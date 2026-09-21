@@ -445,6 +445,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   height: 3px;
   background: #d9dcd2;
   margin-top: 9px;
+  overflow: hidden;
 }
 .ef-progress > i {
   display: block;
@@ -637,6 +638,10 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 }
 .ef-toolbar-label .ef-ico { width: 16px; height: 16px; }
 .ef-toolbar-spacer { flex: 1; min-width: 8px; }
+.ef-toolbar .ef-btn,
+.ef-toolbar .ef-pdf-action {
+  flex-shrink: 0;
+}
 .ef-list-back, .ef-context-toggle { display: none; }
 .ef-menu-wrap { position: relative; }
 .ef-action-menu {

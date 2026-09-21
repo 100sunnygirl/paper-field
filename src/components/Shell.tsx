@@ -1,5 +1,5 @@
 import { MODE_LABELS, type AppMode, type Domain } from "../lib/types";
-import { modLabel } from "../lib/util";
+import { shortcut } from "../lib/util";
 import { useField } from "../store";
 import { Button, Icon } from "./ui";
 
@@ -79,7 +79,7 @@ export function Dock({
             placeholder="搜索标题、作者、标签或 DOI"
             aria-label="搜索论文"
           />
-          <kbd>{modLabel()}K</kbd>
+          <kbd>{shortcut("K")}</kbd>
         </label>
       ) : (
         <div className="ef-header-spacer" />
@@ -116,7 +116,7 @@ export function StatusStrip() {
       </span>
       <span>{settings.hasKey ? "AI 已配置" : "未配置 AI"}</span>
       <span className="right">
-        快捷操作 <span className="mono">{modLabel()}K</span> 搜索
+        快捷操作 <span className="mono">{shortcut("K")}</span> 搜索
       </span>
     </footer>
   );

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { modLabel } from "../lib/util";
+import { shortcut } from "../lib/util";
 import { useField } from "../store";
 import { Button, Field } from "./ui";
 
@@ -76,9 +76,9 @@ export function SystemView() {
             <h3>快捷键</h3>
             <p>
               <span className="kbd">↑</span> <span className="kbd">↓</span> 论文列表 ·{" "}
-              <span className="kbd">{modLabel()}N</span> 添加论文 ·{" "}
-              <span className="kbd">{modLabel()}R</span> 标记已读 ·{" "}
-              <span className="kbd">{modLabel()}K</span> 搜索 · <span className="kbd">Esc</span> 关闭对话框
+              <span className="kbd">{shortcut("N")}</span> 添加论文 ·{" "}
+              <span className="kbd">{shortcut("R")}</span> 标记已读 ·{" "}
+              <span className="kbd">{shortcut("K")}</span> 搜索 · <span className="kbd">Esc</span> 关闭对话框
             </p>
           </article>
         </div>
