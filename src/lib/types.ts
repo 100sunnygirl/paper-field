@@ -14,6 +14,14 @@ export type JobType = "prepareMeta" | "draftNotes" | "refreshLinks";
 export type JobStatus = "queued" | "running" | "done" | "error" | "cancelled";
 export type AppMode = "field" | "archive" | "intake" | "system";
 
+export const NOTE_DISPLAY_ORDER: NoteKind[] = [
+  "summary",
+  "highlights",
+  "weaknesses",
+  "implications",
+  "remarks",
+];
+
 export interface Domain {
   id: string;
   name: string;
@@ -152,7 +160,7 @@ export const NOTE_LABELS: Record<NoteKind, { zh: string; en: string }> = {
   remarks: { zh: "备注", en: "REMARKS" },
   summary: { zh: "总结", en: "SUMMARY" },
   highlights: { zh: "亮点", en: "HIGHLIGHTS" },
-  weaknesses: { zh: "缺点", en: "WEAKNESSES" },
+  weaknesses: { zh: "不足", en: "WEAKNESSES" },
   implications: { zh: "启示", en: "IMPLICATIONS" },
 };
 
@@ -162,3 +170,37 @@ export const MODE_LABELS: Record<AppMode, { zh: string; en: string; index: strin
   intake: { zh: "入库", en: "INTAKE", index: "03" },
   system: { zh: "系统", en: "SYSTEM", index: "04" },
 };
+
+export const READING_STATUS_LABELS: Record<ReadingStatus, string> = {
+  unread: "未读",
+  reading: "在读",
+  read: "已读",
+};
+
+export const OPEN_SOURCE_LABELS: Record<OpenSource, string> = {
+  open: "开源",
+  closed: "闭源",
+  request: "需申请",
+  unknown: "未知",
+};
+
+export const JOB_TYPE_LABELS: Record<JobType, string> = {
+  prepareMeta: "补全论文信息",
+  draftNotes: "起草阅读笔记",
+  refreshLinks: "刷新链接",
+};
+
+export const JOB_STATUS_LABELS: Record<JobStatus, string> = {
+  queued: "等待",
+  running: "运行中",
+  done: "完成",
+  error: "失败",
+  cancelled: "已取消",
+};
+
+export function noteSourceLabel(block: Pick<NoteBlock, "source" | "userEdited">): string {
+  if (block.source === "llm") {
+    return block.userEdited ? "AI 起草 · 人工修订" : "AI 起草";
+  }
+  return "手动笔记";
+}

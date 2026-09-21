@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
+import type { Author, PaperDetail } from "../lib/types";
 import { useField } from "../store";
-import { Button, Dialog, Field } from "./ui";
+import { Button, Dialog, Field, Icon } from "./ui";
 
 export function PaperDialog() {
   const dialog = useField((s) => s.dialog);
@@ -28,16 +29,15 @@ export function PaperDialog() {
   return (
     <Dialog
       open={open}
-      kicker="Intake / new unit"
-      title="+ Paper"
+      title="添加论文"
       onClose={closeDialog}
       footer={
         <>
           <Button type="button" onClick={closeDialog}>
-            Cancel
+            取消
           </Button>
           <Button
-            primary
+            variant="primary"
             type="button"
             onClick={() => {
               setError(null);
@@ -50,22 +50,22 @@ export function PaperDialog() {
               }).catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
             }}
           >
-            COMMIT
+            添加论文
           </Button>
         </>
       }
     >
-      <p style={{ marginTop: 0, color: "var(--muted)" }}>至少填一项。有 Key 时会创建 prepareMeta 作业，但不会自动已读。</p>
-      <Field light label="Title">
+      <p>至少填写标题、arXiv、DOI 或 PDF 路径之一。有 Key 时可以在入库后补全信息，但不会自动已读。</p>
+      <Field label="标题">
         <input value={title} onChange={(e) => setTitle(e.target.value)} autoFocus />
       </Field>
-      <Field light label="arXiv">
+      <Field label="arXiv">
         <input value={arxivId} onChange={(e) => setArxivId(e.target.value)} placeholder="2304.08485" />
       </Field>
-      <Field light label="DOI">
+      <Field label="DOI">
         <input value={doi} onChange={(e) => setDoi(e.target.value)} />
       </Field>
-      <Field light label="PDF path / URL">
+      <Field label="PDF 路径 / URL">
         <input value={pdfUrl} onChange={(e) => setPdfUrl(e.target.value)} />
       </Field>
       <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13 }}>
@@ -75,9 +75,9 @@ export function PaperDialog() {
           onChange={(e) => setRunPrepare(e.target.checked)}
           disabled={!settings.hasKey}
         />
-        入库后运行 LLM PREPARE {settings.hasKey ? "" : "（无 Key，已禁用）"}
+        入库后补全论文信息 {settings.hasKey ? "" : "（尚未配置 AI，已禁用）"}
       </label>
-      {error ? <p style={{ color: "#a33" }}>{error}</p> : null}
+      {error ? <p style={{ color: "var(--pf-danger)" }}>{error}</p> : null}
     </Dialog>
   );
 }
@@ -96,6 +96,7 @@ export function DomainDialog() {
   const [code, setCode] = useState("");
   const [summary, setSummary] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const open = dialog === "domain" || dialog === "edit-domain";
 
   useEffect(() => {
@@ -110,26 +111,37 @@ export function DomainDialog() {
       setSummary("");
     }
     setError(null);
+    setConfirmDelete(false);
   }, [open, editing, selectedDomainId]);
 
   return (
     <Dialog
       open={open}
-      kicker="Domain / field"
-      title={editing ? "Edit field" : "+ Field"}
+      title={editing ? "编辑研究领域" : "新建研究领域"}
       onClose={closeDialog}
+      danger={confirmDelete}
       footer={
         <>
           {editing ? (
-            <Button type="button" onClick={() => void deleteDomain()}>
-              DELETE
-            </Button>
+            confirmDelete ? (
+              <Button
+                type="button"
+                className="ef-btn-danger-solid"
+                onClick={() => void deleteDomain()}
+              >
+                确认删除领域
+              </Button>
+            ) : (
+              <Button type="button" variant="danger" onClick={() => setConfirmDelete(true)}>
+                删除领域…
+              </Button>
+            )
           ) : null}
           <Button type="button" onClick={closeDialog}>
-            Cancel
+            取消
           </Button>
           <Button
-            primary
+            variant="primary"
             type="button"
             onClick={() => {
               setError(null);
@@ -141,26 +153,125 @@ export function DomainDialog() {
               );
             }}
           >
-            COMMIT
+            {editing ? "保存修改" : "创建领域"}
           </Button>
         </>
       }
     >
-      <Field light label="Name / 中文">
-        <input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="多模态"
-          autoFocus
-        />
-      </Field>
-      <Field light label="Code">
-        <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="MM-03" />
-      </Field>
-      <Field light label="Summary">
-        <textarea value={summary} onChange={(e) => setSummary(e.target.value)} />
-      </Field>
-      {error ? <p style={{ color: "#a33" }}>{error}</p> : null}
+      {confirmDelete ? (
+        <p>将删除「{current?.name}」及其论文列表关联。此操作不可撤销。</p>
+      ) : (
+        <>
+          <Field label="名称 / 中文">
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="多模态"
+              autoFocus
+            />
+          </Field>
+          <Field label="代码">
+            <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="MM-03" />
+          </Field>
+          <Field label="简介">
+            <textarea value={summary} onChange={(e) => setSummary(e.target.value)} />
+          </Field>
+        </>
+      )}
+      {error ? <p style={{ color: "var(--pf-danger)" }}>{error}</p> : null}
+    </Dialog>
+  );
+}
+
+export function DomainPickerDialog() {
+  const dialog = useField((s) => s.dialog);
+  const closeDialog = useField((s) => s.closeDialog);
+  const domains = useField((s) => s.domains);
+  const selectedDomainId = useField((s) => s.selectedDomainId);
+  const selectDomain = useField((s) => s.selectDomain);
+  const movePaper = useField((s) => s.movePaper);
+  const openDialog = useField((s) => s.openDialog);
+  const moving = dialog === "move-paper";
+  const open = dialog === "pick-domain" || moving;
+
+  return (
+    <Dialog
+      open={open}
+      title={moving ? "移动到其他领域" : "切换研究领域"}
+      onClose={closeDialog}
+      footer={
+        moving ? (
+          <Button type="button" onClick={closeDialog}>
+            取消
+          </Button>
+        ) : (
+          <>
+            <Button type="button" onClick={() => openDialog("edit-domain")}>
+              编辑当前领域
+            </Button>
+            <Button type="button" variant="primary" onClick={() => openDialog("domain")}>
+              <Icon name="plus" />
+              新建领域
+            </Button>
+          </>
+        )
+      }
+    >
+      <p>{moving ? "选择这篇论文要进入的领域。" : "选择要查看的研究领域。"}</p>
+      {domains.map((domain) => (
+        <button
+          key={domain.id}
+          type="button"
+          className={`ef-domain-option ${domain.id === selectedDomainId ? "is-current" : ""}`}
+          onClick={() => {
+            if (moving) void movePaper(domain.id);
+            else void selectDomain(domain.id);
+          }}
+        >
+          <span>
+            <strong>{domain.name}</strong>
+            {domain.summary ? (
+              <small style={{ display: "block", color: "var(--pf-muted)", marginTop: 4 }}>
+                {domain.summary}
+              </small>
+            ) : null}
+          </span>
+          <span className="mono">
+            {domain.code} <Icon name="right" />
+          </span>
+        </button>
+      ))}
+    </Dialog>
+  );
+}
+
+export function DeletePaperDialog() {
+  const dialog = useField((s) => s.dialog);
+  const closeDialog = useField((s) => s.closeDialog);
+  const paper = useField((s) => s.paper);
+  const deletePaper = useField((s) => s.deletePaper);
+
+  return (
+    <Dialog
+      open={dialog === "delete-paper"}
+      title="删除这篇论文？"
+      onClose={closeDialog}
+      danger
+      footer={
+        <>
+          <Button type="button" onClick={closeDialog}>
+            取消
+          </Button>
+          <Button type="button" className="ef-btn-danger-solid" onClick={() => void deletePaper()}>
+            确认删除
+          </Button>
+        </>
+      }
+    >
+      <p>
+        <strong>{paper?.titleZh || paper?.title}</strong>
+      </p>
+      <p>将删除这篇论文及其笔记。取消会安全返回，不会改动任何内容。</p>
     </Dialog>
   );
 }
@@ -174,25 +285,280 @@ export function ConfirmNotesDialog() {
   return (
     <Dialog
       open={dialog === "confirm-notes"}
-      kicker="Overwrite check"
-      title="Notes touched"
+      title="笔记已被修改"
       onClose={closeDialog}
       footer={
         <>
           <Button type="button" onClick={closeDialog}>
-            Keep mine
+            保留我的笔记
           </Button>
           <Button
-            primary
+            variant="primary"
             type="button"
             onClick={() => void runDraftNotes(pendingDraftJob ?? undefined, true)}
           >
-            Overwrite with LLM
+            用 AI 草稿覆盖
           </Button>
         </>
       }
     >
-      <p>你已经改过笔记。LLM 不会静默覆盖。确认后五块都会被 draftNotes 替换。</p>
+      <p>你已经改过笔记。AI 不会静默覆盖。确认后五块现场笔记都会被起草阅读笔记替换。</p>
     </Dialog>
+  );
+}
+
+export function EditPaperDialog() {
+  const dialog = useField((s) => s.dialog);
+  const closeDialog = useField((s) => s.closeDialog);
+  const paper = useField((s) => s.paper);
+  const savePaperPatch = useField((s) => s.savePaperPatch);
+  const saveAuthors = useField((s) => s.saveAuthors);
+  const open = dialog === "edit-paper" && Boolean(paper);
+
+  return (
+    <Dialog
+      open={open}
+      title="编辑论文信息"
+      onClose={closeDialog}
+      className="is-wide"
+      footer={
+        <Button type="button" onClick={closeDialog}>
+          完成
+        </Button>
+      }
+    >
+      {paper ? (
+        <>
+          <MetaEditor paper={paper} onSave={(patch) => void savePaperPatch(patch)} />
+          <h3 style={{ fontSize: 16, margin: "8px 0 12px" }}>作者</h3>
+          <CrewEditor authors={paper.authors} onSave={(next) => void saveAuthors(next)} />
+        </>
+      ) : null}
+    </Dialog>
+  );
+}
+
+function MetaEditor({
+  paper,
+  onSave,
+}: {
+  paper: PaperDetail;
+  onSave: (patch: {
+    title?: string;
+    titleZh?: string | null;
+    abstract?: string;
+    year?: number | null;
+    venue?: string | null;
+    doi?: string | null;
+    arxivId?: string | null;
+    pdfUrl?: string | null;
+    codeUrl?: string | null;
+    projectPage?: string | null;
+    tags?: string[];
+  }) => void;
+}) {
+  const [draft, setDraft] = useState({
+    title: paper.title,
+    titleZh: paper.titleZh ?? "",
+    abstract: paper.abstract,
+    year: paper.year?.toString() ?? "",
+    venue: paper.venue ?? "",
+    doi: paper.doi ?? "",
+    arxivId: paper.arxivId ?? "",
+    pdfUrl: paper.pdfUrl ?? "",
+    codeUrl: paper.codeUrl ?? "",
+    projectPage: paper.projectPage ?? "",
+    tags: paper.tags.join(", "),
+  });
+
+  useEffect(() => {
+    setDraft({
+      title: paper.title,
+      titleZh: paper.titleZh ?? "",
+      abstract: paper.abstract,
+      year: paper.year?.toString() ?? "",
+      venue: paper.venue ?? "",
+      doi: paper.doi ?? "",
+      arxivId: paper.arxivId ?? "",
+      pdfUrl: paper.pdfUrl ?? "",
+      codeUrl: paper.codeUrl ?? "",
+      projectPage: paper.projectPage ?? "",
+      tags: paper.tags.join(", "),
+    });
+  }, [paper]);
+
+  return (
+    <div>
+      <Field label="英文标题">
+        <input value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} />
+      </Field>
+      <Field label="中文标题">
+        <input value={draft.titleZh} onChange={(e) => setDraft({ ...draft, titleZh: e.target.value })} />
+      </Field>
+      <Field label="摘要">
+        <textarea value={draft.abstract} onChange={(e) => setDraft({ ...draft, abstract: e.target.value })} />
+      </Field>
+      <Field label="年份">
+        <input value={draft.year} onChange={(e) => setDraft({ ...draft, year: e.target.value })} />
+      </Field>
+      <Field label="会议 / 期刊">
+        <input value={draft.venue} onChange={(e) => setDraft({ ...draft, venue: e.target.value })} />
+      </Field>
+      <Field label="DOI">
+        <input value={draft.doi} onChange={(e) => setDraft({ ...draft, doi: e.target.value })} />
+      </Field>
+      <Field label="arXiv">
+        <input value={draft.arxivId} onChange={(e) => setDraft({ ...draft, arxivId: e.target.value })} />
+      </Field>
+      <Field label="PDF">
+        <input value={draft.pdfUrl} onChange={(e) => setDraft({ ...draft, pdfUrl: e.target.value })} />
+      </Field>
+      <Field label="代码仓库">
+        <input value={draft.codeUrl} onChange={(e) => setDraft({ ...draft, codeUrl: e.target.value })} />
+      </Field>
+      <Field label="项目主页">
+        <input value={draft.projectPage} onChange={(e) => setDraft({ ...draft, projectPage: e.target.value })} />
+      </Field>
+      <Field label="标签">
+        <input value={draft.tags} onChange={(e) => setDraft({ ...draft, tags: e.target.value })} />
+      </Field>
+      <Button
+        variant="primary"
+        type="button"
+        onClick={() =>
+          onSave({
+            title: draft.title,
+            titleZh: draft.titleZh || null,
+            abstract: draft.abstract,
+            year: draft.year ? Number(draft.year) : null,
+            venue: draft.venue || null,
+            doi: draft.doi || null,
+            arxivId: draft.arxivId || null,
+            pdfUrl: draft.pdfUrl || null,
+            codeUrl: draft.codeUrl || null,
+            projectPage: draft.projectPage || null,
+            tags: draft.tags
+              .split(",")
+              .map((t) => t.trim())
+              .filter(Boolean),
+          })
+        }
+      >
+        保存论文信息
+      </Button>
+    </div>
+  );
+}
+
+function CrewEditor({
+  authors,
+  onSave,
+}: {
+  authors: Author[];
+  onSave: (authors: Author[]) => void;
+}) {
+  const [draft, setDraft] = useState(authors);
+  const [editing, setEditing] = useState(false);
+
+  useEffect(() => {
+    setDraft(authors);
+    setEditing(false);
+  }, [authors]);
+
+  if (!editing) {
+    return (
+      <div className="ef-crew">
+        {authors.length === 0 ? <p>无作者记录</p> : null}
+        {authors.map((author) => (
+          <article key={author.id}>
+            <strong>
+              {author.name}
+              {author.isCorresponding ? " · 通讯" : ""}
+            </strong>
+            <small>{[author.affiliation, author.lab].filter(Boolean).join(" / ") || "未填写机构"}</small>
+          </article>
+        ))}
+        <Button type="button" onClick={() => setEditing(true)}>
+          编辑作者
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {draft.map((author, index) => (
+        <div key={author.id} className="ef-crew-edit">
+          <Field label={`作者 ${index + 1}`}>
+            <input
+              value={author.name}
+              onChange={(e) => {
+                const next = [...draft];
+                next[index] = { ...author, name: e.target.value };
+                setDraft(next);
+              }}
+            />
+          </Field>
+          <Field label="机构">
+            <input
+              value={author.affiliation ?? ""}
+              onChange={(e) => {
+                const next = [...draft];
+                next[index] = { ...author, affiliation: e.target.value };
+                setDraft(next);
+              }}
+            />
+          </Field>
+          <Field label="实验室">
+            <input
+              value={author.lab ?? ""}
+              onChange={(e) => {
+                const next = [...draft];
+                next[index] = { ...author, lab: e.target.value };
+                setDraft(next);
+              }}
+            />
+          </Field>
+          <label>
+            <input
+              type="checkbox"
+              checked={author.isCorresponding}
+              onChange={(e) => {
+                const next = [...draft];
+                next[index] = { ...author, isCorresponding: e.target.checked };
+                setDraft(next);
+              }}
+            />{" "}
+            通讯作者
+          </label>
+        </div>
+      ))}
+      <div className="job-row">
+        <Button
+          type="button"
+          onClick={() =>
+            setDraft([
+              ...draft,
+              {
+                id: crypto.randomUUID(),
+                name: "",
+                nameZh: null,
+                affiliation: "",
+                lab: "",
+                homepage: null,
+                orcid: null,
+                order: draft.length,
+                isCorresponding: false,
+              },
+            ])
+          }
+        >
+          添加作者
+        </Button>
+        <Button variant="primary" type="button" onClick={() => onSave(draft.filter((a) => a.name.trim()))}>
+          保存作者
+        </Button>
+      </div>
+    </div>
   );
 }

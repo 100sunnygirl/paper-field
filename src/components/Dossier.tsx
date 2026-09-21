@@ -1,472 +1,605 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { renderMarkdown } from "../lib/markdown";
-import { NOTE_KINDS, NOTE_LABELS, type Author, type NoteKind, type OpenSource, type PaperDetail } from "../lib/types";
-import { formatDate } from "../lib/util";
+import {
+  JOB_STATUS_LABELS,
+  JOB_TYPE_LABELS,
+  NOTE_DISPLAY_ORDER,
+  NOTE_LABELS,
+  READING_STATUS_LABELS,
+  noteSourceLabel,
+  type NoteKind,
+  type OpenSource,
+  type PaperDetail,
+  type ReadingStatus,
+} from "../lib/types";
+import { formatDate, pad2 } from "../lib/util";
 import { useField } from "../store";
-import { Button, Empty, Field } from "./ui";
+import { Button, ButtonLink, Dialog, Empty, ExternalResource, Icon } from "./ui";
 
 function NoteEditor({
   kind,
+  index,
   paper,
+  editing,
+  onStart,
+  onStop,
 }: {
   kind: NoteKind;
+  index: number;
   paper: PaperDetail;
+  editing: boolean;
+  onStart: () => void;
+  onStop: () => void;
 }) {
   const saveNote = useField((s) => s.saveNote);
+  const setUnsavedNote = useField((s) => s.setUnsavedNote);
   const block = paper.notes[kind];
   const [value, setValue] = useState(block.content);
-  const [editing, setEditing] = useState(!block.content);
+  const [saving, setSaving] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
-    setValue(block.content);
-    setEditing(!block.content);
-  }, [block.content, paper.id, kind]);
+    if (!editing) {
+      setValue(block.content);
+      setFailed(false);
+    }
+  }, [block.content, paper.id, kind, editing]);
+
+  useEffect(() => {
+    if (editing) {
+      setUnsavedNote(true);
+      textareaRef.current?.focus();
+    }
+  }, [editing, setUnsavedNote]);
 
   const label = NOTE_LABELS[kind];
+
+  async function commit() {
+    setSaving(true);
+    setFailed(false);
+    try {
+      await saveNote(kind, value);
+      setUnsavedNote(false);
+      onStop();
+    } catch {
+      setFailed(true);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function cancel() {
+    setValue(block.content);
+    setFailed(false);
+    setUnsavedNote(false);
+    onStop();
+  }
+
   return (
-    <section className="ef-note-block" id={`note-${kind}`}>
-      <header>
+    <section className="ef-note" id={`note-${kind}`}>
+      <div className="ef-note-head">
         <h3>
-          <span>{label.en.slice(0, 2)}</span>
-          {label.zh} / {label.en}
+          <span className="ef-note-number">{pad2(index + 1)}</span>
+          {label.zh}
         </h3>
-        <div className="ef-note-head">
-          <span>
-            SRC {block.source.toUpperCase()}
-            {block.userEdited ? " · EDITED" : ""}
-          </span>
-          <button type="button" className="ef-btn" onClick={() => setEditing((v) => !v)}>
-            {editing ? "PREVIEW" : "EDIT"}
+        <span className="ef-note-source">{noteSourceLabel(block)}</span>
+        {editing ? null : (
+          <button type="button" className="ef-note-edit" onClick={onStart} aria-label={`编辑${label.zh}`}>
+            <Icon name="edit" />
+            编辑
           </button>
-        </div>
-      </header>
+        )}
+      </div>
       {editing ? (
-        <textarea
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          onBlur={() => {
-            if (value !== block.content) void saveNote(kind, value);
-          }}
-          aria-label={label.zh}
-        />
+        <>
+          <textarea
+            ref={textareaRef}
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            aria-label={`${label.zh}内容`}
+          />
+          <div className="ef-edit-actions">
+            <span className="ef-edit-hint">
+              {saving ? "保存中…" : failed ? "保存失败，输入已保留，可重试。" : "编辑中 · 尚未保存"}
+            </span>
+            <Button type="button" size="sm" onClick={cancel} disabled={saving}>
+              取消
+            </Button>
+            <Button type="button" size="sm" variant="primary" onClick={() => void commit()} disabled={saving}>
+              {saving ? "保存中…" : "保存笔记"}
+            </Button>
+          </div>
+        </>
+      ) : value.trim() ? (
+        <div className="ef-note-text ef-md" dangerouslySetInnerHTML={{ __html: renderMarkdown(value) }} />
       ) : (
-        <div
-          className="ef-md"
-          dangerouslySetInnerHTML={{ __html: renderMarkdown(value || "_empty_") }}
-        />
+        <p className="ef-empty-note">尚未记录，点击「编辑」写下你的判断。</p>
       )}
     </section>
   );
 }
 
-export function ReadingStage() {
-  const paper = useField((s) => s.paper);
-  const mode = useField((s) => s.mode);
-  const jobs = useField((s) => s.jobs);
+function ContextPanel({
+  paper,
+  activeSection,
+  onJump,
+}: {
+  paper: PaperDetail;
+  activeSection: string;
+  onJump: (id: string) => void;
+}) {
   const settings = useField((s) => s.settings);
-  const markRead = useField((s) => s.markRead);
-  const markReading = useField((s) => s.markReading);
+  const jobs = useField((s) => s.jobs);
+  const setReadingStatus = useField((s) => s.setReadingStatus);
   const runPrepareMeta = useField((s) => s.runPrepareMeta);
   const runDraftNotes = useField((s) => s.runDraftNotes);
   const cancelJob = useField((s) => s.cancelJob);
   const savePaperPatch = useField((s) => s.savePaperPatch);
-  const saveAuthors = useField((s) => s.saveAuthors);
-  const deletePaper = useField((s) => s.deletePaper);
+  const setMode = useField((s) => s.setMode);
+  const active = jobs.filter(
+    (job) => job.paperId === paper.id && (job.status === "running" || job.status === "queued"),
+  );
+
+  return (
+    <aside className="ef-context" aria-label="论文资料与目录">
+      <section className="ef-context-block">
+        <h2 className="ef-context-title">阅读状态</h2>
+        <label className="ef-status-select">
+          <Icon name={paper.readingStatus === "read" ? "check" : "file"} />
+          <select
+            aria-label="修改阅读状态"
+            value={paper.readingStatus}
+            onChange={(e) => void setReadingStatus(e.target.value as ReadingStatus)}
+          >
+            {(Object.keys(READING_STATUS_LABELS) as ReadingStatus[]).map((status) => (
+              <option key={status} value={status}>
+                {READING_STATUS_LABELS[status]}
+              </option>
+            ))}
+          </select>
+        </label>
+        <p className="ef-read-date">
+          {paper.readingStatus === "read" && paper.readAt
+            ? `标记于 ${formatDate(paper.readAt)}`
+            : "阅读状态由你手动标记"}
+        </p>
+      </section>
+
+      <section className="ef-context-block">
+        <h2 className="ef-context-title">资料与链接</h2>
+        {paper.codeUrl ? (
+          <ExternalResource href={paper.codeUrl} icon="code">
+            代码仓库
+          </ExternalResource>
+        ) : (
+          <p className="ef-missing">未提供代码仓库</p>
+        )}
+        {paper.projectPage ? (
+          <ExternalResource href={paper.projectPage} icon="link">
+            项目主页
+          </ExternalResource>
+        ) : (
+          <p className="ef-missing">未提供项目主页</p>
+        )}
+        <div className="ef-identifier">
+          arXiv
+          <span className="mono">{paper.arxivId || "未提供"}</span>
+        </div>
+        <label className="ef-os-select">
+          <span>开源状态</span>
+          <select
+            value={paper.codeOpenSource}
+            onChange={(e) => void savePaperPatch({ codeOpenSource: e.target.value as OpenSource })}
+            aria-label="开源状态"
+          >
+            <option value="unknown">未知</option>
+            <option value="open">开源</option>
+            <option value="closed">闭源</option>
+            <option value="request">需申请</option>
+          </select>
+        </label>
+        <details className="ef-metadata-details">
+          <summary>
+            <Icon name="right" />
+            作者、机构与 DOI
+          </summary>
+          <div className="ef-author-details">
+            {paper.authors.length ? (
+              paper.authors.map((author) => (
+                <p key={author.id}>
+                  <strong>
+                    {author.name}
+                    {author.isCorresponding ? " · 通讯" : ""}
+                  </strong>
+                  <br />
+                  {[author.affiliation, author.lab].filter(Boolean).join(" · ") || "机构待补充"}
+                </p>
+              ))
+            ) : (
+              <p>作者信息待补充</p>
+            )}
+            <p>
+              DOI
+              <br />
+              <span className="mono">{paper.doi || "未提供"}</span>
+            </p>
+          </div>
+        </details>
+      </section>
+
+      <section className="ef-context-block">
+        <h2 className="ef-context-title">本页目录</h2>
+        <nav className="ef-toc" aria-label="本页目录">
+          <a
+            href="#abstract"
+            className={activeSection === "abstract" ? "is-active" : ""}
+            onClick={(e) => {
+              e.preventDefault();
+              onJump("abstract");
+            }}
+          >
+            <span className="mono">—</span>摘要
+          </a>
+          {NOTE_DISPLAY_ORDER.map((kind, i) => (
+            <a
+              key={kind}
+              href={`#note-${kind}`}
+              className={activeSection === `note-${kind}` ? "is-active" : ""}
+              onClick={(e) => {
+                e.preventDefault();
+                onJump(`note-${kind}`);
+              }}
+            >
+              <span className="mono">{pad2(i + 1)}</span>
+              {NOTE_LABELS[kind].zh}
+            </a>
+          ))}
+        </nav>
+      </section>
+
+      <section className="ef-ai-context">
+        <h2 className="ef-context-title">
+          <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+            <Icon name="spark" /> AI 助手
+          </span>
+        </h2>
+        {settings.hasKey ? (
+          <p>用于补全元数据或起草笔记草稿。不会自动把论文标成已读。</p>
+        ) : (
+          <p>尚未配置服务。阅读与手动笔记不受影响。</p>
+        )}
+        <div className="ef-ai-buttons">
+          <Button
+            type="button"
+            disabled={!settings.hasKey || Boolean(active.length)}
+            onClick={() => void runPrepareMeta(paper.id)}
+          >
+            <Icon name="file" />
+            补全论文信息
+          </Button>
+          <Button
+            type="button"
+            disabled={!settings.hasKey || Boolean(active.length)}
+            onClick={() => void runDraftNotes(paper.id)}
+          >
+            <Icon name="edit" />
+            起草阅读笔记
+          </Button>
+        </div>
+        {active.map((job) => (
+          <div key={job.id} className="ef-job-row" style={{ marginTop: 8 }}>
+            <span>
+              {job.status === "running" ? <i className="ef-pulse" aria-hidden="true" /> : null}
+              {JOB_TYPE_LABELS[job.type]} · {JOB_STATUS_LABELS[job.status]}
+            </span>
+            <Button type="button" size="sm" onClick={() => void cancelJob(job.id)}>
+              取消
+            </Button>
+          </div>
+        ))}
+        {settings.hasKey ? null : (
+          <Button type="button" variant="link" onClick={() => void setMode("system")}>
+            配置 AI 服务
+            <Icon name="right" />
+          </Button>
+        )}
+      </section>
+    </aside>
+  );
+}
+
+export function ReadingStage({
+  focus,
+  onToggleFocus,
+  listOpen,
+  onToggleList,
+  contextOpen,
+  onToggleContext,
+}: {
+  focus: boolean;
+  onToggleFocus: () => void;
+  listOpen: boolean;
+  onToggleList: () => void;
+  contextOpen: boolean;
+  onToggleContext: () => void;
+}) {
+  const paper = useField((s) => s.paper);
+  const mode = useField((s) => s.mode);
   const openDialog = useField((s) => s.openDialog);
-  const selectPaper = useField((s) => s.selectPaper);
+  const unsavedNote = useField((s) => s.unsavedNote);
+  const setFlash = useField((s) => s.setFlash);
+  const [editingKind, setEditingKind] = useState<NoteKind | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [activeSection, setActiveSection] = useState("abstract");
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setEditingKind(null);
+    setMenuOpen(false);
+    setActiveSection("abstract");
+  }, [paper?.id]);
+
+  useEffect(() => {
+    const onDoc = (event: MouseEvent) => {
+      if (!menuRef.current?.contains(event.target as Node)) setMenuOpen(false);
+    };
+    document.addEventListener("click", onDoc);
+    return () => document.removeEventListener("click", onDoc);
+  }, []);
+
+  useEffect(() => {
+    const root = scrollRef.current;
+    if (!root || !paper) return;
+    const nodes = Array.from(root.querySelectorAll<HTMLElement>(".ef-abstract, .ef-note"));
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            setActiveSection(entry.target.id);
+            break;
+          }
+        }
+      },
+      { root, rootMargin: "-2% 0px -70% 0px", threshold: 0 },
+    );
+    nodes.forEach((node) => observer.observe(node));
+    return () => observer.disconnect();
+  }, [paper?.id]);
+
+  const venueLine = useMemo(() => {
+    if (!paper) return "";
+    return [paper.venue, paper.year].filter(Boolean).join(" ");
+  }, [paper]);
+
+  function jump(id: string) {
+    const root = scrollRef.current;
+    const target = root?.querySelector<HTMLElement>(`#${id}`);
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    target?.scrollIntoView({ block: "start", behavior: reduce ? "auto" : "smooth" });
+    setActiveSection(id);
+    if (contextOpen) onToggleContext();
+  }
+
+  function startEdit(kind: NoteKind) {
+    if (unsavedNote && editingKind && editingKind !== kind) {
+      setFlash({ tone: "warn", text: "请先保存或取消正在编辑的笔记。" });
+      return;
+    }
+    setEditingKind(kind);
+    requestAnimationFrame(() => jump(`note-${kind}`));
+  }
+
+  function writeNote() {
+    if (!paper) return;
+    const empty = NOTE_DISPLAY_ORDER.find((kind) => !paper.notes[kind].content.trim());
+    startEdit(empty ?? "remarks");
+  }
 
   if (!paper) {
     return (
       <section className="ef-read" id="stage" aria-labelledby="read-empty">
-        <div className="ef-read-grid" aria-hidden="true" />
-        <div className="ef-read-surface">
-          <Empty
-            title="Select a paper"
-            body="从左侧导航选择一篇论文，在此阅读摘要并撰写现场笔记。笔记与总结是主舞台，不是侧栏。"
-            action={
-              mode === "field" ? (
-                <Button primary type="button" onClick={() => openDialog("paper")}>
-                  + PAPER
-                </Button>
-              ) : null
-            }
-          />
+        <div className="ef-toolbar">
+          <Button
+            type="button"
+            variant="text"
+            className="ef-list-back"
+            aria-expanded={listOpen}
+            onClick={onToggleList}
+          >
+            <Icon name="menu" />
+            论文列表
+          </Button>
+        </div>
+        <div className="ef-read-scroll">
+          <div className="ef-reading-grid">
+            <Empty
+              title="选择一篇论文"
+              body="从左侧列表选择论文，阅读摘要并撰写现场笔记。打开 PDF 是本页的主操作。"
+              action={
+                mode === "field" ? (
+                  <Button type="button" variant="primary" onClick={() => openDialog("paper")}>
+                    <Icon name="plus" />
+                    添加论文
+                  </Button>
+                ) : null
+              }
+            />
+          </div>
         </div>
       </section>
     );
   }
 
-  const active = jobs.filter(
-    (job) => job.paperId === paper.id && (job.status === "running" || job.status === "queued"),
+  const title = paper.titleZh || paper.title;
+  const english = paper.titleZh ? paper.title : "";
+  const context = (
+    <ContextPanel
+      paper={paper}
+      activeSection={activeSection}
+      onJump={jump}
+    />
   );
-  const labs = paper.labs.length
-    ? paper.labs
-    : [...new Set(paper.authors.map((a) => a.lab).filter(Boolean))].map((name) => ({
-        name: name as string,
-        institution: paper.authors.find((a) => a.lab === name)?.affiliation ?? "",
-      }));
 
   return (
-    <section className="ef-read" id="stage" aria-labelledby="read-title">
-      <div className="ef-read-grid" aria-hidden="true" />
-      <div className="ef-read-bar">
-        <button type="button" className="ef-btn ef-list-back" onClick={() => void selectPaper(null)}>
-          ← LIST
-        </button>
-        {paper.readingStatus === "read" ? (
-          <Button type="button" onClick={() => void markReading()}>
-            READ · {formatDate(paper.readAt)} · UNDO
-          </Button>
-        ) : (
-          <Button primary type="button" onClick={() => void markRead()}>
-            MARK READ
-          </Button>
-        )}
-        {paper.readingStatus === "unread" ? (
-          <Button type="button" onClick={() => void markReading()}>
-            SET READING
-          </Button>
-        ) : null}
-        <Button type="button" onClick={() => void runPrepareMeta(paper.id)} disabled={Boolean(active.length)}>
-          LLM PREPARE
-        </Button>
-        <Button type="button" onClick={() => void runDraftNotes(paper.id)} disabled={Boolean(active.length)}>
-          DRAFT NOTES
-        </Button>
-        {active.map((job) => (
-          <span key={job.id} className="ef-job-live">
-            <i className="ef-pulse" aria-hidden="true" />
-            {job.type} · {job.status}
-            <Button type="button" onClick={() => void cancelJob(job.id)}>
-              CANCEL
-            </Button>
-          </span>
-        ))}
-        <span className="ef-read-bar-spacer" />
-        <Button type="button" onClick={() => openDialog("edit-domain")}>
-          MOVE
-        </Button>
-        <Button type="button" onClick={() => void deletePaper()}>
-          DELETE
-        </Button>
-      </div>
-
-      <div className="ef-read-surface">
-        <p className="ef-kicker">
-          {paper.domain.code} · {paper.readingStatus.toUpperCase()}
-          {paper.llmPreparedAt ? " · META READY" : ""}
-        </p>
-        <h1 className="ef-read-title" id="read-title">
-          {paper.titleZh || paper.title}
-        </h1>
-        {paper.titleZh ? <p className="ef-read-en">{paper.title}</p> : null}
-        <p className="ef-read-meta">
-          {[paper.venue, paper.year, paper.arxivId ? `arXiv:${paper.arxivId}` : null, paper.doi]
-            .filter(Boolean)
-            .join(" · ")}
-        </p>
-
-        {!settings.hasKey ? (
-          <p className="ef-read-banner">NO KEY / 在 SYSTEM 写入端点后可 PREPARE。可完整手录。LLM 不会标记已读。</p>
-        ) : null}
-
-        <section className="ef-abstract">
-          <h2>ABSTRACT / 概要</h2>
-          <p>{paper.abstract || "尚无摘要。展开 META 或运行 LLM PREPARE。"}</p>
-        </section>
-
-        <div className="ef-band">
-          <div>
-            <h2>CREW / LAB</h2>
-            <p>
-              {paper.authors.length
-                ? paper.authors
-                    .map((a) => `${a.name}${a.lab ? ` (${a.lab})` : a.affiliation ? ` (${a.affiliation})` : ""}`)
-                    .join(" · ")
-                : "无作者记录"}
-            </p>
-            {labs.length ? (
-              <p className="ef-band-muted">{labs.map((l) => [l.name, l.institution].filter(Boolean).join(" · ")).join(" / ")}</p>
-            ) : null}
-          </div>
-          <div>
-            <h2>ARTIFACTS</h2>
-            <div className="ef-artifacts">
-              {paper.pdfUrl ? (
-                <a className="ef-chip-link" href={paper.pdfUrl} target="_blank" rel="noreferrer">
-                  PDF
-                </a>
-              ) : (
-                <span className="ef-chip unknown">NO PDF</span>
-              )}
-              {paper.codeUrl ? (
-                <a className="ef-chip-link" href={paper.codeUrl} target="_blank" rel="noreferrer">
-                  CODE
-                </a>
-              ) : (
-                <span className="ef-chip unknown">NO CODE</span>
-              )}
-              {paper.projectPage ? (
-                <a className="ef-chip-link" href={paper.projectPage} target="_blank" rel="noreferrer">
-                  PROJECT
-                </a>
-              ) : null}
-              <label className="ef-os-select">
-                <span>OPEN SRC</span>
-                <select
-                  value={paper.codeOpenSource}
-                  onChange={(e) => void savePaperPatch({ codeOpenSource: e.target.value as OpenSource })}
-                  aria-label="Open source status"
-                >
-                  <option value="unknown">unknown</option>
-                  <option value="open">open</option>
-                  <option value="closed">closed</option>
-                  <option value="request">request</option>
-                </select>
-              </label>
-            </div>
-          </div>
-        </div>
-
-        <details className="ef-meta-fold">
-          <summary>META / CREW · 校对元数据与作者（次于笔记）</summary>
-          <MetaEditor paper={paper} onSave={(patch) => void savePaperPatch(patch)} />
-          <CrewEditor authors={paper.authors} onSave={(next) => void saveAuthors(next)} />
-        </details>
-
-        <header className="ef-notes-head">
-          <h2>FIELD NOTES / 现场笔记</h2>
-          <p>Markdown。LLM 预填标记 source=llm；你改过之后不会被静默覆盖。</p>
-        </header>
-        {NOTE_KINDS.map((kind) => (
-          <NoteEditor key={kind} kind={kind} paper={paper} />
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function MetaEditor({
-  paper,
-  onSave,
-}: {
-  paper: PaperDetail;
-  onSave: (patch: {
-    title?: string;
-    titleZh?: string | null;
-    abstract?: string;
-    year?: number | null;
-    venue?: string | null;
-    doi?: string | null;
-    arxivId?: string | null;
-    pdfUrl?: string | null;
-    codeUrl?: string | null;
-    projectPage?: string | null;
-    tags?: string[];
-  }) => void;
-}) {
-  const [draft, setDraft] = useState({
-    title: paper.title,
-    titleZh: paper.titleZh ?? "",
-    abstract: paper.abstract,
-    year: paper.year?.toString() ?? "",
-    venue: paper.venue ?? "",
-    doi: paper.doi ?? "",
-    arxivId: paper.arxivId ?? "",
-    pdfUrl: paper.pdfUrl ?? "",
-    codeUrl: paper.codeUrl ?? "",
-    projectPage: paper.projectPage ?? "",
-    tags: paper.tags.join(", "),
-  });
-
-  useEffect(() => {
-    setDraft({
-      title: paper.title,
-      titleZh: paper.titleZh ?? "",
-      abstract: paper.abstract,
-      year: paper.year?.toString() ?? "",
-      venue: paper.venue ?? "",
-      doi: paper.doi ?? "",
-      arxivId: paper.arxivId ?? "",
-      pdfUrl: paper.pdfUrl ?? "",
-      codeUrl: paper.codeUrl ?? "",
-      projectPage: paper.projectPage ?? "",
-      tags: paper.tags.join(", "),
-    });
-  }, [paper]);
-
-  return (
-    <div className="ef-meta-form">
-      <Field light label="Title">
-        <input value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} />
-      </Field>
-      <Field light label="Chinese title">
-        <input value={draft.titleZh} onChange={(e) => setDraft({ ...draft, titleZh: e.target.value })} />
-      </Field>
-      <Field light label="Abstract">
-        <textarea value={draft.abstract} onChange={(e) => setDraft({ ...draft, abstract: e.target.value })} />
-      </Field>
-      <Field light label="Year">
-        <input value={draft.year} onChange={(e) => setDraft({ ...draft, year: e.target.value })} />
-      </Field>
-      <Field light label="Venue">
-        <input value={draft.venue} onChange={(e) => setDraft({ ...draft, venue: e.target.value })} />
-      </Field>
-      <Field light label="DOI">
-        <input value={draft.doi} onChange={(e) => setDraft({ ...draft, doi: e.target.value })} />
-      </Field>
-      <Field light label="arXiv">
-        <input value={draft.arxivId} onChange={(e) => setDraft({ ...draft, arxivId: e.target.value })} />
-      </Field>
-      <Field light label="PDF">
-        <input value={draft.pdfUrl} onChange={(e) => setDraft({ ...draft, pdfUrl: e.target.value })} />
-      </Field>
-      <Field light label="Code">
-        <input value={draft.codeUrl} onChange={(e) => setDraft({ ...draft, codeUrl: e.target.value })} />
-      </Field>
-      <Field light label="Project">
-        <input value={draft.projectPage} onChange={(e) => setDraft({ ...draft, projectPage: e.target.value })} />
-      </Field>
-      <Field light label="Tags">
-        <input value={draft.tags} onChange={(e) => setDraft({ ...draft, tags: e.target.value })} />
-      </Field>
-      <Button
-        primary
-        type="button"
-        onClick={() =>
-          onSave({
-            title: draft.title,
-            titleZh: draft.titleZh || null,
-            abstract: draft.abstract,
-            year: draft.year ? Number(draft.year) : null,
-            venue: draft.venue || null,
-            doi: draft.doi || null,
-            arxivId: draft.arxivId || null,
-            pdfUrl: draft.pdfUrl || null,
-            codeUrl: draft.codeUrl || null,
-            projectPage: draft.projectPage || null,
-            tags: draft.tags
-              .split(",")
-              .map((t) => t.trim())
-              .filter(Boolean),
-          })
-        }
-      >
-        SAVE META
-      </Button>
-    </div>
-  );
-}
-
-function CrewEditor({
-  authors,
-  onSave,
-}: {
-  authors: Author[];
-  onSave: (authors: Author[]) => void;
-}) {
-  const [draft, setDraft] = useState(authors);
-  const [editing, setEditing] = useState(false);
-
-  useEffect(() => {
-    setDraft(authors);
-    setEditing(false);
-  }, [authors]);
-
-  if (!editing) {
-    return (
-      <div className="ef-crew">
-        {authors.length === 0 ? <p>无作者记录</p> : null}
-        {authors.map((author) => (
-          <article key={author.id}>
-            <strong>
-              {author.name}
-              {author.isCorresponding ? " · CORR" : ""}
-            </strong>
-            <small>{[author.affiliation, author.lab].filter(Boolean).join(" / ") || "unaffiliated"}</small>
-          </article>
-        ))}
-        <Button type="button" onClick={() => setEditing(true)}>
-          EDIT CREW
-        </Button>
-      </div>
-    );
-  }
-
-  return (
-    <div>
-      {draft.map((author, index) => (
-        <div key={author.id} className="ef-crew-edit">
-          <Field light label={`Author ${index + 1}`}>
-            <input
-              value={author.name}
-              onChange={(e) => {
-                const next = [...draft];
-                next[index] = { ...author, name: e.target.value };
-                setDraft(next);
-              }}
-            />
-          </Field>
-          <Field light label="Affiliation">
-            <input
-              value={author.affiliation ?? ""}
-              onChange={(e) => {
-                const next = [...draft];
-                next[index] = { ...author, affiliation: e.target.value };
-                setDraft(next);
-              }}
-            />
-          </Field>
-          <Field light label="Lab">
-            <input
-              value={author.lab ?? ""}
-              onChange={(e) => {
-                const next = [...draft];
-                next[index] = { ...author, lab: e.target.value };
-                setDraft(next);
-              }}
-            />
-          </Field>
-          <label>
-            <input
-              type="checkbox"
-              checked={author.isCorresponding}
-              onChange={(e) => {
-                const next = [...draft];
-                next[index] = { ...author, isCorresponding: e.target.checked };
-                setDraft(next);
-              }}
-            />{" "}
-            corresponding
-          </label>
-        </div>
-      ))}
-      <div className="job-row">
+    <section className="ef-read" id="stage" aria-labelledby="paper-title">
+      <div className="ef-toolbar">
         <Button
           type="button"
-          onClick={() =>
-            setDraft([
-              ...draft,
-              {
-                id: crypto.randomUUID(),
-                name: "",
-                nameZh: null,
-                affiliation: "",
-                lab: "",
-                homepage: null,
-                orcid: null,
-                order: draft.length,
-                isCorresponding: false,
-              },
-            ])
-          }
+          variant="text"
+          className="ef-list-back"
+          aria-expanded={listOpen}
+          onClick={onToggleList}
         >
-          + AUTHOR
+          <Icon name="menu" />
+          论文列表
         </Button>
-        <Button primary type="button" onClick={() => onSave(draft.filter((a) => a.name.trim()))}>
-          SAVE CREW
+        <span className="ef-toolbar-label">
+          <Icon name="file" />
+          论文详情
+        </span>
+        <span className="ef-toolbar-spacer" />
+        <Button
+          type="button"
+          variant="text"
+          className="ef-focus-btn"
+          aria-pressed={focus}
+          onClick={onToggleFocus}
+        >
+          <Icon name="focus" />
+          {focus ? "退出专注" : "专注阅读"}
         </Button>
+        <Button type="button" variant="text" className="ef-context-toggle" onClick={onToggleContext}>
+          <Icon name="inbox" />
+          资料
+        </Button>
+        {paper.pdfUrl ? (
+          <ButtonLink
+            className="ef-pdf-action"
+            variant="primary"
+            href={paper.pdfUrl}
+            target="_blank"
+            rel="noreferrer"
+          >
+            <Icon name="file" />
+            打开 PDF
+            <Icon name="external" className="ef-ico" />
+          </ButtonLink>
+        ) : (
+          <Button
+            type="button"
+            className="ef-pdf-action"
+            variant="primary"
+            onClick={() => setFlash({ tone: "warn", text: "这篇论文尚未提供 PDF 链接。" })}
+          >
+            <Icon name="file" />
+            打开 PDF
+          </Button>
+        )}
+        <Button type="button" className="ef-write-note" onClick={writeNote}>
+          <Icon name="edit" />
+          写笔记
+        </Button>
+        <div className="ef-menu-wrap" ref={menuRef}>
+          <Button
+            type="button"
+            variant="text"
+            className="more-btn"
+            aria-expanded={menuOpen}
+            aria-controls="action-menu"
+            onClick={() => setMenuOpen((open) => !open)}
+          >
+            <span className="more-word">更多</span>
+            <Icon name="down" />
+          </Button>
+          <div className="ef-action-menu" id="action-menu" hidden={!menuOpen}>
+            <button
+              type="button"
+              onClick={() => {
+                setMenuOpen(false);
+                openDialog("edit-paper");
+              }}
+            >
+              <Icon name="edit" />
+              编辑论文信息
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setMenuOpen(false);
+                openDialog("move-paper");
+              }}
+            >
+              <Icon name="inbox" />
+              移动到其他领域
+            </button>
+            <button
+              type="button"
+              className="danger"
+              onClick={() => {
+                setMenuOpen(false);
+                openDialog("delete-paper");
+              }}
+            >
+              <Icon name="trash" />
+              删除论文…
+            </button>
+          </div>
+        </div>
       </div>
-    </div>
+
+      <div className="ef-read-scroll" ref={scrollRef} id="read-scroll">
+        <div className="ef-reading-grid">
+          <article className="ef-document" id="document">
+            <div className="ef-paper-category">
+              <span>研究论文</span>
+              <i className="ef-category-rule" aria-hidden="true" />
+              <span>{venueLine || paper.domain.name}</span>
+            </div>
+            <h1 id="paper-title" className="ef-read-title" tabIndex={-1}>
+              {title}
+            </h1>
+            {english ? <p className="ef-paper-en">{english}</p> : null}
+            <p className="ef-paper-author-line">
+              {paper.authors.length
+                ? paper.authors.map((author) => author.name).join(" · ")
+                : "作者信息待补充"}
+            </p>
+            <section className="ef-abstract" id="abstract">
+              <h2 className="ef-section-label">
+                摘要 <small>ABSTRACT</small>
+              </h2>
+              <p>{paper.abstract || "尚未填写摘要。可在「更多」中编辑论文信息。"}</p>
+            </section>
+            <div className="ef-notes-heading">
+              <h2>现场笔记</h2>
+              <span className="ef-overline">FIELD NOTES</span>
+            </div>
+            <p className="ef-notes-caption">保留自己的判断，也区分 AI 起草与人工修订。</p>
+            {NOTE_DISPLAY_ORDER.map((kind, index) => (
+              <NoteEditor
+                key={kind}
+                kind={kind}
+                index={index}
+                paper={paper}
+                editing={editingKind === kind}
+                onStart={() => startEdit(kind)}
+                onStop={() => setEditingKind(null)}
+              />
+            ))}
+          </article>
+          {context}
+        </div>
+      </div>
+      <Dialog
+        open={contextOpen}
+        title="论文资料与目录"
+        onClose={onToggleContext}
+        className="context-drawer"
+      >
+        <ContextPanel paper={paper} activeSection={activeSection} onJump={jump} />
+      </Dialog>
+    </section>
   );
 }

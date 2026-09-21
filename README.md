@@ -4,6 +4,12 @@ Local-first research-paper notes for macOS. Organize papers by research domain, 
 
 按研究领域组织的论文笔记台：入库时可用 LLM 预填基础信息，阅读后由你补全洞察并**手动**标记已读。LLM 永远不会把论文标成已读。
 
+## Reading-workstation UI pass / 阅读工作台改版
+
+The product chrome is a **reading workstation**: charcoal top bar, pale mode rail, paper list, document stage, and a quiet context rail. Signal yellow (`#FFFA00`) is reserved for **打开 PDF** and small selection cues — not every button. Body text uses `#30332F` on canvas `#F2F2F0` / surface `#FFFFFF`, with muted `#686B64`. UI type is a single stack (`Inter / Noto Sans SC / PingFang SC`); monospace is only for indices and identifiers.
+
+产品界面是阅读工作台：炭黑顶栏、浅色模式轨、论文列表、正文舞台和安静的资料栏。信号黄只用于「打开 PDF」和少量选中提示。现场笔记顺序为总结 → 亮点 → 不足 → 启示 → 备注。
+
 ## Phase 1 scope
 
 - Domain CRUD and paper CRUD (title, Chinese title, abstract, year, venue, DOI, arXiv, ordered authors with affiliation/lab, labs, PDF/code/project URLs, `codeOpenSource`, tags)
@@ -11,11 +17,12 @@ Local-first research-paper notes for macOS. Organize papers by research domain, 
 - Reading status `unread | reading | read` — **only the user** can mark read
 - Add-paper flow: title and/or arXiv/DOI/PDF path → create in domain → optional `prepareMeta` → optional `draftNotes`
 - User-supplied OpenAI-compatible API key (base URL + model + key). Real cancelable HTTP jobs. No key: full manual entry still works
-- **Reading-first IA:** the selected paper’s title, abstract, crew, artifacts, and **FIELD NOTES** (remarks / summary / highlights / weaknesses / implications) live on a wide stage at ~65–75ch. The paper list is only a navigator. MARK READ / LLM PREPARE / DRAFT NOTES sit on a stage utility strip. LLM never auto-marks read.
-- Modes: FIELD / ARCHIVE / INTAKE / SYSTEM — ARCHIVE and INTAKE keep the same navigator + stage shell; SYSTEM uses the full remaining width
-- Status strip with real counts (read x/y, open-source, LLM queue)
+- **Reading-first IA:** the selected paper’s title, abstract, and **现场笔记** (总结 / 亮点 / 不足 / 启示 / 备注) live on a white document stage. Authors, DOI, links, reading status, TOC, and AI actions sit in the context rail. **打开 PDF** is the page primary. LLM never auto-marks read.
+- Modes: 现场 / 归档 / 入库 / 系统 — ARCHIVE and INTAKE keep the same navigator + stage shell; SYSTEM uses the remaining width
+- Status strip with real counts (read x/y, open-source, LLM queue) — no design-contract chrome
 - Search and Markdown export of a domain
-- Keyboard: ↑↓ list, ⌘N new paper, ⌘R mark read
+- Keyboard: ↑↓ list, ⌘N 添加论文, ⌘R 标记已读, ⌘K 搜索
+- Move paper across domains via 更多 → 移动到其他领域; delete requires a confirm dialog
 
 ## Run on macOS
 
@@ -52,12 +59,12 @@ npm run dev
 
 ## Set API key
 
-1. Open **SYSTEM / 系统**
+1. Open **系统**
 2. Set an OpenAI-compatible **Base URL** (default `https://api.openai.com/v1`) and **model**
-3. Paste the key → **SAVE KEY**
-4. Status strip shows `KEY READY`
-5. On a paper, run **LLM PREPARE** then optionally **DRAFT NOTES**
-6. When you are done reading, **MARK READ** (⌘R)
+3. Paste the key → **保存设置**
+4. Status strip shows `AI 已配置`
+5. On a paper, run **补全论文信息** then optionally **起草阅读笔记**
+6. When you are done reading, set **已读** in the context rail (⌘R)
 
 Without a key, add papers and edit every field by hand. Sample domains (多模态 / 指令对齐) and three papers load automatically on first launch.
 
@@ -121,9 +128,10 @@ xattr -dr com.apple.quarantine "/Applications/Paper Field.app"
 | Shortcut | Action |
 |---|---|
 | ↑ / ↓ | Move in the current paper list |
-| ⌘N / Ctrl+N | New paper |
-| ⌘R / Ctrl+R | Mark selected paper read |
-| Esc | Close dialog |
+| ⌘N / Ctrl+N | 添加论文 |
+| ⌘R / Ctrl+R | 标记已读 |
+| ⌘K / Ctrl+K | 搜索 |
+| Esc | Close dialog / 关闭抽屉 |
 
 ## Data
 
