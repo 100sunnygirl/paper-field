@@ -1,6 +1,13 @@
 import { useEffect, useState } from "react";
 import { isTauri } from "./lib/util";
-import { ConfirmNotesDialog, DomainDialog, PaperDialog } from "./components/Dialogs";
+import {
+  ConfirmNotesDialog,
+  DeletePaperDialog,
+  DomainDialog,
+  DomainPickerDialog,
+  EditPaperDialog,
+  PaperDialog,
+} from "./components/Dialogs";
 import { ReadingStage } from "./components/Dossier";
 import { PaperNav } from "./components/FieldView";
 import { Dock, Rail, StatusStrip } from "./components/Shell";
@@ -25,7 +32,9 @@ export default function App() {
   const markRead = useField((s) => s.markRead);
   const dialog = useField((s) => s.dialog);
   const setMode = useField((s) => s.setMode);
-  const [wiped, setWiped] = useState(false);
+  const [focus, setFocus] = useState(false);
+  const [listOpen, setListOpen] = useState(false);
+  const [contextOpen, setContextOpen] = useState(false);
 
   useEffect(() => {
     void init();
@@ -38,6 +47,12 @@ export default function App() {
   }, [flash, setFlash]);
 
   useEffect(() => {
+    setListOpen(false);
+    setContextOpen(false);
+    if (mode === "system") setFocus(false);
+  }, [mode]);
+
+  useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       const typing =
@@ -45,9 +60,18 @@ export default function App() {
         (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.tagName === "SELECT");
       if (event.key === "Escape") {
         closeDialog();
+        setListOpen(false);
+        setContextOpen(false);
         return;
       }
       const meta = event.metaKey || event.ctrlKey;
+      if (meta && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        const input = document.getElementById("global-search") as HTMLInputElement | null;
+        if (input && getComputedStyle(input).display !== "none") input.focus();
+        else setListOpen(true);
+        return;
+      }
       if (meta && event.key.toLowerCase() === "n") {
         event.preventDefault();
         openDialog("paper");
@@ -73,12 +97,6 @@ export default function App() {
   }, [closeDialog, dialog, markRead, navigatePapers, openDialog]);
 
   useEffect(() => {
-    if (!ready) return;
-    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (reduce) setWiped(true);
-  }, [ready]);
-
-  useEffect(() => {
     if (!isTauri()) return;
     let unlisten: (() => void) | undefined;
     void import("@tauri-apps/api/event").then(({ listen }) => {
@@ -99,12 +117,11 @@ export default function App() {
   }, [markRead, openDialog, setMode]);
 
   const domain = domains.find((d) => d.id === selectedDomainId) ?? null;
-  const domainIndex = Math.max(1, domains.findIndex((d) => d.id === selectedDomainId) + 1);
 
   if (!ready) {
     return (
       <div className="loading-cal" role="status">
-        <div className="bar" aria-label="Calibrating">
+        <div className="bar" aria-label="正在打开阅读工作台">
           <i />
         </div>
       </div>
@@ -114,38 +131,50 @@ export default function App() {
   if (error) {
     return (
       <div className="empty" style={{ padding: 48 }}>
-        <h2>Storage fault</h2>
+        <h2>存储无法打开</h2>
         <p>{error}</p>
       </div>
     );
   }
 
+  const shellClass = [
+    "ef-shell",
+    focus ? "is-focus" : "",
+    listOpen ? "is-list-open" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   return (
     <div
-      className="ef-shell"
+      className={shellClass}
       data-mode={mode}
       data-has-paper={paper && mode !== "system" ? "true" : "false"}
     >
-      {!wiped ? <div className="ef-wipe" onAnimationEnd={() => setWiped(true)} /> : null}
-      <Rail
-        mode={mode}
-        domains={domains}
-        selectedDomainId={selectedDomainId}
-        domainIndex={domainIndex}
-      />
+      <Rail mode={mode} />
       <Dock domain={domain} search={search} />
       {mode === "system" ? (
         <SystemView />
       ) : (
         <>
-          <PaperNav />
-          <ReadingStage />
+          <PaperNav onPaperChosen={() => setListOpen(false)} />
+          <ReadingStage
+            focus={focus}
+            onToggleFocus={() => setFocus((value) => !value)}
+            listOpen={listOpen}
+            onToggleList={() => setListOpen((value) => !value)}
+            contextOpen={contextOpen}
+            onToggleContext={() => setContextOpen((value) => !value)}
+          />
         </>
       )}
       <StatusStrip />
       {flash ? <div className={`ef-flash ${flash.tone}`}>{flash.text}</div> : null}
       <PaperDialog />
       <DomainDialog />
+      <DomainPickerDialog />
+      <DeletePaperDialog />
+      <EditPaperDialog />
       <ConfirmNotesDialog />
     </div>
   );

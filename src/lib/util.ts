@@ -56,3 +56,7 @@ export function isMac(): boolean {
 export function modLabel(): string {
   return isMac() ? "⌘" : "Ctrl";
 }
+
+export function shortcut(key: string): string {
+  return `${modLabel()} ${key}`;
+}

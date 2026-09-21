@@ -40,8 +40,18 @@ interface FieldState {
   search: string;
   archiveFilter: OpenSource | "all";
   settings: LlmSettings;
-  dialog: "paper" | "domain" | "confirm-notes" | "edit-domain" | null;
+  dialog:
+    | "paper"
+    | "domain"
+    | "confirm-notes"
+    | "edit-domain"
+    | "move-paper"
+    | "delete-paper"
+    | "pick-domain"
+    | "edit-paper"
+    | null;
   pendingDraftJob: string | null;
+  unsavedNote: boolean;
   loadError: string | null;
   init: () => Promise<void>;
   setMode: (mode: AppMode) => Promise<void>;
@@ -68,7 +78,10 @@ interface FieldState {
   markRead: () => Promise<void>;
   markReading: () => Promise<void>;
   markUnread: () => Promise<void>;
+  setReadingStatus: (status: "unread" | "reading" | "read") => Promise<void>;
+  movePaper: (domainId: string) => Promise<void>;
   deletePaper: () => Promise<void>;
+  setUnsavedNote: (value: boolean) => void;
   runPrepareMeta: (paperId?: string) => Promise<void>;
   runDraftNotes: (paperId?: string, overwrite?: boolean) => Promise<void>;
   cancelJob: (jobId: string) => Promise<void>;
@@ -103,9 +116,11 @@ export const useField = create<FieldState>((set, get) => ({
   settings: { baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini", hasKey: false },
   dialog: null,
   pendingDraftJob: null,
+  unsavedNote: false,
   loadError: null,
 
   setFlash: (flash) => set({ flash }),
+  setUnsavedNote: (value) => set({ unsavedNote: value }),
   openDialog: (dialog) => set({ dialog }),
   closeDialog: () => set({ dialog: null, pendingDraftJob: null }),
 
@@ -153,16 +168,19 @@ export const useField = create<FieldState>((set, get) => ({
   },
 
   setMode: async (mode) => {
+    if (!guardUnsaved(get)) return;
     set({ mode });
     await get().refresh();
   },
 
   selectDomain: async (id) => {
-    set({ selectedDomainId: id, selectedPaperId: null, paper: null, mode: "field" });
+    if (!guardUnsaved(get)) return;
+    set({ selectedDomainId: id, selectedPaperId: null, paper: null, mode: "field", dialog: null });
     await get().refresh();
   },
 
   selectPaper: async (id) => {
+    if (id && !guardUnsaved(get)) return;
     const paper = id ? await repo.getPaper(id) : null;
     set({ selectedPaperId: id, paper });
     if (paper && get().mode === "field") {
@@ -224,7 +242,7 @@ export const useField = create<FieldState>((set, get) => ({
     if (input.runPrepare) {
       await get().runPrepareMeta(paper.id);
     } else {
-      get().setFlash({ tone: "ok", text: "已入库。可手动补全，或稍后 PREPARE。" });
+      get().setFlash({ tone: "ok", text: "论文已添加。可手动补全信息，或稍后使用 AI 补全。" });
     }
   },
 
@@ -252,47 +270,68 @@ export const useField = create<FieldState>((set, get) => ({
 
   saveNote: async (kind, content) => {
     const id = get().selectedPaperId;
-    if (!id) return;
-    await repo.updateNote(id, kind, content, "manual", true);
-    await get().refresh();
+    if (!id) throw new Error("未选择论文");
+    try {
+      await repo.updateNote(id, kind, content, "manual", true);
+      await get().refresh();
+      get().setFlash({ tone: "ok", text: "笔记已保存。" });
+    } catch (err) {
+      get().setFlash({
+        tone: "error",
+        text: err instanceof Error ? `笔记保存失败：${err.message}` : "笔记保存失败，输入已保留，请重试。",
+      });
+      throw err;
+    }
   },
 
   markRead: async () => {
-    const id = get().selectedPaperId;
-    if (!id) return;
-    await repo.setReadingStatus(id, "read");
-    await get().refresh();
-    get().setFlash({ tone: "ok", text: "已标记已读 · MARK READ" });
+    await get().setReadingStatus("read");
   },
 
   markReading: async () => {
-    const id = get().selectedPaperId;
-    if (!id) return;
-    await repo.setReadingStatus(id, "reading");
-    await get().refresh();
+    await get().setReadingStatus("reading");
   },
 
   markUnread: async () => {
+    await get().setReadingStatus("unread");
+  },
+
+  setReadingStatus: async (status) => {
     const id = get().selectedPaperId;
     if (!id) return;
-    await repo.setReadingStatus(id, "unread");
+    await repo.setReadingStatus(id, status);
     await get().refresh();
+    const labels = { unread: "未读", reading: "在读", read: "已读" };
+    get().setFlash({ tone: "ok", text: `阅读状态已更新为${labels[status]}。` });
+  },
+
+  movePaper: async (domainId) => {
+    const id = get().selectedPaperId;
+    if (!id) return;
+    await repo.updatePaper(id, { domainId });
+    set({ dialog: null, selectedDomainId: domainId, mode: "field" });
+    await get().refresh();
+    const domain = get().domains.find((d) => d.id === domainId);
+    get().setFlash({
+      tone: "ok",
+      text: domain ? `论文已移动到「${domain.name}」。` : "论文已移动到新领域。",
+    });
   },
 
   deletePaper: async () => {
     const id = get().selectedPaperId;
     if (!id) return;
     await repo.deletePaper(id);
-    set({ selectedPaperId: null, paper: null });
+    set({ selectedPaperId: null, paper: null, dialog: null, unsavedNote: false });
     await get().refresh();
+    get().setFlash({ tone: "ok", text: "论文已删除。" });
   },
 
   runPrepareMeta: async (paperId) => {
     const id = paperId ?? get().selectedPaperId;
     if (!id) return;
     if (!get().settings.hasKey) {
-      get().setFlash({ tone: "warn", text: "未配置 API Key。可在 SYSTEM 写入，或继续手动录入。" });
-      set({ mode: "system" });
+      get().setFlash({ tone: "warn", text: "尚未配置 AI 服务。可在系统页写入，或继续手动录入。" });
       return;
     }
     const paper = await repo.getPaper(id);
@@ -310,7 +349,7 @@ export const useField = create<FieldState>((set, get) => ({
     const id = paperId ?? get().selectedPaperId;
     if (!id) return;
     if (!get().settings.hasKey) {
-      get().setFlash({ tone: "warn", text: "未配置 API Key，无法预填笔记。" });
+      get().setFlash({ tone: "warn", text: "尚未配置 AI 服务，无法起草阅读笔记。" });
       return;
     }
     const paper = await repo.getPaper(id);
@@ -347,7 +386,7 @@ export const useField = create<FieldState>((set, get) => ({
     set({ settings });
     get().setFlash({
       tone: settings.hasKey ? "ok" : "warn",
-      text: settings.hasKey ? "端点已写入本地存储。" : "已保存端点，但尚未写入 Key。",
+      text: settings.hasKey ? "AI 服务设置已保存。" : "已保存端点，但尚未写入 Key。",
     });
   },
 
@@ -367,6 +406,7 @@ export const useField = create<FieldState>((set, get) => ({
   },
 
   navigatePapers: async (delta) => {
+    if (!guardUnsaved(get)) return;
     const list = currentList(get());
     if (!list.length) return;
     const index = Math.max(0, list.findIndex((p) => p.id === get().selectedPaperId));
@@ -374,6 +414,12 @@ export const useField = create<FieldState>((set, get) => ({
     if (next) await get().selectPaper(next.id);
   },
 }));
+
+function guardUnsaved(get: () => FieldState): boolean {
+  if (!get().unsavedNote) return true;
+  get().setFlash({ tone: "warn", text: "请先保存或取消正在编辑的笔记。" });
+  return false;
+}
 
 async function runJob(
   jobId: string,
@@ -399,7 +445,7 @@ async function runJob(
       resultJson: raw,
       finishedAt: nowIso(),
     });
-    useField.getState().setFlash({ tone: "ok", text: "LLM 作业完成。阅读状态未改动。" });
+    useField.getState().setFlash({ tone: "ok", text: "AI 作业完成。阅读状态未改动。" });
   } catch (err) {
     if (controller.signal.aborted) return;
     const message = err instanceof Error ? err.message : String(err);

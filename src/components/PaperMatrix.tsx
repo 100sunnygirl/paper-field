@@ -1,12 +1,12 @@
-import type { PaperListItem } from "../lib/types";
-import { OpenChip } from "./ui";
+import { READING_STATUS_LABELS, type PaperListItem } from "../lib/types";
+import { pad2 } from "../lib/util";
+import { Icon } from "./ui";
 
 export function PaperRow({
   paper,
   index,
   selected,
   onSelect,
-  compact = false,
 }: {
   paper: PaperListItem;
   index: number;
@@ -15,26 +15,29 @@ export function PaperRow({
   compact?: boolean;
 }) {
   const title = paper.titleZh || paper.title;
+  const english = paper.titleZh ? paper.title : "";
   return (
     <button
       type="button"
-      className={`ef-row ${compact ? "is-compact" : ""} ${selected ? "is-selected" : ""}`}
+      className={`ef-row ${selected ? "is-selected" : ""}`}
       onClick={onSelect}
       aria-current={selected ? "true" : undefined}
     >
-      <span className={`ef-wedge ${paper.readingStatus}`} aria-hidden="true" />
-      <div>
-        <h3>
-          {String(index + 1).padStart(2, "0")} / {title}
-        </h3>
-        <p>{[paper.venue, paper.year].filter(Boolean).join(" · ") || "UNPLACED"}</p>
-      </div>
-      <OpenChip value={paper.codeOpenSource} />
-      {compact ? null : (
-        <span className="ef-author">
-          {paper.firstAuthor ? `${paper.firstAuthor}${paper.authorCount > 1 ? " et al." : ""}` : "—"}
+      <div className="ef-row-top">
+        <span className="mono">
+          {pad2(index + 1)} / PAPER
         </span>
-      )}
+        <span className="ef-row-status">
+          {paper.readingStatus === "read" ? <Icon name="check" /> : null}
+          {READING_STATUS_LABELS[paper.readingStatus]}
+        </span>
+      </div>
+      <h3>{title}</h3>
+      {english ? <p className="ef-row-en">{english}</p> : null}
+      <div className="ef-row-meta">
+        <span>{[paper.venue, paper.year].filter(Boolean).join(" · ") || "待补全会议信息"}</span>
+        <span>{paper.firstAuthor || "作者待补充"}</span>
+      </div>
     </button>
   );
 }
@@ -43,7 +46,6 @@ export function PaperMatrix({
   papers,
   selectedId,
   onSelect,
-  compact = false,
 }: {
   papers: PaperListItem[];
   selectedId: string | null;
@@ -51,7 +53,7 @@ export function PaperMatrix({
   compact?: boolean;
 }) {
   return (
-    <div className={`ef-matrix ${compact ? "is-compact" : ""}`} role="listbox" aria-label="Paper navigator">
+    <div className="ef-paper-list" role="listbox" aria-label="论文列表">
       {papers.map((paper, index) => (
         <PaperRow
           key={paper.id}
@@ -59,7 +61,6 @@ export function PaperMatrix({
           index={index}
           selected={paper.id === selectedId}
           onSelect={() => onSelect(paper.id)}
-          compact={compact}
         />
       ))}
     </div>

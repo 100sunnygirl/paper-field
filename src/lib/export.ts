@@ -1,5 +1,5 @@
 import type { Domain, NoteKind, PaperDetail } from "./types";
-import { NOTE_LABELS, NOTE_KINDS } from "./types";
+import { NOTE_LABELS, NOTE_DISPLAY_ORDER } from "./types";
 import { isTauri } from "./util";
 
 function paperMarkdown(paper: PaperDetail): string {
@@ -13,7 +13,7 @@ function paperMarkdown(paper: PaperDetail): string {
     })
     .join("\n");
 
-  const notes = NOTE_KINDS.map((kind: NoteKind) => {
+  const notes = NOTE_DISPLAY_ORDER.map((kind: NoteKind) => {
     const block = paper.notes[kind];
     const label = NOTE_LABELS[kind];
     return `## ${label.zh} / ${label.en}\n\n${block.content || "_empty_"}\n`;
