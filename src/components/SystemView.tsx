@@ -29,7 +29,8 @@ export function SystemView() {
             API Key 只存在本机。没有 Key 时仍可完整手录论文与笔记。LLM 永远不会把论文标成已读。
           </p>
 
-          <article className="page-block">
+          <div className="ef-system-blocks">
+          <article className="page-block is-primary">
             <h3>AI 服务设置</h3>
             <p>
               OpenAI 兼容的 Chat Completions。桌面端写入本机存储；浏览器预览回退到
@@ -84,6 +85,7 @@ export function SystemView() {
               <span className="kbd">{shortcut("K")}</span> 搜索 · <span className="kbd">Esc</span> 关闭对话框
             </p>
           </article>
+          </div>
         </div>
       </div>
     </section>

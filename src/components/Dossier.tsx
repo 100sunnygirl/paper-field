@@ -463,7 +463,7 @@ export function ReadingStage({
   );
 
   return (
-    <section className="ef-read" id="stage" aria-labelledby="paper-title">
+    <section className="ef-read has-context" id="stage" aria-labelledby="paper-title">
       <div className="ef-toolbar">
         <Button
           type="button"
@@ -626,9 +626,9 @@ export function ReadingStage({
               />
             ))}
           </article>
-          {context}
         </div>
       </div>
+      {context}
       <Dialog
         open={contextOpen}
         title="论文资料与目录"
