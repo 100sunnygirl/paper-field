@@ -7,6 +7,7 @@ import type {
   JobStatus,
   JobType,
   Lab,
+  MineruStatus,
   LlmJob,
   NoteBlock,
   NoteKind,
@@ -40,6 +41,7 @@ interface PaperRow {
   doi: string | null;
   arxiv_id: string | null;
   pdf_url: string | null;
+  pdf_path: string | null;
   code_url: string | null;
   code_open_source: OpenSource;
   project_page: string | null;
@@ -48,6 +50,12 @@ interface PaperRow {
   llm_prepared_at: string | null;
   notes_drafted_by_llm: number;
   user_notes_touched: number;
+  user_meta_touched: number;
+  mineru_status: MineruStatus | null;
+  mineru_parse_id: number | null;
+  mineru_doc_ref: string | null;
+  mineru_error: string | null;
+  mineru_parse_ids: string | null;
   tags: string;
   labs: string;
   created_at: string;
@@ -131,6 +139,7 @@ function mapPaper(row: PaperRow): Paper {
     doi: row.doi,
     arxivId: row.arxiv_id,
     pdfUrl: row.pdf_url,
+    pdfPath: row.pdf_path,
     codeUrl: row.code_url,
     codeOpenSource: row.code_open_source,
     projectPage: row.project_page,
@@ -139,11 +148,55 @@ function mapPaper(row: PaperRow): Paper {
     llmPreparedAt: row.llm_prepared_at,
     notesDraftedByLlm: Boolean(row.notes_drafted_by_llm),
     userNotesTouched: Boolean(row.user_notes_touched),
+    userMetaTouched: Boolean(row.user_meta_touched),
+    mineruStatus: asMineruStatus(row.mineru_status),
+    mineruParseId: row.mineru_parse_id,
+    mineruDocRef: row.mineru_doc_ref,
+    mineruError: row.mineru_error,
+    mineruParseIds: parseJsonArray<number>(row.mineru_parse_ids, []),
     tags: parseJsonArray<string>(row.tags, []),
     labs: parseJsonArray<Lab>(row.labs, []),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+function titleFromPdf(path: string): string {
+  const base = path.split(/[/\\]/).pop() ?? "";
+  const title = base.replace(/\.pdf$/i, "").trim();
+  return title || "Untitled paper";
+}
+
+function asMineruStatus(value: string | null): MineruStatus | null {
+  if (
+    value === "queued" ||
+    value === "submitted" ||
+    value === "parsing" ||
+    value === "done" ||
+    value === "error" ||
+    value === "cancelled"
+  ) {
+    return value;
+  }
+  return null;
+}
+
+function textField(prev: string, next: string | null | undefined, locked: boolean): string {
+  const incoming = next?.trim() ? next.trim() : prev;
+  if (locked && prev.trim()) return prev;
+  return incoming;
+}
+
+function nullableField(prev: string | null, next: string | null | undefined, locked: boolean): string | null {
+  const incoming = next?.trim() ? next.trim() : prev;
+  if (locked && prev?.trim()) return prev;
+  return incoming;
+}
+
+function yearField(prev: number | null, next: number | null | undefined, locked: boolean): number | null {
+  const incoming = typeof next === "number" && Number.isFinite(next) ? next : prev;
+  if (locked && prev != null) return prev;
+  return incoming;
 }
 
 function mapListItem(row: PaperRow): PaperListItem {
@@ -349,8 +402,13 @@ export const repo = {
             revisedAt: null,
           };
     }
+    const parsed = await engine.select<{ markdown: string }>(
+      "SELECT markdown FROM paper_parse WHERE paper_id = ?",
+      [id],
+    );
     return {
       ...paper,
+      parsedMarkdown: parsed[0]?.markdown ?? "",
       domain,
       authors: authors.map((row) => ({
         id: row.id,
@@ -367,21 +425,38 @@ export const repo = {
     };
   },
 
-  async createPaper(input: {
-    domainId: string;
-    title?: string;
-    arxivId?: string;
-    doi?: string;
-    pdfUrl?: string;
-  }): Promise<Paper> {
+  async pdfPaths(): Promise<string[]> {
+    const engine = await getEngine();
+    const rows = await engine.select<{ pdf_path: string }>(
+      "SELECT pdf_path FROM papers WHERE pdf_path IS NOT NULL AND pdf_path != ''",
+    );
+    return rows.map((row) => row.pdf_path);
+  },
+
+  async importLocalPdfs(
+    domainId: string,
+    paths: string[],
+  ): Promise<{ created: Paper[]; skipped: string[] }> {
+    const created: Paper[] = [];
+    const skipped: string[] = [];
+    const known = new Set(await this.pdfPaths());
+    for (const path of paths) {
+      if (known.has(path)) {
+        skipped.push(path);
+        continue;
+      }
+      const paper = await this.createPaper({ domainId, pdfPath: path });
+      known.add(path);
+      created.push(paper);
+    }
+    return { created, skipped };
+  },
+
+  async createPaper(input: { domainId: string; pdfPath: string; title?: string }): Promise<Paper> {
     const engine = await getEngine();
     const at = nowIso();
-    const title =
-      input.title?.trim() ||
-      input.arxivId?.trim() ||
-      input.doi?.trim() ||
-      input.pdfUrl?.trim() ||
-      "Untitled paper";
+    const pdfPath = input.pdfPath.trim();
+    const title = input.title?.trim() || titleFromPdf(pdfPath);
     const paper: Paper = {
       id: uid(),
       domainId: input.domainId,
@@ -390,9 +465,10 @@ export const repo = {
       abstract: "",
       year: null,
       venue: null,
-      doi: input.doi?.trim() || null,
-      arxivId: input.arxivId?.trim() || null,
-      pdfUrl: input.pdfUrl?.trim() || null,
+      doi: null,
+      arxivId: null,
+      pdfUrl: null,
+      pdfPath,
       codeUrl: null,
       codeOpenSource: "unknown",
       projectPage: null,
@@ -401,6 +477,12 @@ export const repo = {
       llmPreparedAt: null,
       notesDraftedByLlm: false,
       userNotesTouched: false,
+      userMetaTouched: false,
+      mineruStatus: null,
+      mineruParseId: null,
+      mineruDocRef: null,
+      mineruError: null,
+      mineruParseIds: [],
       tags: [],
       labs: [],
       createdAt: at,
@@ -408,11 +490,11 @@ export const repo = {
     };
     await engine.execute(
       `INSERT INTO papers (
-        id, domain_id, title, title_zh, abstract, year, venue, doi, arxiv_id, pdf_url,
+        id, domain_id, title, title_zh, abstract, year, venue, doi, arxiv_id, pdf_url, pdf_path,
         code_url, code_open_source, project_page, reading_status, read_at, llm_prepared_at,
-        notes_drafted_by_llm, user_notes_touched, tags, labs, created_at, updated_at
-      ) VALUES (?, ?, ?, NULL, '', NULL, NULL, ?, ?, ?, NULL, 'unknown', NULL, 'unread', NULL, NULL, 0, 0, '[]', '[]', ?, ?)`,
-      [paper.id, paper.domainId, paper.title, paper.doi, paper.arxivId, paper.pdfUrl, at, at],
+        notes_drafted_by_llm, user_notes_touched, user_meta_touched, mineru_parse_ids, tags, labs, created_at, updated_at
+      ) VALUES (?, ?, ?, NULL, '', NULL, NULL, NULL, NULL, NULL, ?, NULL, 'unknown', NULL, 'unread', NULL, NULL, 0, 0, 0, '[]', '[]', '[]', ?, ?)`,
+      [paper.id, paper.domainId, paper.title, paper.pdfPath, at, at],
     );
     await emptyNotes(engine, paper.id, at);
     return paper;
@@ -436,6 +518,7 @@ export const repo = {
       labs: Lab[];
       domainId: string;
     }>,
+    touchMeta = false,
   ): Promise<void> {
     const engine = await getEngine();
     const current = await engine.select<PaperRow>("SELECT * FROM papers WHERE id = ?", [id]);
@@ -445,12 +528,13 @@ export const repo = {
       ...next,
       ...patch,
       updatedAt: nowIso(),
+      userMetaTouched: touchMeta ? true : next.userMetaTouched,
     };
     await engine.execute(
       `UPDATE papers SET
         domain_id = ?, title = ?, title_zh = ?, abstract = ?, year = ?, venue = ?, doi = ?,
         arxiv_id = ?, pdf_url = ?, code_url = ?, code_open_source = ?, project_page = ?,
-        tags = ?, labs = ?, updated_at = ?
+        tags = ?, labs = ?, user_meta_touched = ?, updated_at = ?
        WHERE id = ?`,
       [
         merged.domainId,
@@ -467,6 +551,7 @@ export const repo = {
         merged.projectPage,
         JSON.stringify(merged.tags),
         JSON.stringify(merged.labs),
+        merged.userMetaTouched ? 1 : 0,
         merged.updatedAt,
         id,
       ],
@@ -486,6 +571,7 @@ export const repo = {
   async deletePaper(id: string): Promise<void> {
     const engine = await getEngine();
     await engine.execute("DELETE FROM llm_jobs WHERE paper_id = ?", [id]);
+    await engine.execute("DELETE FROM paper_parse WHERE paper_id = ?", [id]);
     await engine.execute("DELETE FROM notes WHERE paper_id = ?", [id]);
     await engine.execute("DELETE FROM paper_authors WHERE paper_id = ?", [id]);
     await engine.execute("DELETE FROM papers WHERE id = ?", [id]);
@@ -499,6 +585,7 @@ export const repo = {
       lab?: string | null;
       isCorresponding?: boolean;
     }>,
+    touchMeta = false,
   ): Promise<void> {
     const engine = await getEngine();
     await engine.execute("DELETE FROM paper_authors WHERE paper_id = ?", [paperId]);
@@ -531,7 +618,10 @@ export const repo = {
       );
       order += 1;
     }
-    await engine.execute("UPDATE papers SET updated_at = ? WHERE id = ?", [nowIso(), paperId]);
+    await engine.execute(
+      "UPDATE papers SET updated_at = ?, user_meta_touched = CASE WHEN ? = 1 THEN 1 ELSE user_meta_touched END WHERE id = ?",
+      [nowIso(), touchMeta ? 1 : 0, paperId],
+    );
   },
 
   async updateNote(
@@ -570,14 +660,19 @@ export const repo = {
     }
   },
 
-  async applyPreparedMeta(paperId: string, meta: PreparedMeta): Promise<void> {
+  async applyPreparedMeta(paperId: string, meta: PreparedMeta, overwrite = false): Promise<void> {
     const engine = await getEngine();
     const current = await engine.select<PaperRow>("SELECT * FROM papers WHERE id = ?", [paperId]);
     if (!current[0]) throw new Error("论文不存在");
     const prev = mapPaper(current[0]);
+    const locked = prev.userMetaTouched && !overwrite;
     const open: OpenSource = ["unknown", "open", "closed", "request"].includes(meta.codeOpenSource)
       ? meta.codeOpenSource
       : "unknown";
+    const authorCount = await engine.select<{ cnt: number }>(
+      "SELECT COUNT(*) AS cnt FROM paper_authors WHERE paper_id = ?",
+      [paperId],
+    );
     await engine.execute(
       `UPDATE papers SET
         title = ?, title_zh = ?, abstract = ?, year = ?, venue = ?, doi = ?, arxiv_id = ?,
@@ -585,26 +680,27 @@ export const repo = {
         llm_prepared_at = ?, updated_at = ?
        WHERE id = ?`,
       [
-        meta.title?.trim() || prev.title,
-        meta.titleZh?.trim() || prev.titleZh,
-        meta.abstract ?? prev.abstract,
-        meta.year ?? prev.year,
-        meta.venue ?? prev.venue,
-        meta.doi ?? prev.doi,
-        meta.arxivId ?? prev.arxivId,
-        meta.pdfURL ?? prev.pdfUrl,
-        meta.codeURL ?? prev.codeUrl,
-        open,
-        meta.projectPage ?? prev.projectPage,
-        JSON.stringify(meta.tags ?? prev.tags),
-        JSON.stringify(meta.labs ?? prev.labs),
+        textField(prev.title, meta.title, locked),
+        nullableField(prev.titleZh, meta.titleZh, locked),
+        textField(prev.abstract, meta.abstract, locked),
+        yearField(prev.year, meta.year, locked),
+        nullableField(prev.venue, meta.venue, locked),
+        nullableField(prev.doi, meta.doi, locked),
+        nullableField(prev.arxivId, meta.arxivId, locked),
+        nullableField(prev.pdfUrl, meta.pdfURL, locked),
+        nullableField(prev.codeUrl, meta.codeURL, locked),
+        locked && prev.codeOpenSource !== "unknown" ? prev.codeOpenSource : open,
+        nullableField(prev.projectPage, meta.projectPage, locked),
+        JSON.stringify(locked && prev.tags.length ? prev.tags : (meta.tags ?? prev.tags)),
+        JSON.stringify(locked && prev.labs.length ? prev.labs : (meta.labs ?? prev.labs)),
         nowIso(),
         nowIso(),
         paperId,
       ],
     );
-    if (meta.authors?.length) {
-      await this.replaceAuthors(paperId, meta.authors);
+    const authors = Number(authorCount[0]?.cnt ?? 0);
+    if (meta.authors?.length && (!locked || authors === 0)) {
+      await this.replaceAuthors(paperId, meta.authors, false);
     }
   },
 
@@ -731,5 +827,66 @@ export const repo = {
       if (detail) details.push(detail);
     }
     return details;
+  },
+
+  async setMineruState(
+    id: string,
+    patch: {
+      status?: MineruStatus | null;
+      parseId?: number | null;
+      docRef?: string | null;
+      error?: string | null;
+      parseIds?: number[];
+    },
+  ): Promise<void> {
+    const engine = await getEngine();
+    const rows = await engine.select<PaperRow>("SELECT * FROM papers WHERE id = ?", [id]);
+    if (!rows[0]) return;
+    const prev = mapPaper(rows[0]);
+    await engine.execute(
+      `UPDATE papers SET mineru_status = ?, mineru_parse_id = ?, mineru_doc_ref = ?, mineru_error = ?, mineru_parse_ids = ?, updated_at = ? WHERE id = ?`,
+      [
+        patch.status === undefined ? prev.mineruStatus : patch.status,
+        patch.parseId === undefined ? prev.mineruParseId : patch.parseId,
+        patch.docRef === undefined ? prev.mineruDocRef : patch.docRef,
+        patch.error === undefined ? prev.mineruError : patch.error,
+        JSON.stringify(patch.parseIds === undefined ? prev.mineruParseIds : patch.parseIds),
+        nowIso(),
+        id,
+      ],
+    );
+  },
+
+  async saveParsedMarkdown(id: string, markdown: string): Promise<void> {
+    const engine = await getEngine();
+    const at = nowIso();
+    await engine.execute(
+      `INSERT INTO paper_parse (paper_id, markdown, updated_at) VALUES (?, ?, ?)
+       ON CONFLICT(paper_id) DO UPDATE SET markdown = excluded.markdown, updated_at = excluded.updated_at`,
+      [id, markdown, at],
+    );
+    await engine.execute("UPDATE papers SET updated_at = ? WHERE id = ?", [at, id]);
+  },
+
+  async listPendingMineru(): Promise<string[]> {
+    const engine = await getEngine();
+    const rows = await engine.select<{ id: string }>(
+      `SELECT id FROM papers
+        WHERE pdf_path IS NOT NULL AND pdf_path != ''
+          AND mineru_status IN ('queued', 'submitted', 'parsing')
+        ORDER BY updated_at ASC`,
+    );
+    return rows.map((row) => row.id);
+  },
+
+  async listReadyForMeta(): Promise<string[]> {
+    const engine = await getEngine();
+    const rows = await engine.select<{ id: string }>(
+      `SELECT p.id FROM papers p
+         JOIN paper_parse m ON m.paper_id = p.id
+        WHERE p.llm_prepared_at IS NULL AND m.markdown != ''
+        ORDER BY p.updated_at ASC`,
+    );
+    return rows.map((row) => row.id);
   },
 };

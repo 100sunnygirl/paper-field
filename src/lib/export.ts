@@ -28,7 +28,7 @@ ${paper.titleZh ? `> ${paper.titleZh}\n` : ""}
 - DOI: ${paper.doi ?? "—"}
 - arXiv: ${paper.arxivId ?? "—"}
 - Open source: ${paper.codeOpenSource}
-- PDF: ${paper.pdfUrl ?? "—"}
+- PDF: ${paper.pdfPath ?? paper.pdfUrl ?? "—"}
 - Code: ${paper.codeUrl ?? "—"}
 - Project: ${paper.projectPage ?? "—"}
 - Tags: ${paper.tags.join(", ") || "—"}

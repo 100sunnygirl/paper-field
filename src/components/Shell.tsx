@@ -88,7 +88,7 @@ export function Dock({
       {mode !== "system" ? (
         <Button type="button" className="new-paper" onClick={() => openDialog("paper")}>
           <Icon name="plus" />
-          添加论文
+          导入 PDF
         </Button>
       ) : null}
     </header>
@@ -98,6 +98,7 @@ export function Dock({
 export function StatusStrip() {
   const stats = useField((s) => s.stats);
   const settings = useField((s) => s.settings);
+  const mineru = useField((s) => s.mineru);
   return (
     <footer className="ef-status">
       <span>
@@ -115,6 +116,7 @@ export function StatusStrip() {
             : "队列空闲"}
       </span>
       <span>{settings.hasKey ? "AI 已配置" : "未配置 AI"}</span>
+      <span>{mineru.configured ? "MinerU 已配置" : "未配置 MinerU"}</span>
       <span className="right">
         快捷操作 <span className="mono">{shortcut("K")}</span> 搜索
       </span>

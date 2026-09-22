@@ -18,6 +18,7 @@ export const SCHEMA_STATEMENTS = [
     doi TEXT,
     arxiv_id TEXT,
     pdf_url TEXT,
+    pdf_path TEXT,
     code_url TEXT,
     code_open_source TEXT NOT NULL DEFAULT 'unknown',
     project_page TEXT,
@@ -26,9 +27,20 @@ export const SCHEMA_STATEMENTS = [
     llm_prepared_at TEXT,
     notes_drafted_by_llm INTEGER NOT NULL DEFAULT 0,
     user_notes_touched INTEGER NOT NULL DEFAULT 0,
+    user_meta_touched INTEGER NOT NULL DEFAULT 0,
+    mineru_status TEXT,
+    mineru_parse_id INTEGER,
+    mineru_doc_ref TEXT,
+    mineru_error TEXT,
+    mineru_parse_ids TEXT NOT NULL DEFAULT '[]',
     tags TEXT NOT NULL DEFAULT '[]',
     labs TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS paper_parse (
+    paper_id TEXT PRIMARY KEY REFERENCES papers(id) ON DELETE CASCADE,
+    markdown TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL
   )`,
   `CREATE TABLE IF NOT EXISTS authors (
@@ -74,4 +86,14 @@ export const SCHEMA_STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS idx_papers_updated ON papers(updated_at)`,
   `CREATE INDEX IF NOT EXISTS idx_jobs_status ON llm_jobs(status)`,
   `CREATE INDEX IF NOT EXISTS idx_authors_name ON authors(name)`,
+];
+
+export const PAPER_MIGRATIONS = [
+  "ALTER TABLE papers ADD COLUMN pdf_path TEXT",
+  "ALTER TABLE papers ADD COLUMN user_meta_touched INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE papers ADD COLUMN mineru_status TEXT",
+  "ALTER TABLE papers ADD COLUMN mineru_parse_id INTEGER",
+  "ALTER TABLE papers ADD COLUMN mineru_doc_ref TEXT",
+  "ALTER TABLE papers ADD COLUMN mineru_error TEXT",
+  "ALTER TABLE papers ADD COLUMN mineru_parse_ids TEXT NOT NULL DEFAULT '[]'",
 ];

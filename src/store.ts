@@ -1,5 +1,7 @@
 import { create } from "zustand";
 import { exportDomain } from "./lib/export";
+import { DEFAULT_MINERU, loadMineruSettings, saveMineruSettings, type MineruSettings } from "./lib/mineru";
+import { backfillMeta, cancelMineruPaper, clearMineruCancel, enqueueMineru, resumeMineru, runMineruBatch } from "./lib/mineruRun";
 import { DRAFT_NOTES_SYSTEM, PREPARE_META_SYSTEM, draftNotesUserPrompt, normalizeMeta, normalizeNotes, prepareMetaUserPrompt } from "./lib/prompts";
 import { repo } from "./lib/repo";
 import { cancelChat, completeChat, loadSettings, saveSettings } from "./lib/settings";
@@ -40,6 +42,7 @@ interface FieldState {
   search: string;
   archiveFilter: OpenSource | "all";
   settings: LlmSettings;
+  mineru: MineruSettings;
   dialog:
     | "paper"
     | "domain"
@@ -65,13 +68,8 @@ interface FieldState {
   createDomain: (input: { name: string; code: string; summary?: string }) => Promise<void>;
   updateDomain: (input: { name: string; code: string; summary?: string }) => Promise<void>;
   deleteDomain: () => Promise<void>;
-  createPaper: (input: {
-    title?: string;
-    arxivId?: string;
-    doi?: string;
-    pdfUrl?: string;
-    runPrepare: boolean;
-  }) => Promise<void>;
+  importPdfs: (paths: string[]) => Promise<void>;
+  retryMineru: (paperId: string) => Promise<void>;
   savePaperPatch: (patch: Parameters<typeof repo.updatePaper>[1]) => Promise<void>;
   saveAuthors: (authors: PaperDetail["authors"]) => Promise<void>;
   saveNote: (kind: NoteKind, content: string) => Promise<void>;
@@ -82,10 +80,11 @@ interface FieldState {
   movePaper: (domainId: string) => Promise<void>;
   deletePaper: () => Promise<void>;
   setUnsavedNote: (value: boolean) => void;
-  runPrepareMeta: (paperId?: string) => Promise<void>;
+  runPrepareMeta: (paperId?: string, overwrite?: boolean, quiet?: boolean) => Promise<void>;
   runDraftNotes: (paperId?: string, overwrite?: boolean) => Promise<void>;
   cancelJob: (jobId: string) => Promise<void>;
   saveLlmSettings: (input: { baseUrl: string; model: string; apiKey?: string }) => Promise<void>;
+  saveMineruSettings: (input: MineruSettings) => Promise<void>;
   exportCurrentDomain: () => Promise<void>;
   navigatePapers: (delta: number) => Promise<void>;
   setFlash: (flash: Flash | null) => void;
@@ -114,6 +113,7 @@ export const useField = create<FieldState>((set, get) => ({
   search: "",
   archiveFilter: "all",
   settings: { baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini", hasKey: false },
+  mineru: DEFAULT_MINERU,
   dialog: null,
   pendingDraftJob: null,
   unsavedNote: false,
@@ -127,10 +127,15 @@ export const useField = create<FieldState>((set, get) => ({
   init: async () => {
     try {
       await repo.init();
-      const [domains, settings] = await Promise.all([repo.listDomains(), loadSettings()]);
+      const [domains, settings, mineru] = await Promise.all([
+        repo.listDomains(),
+        loadSettings(),
+        loadMineruSettings().catch(() => DEFAULT_MINERU),
+      ]);
       const selectedDomainId = domains[0]?.id ?? null;
-      set({ domains, selectedDomainId, settings, ready: true, error: null });
+      set({ domains, selectedDomainId, settings, mineru, ready: true, error: null });
       await get().refresh();
+      enqueueMineru(() => resumeMineru(mineruHost()));
     } catch (err) {
       set({
         error: err instanceof Error ? err.message : String(err),
@@ -224,32 +229,60 @@ export const useField = create<FieldState>((set, get) => ({
     await get().refresh();
   },
 
-  createPaper: async (input) => {
+  importPdfs: async (paths) => {
     const domainId = get().selectedDomainId;
     if (!domainId) throw new Error("先选择一个领域");
-    if (!input.title?.trim() && !input.arxivId?.trim() && !input.doi?.trim() && !input.pdfUrl?.trim()) {
-      throw new Error("至少填写标题、arXiv、DOI 或 PDF 路径之一");
-    }
-    const paper = await repo.createPaper({
-      domainId,
-      title: input.title,
-      arxivId: input.arxivId,
-      doi: input.doi,
-      pdfUrl: input.pdfUrl,
+    const unique = [...new Set(paths.map((path) => path.trim()).filter(Boolean))];
+    if (!unique.length) throw new Error("请选择至少一个 PDF");
+    const { created, skipped } = await repo.importLocalPdfs(domainId, unique);
+    set({
+      dialog: null,
+      selectedPaperId: created[0]?.id ?? get().selectedPaperId,
+      mode: "field",
     });
-    set({ dialog: null, selectedPaperId: paper.id, mode: "field" });
     await get().refresh();
-    if (input.runPrepare) {
-      await get().runPrepareMeta(paper.id);
-    } else {
-      get().setFlash({ tone: "ok", text: "论文已添加。可手动补全信息，或稍后使用 AI 补全。" });
+    if (!created.length) {
+      get().setFlash({ tone: "warn", text: "这些 PDF 已在库中。" });
+      return;
     }
+    const skippedText = skipped.length ? `，跳过 ${skipped.length} 篇已在库中` : "";
+    if (!get().mineru.configured) {
+      get().setFlash({
+        tone: "warn",
+        text: `已导入 ${created.length} 篇${skippedText}。MinerU 未配置，论文已入库，尚未解析。`,
+      });
+      return;
+    }
+    get().setFlash({
+      tone: "ok",
+      text: `已导入 ${created.length} 篇${skippedText}。已将 ${created.length} 篇论文发送到 MinerU 4.0 解析。`,
+    });
+    const ids = created.map((paper) => paper.id);
+    enqueueMineru(() => runMineruBatch(mineruHost(), ids, false));
+  },
+
+  retryMineru: async (paperId) => {
+    if (!get().mineru.configured) {
+      get().setFlash({ tone: "warn", text: "尚未配置 MinerU。可在系统页写入连接方式。" });
+      return;
+    }
+    clearMineruCancel(paperId);
+    await repo.setMineruState(paperId, {
+      status: "queued",
+      error: null,
+      parseId: null,
+      parseIds: [],
+      docRef: null,
+    });
+    await get().refresh();
+    get().setFlash({ tone: "ok", text: "已将这篇论文发送到 MinerU 4.0 解析。" });
+    enqueueMineru(() => runMineruBatch(mineruHost(), [paperId], true));
   },
 
   savePaperPatch: async (patch) => {
     const id = get().selectedPaperId;
     if (!id) return;
-    await repo.updatePaper(id, patch);
+    await repo.updatePaper(id, patch, true);
     await get().refresh();
   },
 
@@ -264,6 +297,7 @@ export const useField = create<FieldState>((set, get) => ({
         lab: author.lab,
         isCorresponding: author.isCorresponding,
       })),
+      true,
     );
     await get().refresh();
   },
@@ -327,11 +361,13 @@ export const useField = create<FieldState>((set, get) => ({
     get().setFlash({ tone: "ok", text: "论文已删除。" });
   },
 
-  runPrepareMeta: async (paperId) => {
+  runPrepareMeta: async (paperId, overwrite = true, quiet = false) => {
     const id = paperId ?? get().selectedPaperId;
     if (!id) return;
     if (!get().settings.hasKey) {
-      get().setFlash({ tone: "warn", text: "尚未配置 AI 服务。可在系统页写入，或继续手动录入。" });
+      if (!quiet) {
+        get().setFlash({ tone: "warn", text: "尚未配置 AI 服务。可在系统页写入，或继续手动录入。" });
+      }
       return;
     }
     const paper = await repo.getPaper(id);
@@ -341,8 +377,8 @@ export const useField = create<FieldState>((set, get) => ({
     await get().refresh();
     await runJob(job.id, PREPARE_META_SYSTEM, prompt, async (raw) => {
       const meta = normalizeMeta(extractJson(raw), paper.title);
-      await repo.applyPreparedMeta(id, meta);
-    });
+      await repo.applyPreparedMeta(id, meta, overwrite);
+    }, quiet);
   },
 
   runDraftNotes: async (paperId, overwrite = false) => {
@@ -369,6 +405,18 @@ export const useField = create<FieldState>((set, get) => ({
   },
 
   cancelJob: async (jobId) => {
+    const job = get().jobs.find((item) => item.id === jobId);
+    if (job?.type === "mineruParse") {
+      cancelMineruPaper(job.paperId);
+      await repo.updateJob(jobId, {
+        status: "cancelled",
+        error: "cancelled",
+        finishedAt: nowIso(),
+      });
+      await repo.setMineruState(job.paperId, { status: "cancelled" });
+      await get().refresh();
+      return;
+    }
     abortMap.get(jobId)?.abort();
     abortMap.delete(jobId);
     await cancelChat(jobId);
@@ -388,6 +436,17 @@ export const useField = create<FieldState>((set, get) => ({
       tone: settings.hasKey ? "ok" : "warn",
       text: settings.hasKey ? "AI 服务设置已保存。" : "已保存端点，但尚未写入 Key。",
     });
+    if (settings.hasKey) enqueueMineru(() => backfillMeta(mineruHost()));
+  },
+
+  saveMineruSettings: async (input) => {
+    const mineru = await saveMineruSettings(input);
+    set({ mineru });
+    get().setFlash({
+      tone: mineru.configured ? "ok" : "warn",
+      text: mineru.configured ? "MinerU 设置已保存。" : "已保存，MinerU 仍未配置完成。",
+    });
+    if (mineru.configured) enqueueMineru(() => resumeMineru(mineruHost()));
   },
 
   exportCurrentDomain: async () => {
@@ -415,6 +474,17 @@ export const useField = create<FieldState>((set, get) => ({
   },
 }));
 
+function mineruHost() {
+  return {
+    mineru: () => useField.getState().mineru,
+    hasKey: () => useField.getState().settings.hasKey,
+    refresh: () => useField.getState().refresh(),
+    flash: (tone: "ok" | "warn" | "error", text: string) => useField.getState().setFlash({ tone, text }),
+    prepare: (paperId: string, overwrite: boolean, quiet: boolean) =>
+      useField.getState().runPrepareMeta(paperId, overwrite, quiet),
+  };
+}
+
 function guardUnsaved(get: () => FieldState): boolean {
   if (!get().unsavedNote) return true;
   get().setFlash({ tone: "warn", text: "请先保存或取消正在编辑的笔记。" });
@@ -426,6 +496,7 @@ async function runJob(
   system: string,
   user: string,
   apply: (raw: string) => Promise<void>,
+  quiet = false,
 ) {
   const controller = new AbortController();
   abortMap.set(jobId, controller);
@@ -445,7 +516,9 @@ async function runJob(
       resultJson: raw,
       finishedAt: nowIso(),
     });
-    useField.getState().setFlash({ tone: "ok", text: "AI 作业完成。阅读状态未改动。" });
+    if (!quiet) {
+      useField.getState().setFlash({ tone: "ok", text: "AI 作业完成。阅读状态未改动。" });
+    }
   } catch (err) {
     if (controller.signal.aborted) return;
     const message = err instanceof Error ? err.message : String(err);

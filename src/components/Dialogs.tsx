@@ -1,35 +1,76 @@
 import { useEffect, useState } from "react";
+import { listPdfs, normalizePdf } from "../lib/mineru";
+import { repo } from "../lib/repo";
 import type { Author, PaperDetail } from "../lib/types";
+import { isTauri } from "../lib/util";
 import { useField } from "../store";
 import { Button, Dialog, Field, Icon } from "./ui";
 
 export function PaperDialog() {
   const dialog = useField((s) => s.dialog);
   const closeDialog = useField((s) => s.closeDialog);
-  const createPaper = useField((s) => s.createPaper);
-  const settings = useField((s) => s.settings);
-  const [title, setTitle] = useState("");
-  const [arxivId, setArxivId] = useState("");
-  const [doi, setDoi] = useState("");
-  const [pdfUrl, setPdfUrl] = useState("");
-  const [runPrepare, setRunPrepare] = useState(true);
+  const importPdfs = useField((s) => s.importPdfs);
+  const [items, setItems] = useState<Array<{ path: string; name: string; duplicate: boolean }>>([]);
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
   const open = dialog === "paper";
 
   useEffect(() => {
     if (!open) return;
-    setTitle("");
-    setArxivId("");
-    setDoi("");
-    setPdfUrl("");
-    setRunPrepare(true);
+    setItems([]);
     setError(null);
+    setBusy(false);
   }, [open]);
+
+  async function addPaths(paths: string[]) {
+    const known = new Set(await repo.pdfPaths());
+    setItems((current) => {
+      const next = new Map(current.map((item) => [item.path, item]));
+      for (const path of paths) {
+        const name = path.split(/[/\\]/).pop() ?? path;
+        next.set(path, { path, name, duplicate: known.has(path) });
+      }
+      return [...next.values()];
+    });
+  }
+
+  async function pickFiles() {
+    setError(null);
+    try {
+      const { open: pick } = await import("@tauri-apps/plugin-dialog");
+      const selected = await pick({
+        multiple: true,
+        filters: [{ name: "PDF", extensions: ["pdf"] }],
+      });
+      if (!selected) return;
+      const list = Array.isArray(selected) ? selected : [selected];
+      const normalized = [];
+      for (const path of list) normalized.push(await normalizePdf(path));
+      await addPaths(normalized);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function pickDirectory() {
+    setError(null);
+    try {
+      const { open: pick } = await import("@tauri-apps/plugin-dialog");
+      const selected = await pick({ directory: true, multiple: false });
+      if (typeof selected !== "string") return;
+      await addPaths(await listPdfs(selected));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  const fresh = items.filter((item) => !item.duplicate);
 
   return (
     <Dialog
       open={open}
-      title="添加论文"
+      title="导入 PDF"
+      className="is-wide"
       onClose={closeDialog}
       footer={
         <>
@@ -39,44 +80,46 @@ export function PaperDialog() {
           <Button
             variant="primary"
             type="button"
+            disabled={!fresh.length || busy}
             onClick={() => {
               setError(null);
-              void createPaper({
-                title,
-                arxivId,
-                doi,
-                pdfUrl,
-                runPrepare: runPrepare && settings.hasKey,
-              }).catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
+              setBusy(true);
+              void importPdfs(fresh.map((item) => item.path)).catch((err: unknown) => {
+                setBusy(false);
+                setError(err instanceof Error ? err.message : String(err));
+              });
             }}
           >
-            添加论文
+            导入 {fresh.length ? fresh.length : ""}
           </Button>
         </>
       }
     >
-      <p>至少填写标题、arXiv、DOI 或 PDF 路径之一。有 Key 时可以在入库后补全信息，但不会自动已读。</p>
-      <Field label="标题">
-        <input value={title} onChange={(e) => setTitle(e.target.value)} autoFocus />
-      </Field>
-      <Field label="arXiv">
-        <input value={arxivId} onChange={(e) => setArxivId(e.target.value)} placeholder="2304.08485" />
-      </Field>
-      <Field label="DOI">
-        <input value={doi} onChange={(e) => setDoi(e.target.value)} />
-      </Field>
-      <Field label="PDF 路径 / URL">
-        <input value={pdfUrl} onChange={(e) => setPdfUrl(e.target.value)} />
-      </Field>
-      <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13 }}>
-        <input
-          type="checkbox"
-          checked={runPrepare}
-          onChange={(e) => setRunPrepare(e.target.checked)}
-          disabled={!settings.hasKey}
-        />
-        入库后补全论文信息 {settings.hasKey ? "" : "（尚未配置 AI，已禁用）"}
-      </label>
+      <p>选择本机 PDF，或一个目录中的全部 PDF。文件名会先当作标题，导入后立即交给 MinerU 4.0 解析。</p>
+      {isTauri() ? (
+        <div className="ef-import-actions">
+          <Button type="button" onClick={() => void pickFiles()}>
+            <Icon name="file" />
+            选择 PDF
+          </Button>
+          <Button type="button" onClick={() => void pickDirectory()}>
+            <Icon name="inbox" />
+            选择文件夹
+          </Button>
+        </div>
+      ) : (
+        <p>浏览器预览不能读取本机 PDF。请在桌面应用中导入。</p>
+      )}
+      {items.length ? (
+        <ul className="ef-import-list">
+          {items.map((item) => (
+            <li key={item.path}>
+              <span>{item.name}</span>
+              {item.duplicate ? <em>已在库中</em> : null}
+            </li>
+          ))}
+        </ul>
+      ) : null}
       {error ? <p style={{ color: "var(--pf-danger)" }}>{error}</p> : null}
     </Dialog>
   );
@@ -410,7 +453,10 @@ function MetaEditor({
       <Field label="arXiv">
         <input value={draft.arxivId} onChange={(e) => setDraft({ ...draft, arxivId: e.target.value })} />
       </Field>
-      <Field label="PDF">
+      <Field label="本地 PDF">
+        <input value={paper.pdfPath ?? "未绑定本地文件"} readOnly />
+      </Field>
+      <Field label="公开 PDF 链接">
         <input value={draft.pdfUrl} onChange={(e) => setDraft({ ...draft, pdfUrl: e.target.value })} />
       </Field>
       <Field label="代码仓库">

@@ -10,7 +10,8 @@ export type NoteKind = (typeof NOTE_KINDS)[number];
 export type ReadingStatus = "unread" | "reading" | "read";
 export type OpenSource = "unknown" | "open" | "closed" | "request";
 export type NoteSource = "manual" | "llm";
-export type JobType = "prepareMeta" | "draftNotes" | "refreshLinks";
+export type JobType = "prepareMeta" | "draftNotes" | "refreshLinks" | "mineruParse";
+export type MineruStatus = "queued" | "submitted" | "parsing" | "done" | "error" | "cancelled";
 export type JobStatus = "queued" | "running" | "done" | "error" | "cancelled";
 export type AppMode = "field" | "archive" | "intake" | "system";
 
@@ -69,6 +70,7 @@ export interface Paper {
   doi: string | null;
   arxivId: string | null;
   pdfUrl: string | null;
+  pdfPath: string | null;
   codeUrl: string | null;
   codeOpenSource: OpenSource;
   projectPage: string | null;
@@ -77,6 +79,12 @@ export interface Paper {
   llmPreparedAt: string | null;
   notesDraftedByLlm: boolean;
   userNotesTouched: boolean;
+  userMetaTouched: boolean;
+  mineruStatus: MineruStatus | null;
+  mineruParseId: number | null;
+  mineruDocRef: string | null;
+  mineruError: string | null;
+  mineruParseIds: number[];
   tags: string[];
   labs: Lab[];
   createdAt: string;
@@ -94,6 +102,7 @@ export interface PaperDetail extends Paper {
   authors: Author[];
   notes: Record<NoteKind, NoteBlock>;
   domain: Domain;
+  parsedMarkdown: string;
 }
 
 export interface LlmJob {
@@ -188,6 +197,16 @@ export const JOB_TYPE_LABELS: Record<JobType, string> = {
   prepareMeta: "补全论文信息",
   draftNotes: "起草阅读笔记",
   refreshLinks: "刷新链接",
+  mineruParse: "MinerU 解析",
+};
+
+export const MINERU_STATUS_LABELS: Record<MineruStatus, string> = {
+  queued: "待发送",
+  submitted: "已提交",
+  parsing: "解析中",
+  done: "解析完成",
+  error: "解析失败",
+  cancelled: "已取消",
 };
 
 export const JOB_STATUS_LABELS: Record<JobStatus, string> = {

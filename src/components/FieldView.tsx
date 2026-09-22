@@ -82,7 +82,7 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
           <div className="ef-domain-picker">
             <h2>入库</h2>
           </div>
-          <p className="ef-nav-sum">等待处理或尚未标记已读的论文，以及正在运行的 AI 作业。</p>
+          <p className="ef-nav-sum">尚未读完的论文，以及 MinerU 解析和 AI 补全作业。</p>
         </div>
       ) : null}
 

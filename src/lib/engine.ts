@@ -1,4 +1,4 @@
-import { SCHEMA_STATEMENTS } from "./schema";
+import { PAPER_MIGRATIONS, SCHEMA_STATEMENTS } from "./schema";
 import { isTauri } from "./util";
 import type initSqlJsType from "sql.js";
 
@@ -100,6 +100,16 @@ async function applySchema(engine: SqlEngine): Promise<void> {
   for (const statement of SCHEMA_STATEMENTS) {
     await engine.execute(statement);
   }
+  for (const statement of PAPER_MIGRATIONS) {
+    try {
+      await engine.execute(statement);
+    } catch (err) {
+      const message = (err instanceof Error ? err.message : String(err)).toLowerCase();
+      if (message.includes("duplicate column")) continue;
+      throw err;
+    }
+  }
+  await engine.execute("CREATE INDEX IF NOT EXISTS idx_papers_pdf_path ON papers(pdf_path)");
 }
 
 let singleton: Promise<SqlEngine> | null = null;

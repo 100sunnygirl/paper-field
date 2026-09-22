@@ -20,9 +20,11 @@ Return ONLY valid JSON matching this schema:
   "confidence": 0.0
 }
 Rules:
-- Use the provided title / arXiv / DOI / PDF path. If you recognize the paper, fill accurate public metadata.
+- Prefer the MinerU markdown when it is present. It is the text of the local PDF.
+- Use the provided title / arXiv / DOI only as hints. If you recognize the paper, fill accurate public metadata.
 - titleZh should be a concise Chinese translation when possible, else null.
 - codeOpenSource: open if official code is public; closed if weights/code are known unreleased; request if available on request; unknown otherwise.
+- pdfURL is a public link only. Never replace or invent the local file path.
 - Never invent a DOI or arXiv id. Leave fields null when unsure.
 - Do not mention reading status. Do not output markdown.`;
 
@@ -42,19 +44,31 @@ Write in Chinese if the user's other fields are Chinese, otherwise match the pap
 - implications: what this paper changes for the current research domain.
 Be specific. No reading-status language. No fake citations.`;
 
+function excerpt(value: string | null | undefined, max = 12000): string | null {
+  const text = value?.trim();
+  if (!text) return null;
+  if (text.length <= max) return text;
+  return `${text.slice(0, max)}\n\n[truncated]`;
+}
+
 export function prepareMetaUserPrompt(input: {
   title: string;
   arxivId?: string | null;
   doi?: string | null;
   pdfUrl?: string | null;
+  pdfPath?: string | null;
   abstract?: string | null;
+  parsedMarkdown?: string | null;
 }): string {
+  const markdown = excerpt(input.parsedMarkdown);
   return [
     `Title: ${input.title}`,
     input.arxivId ? `arXiv: ${input.arxivId}` : null,
     input.doi ? `DOI: ${input.doi}` : null,
-    input.pdfUrl ? `PDF: ${input.pdfUrl}` : null,
+    input.pdfPath ? `Local PDF: ${input.pdfPath}` : null,
+    input.pdfUrl ? `Public PDF: ${input.pdfUrl}` : null,
     input.abstract ? `Abstract already on file:\n${input.abstract}` : null,
+    markdown ? `MinerU markdown:\n${markdown}` : null,
   ]
     .filter(Boolean)
     .join("\n");
@@ -72,6 +86,7 @@ export function draftNotesUserPrompt(paper: PaperDetail): string {
     "",
     "Abstract:",
     paper.abstract || "(none)",
+    excerpt(paper.parsedMarkdown) ? `\nMinerU markdown:\n${excerpt(paper.parsedMarkdown)}` : null,
   ]
     .filter((line) => line !== null)
     .join("\n");

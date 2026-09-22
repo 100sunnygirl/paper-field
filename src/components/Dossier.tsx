@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { renderMarkdown } from "../lib/markdown";
+import { openLocalPdf } from "../lib/mineru";
 import {
   JOB_STATUS_LABELS,
   JOB_TYPE_LABELS,
+  MINERU_STATUS_LABELS,
   NOTE_DISPLAY_ORDER,
   NOTE_LABELS,
   READING_STATUS_LABELS,
@@ -134,6 +136,8 @@ function ContextPanel({
   const setReadingStatus = useField((s) => s.setReadingStatus);
   const runPrepareMeta = useField((s) => s.runPrepareMeta);
   const runDraftNotes = useField((s) => s.runDraftNotes);
+  const retryMineru = useField((s) => s.retryMineru);
+  const mineru = useField((s) => s.mineru);
   const cancelJob = useField((s) => s.cancelJob);
   const savePaperPatch = useField((s) => s.savePaperPatch);
   const setMode = useField((s) => s.setMode);
@@ -226,6 +230,22 @@ function ContextPanel({
             </p>
           </div>
         </details>
+        {paper.pdfPath ? (
+          <p className="ef-missing">
+            MinerU · {paper.mineruStatus ? MINERU_STATUS_LABELS[paper.mineruStatus] : "尚未解析"}
+          </p>
+        ) : null}
+        {paper.mineruError ? <p style={{ color: "var(--pf-danger)" }}>{paper.mineruError}</p> : null}
+        {paper.pdfPath &&
+        mineru.configured &&
+        paper.mineruStatus !== "queued" &&
+        paper.mineruStatus !== "submitted" &&
+        paper.mineruStatus !== "parsing" &&
+        paper.mineruStatus !== "done" ? (
+          <Button type="button" onClick={() => void retryMineru(paper.id)}>
+            {paper.mineruStatus === "error" || paper.mineruStatus === "cancelled" ? "重新解析" : "发送到 MinerU 解析"}
+          </Button>
+        ) : null}
       </section>
 
       <section className="ef-context-block">
@@ -421,7 +441,7 @@ export function ReadingStage({
                 mode === "field" ? (
                   <Button type="button" variant="primary" onClick={() => openDialog("paper")}>
                     <Icon name="plus" />
-                    添加论文
+                    导入 PDF
                   </Button>
                 ) : null
               }
@@ -474,7 +494,24 @@ export function ReadingStage({
           <Icon name="inbox" />
           资料
         </Button>
-        {paper.pdfUrl ? (
+        {paper.pdfPath ? (
+          <Button
+            type="button"
+            className="ef-pdf-action"
+            variant="primary"
+            onClick={() => {
+              void openLocalPdf(paper.pdfPath!).catch((err: unknown) => {
+                setFlash({
+                  tone: "error",
+                  text: err instanceof Error ? err.message : "无法打开 PDF",
+                });
+              });
+            }}
+          >
+            <Icon name="file" />
+            打开 PDF
+          </Button>
+        ) : paper.pdfUrl ? (
           <ButtonLink
             className="ef-pdf-action"
             variant="primary"
@@ -491,7 +528,7 @@ export function ReadingStage({
             type="button"
             className="ef-pdf-action"
             variant="primary"
-            onClick={() => setFlash({ tone: "warn", text: "这篇论文尚未提供 PDF 链接。" })}
+            onClick={() => setFlash({ tone: "warn", text: "这篇论文还没有本地 PDF。" })}
           >
             <Icon name="file" />
             打开 PDF

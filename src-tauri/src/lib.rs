@@ -1,3 +1,5 @@
+mod mineru;
+
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
@@ -46,13 +48,17 @@ struct ExportFile {
     content: String,
 }
 
-fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
+pub(crate) fn app_config_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app
         .path()
         .resolve("", BaseDirectory::AppConfig)
         .map_err(|e| e.to_string())?;
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    Ok(dir.join("llm-settings.json"))
+    Ok(dir)
+}
+
+fn settings_path(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app_config_dir(app)?.join("llm-settings.json"))
 }
 
 fn read_settings(app: &AppHandle) -> Result<LlmSettingsFile, String> {
@@ -277,7 +283,16 @@ pub fn run() {
             save_llm_settings,
             llm_complete,
             llm_cancel,
-            export_files
+            export_files,
+            mineru::mineru_settings,
+            mineru::save_mineru_settings,
+            mineru::mineru_test,
+            mineru::list_pdfs,
+            mineru::normalize_pdf,
+            mineru::open_pdf,
+            mineru::mineru_submit,
+            mineru::mineru_parse_statuses,
+            mineru::mineru_markdown
         ])
         .run(tauri::generate_context!())
         .expect("error while running Paper Field");

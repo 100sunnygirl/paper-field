@@ -1,4 +1,4 @@
-import { READING_STATUS_LABELS, type PaperListItem } from "../lib/types";
+import { MINERU_STATUS_LABELS, READING_STATUS_LABELS, type PaperListItem } from "../lib/types";
 import { pad2 } from "../lib/util";
 import { Icon } from "./ui";
 
@@ -37,6 +37,9 @@ export function PaperRow({
       <div className="ef-row-meta">
         <span>{[paper.venue, paper.year].filter(Boolean).join(" · ") || "待补全会议信息"}</span>
         <span>{paper.firstAuthor || "作者待补充"}</span>
+        {paper.mineruStatus && paper.mineruStatus !== "done" ? (
+          <span>{MINERU_STATUS_LABELS[paper.mineruStatus]}</span>
+        ) : null}
       </div>
     </button>
   );

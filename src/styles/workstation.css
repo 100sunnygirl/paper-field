@@ -1157,11 +1157,34 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 .ef-dialog-head h2 { font-size: 20px; margin: 0; font-weight: 700; }
 .ef-dialog-body { padding: 20px 24px; }
 .ef-dialog-body p {
-  line-height: 1.85;
+  margin: 0 0 12px;
   color: var(--pf-secondary);
+  line-height: 1.7;
   font-size: 14px;
-  margin-top: 0;
 }
+.ef-import-actions {
+  display: flex;
+  gap: 8px;
+  margin: 4px 0 12px;
+}
+.ef-import-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid var(--pf-rule, #ddd);
+}
+.ef-import-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--pf-rule, #eee);
+  font-size: 13px;
+}
+.ef-import-list li:last-child { border-bottom: 0; }
+.ef-import-list em { color: var(--pf-secondary); font-style: normal; }
 .ef-dialog-foot {
   display: flex;
   gap: 10px;
