@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { OPEN_SOURCE_LABELS, type OpenSource } from "../lib/types";
 
 export type ButtonVariant = "primary" | "secondary" | "text" | "danger" | "link";
@@ -100,6 +100,7 @@ export function Dialog({
   open,
   title,
   onClose,
+  vetoClose,
   children,
   footer,
   className = "",
@@ -108,6 +109,8 @@ export function Dialog({
   open: boolean;
   title: string;
   onClose: () => void;
+  /** 返回 true 表示本次关闭被否决（如存在未保存修改）；提示由回调自身负责。 */
+  vetoClose?: () => boolean;
   children: ReactNode;
   footer?: ReactNode;
   className?: string;
@@ -116,6 +119,33 @@ export function Dialog({
   const panelRef = useRef<HTMLDivElement>(null);
   const lastFocus = useRef<HTMLElement | null>(null);
   const titleId = useId();
+  const [hasVetoedOnce, setHasVetoedOnce] = useState(false);
+
+  useEffect(() => {
+    if (open) setHasVetoedOnce(false);
+  }, [open]);
+
+  // 统一关闭入口：backdrop、Escape、header 关闭按钮都经此走。
+  // 否决分支必须继续 stopPropagation——否则事件冒泡到 window 层，
+  // App 的无条件 closeDialog() 仍会关掉对话框，否决形同虚设。
+  const guardClose = useCallback(
+    (event?: { stopPropagation: () => void }) => {
+      if (vetoClose && !hasVetoedOnce && vetoClose()) {
+        event?.stopPropagation();
+        setHasVetoedOnce(true);
+        return;
+      }
+      event?.stopPropagation();
+      onClose();
+    },
+    [hasVetoedOnce, onClose, vetoClose],
+  );
+
+  // 用 ref 透传 guardClose，避免回调引用变化导致焦点 effect 重跑、焦点被拉回首元素。
+  const guardRef = useRef(guardClose);
+  useEffect(() => {
+    guardRef.current = guardClose;
+  });
 
   useEffect(() => {
     if (!open) return;
@@ -130,8 +160,7 @@ export function Dialog({
 
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        event.stopPropagation();
-        onClose();
+        guardRef.current(event);
         return;
       }
       if (event.key !== "Tab" || !panel) return;
@@ -152,11 +181,15 @@ export function Dialog({
       document.removeEventListener("keydown", onKey, true);
       lastFocus.current?.focus();
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
   return (
-    <div className="ef-backdrop" role="presentation" onMouseDown={onClose}>
+    <div
+      className="ef-backdrop"
+      role="presentation"
+      onMouseDown={(e) => guardClose(e)}
+    >
       <div
         ref={panelRef}
         className={`ef-dialog ${danger ? "is-danger" : ""} ${className}`.trim()}
@@ -167,7 +200,13 @@ export function Dialog({
       >
         <header className="ef-dialog-head">
           <h2 id={titleId}>{title}</h2>
-          <Button type="button" variant="text" className="ef-icon-btn" onClick={onClose} aria-label="关闭对话框">
+          <Button
+            type="button"
+            variant="text"
+            className="ef-icon-btn"
+            onClick={() => guardClose()}
+            aria-label="关闭对话框"
+          >
             <Icon name="close" />
           </Button>
         </header>

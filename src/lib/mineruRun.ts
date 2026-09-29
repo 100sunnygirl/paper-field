@@ -2,13 +2,14 @@ import {
   mineruMarkdown,
   mineruParseStatuses,
   mineruSubmit,
-  type MineruSettings,
+  type MineruSettingsV2,
 } from "./mineru";
+import type { MineruProviderKind } from "./types";
 import { repo } from "./repo";
 import { nowIso } from "./util";
 
 interface Host {
-  mineru: () => MineruSettings;
+  mineru: () => MineruSettingsV2;
   hasKey: () => boolean;
   refresh: () => Promise<void>;
   flash: (tone: "ok" | "warn" | "error", text: string) => void;
@@ -48,8 +49,9 @@ async function retireActive(paperId: string): Promise<void> {
 async function pollMarkdown(
   host: Host,
   paperId: string,
+  provider: MineruProviderKind,
   docRef: string,
-  parseIds: number[],
+  parseIds: string[],
   tier: string,
   pageRange: string,
 ): Promise<string> {
@@ -62,10 +64,12 @@ async function pollMarkdown(
       await host.refresh();
       announced = true;
     }
-    if (!parseIds.length) {
-      return mineruMarkdown(host.mineru(), docRef, tier, pageRange);
+    // 「无 parseIds 直接取 markdown」仅对 doclib 成立；官方 API 的 parseIds 恒为空，
+    // 必须先轮询 batch 状态等到 done 再取 full.md，否则会在 running 阶段过早取结果。
+    if (!parseIds.length && provider !== "api") {
+      return mineruMarkdown(provider, docRef, tier, pageRange);
     }
-    const polls = await pollStatuses(host.mineru(), parseIds);
+    const polls = await pollStatuses(provider, docRef, parseIds);
     const waiting = polls.some((item) => item.status === "pending" || item.status === "parsing");
     const failed = polls.find((item) => item.status === "failed");
     const settled = polls.some((item) => item.status === "done" || item.status === "superseded");
@@ -73,32 +77,41 @@ async function pollMarkdown(
       throw new Error(failed.error || "MinerU 解析失败");
     }
     if (!waiting) {
-      return mineruMarkdown(host.mineru(), docRef, tier, pageRange);
+      return mineruMarkdown(provider, docRef, tier, pageRange);
     }
     await sleep(4000);
   }
   throw new Error("MinerU 解析超时");
 }
 
-async function pollStatuses(settings: MineruSettings, parseIds: number[]) {
+async function pollStatuses(provider: MineruProviderKind, docRef: string, parseIds: string[]) {
   let last: unknown = null;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
-      return await mineruParseStatuses(settings, parseIds);
+      return await mineruParseStatuses(provider, docRef, parseIds);
     } catch (err) {
       last = err;
       await sleep(2000);
     }
   }
-  throw last instanceof Error ? last : new Error(String(last));
+  const detail = last instanceof Error ? last.message : String(last);
+  // 恢复/轮询仅同源：源级错误不自动换源（short_id 与 batch_id 命名空间不同），
+  // 指引用户点「重新解析」由后端按回退顺序重选源重新提交。
+  throw new Error(`解析源不可用（${detail}）。可点击重新解析换源重提。`);
 }
 
+/**
+ * 解析完成后的自动元数据补全（曾因函数体丢失成为死链）。
+ * 关键语义：overwrite=false —— repo.applyPreparedMeta 的用户编辑锁生效，
+ * 自动补全永不覆盖用户手改过的字段；quiet=true 避免 flash 刷屏。
+ */
 async function autoPrepare(host: Host, paperId: string): Promise<boolean> {
   if (!host.hasKey()) return false;
   const paper = await repo.getPaper(paperId);
   if (!paper || paper.llmPreparedAt || !paper.parsedMarkdown.trim()) return false;
-    const after = await repo.getPaper(paperId);
-    return Boolean(after?.llmPreparedAt);
+  await host.prepare(paperId, false, true);
+  const after = await repo.getPaper(paperId);
+  return Boolean(after?.llmPreparedAt);
 }
 
 async function processOne(host: Host, paperId: string, force: boolean): Promise<"ok" | "fail" | "cancelled" | "skip"> {
@@ -121,28 +134,39 @@ async function processOne(host: Host, paperId: string, force: boolean): Promise<
   try {
     let docRef = paper.mineruDocRef;
     let parseIds = paper.mineruParseIds;
+    let provider = paper.mineruProvider as MineruProviderKind | null;
+    // 恢复仅同源：pending 论文必须带有提交时记录的 provider 才能续轮询；
+    // 旧数据（status=submitted 但无 provider）只能重新提交，由后端按 order 重选源。
     const canResume =
       !force &&
       (paper.mineruStatus === "submitted" || paper.mineruStatus === "parsing") &&
-      Boolean(docRef);
+      Boolean(docRef) &&
+      Boolean(provider);
     if (!canResume) {
       await repo.setMineruState(paperId, { status: "queued", error: null });
       await host.refresh();
       if (cancelled.has(paperId)) throw new Error("CANCELLED");
-      const submitted = await mineruSubmit(settings, paper.pdfPath, paperId, force);
+      const submitted = await mineruSubmit(paperId, paper.pdfPath, force);
       if (cancelled.has(paperId)) throw new Error("CANCELLED");
       docRef = submitted.shortId;
       parseIds = submitted.parseIds;
+      provider = submitted.provider;
       await repo.setMineruState(paperId, {
         status: "submitted",
         parseId: parseIds[0] ?? null,
         parseIds,
         docRef,
+        provider,
         error: null,
       });
       await host.refresh();
       if (submitted.status === "done") {
-        const markdown = await mineruMarkdown(settings, docRef, submitted.tier || settings.tier, settings.pageRange);
+        const markdown = await mineruMarkdown(
+          provider,
+          docRef,
+          submitted.tier || settings.tier,
+          settings.pageRange,
+        );
         await repo.saveParsedMarkdown(paperId, markdown);
         await repo.setMineruState(paperId, { status: "done", error: null });
         await repo.updateJob(job.id, { status: "done", finishedAt: nowIso() });
@@ -151,8 +175,16 @@ async function processOne(host: Host, paperId: string, force: boolean): Promise<
         return "ok";
       }
     }
-    if (!docRef) throw new Error("MinerU 没有返回文档编号");
-    const markdown = await pollMarkdown(host, paperId, docRef, parseIds, settings.tier, settings.pageRange);
+    if (!docRef || !provider) throw new Error("MinerU 没有返回文档编号");
+    const markdown = await pollMarkdown(
+      host,
+      paperId,
+      provider,
+      docRef,
+      parseIds,
+      settings.tier,
+      settings.pageRange,
+    );
     await repo.saveParsedMarkdown(paperId, markdown);
     await repo.setMineruState(paperId, { status: "done", error: null });
     await repo.updateJob(job.id, { status: "done", finishedAt: nowIso() });
@@ -176,6 +208,7 @@ async function processOne(host: Host, paperId: string, force: boolean): Promise<
 }
 
 export async function runMineruBatch(host: Host, paperIds: string[], force = false): Promise<void> {
+  // 守卫语义：order 中无任何启用源 → 静默返回（入口 importPdfs/retryMineru 已给出指引）。
   if (!host.mineru().configured) return;
   let ok = 0;
   let fail = 0;

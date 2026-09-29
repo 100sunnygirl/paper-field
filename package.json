@@ -1,13 +1,14 @@
 {
   "name": "paper-field",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview --host 127.0.0.1 --port 43173",
     "tauri": "tauri",
+    "test": "vitest run",
     "postinstall": "mkdir -p public/vendor && cp node_modules/sql.js/dist/sql-wasm.js public/vendor/sql-wasm.js && cp node_modules/sql.js/dist/sql-wasm.wasm public/vendor/sql-wasm.wasm"
   },
   "dependencies": {
@@ -16,6 +17,7 @@
     "@tauri-apps/plugin-opener": "^2",
     "@tauri-apps/plugin-sql": "^2",
     "@tauri-apps/plugin-store": "^2",
+    "dompurify": "^3.4.16",
     "marked": "^15.0.12",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
@@ -24,11 +26,17 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
+    "@testing-library/dom": "^10.4.2",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.7",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@types/sql.js": "^1.4.9",
     "@vitejs/plugin-react": "^6.0.2",
+    "jsdom": "^27.0.1",
     "typescript": "~5.8.3",
-    "vite": "^8.0.16"
+    "vite": "^8.0.16",
+    "vitest": "^4.1.11"
   }
 }

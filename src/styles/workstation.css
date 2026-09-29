@@ -1144,6 +1144,121 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   background: var(--pf-success-bg);
 }
 
+/* MinerU 三源配置卡片 */
+.ef-effective-row {
+  border: 1px solid var(--pf-divider);
+  background: #fff;
+  padding: 10px 12px;
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: var(--pf-secondary);
+}
+.ef-effective-row .ef-effective-text b { color: var(--pf-ink); font-weight: 700; }
+.ef-effective-row .ef-effective-text.is-error { color: var(--pf-danger); }
+.ef-order-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 14px;
+}
+.ef-order-label { font-size: 12px; font-weight: 600; color: var(--pf-ink); }
+.ef-order-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  border: 1px solid var(--pf-divider);
+  background: #fff;
+  padding: 3px 4px 3px 9px;
+  font-size: 12px;
+  color: var(--pf-secondary);
+}
+.ef-order-chip.is-effective {
+  /* 当前生效来源：小面积信号黄描边（仅选中提示，遵守设计契约） */
+  outline: 2px solid var(--pf-signal);
+  outline-offset: -2px;
+  color: var(--pf-ink);
+  font-weight: 600;
+}
+.ef-order-chip button {
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--pf-divider);
+  background: var(--pf-canvas, #f2f2f0);
+  color: var(--pf-secondary);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+.ef-order-chip button:hover:not(:disabled) { border-color: var(--pf-ink); color: var(--pf-ink); }
+.ef-order-chip button:disabled { opacity: 0.35; cursor: default; }
+.ef-provider-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+  margin: 4px 0 16px;
+}
+.ef-provider-card {
+  border: 1px solid var(--pf-divider);
+  background: #fff;
+  padding: 14px 16px;
+  min-width: 0;
+}
+.ef-provider-card header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.ef-provider-card .ef-provider-name { font-size: 15px; font-weight: 700; color: var(--pf-ink); }
+.ef-provider-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  color: var(--pf-ink);
+  cursor: pointer;
+}
+.ef-provider-toggle input { width: 15px; height: 15px; accent-color: var(--pf-ink); }
+.ef-provider-toggle strong { font-weight: 700; }
+.ef-provider-desc {
+  font-size: 12.5px;
+  color: var(--pf-muted);
+  line-height: 1.6;
+  margin: 0 0 12px;
+}
+.ef-active-badge {
+  font-size: 11px;
+  color: var(--pf-ink);
+  border: 1px solid var(--pf-ink);
+  padding: 2px 6px;
+  white-space: nowrap;
+}
+.ef-provider-card .ef-field { margin-bottom: 12px; }
+.ef-provider-card .ef-import-actions { margin: 4px 0 8px; }
+.ef-probe-line {
+  font-size: 12px;
+  margin: 6px 0 0;
+  color: var(--pf-muted);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.ef-probe-line.is-ok { color: var(--pf-success); }
+.ef-probe-line.is-error { color: var(--pf-danger); }
+.ef-probe-ms {
+  font-family: SFMono-Regular, Consolas, monospace;
+  font-size: 11px;
+  color: var(--pf-muted);
+  margin-left: 4px;
+}
+.ef-manual-paper {
+  border: 1px solid var(--pf-divider);
+  padding: 14px 16px 4px;
+  margin: 4px 0 12px;
+  background: #fff;
+}
+
 /* Status */
 .ef-status {
   grid-area: status;
@@ -1491,3 +1606,97 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
     scroll-behavior: auto !important;
   }
 }
+
+/* ---- Cross-domain search dropdown (Dock) ---- */
+.ef-dock { position: relative; z-index: 30; }
+.ef-search-wrap {
+  position: relative;
+  flex: 1;
+  max-width: 580px;
+  min-width: 0;
+  display: flex;
+}
+.ef-search-wrap .ef-search { flex: 1; }
+.ef-search-scope {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  background: var(--pf-surface);
+  border: 1px solid var(--pf-ink);
+  box-shadow: 4px 4px 0 rgba(25, 25, 25, 0.16);
+  color: var(--pf-ink);
+  max-height: min(420px, 60vh);
+  overflow: auto;
+}
+.ef-search-scope-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--pf-divider);
+  font-size: 12px;
+  color: var(--pf-muted);
+}
+.ef-search-scope-head button {
+  border: 0;
+  background: transparent;
+  color: var(--pf-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+.ef-search-scope-head button:hover { color: var(--pf-ink); text-decoration: underline; }
+.ef-search-scope-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--pf-divider);
+  padding: 10px 14px;
+  cursor: pointer;
+}
+.ef-search-scope-item:last-child { border-bottom: 0; }
+.ef-search-scope-item:hover { background: #f0f2eb; }
+.ef-search-scope-title {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: var(--pf-ink);
+}
+.ef-search-scope-meta {
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--pf-muted);
+}
+
+/* ---- Parsed full text (MinerU) collapsible block in the reading stage ---- */
+.ef-fulltext {
+  margin: 0;
+  padding: 14px 0 18px;
+  border-bottom: 1px solid var(--pf-divider);
+  scroll-margin-top: 24px;
+}
+.ef-fulltext summary {
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--pf-ink);
+  list-style: none;
+}
+.ef-fulltext summary .ef-ico {
+  width: 14px;
+  height: 14px;
+  transition: transform var(--pf-direct);
+}
+.ef-fulltext[open] summary .ef-ico { transform: rotate(90deg); }
+.ef-fulltext .ef-note-text { margin-top: 12px; }
+.ef-fulltext .ef-empty-note { margin: 10px 0 0; }

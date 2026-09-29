@@ -4,6 +4,7 @@ import { openLocalPdf } from "../lib/mineru";
 import {
   JOB_STATUS_LABELS,
   JOB_TYPE_LABELS,
+  MINERU_PROVIDER_LABELS,
   MINERU_STATUS_LABELS,
   NOTE_DISPLAY_ORDER,
   NOTE_LABELS,
@@ -141,6 +142,7 @@ function ContextPanel({
   const cancelJob = useField((s) => s.cancelJob);
   const savePaperPatch = useField((s) => s.savePaperPatch);
   const setMode = useField((s) => s.setMode);
+  const openDialog = useField((s) => s.openDialog);
   const active = jobs.filter(
     (job) => job.paperId === paper.id && (job.status === "running" || job.status === "queued"),
   );
@@ -235,13 +237,23 @@ function ContextPanel({
             MinerU · {paper.mineruStatus ? MINERU_STATUS_LABELS[paper.mineruStatus] : "尚未解析"}
           </p>
         ) : null}
+        {paper.pdfPath && paper.mineruProvider ? (
+          <p className="ef-missing">
+            解析来源：{MINERU_PROVIDER_LABELS[paper.mineruProvider] ?? paper.mineruProvider}
+          </p>
+        ) : null}
         {paper.mineruError ? <p style={{ color: "var(--pf-danger)" }}>{paper.mineruError}</p> : null}
-        {paper.pdfPath &&
-        mineru.configured &&
-        paper.mineruStatus !== "queued" &&
-        paper.mineruStatus !== "submitted" &&
-        paper.mineruStatus !== "parsing" &&
-        paper.mineruStatus !== "done" ? (
+        {paper.pdfPath && !mineru.configured ? (
+          <Button type="button" variant="link" onClick={() => void setMode("system")}>
+            配置 MinerU 解析源
+            <Icon name="right" />
+          </Button>
+        ) : paper.pdfPath &&
+          mineru.configured &&
+          paper.mineruStatus !== "queued" &&
+          paper.mineruStatus !== "submitted" &&
+          paper.mineruStatus !== "parsing" &&
+          paper.mineruStatus !== "done" ? (
           <Button type="button" onClick={() => void retryMineru(paper.id)}>
             {paper.mineruStatus === "error" || paper.mineruStatus === "cancelled" ? "重新解析" : "发送到 MinerU 解析"}
           </Button>
@@ -260,6 +272,16 @@ function ContextPanel({
             }}
           >
             <span className="mono">—</span>摘要
+          </a>
+          <a
+            href="#fulltext"
+            className={activeSection === "fulltext" ? "is-active" : ""}
+            onClick={(e) => {
+              e.preventDefault();
+              onJump("fulltext");
+            }}
+          >
+            <span className="mono">—</span>解析全文
           </a>
           {NOTE_DISPLAY_ORDER.map((kind, i) => (
             <a
@@ -293,7 +315,14 @@ function ContextPanel({
           <Button
             type="button"
             disabled={!settings.hasKey || Boolean(active.length)}
-            onClick={() => void runPrepareMeta(paper.id)}
+            onClick={() => {
+              // AI 不会静默覆盖：手动改过的论文信息先经确认对话框选择保留或覆盖。
+              if (paper.userMetaTouched) {
+                openDialog("confirm-meta");
+                return;
+              }
+              void runPrepareMeta(paper.id);
+            }}
           >
             <Icon name="file" />
             补全论文信息
@@ -372,7 +401,7 @@ export function ReadingStage({
   useEffect(() => {
     const root = scrollRef.current;
     if (!root || !paper) return;
-    const nodes = Array.from(root.querySelectorAll<HTMLElement>(".ef-abstract, .ef-note"));
+    const nodes = Array.from(root.querySelectorAll<HTMLElement>(".ef-abstract, .ef-fulltext, .ef-note"));
     const observer = new IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
@@ -609,6 +638,20 @@ export function ReadingStage({
               </h2>
               <p>{paper.abstract || "尚未填写摘要。可在「更多」中编辑论文信息。"}</p>
             </section>
+            <details className="ef-metadata-details ef-fulltext" id="fulltext">
+              <summary>
+                <Icon name="right" />
+                解析全文（MinerU）
+              </summary>
+              {paper.parsedMarkdown.trim() ? (
+                <div
+                  className="ef-note-text ef-md"
+                  dangerouslySetInnerHTML={{ __html: renderMarkdown(paper.parsedMarkdown) }}
+                />
+              ) : (
+                <p className="ef-empty-note">尚未解析出全文。</p>
+              )}
+            </details>
             <div className="ef-notes-heading">
               <h2>现场笔记</h2>
               <span className="ef-overline">FIELD NOTES</span>

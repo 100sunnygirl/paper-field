@@ -1,5 +1,5 @@
 import type { Domain, NoteKind, PaperDetail } from "./types";
-import { NOTE_LABELS, NOTE_DISPLAY_ORDER } from "./types";
+import { NOTE_LABELS, NOTE_DISPLAY_ORDER, noteSourceLabel } from "./types";
 import { isTauri } from "./util";
 
 function paperMarkdown(paper: PaperDetail): string {
@@ -13,10 +13,12 @@ function paperMarkdown(paper: PaperDetail): string {
     })
     .join("\n");
 
+  const labs = paper.labs.map((lab) => `${lab.name} (${lab.institution})`).join("; ");
+
   const notes = NOTE_DISPLAY_ORDER.map((kind: NoteKind) => {
     const block = paper.notes[kind];
     const label = NOTE_LABELS[kind];
-    return `## ${label.zh} / ${label.en}\n\n${block.content || "_empty_"}\n`;
+    return `## ${label.zh} / ${label.en} · ${noteSourceLabel(block)}\n\n${block.content || "_empty_"}\n`;
   }).join("\n");
 
   return `# ${paper.title}
@@ -32,6 +34,7 @@ ${paper.titleZh ? `> ${paper.titleZh}\n` : ""}
 - Code: ${paper.codeUrl ?? "—"}
 - Project: ${paper.projectPage ?? "—"}
 - Tags: ${paper.tags.join(", ") || "—"}
+- Labs: ${labs || "—"}
 
 ## Authors
 
@@ -59,6 +62,21 @@ export interface ExportFile {
 
 export function buildDomainExport(domain: Domain, papers: PaperDetail[]): ExportFile[] {
   const folder = slug(domain.code || domain.name);
+  // 同年同标题的论文会生成相同 slug 互相覆盖；先统一分配唯一文件名，
+  // README 索引与实际文件都使用这份分配结果。
+  const used = new Set<string>();
+  const fileNames = papers.map((paper) => {
+    const base = slug(`${paper.year ?? "n"}-${paper.title}`);
+    let name = base;
+    if (used.has(name)) name = `${base}-${paper.id.slice(0, 4).toLowerCase()}`;
+    let n = 2;
+    while (used.has(name)) {
+      name = `${base}-${paper.id.slice(0, 4).toLowerCase()}-${n}`;
+      n += 1;
+    }
+    used.add(name);
+    return `${name}.md`;
+  });
   const index = `# ${domain.name} / ${domain.code}
 
 ${domain.summary ?? ""}
@@ -66,17 +84,17 @@ ${domain.summary ?? ""}
 ${papers
   .map(
     (paper, i) =>
-      `${i + 1}. [${paper.title}](./${slug(`${paper.year ?? "n"}-${paper.title}`)}.md) — ${paper.readingStatus}`,
+      `${i + 1}. [${paper.title}](./${fileNames[i]}) — ${paper.readingStatus}`,
   )
   .join("\n")}
 `;
   const files: ExportFile[] = [{ relativePath: `${folder}/README.md`, content: index }];
-  for (const paper of papers) {
+  papers.forEach((paper, i) => {
     files.push({
-      relativePath: `${folder}/${slug(`${paper.year ?? "n"}-${paper.title}`)}.md`,
+      relativePath: `${folder}/${fileNames[i]}`,
       content: paperMarkdown(paper),
     });
-  }
+  });
   return files;
 }
 

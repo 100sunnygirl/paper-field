@@ -11,6 +11,7 @@ export type ReadingStatus = "unread" | "reading" | "read";
 export type OpenSource = "unknown" | "open" | "closed" | "request";
 export type NoteSource = "manual" | "llm";
 export type JobType = "prepareMeta" | "draftNotes" | "refreshLinks" | "mineruParse";
+export type MineruProviderKind = "local" | "ssh" | "api";
 export type MineruStatus = "queued" | "submitted" | "parsing" | "done" | "error" | "cancelled";
 export type JobStatus = "queued" | "running" | "done" | "error" | "cancelled";
 export type AppMode = "field" | "archive" | "intake" | "system";
@@ -81,10 +82,11 @@ export interface Paper {
   userNotesTouched: boolean;
   userMetaTouched: boolean;
   mineruStatus: MineruStatus | null;
-  mineruParseId: number | null;
+  mineruParseId: string | null;
   mineruDocRef: string | null;
   mineruError: string | null;
-  mineruParseIds: number[];
+  mineruParseIds: string[];
+  mineruProvider: MineruProviderKind | string | null;
   tags: string[];
   labs: Lab[];
   createdAt: string;
@@ -198,6 +200,12 @@ export const JOB_TYPE_LABELS: Record<JobType, string> = {
   draftNotes: "起草阅读笔记",
   refreshLinks: "刷新链接",
   mineruParse: "MinerU 解析",
+};
+
+export const MINERU_PROVIDER_LABELS: Record<string, string> = {
+  local: "本地 CLI",
+  ssh: "SSH 远程",
+  api: "官方 API",
 };
 
 export const MINERU_STATUS_LABELS: Record<MineruStatus, string> = {

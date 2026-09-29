@@ -105,7 +105,9 @@ export async function completeChat(input: {
         { role: "user", content: input.user },
       ],
     }),
-    signal: input.signal,
+    // 浏览器分支此前无超时（桌面端由 Rust 侧限时）：与后端对齐为 120s，
+    // 并把外部取消信号与超时信号合并（手动转发，兼容无 AbortSignal.any 的环境）。
+    signal: mergeAbortSignals(input.signal, 120_000, "LLM 请求超时（120s），请重试。"),
   });
   if (!response.ok) {
     const text = await response.text();
@@ -117,6 +119,21 @@ export async function completeChat(input: {
   const content = json.choices?.[0]?.message?.content;
   if (!content) throw new Error("模型返回为空");
   return content;
+}
+
+function mergeAbortSignals(external: AbortSignal | undefined, timeoutMs: number, message: string): AbortSignal {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(message), timeoutMs);
+  // 任何一方触发后都清掉计时器（fetch 正常完成且未 abort 时，timer 到期后自然结束，无泄漏）。
+  controller.signal.addEventListener("abort", () => clearTimeout(timer), { once: true });
+  if (external) {
+    if (external.aborted) {
+      controller.abort(external.reason);
+    } else {
+      external.addEventListener("abort", () => controller.abort(external.reason), { once: true });
+    }
+  }
+  return controller.signal;
 }
 
 export async function cancelChat(jobId: string): Promise<void> {

@@ -56,6 +56,7 @@ interface PaperRow {
   mineru_doc_ref: string | null;
   mineru_error: string | null;
   mineru_parse_ids: string | null;
+  mineru_provider?: string | null;
   tags: string;
   labs: string;
   created_at: string;
@@ -116,6 +117,22 @@ const PAPER_LIST_SQL = `
     JOIN domains d ON d.id = p.domain_id
 `;
 
+// 三种模式（现场 / 归档 / 入库）与跨域搜索共用的匹配条件：
+// 标题、中文标题、摘要、期刊、DOI、arXiv、标签、实验室 JSON 文本 + 作者名。
+const PAPER_SEARCH_MATCH_SQL = `(
+            p.title LIKE ? OR IFNULL(p.title_zh,'') LIKE ? OR IFNULL(p.abstract,'') LIKE ?
+            OR IFNULL(p.venue,'') LIKE ? OR IFNULL(p.doi,'') LIKE ? OR IFNULL(p.arxiv_id,'') LIKE ?
+            OR p.tags LIKE ? OR p.labs LIKE ?
+            OR EXISTS (
+              SELECT 1 FROM paper_authors pa JOIN authors a ON a.id = pa.author_id
+               WHERE pa.paper_id = p.id AND a.name LIKE ?
+            )
+          )`;
+
+function searchParams(like: string): unknown[] {
+  return [like, like, like, like, like, like, like, like, like];
+}
+
 function mapDomain(row: DomainRow): Domain {
   return {
     id: row.id,
@@ -150,10 +167,12 @@ function mapPaper(row: PaperRow): Paper {
     userNotesTouched: Boolean(row.user_notes_touched),
     userMetaTouched: Boolean(row.user_meta_touched),
     mineruStatus: asMineruStatus(row.mineru_status),
-    mineruParseId: row.mineru_parse_id,
+    mineruParseId: row.mineru_parse_id == null ? null : String(row.mineru_parse_id),
     mineruDocRef: row.mineru_doc_ref,
     mineruError: row.mineru_error,
-    mineruParseIds: parseJsonArray<number>(row.mineru_parse_ids, []),
+    // 旧库存的是数字数组，官方 API 时代统一归一为字符串（doclib 数字 id 字符串化）。
+    mineruParseIds: parseJsonArray<string>(row.mineru_parse_ids, []).map((id) => String(id)),
+    mineruProvider: row.mineru_provider ?? null,
     tags: parseJsonArray<string>(row.tags, []),
     labs: parseJsonArray<Lab>(row.labs, []),
     createdAt: row.created_at,
@@ -223,6 +242,13 @@ export const repo = {
   async init(): Promise<void> {
     const engine = await getEngine();
     await seedIfEmpty(engine);
+    // 应用上次退出（崩溃 / 强杀）时残留的 queued/running 作业永远不会自行结束，
+    // 会把状态栏钉在「作业运行中」并把论文钉在入库模式；启动时统一清扫为 error。
+    await engine.execute(
+      `UPDATE llm_jobs SET status = 'error', error = '应用上次退出，作业中断', finished_at = ?
+        WHERE status IN ('queued','running')`,
+      [nowIso()],
+    );
   },
 
   async listDomains(): Promise<Domain[]> {
@@ -292,17 +318,9 @@ export const repo = {
     const rows = await engine.select<PaperRow>(
       `${PAPER_LIST_SQL}
         WHERE p.domain_id = ?
-          AND (
-            p.title LIKE ? OR IFNULL(p.title_zh,'') LIKE ? OR IFNULL(p.abstract,'') LIKE ?
-            OR IFNULL(p.venue,'') LIKE ? OR IFNULL(p.doi,'') LIKE ? OR IFNULL(p.arxiv_id,'') LIKE ?
-            OR p.tags LIKE ?
-            OR EXISTS (
-              SELECT 1 FROM paper_authors pa JOIN authors a ON a.id = pa.author_id
-               WHERE pa.paper_id = p.id AND a.name LIKE ?
-            )
-          )
+          AND ${PAPER_SEARCH_MATCH_SQL}
         ORDER BY p.created_at DESC`,
-      [domainId, like, like, like, like, like, like, like, like],
+      [domainId, ...searchParams(like)],
     );
     return rows.map(mapListItem);
   },
@@ -314,14 +332,9 @@ export const repo = {
     const like = `%${q}%`;
     const rows = await engine.select<PaperRow>(
       `${PAPER_LIST_SQL}
-        WHERE p.title LIKE ? OR IFNULL(p.title_zh,'') LIKE ? OR IFNULL(p.abstract,'') LIKE ?
-          OR IFNULL(p.venue,'') LIKE ? OR p.tags LIKE ?
-          OR EXISTS (
-            SELECT 1 FROM paper_authors pa JOIN authors a ON a.id = pa.author_id
-             WHERE pa.paper_id = p.id AND a.name LIKE ?
-          )
+        WHERE ${PAPER_SEARCH_MATCH_SQL}
         ORDER BY p.updated_at DESC`,
-      [like, like, like, like, like, like],
+      searchParams(like),
     );
     return rows.map(mapListItem);
   },
@@ -339,10 +352,8 @@ export const repo = {
     }
     if (filter.search?.trim()) {
       const like = `%${filter.search.trim()}%`;
-      clauses.push(
-        `(p.title LIKE ? OR IFNULL(p.title_zh,'') LIKE ? OR IFNULL(p.venue,'') LIKE ? OR p.labs LIKE ?)`,
-      );
-      params.push(like, like, like, like);
+      clauses.push(PAPER_SEARCH_MATCH_SQL);
+      params.push(...searchParams(like));
     }
     const rows = await engine.select<PaperRow>(
       `${PAPER_LIST_SQL} WHERE ${clauses.join(" AND ")} ORDER BY IFNULL(p.read_at, p.updated_at) DESC`,
@@ -351,13 +362,26 @@ export const repo = {
     return rows.map(mapListItem);
   },
 
-  async listIntake(): Promise<PaperListItem[]> {
+  async listIntake(search = ""): Promise<PaperListItem[]> {
     const engine = await getEngine();
+    const q = search.trim();
+    if (!q) {
+      const rows = await engine.select<PaperRow>(
+        `${PAPER_LIST_SQL}
+          WHERE p.reading_status != 'read'
+             OR EXISTS (SELECT 1 FROM llm_jobs j WHERE j.paper_id = p.id AND j.status IN ('queued','running'))
+          ORDER BY p.created_at DESC`,
+      );
+      return rows.map(mapListItem);
+    }
+    const like = `%${q}%`;
     const rows = await engine.select<PaperRow>(
       `${PAPER_LIST_SQL}
-        WHERE p.reading_status != 'read'
-           OR EXISTS (SELECT 1 FROM llm_jobs j WHERE j.paper_id = p.id AND j.status IN ('queued','running'))
+        WHERE (p.reading_status != 'read'
+           OR EXISTS (SELECT 1 FROM llm_jobs j WHERE j.paper_id = p.id AND j.status IN ('queued','running')))
+          AND ${PAPER_SEARCH_MATCH_SQL}
         ORDER BY p.created_at DESC`,
+      searchParams(like),
     );
     return rows.map(mapListItem);
   },
@@ -452,11 +476,11 @@ export const repo = {
     return { created, skipped };
   },
 
-  async createPaper(input: { domainId: string; pdfPath: string; title?: string }): Promise<Paper> {
+  async createPaper(input: { domainId: string; pdfPath?: string; title?: string }): Promise<Paper> {
     const engine = await getEngine();
     const at = nowIso();
-    const pdfPath = input.pdfPath.trim();
-    const title = input.title?.trim() || titleFromPdf(pdfPath);
+    const pdfPath = input.pdfPath?.trim() || null;
+    const title = input.title?.trim() || (pdfPath ? titleFromPdf(pdfPath) : "") || "未命名论文";
     const paper: Paper = {
       id: uid(),
       domainId: input.domainId,
@@ -483,6 +507,7 @@ export const repo = {
       mineruDocRef: null,
       mineruError: null,
       mineruParseIds: [],
+      mineruProvider: null,
       tags: [],
       labs: [],
       createdAt: at,
@@ -561,7 +586,16 @@ export const repo = {
   async setReadingStatus(id: string, status: ReadingStatus): Promise<void> {
     const engine = await getEngine();
     const at = nowIso();
-    const readAt = status === "read" ? at : null;
+    // read → reading → read 的往返不应把最初标记已读的时间覆盖成新时间：
+    // 已读取历史值（无则记现在），在读保留历史值，未读清空。
+    const rows = await engine.select<PaperRow>("SELECT * FROM papers WHERE id = ?", [id]);
+    const prev = rows[0];
+    const readAt =
+      status === "read"
+        ? prev?.read_at ?? at
+        : status === "reading"
+          ? prev?.read_at ?? null
+          : null;
     await engine.execute(
       "UPDATE papers SET reading_status = ?, read_at = ?, updated_at = ? WHERE id = ?",
       [status, readAt, at, id],
@@ -593,23 +627,26 @@ export const repo = {
     for (const author of authors) {
       const name = author.name.trim();
       if (!name) continue;
+      const incomingAffiliation = author.affiliation?.trim() || null;
+      const incomingLab = author.lab?.trim() || null;
+      // 只复用「名字 + 机构 + 实验室」完全一致（或双方均为空）的既有行；
+      // 不一致时新插一行，绝不 UPDATE 全局 authors 行——
+      // 否则改 A 论文作者机构会改写 B 论文的同名作者。
       const found = await engine.select<{ id: string }>(
-        "SELECT id FROM authors WHERE lower(name) = lower(?) LIMIT 1",
-        [name],
+        `SELECT id FROM authors
+          WHERE lower(name) = lower(?)
+            AND IFNULL(TRIM(affiliation), '') = ?
+            AND IFNULL(TRIM(lab), '') = ?
+          LIMIT 1`,
+        [name, incomingAffiliation ?? "", incomingLab ?? ""],
       );
       const authorId = found[0]?.id ?? uid();
       if (!found[0]) {
         await engine.execute(
           `INSERT INTO authors (id, name, name_zh, affiliation, lab, homepage, orcid)
            VALUES (?, ?, NULL, ?, ?, NULL, NULL)`,
-          [authorId, name, author.affiliation ?? null, author.lab ?? null],
+          [authorId, name, incomingAffiliation, incomingLab],
         );
-      } else {
-        await engine.execute("UPDATE authors SET affiliation = ?, lab = ? WHERE id = ?", [
-          author.affiliation ?? null,
-          author.lab ?? null,
-          authorId,
-        ]);
       }
       await engine.execute(
         `INSERT OR REPLACE INTO paper_authors (paper_id, author_id, sort_order, is_corresponding)
@@ -833,10 +870,11 @@ export const repo = {
     id: string,
     patch: {
       status?: MineruStatus | null;
-      parseId?: number | null;
+      parseId?: string | null;
       docRef?: string | null;
       error?: string | null;
-      parseIds?: number[];
+      parseIds?: string[];
+      provider?: string | null;
     },
   ): Promise<void> {
     const engine = await getEngine();
@@ -844,13 +882,14 @@ export const repo = {
     if (!rows[0]) return;
     const prev = mapPaper(rows[0]);
     await engine.execute(
-      `UPDATE papers SET mineru_status = ?, mineru_parse_id = ?, mineru_doc_ref = ?, mineru_error = ?, mineru_parse_ids = ?, updated_at = ? WHERE id = ?`,
+      `UPDATE papers SET mineru_status = ?, mineru_parse_id = ?, mineru_doc_ref = ?, mineru_error = ?, mineru_parse_ids = ?, mineru_provider = ?, updated_at = ? WHERE id = ?`,
       [
         patch.status === undefined ? prev.mineruStatus : patch.status,
         patch.parseId === undefined ? prev.mineruParseId : patch.parseId,
         patch.docRef === undefined ? prev.mineruDocRef : patch.docRef,
         patch.error === undefined ? prev.mineruError : patch.error,
         JSON.stringify(patch.parseIds === undefined ? prev.mineruParseIds : patch.parseIds),
+        patch.provider === undefined ? (rows[0].mineru_provider ?? null) : patch.provider,
         nowIso(),
         id,
       ],

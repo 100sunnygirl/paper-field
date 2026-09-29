@@ -13,6 +13,8 @@ export function PaperDialog() {
   const [items, setItems] = useState<Array<{ path: string; name: string; duplicate: boolean }>>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<{ done: number; total: number; current: string } | null>(null);
+  const [manualOpen, setManualOpen] = useState(false);
   const open = dialog === "paper";
 
   useEffect(() => {
@@ -20,6 +22,8 @@ export function PaperDialog() {
     setItems([]);
     setError(null);
     setBusy(false);
+    setProgress(null);
+    setManualOpen(false);
   }, [open]);
 
   async function addPaths(paths: string[]) {
@@ -84,32 +88,57 @@ export function PaperDialog() {
             onClick={() => {
               setError(null);
               setBusy(true);
-              void importPdfs(fresh.map((item) => item.path)).catch((err: unknown) => {
-                setBusy(false);
-                setError(err instanceof Error ? err.message : String(err));
-              });
+              void importPdfs(fresh.map((item) => item.path), (done, total, current) =>
+                setProgress({ done, total, current }),
+              )
+                .catch((err: unknown) => {
+                  setError(err instanceof Error ? err.message : String(err));
+                })
+                .finally(() => {
+                  setBusy(false);
+                  setProgress(null);
+                });
             }}
           >
-            导入 {fresh.length ? fresh.length : ""}
+            {busy ? "导入中…" : `导入 ${fresh.length ? fresh.length : ""}`}
           </Button>
         </>
       }
     >
-      <p>选择本机 PDF，或一个目录中的全部 PDF。文件名会先当作标题，导入后立即交给 MinerU 4.0 解析。</p>
+      <p>选择本机 PDF，或一个目录中的全部 PDF。文件名会先当作标题，导入后立即交给 MinerU 解析。没有 PDF 也可手动录入。</p>
       {isTauri() ? (
         <div className="ef-import-actions">
-          <Button type="button" onClick={() => void pickFiles()}>
+          <Button type="button" onClick={() => void pickFiles()} disabled={busy}>
             <Icon name="file" />
             选择 PDF
           </Button>
-          <Button type="button" onClick={() => void pickDirectory()}>
+          <Button type="button" onClick={() => void pickDirectory()} disabled={busy}>
             <Icon name="inbox" />
             选择文件夹
           </Button>
+          <Button
+            type="button"
+            className={manualOpen ? "is-active" : ""}
+            aria-pressed={manualOpen}
+            onClick={() => setManualOpen((value) => !value)}
+            disabled={busy}
+          >
+            <Icon name="edit" />
+            手动添加
+          </Button>
         </div>
       ) : (
-        <p>浏览器预览不能读取本机 PDF。请在桌面应用中导入。</p>
+        <p>浏览器预览不能读取本机 PDF，仍可手动添加论文。完整导入请在桌面应用中进行。</p>
       )}
+      {isTauri() && manualOpen ? <ManualPaperForm onCreated={() => setManualOpen(false)} /> : null}
+      {!isTauri() ? <ManualPaperForm onCreated={() => undefined} /> : null}
+      {busy && progress ? (
+        <p aria-live="polite">
+          正在入库 {progress.done}/{progress.total} · {progress.current}
+        </p>
+      ) : busy ? (
+        <p aria-live="polite">正在入库…</p>
+      ) : null}
       {items.length ? (
         <ul className="ef-import-list">
           {items.map((item) => (
@@ -122,6 +151,96 @@ export function PaperDialog() {
       ) : null}
       {error ? <p style={{ color: "var(--pf-danger)" }}>{error}</p> : null}
     </Dialog>
+  );
+}
+
+function ManualPaperForm({ onCreated }: { onCreated: () => void }) {
+  const createManualPaper = useField((s) => s.createManualPaper);
+  const [title, setTitle] = useState("");
+  const [arxivId, setArxivId] = useState("");
+  const [doi, setDoi] = useState("");
+  const [pdfPath, setPdfPath] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function pickPdf() {
+    setError(null);
+    try {
+      const { open: pick } = await import("@tauri-apps/plugin-dialog");
+      const selected = await pick({
+        multiple: false,
+        filters: [{ name: "PDF", extensions: ["pdf"] }],
+      });
+      if (typeof selected !== "string") return;
+      setPdfPath(await normalizePdf(selected));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  const titleMissing = Boolean(busy === false && error && !title.trim());
+
+  return (
+    <div className="ef-manual-paper">
+      <Field label="标题（必填）">
+        <input
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          placeholder="Attention Is All You Need"
+          aria-invalid={titleMissing || undefined}
+        />
+      </Field>
+      <Field label="arXiv ID">
+        <input value={arxivId} onChange={(e) => setArxivId(e.target.value)} placeholder="1706.03762" />
+      </Field>
+      <Field label="DOI">
+        <input value={doi} onChange={(e) => setDoi(e.target.value)} placeholder="10.1038/…" />
+      </Field>
+      {isTauri() ? (
+        <Field label="本地 PDF（可选）">
+          <div className="ef-import-actions" style={{ margin: 0 }}>
+            <Button type="button" size="sm" onClick={() => void pickPdf()} disabled={busy}>
+              <Icon name="file" />
+              {pdfPath ? pdfPath.split(/[/\\]/).pop() : "选择 PDF"}
+            </Button>
+            {pdfPath ? (
+              <Button type="button" size="sm" variant="text" onClick={() => setPdfPath("")} disabled={busy}>
+                移除
+              </Button>
+            ) : null}
+          </div>
+        </Field>
+      ) : null}
+      <div className="ef-import-actions">
+        <Button
+          variant="primary"
+          type="button"
+          disabled={busy}
+          onClick={() => {
+            if (!title.trim()) {
+              setError("标题必填。没有 PDF 也可以先建条目，之后在编辑论文信息中补充。");
+              return;
+            }
+            setError(null);
+            setBusy(true);
+            void createManualPaper({
+              title,
+              arxivId: arxivId || undefined,
+              doi: doi || undefined,
+              pdfPath: pdfPath || undefined,
+            })
+              .then(onCreated)
+              .catch((err: unknown) => {
+                setBusy(false);
+                setError(err instanceof Error ? err.message : String(err));
+              });
+          }}
+        >
+          {busy ? "创建中…" : "创建论文"}
+        </Button>
+      </div>
+      {error ? <p style={{ color: "var(--pf-danger)" }}>{error}</p> : null}
+    </div>
   );
 }
 
@@ -350,19 +469,76 @@ export function ConfirmNotesDialog() {
   );
 }
 
+/** userMetaTouched 时的补全论文信息确认：AI 不会静默覆盖手动修改过的字段。 */
+export function ConfirmMetaDialog() {
+  const dialog = useField((s) => s.dialog);
+  const closeDialog = useField((s) => s.closeDialog);
+  const paper = useField((s) => s.paper);
+  const runPrepareMeta = useField((s) => s.runPrepareMeta);
+  const open = dialog === "confirm-meta" && Boolean(paper);
+
+  function run(overwrite: boolean) {
+    closeDialog();
+    if (paper) void runPrepareMeta(paper.id, overwrite);
+  }
+
+  return (
+    <Dialog
+      open={open}
+      title="论文信息已被手动修改"
+      onClose={closeDialog}
+      footer={
+        <>
+          <Button type="button" onClick={() => run(false)}>
+            保留我的修改
+          </Button>
+          <Button variant="primary" type="button" onClick={() => run(true)}>
+            用 AI 结果覆盖
+          </Button>
+        </>
+      }
+    >
+      <p>
+        你已经手改过论文信息。AI 不会静默覆盖。选「保留我的修改」只补全空白字段；
+        选「用 AI 结果覆盖」会用 AI 结果覆盖你修改过的字段。
+      </p>
+    </Dialog>
+  );
+}
+
 export function EditPaperDialog() {
   const dialog = useField((s) => s.dialog);
   const closeDialog = useField((s) => s.closeDialog);
   const paper = useField((s) => s.paper);
   const savePaperPatch = useField((s) => s.savePaperPatch);
   const saveAuthors = useField((s) => s.saveAuthors);
+  const setFlash = useField((s) => s.setFlash);
   const open = dialog === "edit-paper" && Boolean(paper);
+  const [metaDirty, setMetaDirty] = useState(false);
+  const [crewDirty, setCrewDirty] = useState(false);
+
+  useEffect(() => {
+    if (!open) {
+      setMetaDirty(false);
+      setCrewDirty(false);
+    }
+  }, [open]);
+
+  // dirty 时否决关闭并提示；第二次 Esc / 关闭仍可放行（ui.tsx 的 hasVetoedOnce 约定）。
+  function vetoClose(): boolean {
+    if (metaDirty || crewDirty) {
+      setFlash({ tone: "warn", text: "论文信息尚未保存。再按一次 Esc 可放弃修改。" });
+      return true;
+    }
+    return false;
+  }
 
   return (
     <Dialog
       open={open}
       title="编辑论文信息"
       onClose={closeDialog}
+      vetoClose={vetoClose}
       className="is-wide"
       footer={
         <Button type="button" onClick={closeDialog}>
@@ -372,20 +548,42 @@ export function EditPaperDialog() {
     >
       {paper ? (
         <>
-          <MetaEditor paper={paper} onSave={(patch) => void savePaperPatch(patch)} />
+          <MetaEditor
+            paper={paper}
+            onDirtyChange={setMetaDirty}
+            onSave={(patch) => void savePaperPatch(patch)}
+          />
           <h3 style={{ fontSize: 16, margin: "8px 0 12px" }}>作者</h3>
-          <CrewEditor authors={paper.authors} onSave={(next) => void saveAuthors(next)} />
+          <CrewEditor authors={paper.authors} onDirtyChange={setCrewDirty} onSave={(next) => void saveAuthors(next)} />
         </>
       ) : null}
     </Dialog>
   );
 }
 
+function metaDraftOf(paper: PaperDetail) {
+  return {
+    title: paper.title,
+    titleZh: paper.titleZh ?? "",
+    abstract: paper.abstract,
+    year: paper.year?.toString() ?? "",
+    venue: paper.venue ?? "",
+    doi: paper.doi ?? "",
+    arxivId: paper.arxivId ?? "",
+    pdfUrl: paper.pdfUrl ?? "",
+    codeUrl: paper.codeUrl ?? "",
+    projectPage: paper.projectPage ?? "",
+    tags: paper.tags.join(", "),
+  };
+}
+
 function MetaEditor({
   paper,
   onSave,
+  onDirtyChange,
 }: {
   paper: PaperDetail;
+  onDirtyChange?: (dirty: boolean) => void;
   onSave: (patch: {
     title?: string;
     titleZh?: string | null;
@@ -400,35 +598,23 @@ function MetaEditor({
     tags?: string[];
   }) => void;
 }) {
-  const [draft, setDraft] = useState({
-    title: paper.title,
-    titleZh: paper.titleZh ?? "",
-    abstract: paper.abstract,
-    year: paper.year?.toString() ?? "",
-    venue: paper.venue ?? "",
-    doi: paper.doi ?? "",
-    arxivId: paper.arxivId ?? "",
-    pdfUrl: paper.pdfUrl ?? "",
-    codeUrl: paper.codeUrl ?? "",
-    projectPage: paper.projectPage ?? "",
-    tags: paper.tags.join(", "),
-  });
+  const [draft, setDraft] = useState(() => metaDraftOf(paper));
 
   useEffect(() => {
-    setDraft({
-      title: paper.title,
-      titleZh: paper.titleZh ?? "",
-      abstract: paper.abstract,
-      year: paper.year?.toString() ?? "",
-      venue: paper.venue ?? "",
-      doi: paper.doi ?? "",
-      arxivId: paper.arxivId ?? "",
-      pdfUrl: paper.pdfUrl ?? "",
-      codeUrl: paper.codeUrl ?? "",
-      projectPage: paper.projectPage ?? "",
-      tags: paper.tags.join(", "),
-    });
+    setDraft(metaDraftOf(paper));
   }, [paper]);
+
+  const base = metaDraftOf(paper);
+  const dirty = JSON.stringify(draft) !== JSON.stringify(base);
+
+  useEffect(() => {
+    onDirtyChange?.(dirty);
+  }, [dirty, onDirtyChange]);
+
+  // 年份校验：非空时必须是可解析的整数（此前 Number("abc") → NaN 会把年份写成 NaN）。
+  const yearText = draft.year.trim();
+  const parsedYear = yearText ? Number.parseInt(yearText, 10) : null;
+  const yearInvalid = Boolean(yearText) && (parsedYear === null || !Number.isFinite(parsedYear));
 
   return (
     <div>
@@ -442,8 +628,18 @@ function MetaEditor({
         <textarea value={draft.abstract} onChange={(e) => setDraft({ ...draft, abstract: e.target.value })} />
       </Field>
       <Field label="年份">
-        <input value={draft.year} onChange={(e) => setDraft({ ...draft, year: e.target.value })} />
+        <input
+          value={draft.year}
+          onChange={(e) => setDraft({ ...draft, year: e.target.value })}
+          inputMode="numeric"
+          aria-invalid={yearInvalid || undefined}
+        />
       </Field>
+      {yearInvalid ? (
+        <p style={{ color: "var(--pf-danger)", margin: "-10px 0 12px", fontSize: 13 }}>
+          年份需为数字，例如 2024。当前输入不会被保存。
+        </p>
+      ) : null}
       <Field label="会议 / 期刊">
         <input value={draft.venue} onChange={(e) => setDraft({ ...draft, venue: e.target.value })} />
       </Field>
@@ -471,12 +667,13 @@ function MetaEditor({
       <Button
         variant="primary"
         type="button"
+        disabled={yearInvalid}
         onClick={() =>
           onSave({
             title: draft.title,
             titleZh: draft.titleZh || null,
             abstract: draft.abstract,
-            year: draft.year ? Number(draft.year) : null,
+            year: yearText && parsedYear !== null && Number.isFinite(parsedYear) ? parsedYear : null,
             venue: draft.venue || null,
             doi: draft.doi || null,
             arxivId: draft.arxivId || null,
@@ -499,8 +696,10 @@ function MetaEditor({
 function CrewEditor({
   authors,
   onSave,
+  onDirtyChange,
 }: {
   authors: Author[];
+  onDirtyChange?: (dirty: boolean) => void;
   onSave: (authors: Author[]) => void;
 }) {
   const [draft, setDraft] = useState(authors);
@@ -510,6 +709,13 @@ function CrewEditor({
     setDraft(authors);
     setEditing(false);
   }, [authors]);
+
+  const crewDirty =
+    editing && (draft.length !== authors.length || JSON.stringify(draft) !== JSON.stringify(authors));
+
+  useEffect(() => {
+    onDirtyChange?.(crewDirty);
+  }, [crewDirty, onDirtyChange]);
 
   if (!editing) {
     return (

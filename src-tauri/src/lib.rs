@@ -1,9 +1,11 @@
 mod mineru;
+mod mineru_api;
 
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
@@ -84,7 +86,9 @@ fn persist_store(app: &AppHandle, settings: &LlmSettingsFile) {
             "hasKey",
             serde_json::Value::Bool(!settings.api_key.trim().is_empty()),
         );
-        let _ = store.set("apiKey", serde_json::Value::String(settings.api_key.clone()));
+        // 历史版本曾把明文 apiKey 镜像进插件存储的磁盘 JSON；
+        // 只停止写入无法清除既有残留，这里每次保存都主动删除并落盘。
+        let _ = store.delete("apiKey");
         let _ = store.save();
     }
 }
@@ -117,10 +121,10 @@ fn save_llm_settings(
     } else {
         model.trim().to_string()
     };
+    // 三态：None=保留已存 key、Some("")=显式清除、Some(x)=写入。
     if let Some(key) = api_key {
-        if !key.trim().is_empty() {
-            settings.api_key = key.trim().to_string();
-        }
+        let trimmed = key.trim().to_string();
+        settings.api_key = trimmed;
     }
     write_settings(&app, &settings)?;
     persist_store(&app, &settings);
@@ -167,6 +171,8 @@ async fn call_chat(
         settings.base_url.trim_end_matches('/')
     );
     let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(120))
         .use_rustls_tls()
         .build()
         .map_err(|e| e.to_string())?;
@@ -287,6 +293,7 @@ pub fn run() {
             mineru::mineru_settings,
             mineru::save_mineru_settings,
             mineru::mineru_test,
+            mineru::mineru_probe,
             mineru::list_pdfs,
             mineru::normalize_pdf,
             mineru::open_pdf,

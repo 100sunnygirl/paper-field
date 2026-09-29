@@ -81,6 +81,10 @@ export const SCHEMA_STATEMENTS = [
     started_at TEXT,
     finished_at TEXT
   )`,
+  `CREATE TABLE IF NOT EXISTS app_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  )`,
   `CREATE INDEX IF NOT EXISTS idx_papers_domain ON papers(domain_id)`,
   `CREATE INDEX IF NOT EXISTS idx_papers_status ON papers(reading_status)`,
   `CREATE INDEX IF NOT EXISTS idx_papers_updated ON papers(updated_at)`,
@@ -96,4 +100,5 @@ export const PAPER_MIGRATIONS = [
   "ALTER TABLE papers ADD COLUMN mineru_doc_ref TEXT",
   "ALTER TABLE papers ADD COLUMN mineru_error TEXT",
   "ALTER TABLE papers ADD COLUMN mineru_parse_ids TEXT NOT NULL DEFAULT '[]'",
+  "ALTER TABLE papers ADD COLUMN mineru_provider TEXT",
 ];

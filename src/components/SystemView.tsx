@@ -1,8 +1,21 @@
 import { useEffect, useState } from "react";
-import { testMineru, type MineruMode, type MineruTier } from "../lib/mineru";
+import {
+  testMineru,
+  type MineruLanguage,
+  type MineruModelVersion,
+  type MineruProviderKind,
+  type MineruSaveInput,
+  type MineruTier,
+  type ProviderHealth,
+} from "../lib/mineru";
+import { providerLabel, summarizeHealths } from "../lib/mineruPlan";
 import { shortcut } from "../lib/util";
 import { useField } from "../store";
 import { Button, Field } from "./ui";
+
+function errText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
 
 export function SystemView() {
   const settings = useField((s) => s.settings);
@@ -14,11 +27,30 @@ export function SystemView() {
   const [baseUrl, setBaseUrl] = useState(settings.baseUrl);
   const [model, setModel] = useState(settings.model);
   const [apiKey, setApiKey] = useState("");
+  const [llmMessage, setLlmMessage] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
+  const [confirmClearKey, setConfirmClearKey] = useState(false);
 
   useEffect(() => {
     setBaseUrl(settings.baseUrl);
     setModel(settings.model);
   }, [settings.baseUrl, settings.model]);
+
+  useEffect(() => {
+    if (!settings.hasKey) setConfirmClearKey(false);
+  }, [settings.hasKey]);
+
+  async function clearSavedKey() {
+    setConfirmClearKey(false);
+    setLlmMessage(null);
+    try {
+      // 显式传空串 = 清除（Rust 侧 Some("")）；undefined 才是「保留已存」。
+      await saveLlmSettings({ baseUrl, model, apiKey: "" });
+      setApiKey("");
+      setLlmMessage({ tone: "ok", text: "已清除本机保存的 API Key。" });
+    } catch (err) {
+      setLlmMessage({ tone: "error", text: `清除 Key 失败：${errText(err)}。` });
+    }
+  }
 
   return (
     <section className="ef-read" id="stage" aria-labelledby="system-title">
@@ -51,19 +83,40 @@ export function SystemView() {
                 autoComplete="off"
               />
             </Field>
-            <Button
-              variant="primary"
-              type="button"
-              onClick={() =>
-                void saveLlmSettings({
-                  baseUrl,
-                  model,
-                  apiKey: apiKey.trim() ? apiKey.trim() : undefined,
-                })
-              }
-            >
-              保存设置
-            </Button>
+            <div className="ef-import-actions">
+              <Button
+                variant="primary"
+                type="button"
+                onClick={() => {
+                  setLlmMessage(null);
+                  void saveLlmSettings({
+                    baseUrl,
+                    model,
+                    apiKey: apiKey.trim() ? apiKey.trim() : undefined,
+                  }).catch((err: unknown) => {
+                    setLlmMessage({ tone: "error", text: `保存设置失败：${errText(err)}。` });
+                  });
+                }}
+              >
+                保存设置
+              </Button>
+              {settings.hasKey ? (
+                confirmClearKey ? (
+                  <Button type="button" className="ef-btn-danger-solid" onClick={() => void clearSavedKey()}>
+                    确认清除 Key
+                  </Button>
+                ) : (
+                  <Button type="button" variant="danger" onClick={() => setConfirmClearKey(true)}>
+                    清除已保存的 Key…
+                  </Button>
+                )
+              ) : null}
+            </div>
+            {llmMessage ? (
+              <p style={{ color: llmMessage.tone === "error" ? "var(--pf-danger)" : "var(--pf-success)" }}>
+                {llmMessage.text}
+              </p>
+            ) : null}
           </article>
 
           <MineruSettings />
@@ -82,7 +135,8 @@ export function SystemView() {
               <span className="kbd">↑</span> <span className="kbd">↓</span> 论文列表 ·{" "}
               <span className="kbd">{shortcut("N")}</span> 导入 PDF ·{" "}
               <span className="kbd">{shortcut("R")}</span> 标记已读 ·{" "}
-              <span className="kbd">{shortcut("K")}</span> 搜索 · <span className="kbd">Esc</span> 关闭对话框
+              <span className="kbd">{shortcut("K")}</span> 搜索（系统页按它跳回现场） ·{" "}
+              <span className="kbd">Esc</span> 关闭对话框
             </p>
           </article>
           </div>
@@ -94,108 +148,410 @@ export function SystemView() {
 
 function MineruSettings() {
   const saved = useField((s) => s.mineru);
+  const healths = useField((s) => s.mineruHealth);
+  const effective = useField((s) => s.effectiveProvider);
   const saveMineru = useField((s) => s.saveMineruSettings);
-  const [mode, setMode] = useState<MineruMode>(saved.mode);
-  const [socketPath, setSocketPath] = useState(saved.socketPath);
-  const [sshHost, setSshHost] = useState(saved.sshHost);
-  const [sshPort, setSshPort] = useState(String(saved.sshPort || 22));
-  const [sshUser, setSshUser] = useState(saved.sshUser);
-  const [identityFile, setIdentityFile] = useState(saved.identityFile);
-  const [remoteInbox, setRemoteInbox] = useState(saved.remoteInbox);
+  const probeMineru = useField((s) => s.probeMineru);
+
+  const [localEnabled, setLocalEnabled] = useState(saved.local.enabled);
+  const [localSocket, setLocalSocket] = useState(saved.local.socketPath);
+  const [sshEnabled, setSshEnabled] = useState(saved.ssh.enabled);
+  const [sshHost, setSshHost] = useState(saved.ssh.host);
+  const [sshPort, setSshPort] = useState(String(saved.ssh.port || 22));
+  const [sshUser, setSshUser] = useState(saved.ssh.user);
+  const [sshKey, setSshKey] = useState(saved.ssh.identityFile);
+  const [sshSocket, setSshSocket] = useState(saved.ssh.socketPath);
+  const [sshInbox, setSshInbox] = useState(saved.ssh.inboxDir);
+  const [apiToken, setApiToken] = useState("");
+  const [modelVersion, setModelVersion] = useState<MineruModelVersion>(saved.api.modelVersion);
+  const [language, setLanguage] = useState<MineruLanguage>(saved.api.language);
+  const [enableFormula, setEnableFormula] = useState(saved.api.enableFormula);
+  const [enableTable, setEnableTable] = useState(saved.api.enableTable);
   const [tier, setTier] = useState<MineruTier>(saved.tier);
   const [pageRange, setPageRange] = useState(saved.pageRange);
-  const [message, setMessage] = useState<string | null>(null);
-  const [tone, setTone] = useState<"ok" | "error">("ok");
+  const [order, setOrder] = useState<MineruProviderKind[]>(saved.order);
+  const [message, setMessage] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
+  const [testResults, setTestResults] = useState<Partial<Record<MineruProviderKind, { tone: "ok" | "error"; text: string }>>>({});
+  const [testing, setTesting] = useState<MineruProviderKind | null>(null);
+  const [probing, setProbing] = useState(false);
+  const [confirmClearToken, setConfirmClearToken] = useState(false);
 
   useEffect(() => {
-    setMode(saved.mode);
-    setSocketPath(saved.socketPath);
-    setSshHost(saved.sshHost);
-    setSshPort(String(saved.sshPort || 22));
-    setSshUser(saved.sshUser);
-    setIdentityFile(saved.identityFile);
-    setRemoteInbox(saved.remoteInbox);
+    setLocalEnabled(saved.local.enabled);
+    setLocalSocket(saved.local.socketPath);
+    setSshEnabled(saved.ssh.enabled);
+    setSshHost(saved.ssh.host);
+    setSshPort(String(saved.ssh.port || 22));
+    setSshUser(saved.ssh.user);
+    setSshKey(saved.ssh.identityFile);
+    setSshSocket(saved.ssh.socketPath);
+    setSshInbox(saved.ssh.inboxDir);
+    setModelVersion(saved.api.modelVersion);
+    setLanguage(saved.api.language);
+    setEnableFormula(saved.api.enableFormula);
+    setEnableTable(saved.api.enableTable);
     setTier(saved.tier);
     setPageRange(saved.pageRange);
+    setOrder(saved.order);
+    setApiToken("");
+    setConfirmClearToken(false);
   }, [saved]);
 
-  function current() {
+  function currentInput(nextOrder?: MineruProviderKind[]): MineruSaveInput {
     return {
-      mode,
-      socketPath,
-      sshHost,
-      sshPort: Number(sshPort) || 22,
-      sshUser,
-      identityFile,
-      remoteInbox,
+      order: nextOrder ?? order,
+      local: { enabled: localEnabled, socketPath: localSocket },
+      ssh: {
+        enabled: sshEnabled,
+        host: sshHost,
+        port: Number(sshPort) || 22,
+        user: sshUser,
+        identityFile: sshKey,
+        socketPath: sshSocket,
+        inboxDir: sshInbox,
+      },
+      api: {
+        // null = 保留已存 Token；空输入框视为未改动。
+        token: apiToken.trim() ? apiToken.trim() : null,
+        modelVersion,
+        language,
+        enableFormula,
+        enableTable,
+      },
       tier,
       pageRange,
-      configured: false,
     };
   }
 
+  function isDirty(): boolean {
+    const cur = currentInput();
+    return (
+      JSON.stringify(cur.order) !== JSON.stringify(saved.order) ||
+      JSON.stringify(cur.local) !== JSON.stringify({ enabled: saved.local.enabled, socketPath: saved.local.socketPath }) ||
+      JSON.stringify(cur.ssh) !==
+        JSON.stringify({
+          enabled: saved.ssh.enabled,
+          host: saved.ssh.host,
+          port: saved.ssh.port,
+          user: saved.ssh.user,
+          identityFile: saved.ssh.identityFile,
+          socketPath: saved.ssh.socketPath,
+          inboxDir: saved.ssh.inboxDir,
+        }) ||
+      Boolean(cur.api.token) !== saved.api.hasToken ||
+      cur.api.modelVersion !== saved.api.modelVersion ||
+      cur.api.language !== saved.api.language ||
+      cur.api.enableFormula !== saved.api.enableFormula ||
+      cur.api.enableTable !== saved.api.enableTable ||
+      cur.tier !== saved.tier ||
+      cur.pageRange !== saved.pageRange
+    );
+  }
+
+  async function save(input: MineruSaveInput): Promise<void> {
+    await saveMineru(input);
+  }
+
+  async function testProvider(provider: MineruProviderKind) {
+    setMessage(null);
+    setTesting(provider);
+    try {
+      // 表单有未保存修改时先落盘，测试的才是用户眼前这份配置。
+      if (isDirty()) await save(currentInput());
+      const started = Date.now();
+      const text = await testMineru(provider);
+      setTestResults((prev) => ({
+        ...prev,
+        [provider]: { tone: "ok", text: `${text} · ${Date.now() - started}ms` },
+      }));
+    } catch (err) {
+      setTestResults((prev) => ({ ...prev, [provider]: { tone: "error", text: errText(err) } }));
+    } finally {
+      setTesting(null);
+    }
+  }
+
+  async function reprobe() {
+    setProbing(true);
+    setMessage(null);
+    try {
+      if (isDirty()) await save(currentInput());
+      await probeMineru();
+    } catch (err) {
+      setMessage({ tone: "error", text: `探测失败：${errText(err)}。` });
+    } finally {
+      setProbing(false);
+    }
+  }
+
+  function moveOrder(index: number, delta: -1 | 1) {
+    const target = index + delta;
+    if (target < 0 || target >= order.length) return;
+    const next = [...order];
+    const [item] = next.splice(index, 1);
+    next.splice(target, 0, item);
+    setOrder(next);
+    // 顺序即回退优先级：调整后立即保存并重探。
+    setMessage(null);
+    void save(currentInput(next)).catch((err: unknown) => {
+      setMessage({ tone: "error", text: `保存回退顺序失败：${errText(err)}。` });
+    });
+  }
+
+  async function clearToken() {
+    setConfirmClearToken(false);
+    setMessage(null);
+    try {
+      await save({ ...currentInput(), api: { ...currentInput().api, token: "" } });
+      setApiToken("");
+      setMessage({ tone: "ok", text: "已清除官方 API Token。" });
+    } catch (err) {
+      setMessage({ tone: "error", text: `清除 Token 失败：${errText(err)}。` });
+    }
+  }
+
+  function healthLine(provider: MineruProviderKind) {
+    const item: ProviderHealth | undefined = healths.find((h) => h.provider === provider);
+    if (!item) return <p className="ef-probe-line">未探测</p>;
+    if (item.ok) {
+      return (
+        <p className="ef-probe-line is-ok">
+          {item.message} <span className="ef-probe-ms">{item.latencyMs}ms</span>
+        </p>
+      );
+    }
+    return <p className="ef-probe-line is-error">{item.message}</p>;
+  }
+
+  const enabledCount = [localEnabled, sshEnabled, saved.api.hasToken || Boolean(apiToken.trim())].filter(Boolean).length;
+  const failureSummary = saved.configured && !effective && healths.length ? summarizeHealths(saved.order, healths) : "";
+
   return (
     <article className="page-block">
-      <h3>MinerU 4.0</h3>
+      <h3>MinerU 解析源</h3>
       <p>
-        导入 PDF 后会立刻送到这里解析。文档库只接受它所在电脑上的文件路径：同一台电脑用本机 socket，另一台电脑用 SSH，应用会先把 PDF 拷到暂存目录。
-        {saved.configured ? " 当前已配置。" : " 当前未配置，导入仍会入库，但不会解析。"}
+        导入 PDF 后自动送解析。三种来源按下方回退顺序探测：上方来源不可用时自动切到下一个。
+        SSH 远程即原 doclib.sock 方案（另一台电脑部署），字段原样保留。
       </p>
-      <div className="filter-row" role="group" aria-label="MinerU 连接方式">
-        {(
-          [
-            ["off", "不使用"],
-            ["local", "本机"],
-            ["ssh", "SSH"],
-          ] as const
-        ).map(([value, label]) => (
-          <Button
-            key={value}
-            type="button"
-            size="sm"
-            className={mode === value ? "is-active" : ""}
-            aria-pressed={mode === value}
-            onClick={() => setMode(value)}
-          >
-            {label}
-          </Button>
-        ))}
+
+      <div className="ef-effective-row" aria-live="polite">
+        {probing ? (
+          <span className="ef-effective-text">正在探测各来源…</span>
+        ) : effective ? (
+          <span className="ef-effective-text">
+            当前生效：<b>{providerLabel(effective)}</b>
+            <span className="ef-probe-ms">按回退顺序自动选择</span>
+          </span>
+        ) : saved.configured ? (
+          <span className="ef-effective-text is-error">
+            已启用的来源均未通过探测，导入将只入库不解析。
+          </span>
+        ) : (
+          <span className="ef-effective-text">尚未启用任何解析源，导入仅入库。</span>
+        )}
       </div>
-      {mode === "local" ? (
-        <Field label="Socket 路径">
-          <input value={socketPath} onChange={(e) => setSocketPath(e.target.value)} placeholder="~/.mineru/doclib.sock" />
-        </Field>
+      {failureSummary ? (
+        <p className="ef-probe-line is-error" style={{ marginTop: -6 }}>
+          {failureSummary}。可修正配置后点「测试连接」，或到 mineru.net 申请官方 API Token 兜底。
+        </p>
       ) : null}
-      {mode === "ssh" ? (
-        <>
+
+      <div className="ef-order-row" role="group" aria-label="回退顺序">
+        <span className="ef-order-label">回退顺序</span>
+        {order.map((provider, index) => (
+          <span
+            key={provider}
+            className={`ef-order-chip${effective === provider ? " is-effective" : ""}`}
+          >
+            {providerLabel(provider)}
+            <button
+              type="button"
+              aria-label={`上移${providerLabel(provider)}`}
+              disabled={index === 0}
+              onClick={() => moveOrder(index, -1)}
+            >
+              ↑
+            </button>
+            <button
+              type="button"
+              aria-label={`下移${providerLabel(provider)}`}
+              disabled={index === order.length - 1}
+              onClick={() => moveOrder(index, 1)}
+            >
+              ↓
+            </button>
+          </span>
+        ))}
+        <Button type="button" size="sm" disabled={probing} onClick={() => void reprobe()}>
+          {probing ? "探测中…" : "重新探测全部"}
+        </Button>
+      </div>
+
+      <div className="ef-provider-grid">
+        <section className="ef-provider-card" aria-label="本地 CLI">
+          <header>
+            <label className="ef-provider-toggle">
+              <input
+                type="checkbox"
+                checked={localEnabled}
+                onChange={(e) => setLocalEnabled(e.target.checked)}
+              />
+              <strong>本地 CLI</strong>
+            </label>
+            {effective === "local" ? <span className="ef-active-badge">生效中</span> : null}
+          </header>
+          <p className="ef-provider-desc">MinerU 文档库与本应用在同一台电脑时使用。</p>
+          <Field label="Socket 路径">
+            <input
+              value={localSocket}
+              onChange={(e) => setLocalSocket(e.target.value)}
+              placeholder="~/.mineru/doclib.sock"
+            />
+          </Field>
+          <div className="ef-import-actions">
+            <Button
+              type="button"
+              size="sm"
+              disabled={testing === "local"}
+              onClick={() => void testProvider("local")}
+            >
+              {testing === "local" ? "测试中…" : "测试连接"}
+            </Button>
+          </div>
+          {testResults.local ? (
+            <p className={`ef-probe-line ${testResults.local.tone === "ok" ? "is-ok" : "is-error"}`}>
+              {testResults.local.text}
+            </p>
+          ) : (
+            healthLine("local")
+          )}
+        </section>
+
+        <section className="ef-provider-card" aria-label="SSH 远程">
+          <header>
+            <label className="ef-provider-toggle">
+              <input
+                type="checkbox"
+                checked={sshEnabled}
+                onChange={(e) => setSshEnabled(e.target.checked)}
+              />
+              <strong>SSH 远程</strong>
+            </label>
+            {effective === "ssh" ? <span className="ef-active-badge">生效中</span> : null}
+          </header>
+          <p className="ef-provider-desc">连接另一台电脑上已部署的 MinerU（原 doclib.sock 方案），PDF 会先拷到远程暂存目录。</p>
           <Field label="主机">
             <input value={sshHost} onChange={(e) => setSshHost(e.target.value)} placeholder="imac" />
           </Field>
           <Field label="端口">
-            <input value={sshPort} onChange={(e) => setSshPort(e.target.value)} />
+            <input value={sshPort} onChange={(e) => setSshPort(e.target.value)} inputMode="numeric" />
           </Field>
           <Field label="用户">
             <input value={sshUser} onChange={(e) => setSshUser(e.target.value)} placeholder="user" />
           </Field>
           <Field label="私钥路径">
             <input
-              value={identityFile}
-              onChange={(e) => setIdentityFile(e.target.value)}
+              value={sshKey}
+              onChange={(e) => setSshKey(e.target.value)}
               placeholder="~/.ssh/id_ed25519，留空则用 SSH 配置"
+            />
+          </Field>
+          <Field label="远程 Socket 路径">
+            <input
+              value={sshSocket}
+              onChange={(e) => setSshSocket(e.target.value)}
+              placeholder="~/.mineru/doclib.sock"
             />
           </Field>
           <Field label="远程暂存目录">
             <input
-              value={remoteInbox}
-              onChange={(e) => setRemoteInbox(e.target.value)}
+              value={sshInbox}
+              onChange={(e) => setSshInbox(e.target.value)}
               placeholder="~/.mineru/paper-field-inbox"
             />
           </Field>
-        </>
-      ) : null}
-      {mode !== "off" ? (
+          <div className="ef-import-actions">
+            <Button
+              type="button"
+              size="sm"
+              disabled={testing === "ssh"}
+              onClick={() => void testProvider("ssh")}
+            >
+              {testing === "ssh" ? "测试中…" : "测试连接"}
+            </Button>
+          </div>
+          {testResults.ssh ? (
+            <p className={`ef-probe-line ${testResults.ssh.tone === "ok" ? "is-ok" : "is-error"}`}>
+              {testResults.ssh.text}
+            </p>
+          ) : (
+            healthLine("ssh")
+          )}
+        </section>
+
+        <section className="ef-provider-card" aria-label="官方 API">
+          <header>
+            <strong className="ef-provider-name">官方 API</strong>
+            {effective === "api" ? <span className="ef-active-badge">生效中</span> : null}
+          </header>
+          <p className="ef-provider-desc">
+            mineru.net 云端解析。无需本机部署；填入 Token 即启用（限额：单文件 200MB / 200 页，批量 50 篇，每日 1000 页）。
+          </p>
+          <Field label={`Token ${saved.api.hasToken ? "（已保存 · 留空则保持）" : "（在 mineru.net 获取）"}`}>
+            <input
+              type="password"
+              value={apiToken}
+              onChange={(e) => setApiToken(e.target.value)}
+              placeholder={saved.api.hasToken ? "••••••••" : "eyJhbGci…"}
+              autoComplete="off"
+            />
+          </Field>
+          <Field label="模型版本">
+            <select value={modelVersion} onChange={(e) => setModelVersion(e.target.value as MineruModelVersion)}>
+              <option value="pipeline">pipeline</option>
+              <option value="vlm">vlm</option>
+            </select>
+          </Field>
+          <Field label="语言">
+            <select value={language} onChange={(e) => setLanguage(e.target.value as MineruLanguage)}>
+              <option value="ch">中文</option>
+              <option value="en">English</option>
+            </select>
+          </Field>
+          <div className="ef-import-actions">
+            <Button
+              type="button"
+              size="sm"
+              disabled={testing === "api"}
+              onClick={() => void testProvider("api")}
+            >
+              {testing === "api" ? "测试中…" : "测试连接"}
+            </Button>
+            {saved.api.hasToken ? (
+              confirmClearToken ? (
+                <Button type="button" size="sm" className="ef-btn-danger-solid" onClick={() => void clearToken()}>
+                  确认清除 Token
+                </Button>
+              ) : (
+                <Button type="button" size="sm" variant="danger" onClick={() => setConfirmClearToken(true)}>
+                  清除已保存的 Token…
+                </Button>
+              )
+            ) : null}
+          </div>
+          {testResults.api ? (
+            <p className={`ef-probe-line ${testResults.api.tone === "ok" ? "is-ok" : "is-error"}`}>
+              {testResults.api.text}
+            </p>
+          ) : (
+            healthLine("api")
+          )}
+        </section>
+      </div>
+
+      {localEnabled || sshEnabled ? (
         <>
-          <Field label="解析档位">
+          <Field label="解析档位（本地 / SSH）">
             <select value={tier} onChange={(e) => setTier(e.target.value as MineruTier)} aria-label="解析档位">
               <option value="flash">flash</option>
               <option value="basic">basic</option>
@@ -203,45 +559,33 @@ function MineruSettings() {
               <option value="advanced">advanced</option>
             </select>
           </Field>
-          <Field label="页码">
+          <Field label="页码范围（本地 / SSH；官方 API 非 all 时按页码提交）">
             <input value={pageRange} onChange={(e) => setPageRange(e.target.value)} placeholder="all" />
           </Field>
         </>
       ) : null}
+
       <div className="ef-import-actions">
         <Button
           variant="primary"
           type="button"
           onClick={() => {
             setMessage(null);
-            void saveMineru(current()).catch((err: unknown) => {
-              setTone("error");
-              setMessage(err instanceof Error ? err.message : String(err));
-            });
-          }}
-        >
-          保存 MinerU
-        </Button>
-        <Button
-          type="button"
-          disabled={mode === "off"}
-          onClick={() => {
-            setMessage(null);
-            void testMineru(current())
-              .then((text) => {
-                setTone("ok");
-                setMessage(text);
-              })
+            void save(currentInput())
+              .then(() => setMessage({ tone: "ok", text: `MinerU 设置已保存（启用 ${enabledCount} 个来源）。` }))
               .catch((err: unknown) => {
-                setTone("error");
-                setMessage(err instanceof Error ? err.message : String(err));
+                setMessage({ tone: "error", text: `保存 MinerU 设置失败：${errText(err)}。` });
               });
           }}
         >
-          测试连接
+          保存设置
         </Button>
       </div>
-      {message ? <p style={{ color: tone === "error" ? "var(--pf-danger)" : "var(--pf-success)" }}>{message}</p> : null}
+      {message ? (
+        <p style={{ color: message.tone === "error" ? "var(--pf-danger)" : "var(--pf-success)" }}>
+          {message.text}
+        </p>
+      ) : null}
     </article>
   );
 }

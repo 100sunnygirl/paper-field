@@ -24,6 +24,16 @@ async function note(
 }
 
 export async function seedIfEmpty(engine: SqlEngine): Promise<void> {
+  // 持久「已初始化」标记：只要写过一次，之后即使删光所有领域也不再灌入演示数据。
+  // 存量库（已有数据但从未写标记）首次 init 时也会补上标记，随后才检查是否需要播种。
+  const meta = await engine.select<{ c: number }>(
+    "SELECT COUNT(*) AS c FROM app_meta WHERE key = 'seeded'",
+  );
+  if (Number(meta[0]?.c ?? 0) > 0) return;
+  await engine.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES ('seeded', ?)", [
+    new Date().toISOString(),
+  ]);
+
   const rows = await engine.select<{ c: number }>("SELECT COUNT(*) AS c FROM domains");
   if (Number(rows[0]?.c ?? 0) > 0) return;
 

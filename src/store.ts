@@ -1,7 +1,17 @@
 import { create } from "zustand";
 import { exportDomain } from "./lib/export";
-import { DEFAULT_MINERU, loadMineruSettings, saveMineruSettings, type MineruSettings } from "./lib/mineru";
+import {
+  DEFAULT_MINERU,
+  loadMineruSettings,
+  mineruProbe,
+  saveMineruSettings,
+  type MineruProviderKind,
+  type MineruSaveInput,
+  type MineruSettingsV2,
+  type ProviderHealth,
+} from "./lib/mineru";
 import { backfillMeta, cancelMineruPaper, clearMineruCancel, enqueueMineru, resumeMineru, runMineruBatch } from "./lib/mineruRun";
+import { pickProviderFromHealths, providerLabel, summarizeHealths } from "./lib/mineruPlan";
 import { DRAFT_NOTES_SYSTEM, PREPARE_META_SYSTEM, draftNotesUserPrompt, normalizeMeta, normalizeNotes, prepareMetaUserPrompt } from "./lib/prompts";
 import { repo } from "./lib/repo";
 import { cancelChat, completeChat, loadSettings, saveSettings } from "./lib/settings";
@@ -42,11 +52,14 @@ interface FieldState {
   search: string;
   archiveFilter: OpenSource | "all";
   settings: LlmSettings;
-  mineru: MineruSettings;
+  mineru: MineruSettingsV2;
+  mineruHealth: ProviderHealth[];
+  effectiveProvider: MineruProviderKind | null;
   dialog:
     | "paper"
     | "domain"
     | "confirm-notes"
+    | "confirm-meta"
     | "edit-domain"
     | "move-paper"
     | "delete-paper"
@@ -68,7 +81,16 @@ interface FieldState {
   createDomain: (input: { name: string; code: string; summary?: string }) => Promise<void>;
   updateDomain: (input: { name: string; code: string; summary?: string }) => Promise<void>;
   deleteDomain: () => Promise<void>;
-  importPdfs: (paths: string[]) => Promise<void>;
+  importPdfs: (
+    paths: string[],
+    onProgress?: (done: number, total: number, current: string) => void,
+  ) => Promise<void>;
+  createManualPaper: (input: {
+    title: string;
+    arxivId?: string;
+    doi?: string;
+    pdfPath?: string;
+  }) => Promise<void>;
   retryMineru: (paperId: string) => Promise<void>;
   savePaperPatch: (patch: Parameters<typeof repo.updatePaper>[1]) => Promise<void>;
   saveAuthors: (authors: PaperDetail["authors"]) => Promise<void>;
@@ -84,7 +106,8 @@ interface FieldState {
   runDraftNotes: (paperId?: string, overwrite?: boolean) => Promise<void>;
   cancelJob: (jobId: string) => Promise<void>;
   saveLlmSettings: (input: { baseUrl: string; model: string; apiKey?: string }) => Promise<void>;
-  saveMineruSettings: (input: MineruSettings) => Promise<void>;
+  saveMineruSettings: (input: MineruSaveInput) => Promise<void>;
+  probeMineru: () => Promise<ProviderHealth[]>;
   exportCurrentDomain: () => Promise<void>;
   navigatePapers: (delta: number) => Promise<void>;
   setFlash: (flash: Flash | null) => void;
@@ -114,6 +137,8 @@ export const useField = create<FieldState>((set, get) => ({
   archiveFilter: "all",
   settings: { baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini", hasKey: false },
   mineru: DEFAULT_MINERU,
+  mineruHealth: [],
+  effectiveProvider: null,
   dialog: null,
   pendingDraftJob: null,
   unsavedNote: false,
@@ -135,6 +160,8 @@ export const useField = create<FieldState>((set, get) => ({
       const selectedDomainId = domains[0]?.id ?? null;
       set({ domains, selectedDomainId, settings, mineru, ready: true, error: null });
       await get().refresh();
+      // 探测不阻断 ready：浏览器预览直接返回 []，桌面端最多 10s，完成后异步更新状态条。
+      void get().probeMineru();
       enqueueMineru(() => resumeMineru(mineruHost()));
     } catch (err) {
       set({
@@ -159,7 +186,7 @@ export const useField = create<FieldState>((set, get) => ({
       search: state.mode === "archive" ? state.search : "",
       openSource: state.archiveFilter,
     });
-    const intake = await repo.listIntake();
+    const intake = await repo.listIntake(state.mode === "intake" ? state.search : "");
     const selectedPaperId =
       state.selectedPaperId &&
       (state.mode === "field" ? papers : state.mode === "archive" ? archive : intake).some(
@@ -180,8 +207,13 @@ export const useField = create<FieldState>((set, get) => ({
 
   selectDomain: async (id) => {
     if (!guardUnsaved(get)) return;
-    set({ selectedDomainId: id, selectedPaperId: null, paper: null, mode: "field", dialog: null });
-    await get().refresh();
+    try {
+      set({ selectedDomainId: id, selectedPaperId: null, paper: null, mode: "field", dialog: null });
+      await get().refresh();
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `切换领域失败：${errText(err)}，数据未改动。` });
+      throw err;
+    }
   },
 
   selectPaper: async (id) => {
@@ -223,83 +255,175 @@ export const useField = create<FieldState>((set, get) => ({
   deleteDomain: async () => {
     const id = get().selectedDomainId;
     if (!id) return;
-    await repo.deleteDomain(id);
-    const domains = await repo.listDomains();
-    set({ selectedDomainId: domains[0]?.id ?? null, dialog: null, selectedPaperId: null, paper: null });
-    await get().refresh();
+    try {
+      await repo.deleteDomain(id);
+      const domains = await repo.listDomains();
+      set({ selectedDomainId: domains[0]?.id ?? null, dialog: null, selectedPaperId: null, paper: null });
+      await get().refresh();
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `删除领域失败：${errText(err)}，数据未改动。` });
+      throw err;
+    }
   },
 
-  importPdfs: async (paths) => {
+  importPdfs: async (paths, onProgress) => {
     const domainId = get().selectedDomainId;
     if (!domainId) throw new Error("先选择一个领域");
     const unique = [...new Set(paths.map((path) => path.trim()).filter(Boolean))];
     if (!unique.length) throw new Error("请选择至少一个 PDF");
-    const { created, skipped } = await repo.importLocalPdfs(domainId, unique);
-    set({
-      dialog: null,
-      selectedPaperId: created[0]?.id ?? get().selectedPaperId,
-      mode: "field",
-    });
-    await get().refresh();
-    if (!created.length) {
-      get().setFlash({ tone: "warn", text: "这些 PDF 已在库中。" });
-      return;
-    }
-    const skippedText = skipped.length ? `，跳过 ${skipped.length} 篇已在库中` : "";
-    if (!get().mineru.configured) {
-      get().setFlash({
-        tone: "warn",
-        text: `已导入 ${created.length} 篇${skippedText}。MinerU 未配置，论文已入库，尚未解析。`,
+    try {
+      // 逐篇入库以回报真实进度（n/总数 · 当前文件）；单篇失败不中断整批。
+      const created: PaperListItem["id"][] = [];
+      let skippedCount = 0;
+      const failed: Array<{ name: string; message: string }> = [];
+      let done = 0;
+      for (const path of unique) {
+        const name = path.split(/[/\\]/).pop() ?? path;
+        try {
+          const result = await repo.importLocalPdfs(domainId, [path]);
+          for (const paper of result.created) created.push(paper.id);
+          skippedCount += result.skipped.length;
+        } catch (err) {
+          failed.push({ name, message: errText(err) });
+        }
+        done += 1;
+        onProgress?.(done, unique.length, name);
+      }
+      set({
+        dialog: null,
+        selectedPaperId: created[0] ?? get().selectedPaperId,
+        mode: "field",
       });
-      return;
+      await get().refresh();
+      const skippedText = skippedCount ? `，跳过 ${skippedCount} 篇已在库中` : "";
+      if (failed.length) {
+        get().setFlash({
+          tone: "error",
+          text: `已导入 ${created.length} 篇${skippedText}，${failed.length} 篇失败：${failed[0].name}（${failed[0].message}）。`,
+        });
+      }
+      if (!created.length) {
+        if (!failed.length) get().setFlash({ tone: "warn", text: "这些 PDF 已在库中。" });
+        return;
+      }
+      // 生效源判断：探测结果可能过期，无结果时先重探一次再下结论。
+      let effective = get().effectiveProvider;
+      if (!effective && get().mineru.configured) {
+        effective = pickProviderFromHealths(get().mineru.order, await get().probeMineru());
+      }
+      if (!effective) {
+        get().setFlash({
+          tone: "warn",
+          text: `已导入 ${created.length} 篇${skippedText}。当前没有可用的 MinerU 解析源，论文已入库但未解析，可到系统页配置。`,
+        });
+        return;
+      }
+      if (!failed.length) {
+        get().setFlash({
+          tone: "ok",
+          text: `已导入 ${created.length} 篇${skippedText}，正在用${providerLabel(effective)}解析。`,
+        });
+      }
+      enqueueMineru(() => runMineruBatch(mineruHost(), created, false));
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `导入失败：${errText(err)}，数据未改动。` });
+      throw err;
     }
-    get().setFlash({
-      tone: "ok",
-      text: `已导入 ${created.length} 篇${skippedText}。已将 ${created.length} 篇论文发送到 MinerU 4.0 解析。`,
-    });
-    const ids = created.map((paper) => paper.id);
-    enqueueMineru(() => runMineruBatch(mineruHost(), ids, false));
+  },
+
+  createManualPaper: async (input) => {
+    const domainId = get().selectedDomainId;
+    if (!domainId) throw new Error("先选择一个领域");
+    const title = input.title.trim();
+    if (!title) throw new Error("标题必填");
+    try {
+      const paper = await repo.createPaper({ domainId, title, pdfPath: input.pdfPath });
+      const patch: { arxivId?: string; doi?: string } = {};
+      if (input.arxivId?.trim()) patch.arxivId = input.arxivId.trim();
+      if (input.doi?.trim()) patch.doi = input.doi.trim();
+      if (Object.keys(patch).length) await repo.updatePaper(paper.id, patch);
+      set({ dialog: null, selectedPaperId: paper.id, mode: "field" });
+      await get().refresh();
+      get().setFlash({
+        tone: "ok",
+        text: paper.pdfPath ? `已创建「${title}」，正在安排解析。` : `已创建「${title}」。`,
+      });
+      if (paper.pdfPath) enqueueMineru(() => runMineruBatch(mineruHost(), [paper.id], false));
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `创建论文失败：${errText(err)}，数据未改动。` });
+      throw err;
+    }
   },
 
   retryMineru: async (paperId) => {
     if (!get().mineru.configured) {
-      get().setFlash({ tone: "warn", text: "尚未配置 MinerU。可在系统页写入连接方式。" });
+      get().setFlash({ tone: "warn", text: "尚未启用任何 MinerU 解析源。可在系统页配置本地 / SSH / 官方 API。" });
       return;
     }
-    clearMineruCancel(paperId);
-    await repo.setMineruState(paperId, {
-      status: "queued",
-      error: null,
-      parseId: null,
-      parseIds: [],
-      docRef: null,
-    });
-    await get().refresh();
-    get().setFlash({ tone: "ok", text: "已将这篇论文发送到 MinerU 4.0 解析。" });
-    enqueueMineru(() => runMineruBatch(mineruHost(), [paperId], true));
+    // 探测结果可能过期：无生效源时先重探一次再下结论。
+    if (!get().effectiveProvider) await get().probeMineru();
+    if (!get().effectiveProvider) {
+      const detail = summarizeHealths(get().mineru.order, get().mineruHealth);
+      get().setFlash({
+        tone: "warn",
+        text: detail
+          ? `当前没有可用的 MinerU 解析源（${detail}）。可到系统页查看失败原因。`
+          : "当前没有可用的 MinerU 解析源（本地/SSH/官方 API 均未通过探测），可到系统页配置或查看失败原因。",
+      });
+      return;
+    }
+    try {
+      clearMineruCancel(paperId);
+      // 跨源切换唯一入口：重置 docRef/parseIds/provider 后以 provider=null 重新提交，
+      // 由后端按回退顺序重选源并更新论文记录的解析来源。
+      await repo.setMineruState(paperId, {
+        status: "queued",
+        error: null,
+        parseId: null,
+        parseIds: [],
+        docRef: null,
+        provider: null,
+      });
+      await get().refresh();
+      get().setFlash({ tone: "ok", text: "已将这篇论文发送到 MinerU 解析。" });
+      enqueueMineru(() => runMineruBatch(mineruHost(), [paperId], true));
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `重新解析失败：${errText(err)}，数据未改动。` });
+      throw err;
+    }
   },
 
   savePaperPatch: async (patch) => {
     const id = get().selectedPaperId;
     if (!id) return;
-    await repo.updatePaper(id, patch, true);
-    await get().refresh();
+    try {
+      await repo.updatePaper(id, patch, true);
+      await get().refresh();
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `保存论文信息失败：${errText(err)}，数据未改动。` });
+      throw err;
+    }
   },
 
   saveAuthors: async (authors) => {
     const id = get().selectedPaperId;
     if (!id) return;
-    await repo.replaceAuthors(
-      id,
-      authors.map((author) => ({
-        name: author.name,
-        affiliation: author.affiliation,
-        lab: author.lab,
-        isCorresponding: author.isCorresponding,
-      })),
-      true,
-    );
-    await get().refresh();
+    try {
+      await repo.replaceAuthors(
+        id,
+        authors.map((author) => ({
+          name: author.name,
+          affiliation: author.affiliation,
+          lab: author.lab,
+          isCorresponding: author.isCorresponding,
+        })),
+        true,
+      );
+      await get().refresh();
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `保存作者失败：${errText(err)}，数据未改动。` });
+      throw err;
+    }
   },
 
   saveNote: async (kind, content) => {
@@ -333,32 +457,47 @@ export const useField = create<FieldState>((set, get) => ({
   setReadingStatus: async (status) => {
     const id = get().selectedPaperId;
     if (!id) return;
-    await repo.setReadingStatus(id, status);
-    await get().refresh();
-    const labels = { unread: "未读", reading: "在读", read: "已读" };
-    get().setFlash({ tone: "ok", text: `阅读状态已更新为${labels[status]}。` });
+    try {
+      await repo.setReadingStatus(id, status);
+      await get().refresh();
+      const labels = { unread: "未读", reading: "在读", read: "已读" };
+      get().setFlash({ tone: "ok", text: `阅读状态已更新为${labels[status]}。` });
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `更新阅读状态失败：${errText(err)}，数据未改动。` });
+      throw err;
+    }
   },
 
   movePaper: async (domainId) => {
     const id = get().selectedPaperId;
     if (!id) return;
-    await repo.updatePaper(id, { domainId });
-    set({ dialog: null, selectedDomainId: domainId, mode: "field" });
-    await get().refresh();
-    const domain = get().domains.find((d) => d.id === domainId);
-    get().setFlash({
-      tone: "ok",
-      text: domain ? `论文已移动到「${domain.name}」。` : "论文已移动到新领域。",
-    });
+    try {
+      await repo.updatePaper(id, { domainId });
+      set({ dialog: null, selectedDomainId: domainId, mode: "field" });
+      await get().refresh();
+      const domain = get().domains.find((d) => d.id === domainId);
+      get().setFlash({
+        tone: "ok",
+        text: domain ? `论文已移动到「${domain.name}」。` : "论文已移动到新领域。",
+      });
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `移动论文失败：${errText(err)}，数据未改动。` });
+      throw err;
+    }
   },
 
   deletePaper: async () => {
     const id = get().selectedPaperId;
     if (!id) return;
-    await repo.deletePaper(id);
-    set({ selectedPaperId: null, paper: null, dialog: null, unsavedNote: false });
-    await get().refresh();
-    get().setFlash({ tone: "ok", text: "论文已删除。" });
+    try {
+      await repo.deletePaper(id);
+      set({ selectedPaperId: null, paper: null, dialog: null, unsavedNote: false });
+      await get().refresh();
+      get().setFlash({ tone: "ok", text: "论文已删除。" });
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `删除论文失败：${errText(err)}，数据未改动。` });
+      throw err;
+    }
   },
 
   runPrepareMeta: async (paperId, overwrite = true, quiet = false) => {
@@ -429,24 +568,46 @@ export const useField = create<FieldState>((set, get) => ({
   },
 
   saveLlmSettings: async (input) => {
-    await saveSettings(input);
-    const settings = await loadSettings();
-    set({ settings });
-    get().setFlash({
-      tone: settings.hasKey ? "ok" : "warn",
-      text: settings.hasKey ? "AI 服务设置已保存。" : "已保存端点，但尚未写入 Key。",
-    });
-    if (settings.hasKey) enqueueMineru(() => backfillMeta(mineruHost()));
+    try {
+      await saveSettings(input);
+      const settings = await loadSettings();
+      set({ settings });
+      get().setFlash({
+        tone: settings.hasKey ? "ok" : "warn",
+        text: settings.hasKey ? "AI 服务设置已保存。" : "已保存端点，但尚未写入 Key。",
+      });
+      if (settings.hasKey) enqueueMineru(() => backfillMeta(mineruHost()));
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `保存 AI 服务设置失败：${errText(err)}，数据未改动。` });
+      throw err;
+    }
   },
 
   saveMineruSettings: async (input) => {
-    const mineru = await saveMineruSettings(input);
-    set({ mineru });
-    get().setFlash({
-      tone: mineru.configured ? "ok" : "warn",
-      text: mineru.configured ? "MinerU 设置已保存。" : "已保存，MinerU 仍未配置完成。",
+    try {
+      const mineru = await saveMineruSettings(input);
+      set({ mineru });
+      get().setFlash({
+        tone: mineru.configured ? "ok" : "warn",
+        text: mineru.configured ? "MinerU 设置已保存，正在重新探测各来源。" : "已保存，尚未启用任何解析源。",
+      });
+      // 保存成功后重探（异步，不阻塞返回）；浏览器预览 resolve [] 不抛错。
+      void get().probeMineru();
+      if (mineru.configured) enqueueMineru(() => resumeMineru(mineruHost()));
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `保存 MinerU 设置失败：${errText(err)}，数据未改动。` });
+      throw err;
+    }
+  },
+
+  probeMineru: async () => {
+    const healths = await mineruProbe();
+    const mineru = get().mineru;
+    set({
+      mineruHealth: healths,
+      effectiveProvider: pickProviderFromHealths(mineru.order, healths),
     });
-    if (mineru.configured) enqueueMineru(() => resumeMineru(mineruHost()));
+    return healths;
   },
 
   exportCurrentDomain: async () => {
@@ -468,8 +629,15 @@ export const useField = create<FieldState>((set, get) => ({
     if (!guardUnsaved(get)) return;
     const list = currentList(get());
     if (!list.length) return;
-    const index = Math.max(0, list.findIndex((p) => p.id === get().selectedPaperId));
-    const next = list[Math.min(list.length - 1, Math.max(0, index + delta))];
+    // 未选中论文时，↓ 直接落到第 1 篇、↑ 落到最后一篇，而不是跳过第 1 篇。
+    const idx = list.findIndex((p) => p.id === get().selectedPaperId);
+    const index =
+      idx === -1
+        ? delta > 0
+          ? 0
+          : list.length - 1
+        : Math.min(list.length - 1, Math.max(0, idx + delta));
+    const next = list[index];
     if (next) await get().selectPaper(next.id);
   },
 }));
@@ -489,6 +657,10 @@ function guardUnsaved(get: () => FieldState): boolean {
   if (!get().unsavedNote) return true;
   get().setFlash({ tone: "warn", text: "请先保存或取消正在编辑的笔记。" });
   return false;
+}
+
+function errText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 async function runJob(

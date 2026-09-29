@@ -95,7 +95,7 @@ async function persistSqlJs(bytes: Uint8Array): Promise<void> {
   });
 }
 
-async function applySchema(engine: SqlEngine): Promise<void> {
+export async function applySchema(engine: SqlEngine): Promise<void> {
   await engine.execute("PRAGMA foreign_keys = ON");
   for (const statement of SCHEMA_STATEMENTS) {
     await engine.execute(statement);
