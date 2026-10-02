@@ -13,6 +13,7 @@ vi.mock("./lib/repo", () => ({
     listArchive: vi.fn(async () => []),
     listIntake: vi.fn(async () => []),
     listFailedMineru: vi.fn(async () => [] as string[]),
+    createDomain: vi.fn(),
     setMineruState: vi.fn(async () => undefined),
   },
 }));
@@ -71,6 +72,7 @@ beforeEach(() => {
   vi.mocked(repo.listPapers).mockClear();
   vi.mocked(repo.listFailedMineru).mockReset();
   vi.mocked(repo.setMineruState).mockReset();
+  vi.mocked(repo.createDomain).mockReset();
 });
 
 describe("navigatePapers（缺陷 9：未选中时的首末落点）", () => {
@@ -214,5 +216,26 @@ describe("retryFailedMineru（INTAKE 批量重试）", () => {
 
     expect(repo.setMineruState).not.toHaveBeenCalled();
     expect(useField.getState().flash?.text).toContain("尚未启用任何 MinerU 解析源");
+  });
+});
+
+describe("createDomain / updateDomain（仅名称必填）", () => {
+  it("缺少名称时报「领域名称必填」，不再要求短码", async () => {
+    await expect(useField.getState().createDomain({ name: "  ", code: "MM-1" })).rejects.toThrow(
+      "领域名称必填",
+    );
+  });
+
+  it("短码留空也能创建", async () => {
+    vi.mocked(repo.createDomain).mockResolvedValue({
+      id: "d-new",
+      name: "多模态",
+      code: "D-01",
+      summary: null,
+      sortOrder: 1,
+      createdAt: "2024-01-01T00:00:00.000Z",
+    });
+    await useField.getState().createDomain({ name: "多模态", code: "" });
+    expect(repo.createDomain).toHaveBeenCalledWith({ name: "多模态", code: "" });
   });
 });

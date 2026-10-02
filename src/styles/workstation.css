@@ -104,6 +104,14 @@ img { max-width: 100%; }
 a { color: inherit; }
 button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
 
+/* Text selection: explicit signal highlighter (ink on yellow). WKWebView's
+   system default can read as invisible next to the flat paper design, so
+   every surface — inputs, notes, dark dock — gets one unmistakable color. */
+::selection {
+  background: color-mix(in srgb, var(--pf-signal) 72%, var(--pf-surface));
+  color: var(--pf-ink);
+}
+
 .ef-ico {
   width: 18px;
   height: 18px;
@@ -1014,12 +1022,14 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   border-radius: var(--pf-radius);
   transition: border-color var(--pf-motion), box-shadow var(--pf-motion);
 }
-/* 书写表面聚焦：与控件层 .ef-field 同一双墨线（1px 描边 + 1px 贴边环），
-   单一聚焦语言；文本域聚焦恒可见，不出现无焦点提示的书写面。 */
+/* 书写表面聚焦：与控件层 .ef-field 同一双墨线（1px 描边 + 1px 贴边环）+ 信号
+   柔光晕；单一聚焦语言，文本域聚焦恒可见。 */
 .ef-note textarea:focus {
   outline: none;
   border-color: var(--pf-ink);
-  box-shadow: 0 0 0 1px var(--pf-ink);
+  box-shadow:
+    0 0 0 1px var(--pf-ink),
+    0 0 0 4px color-mix(in srgb, var(--pf-signal) 32%, transparent);
 }
 .ef-edit-actions {
   display: flex;
@@ -1443,6 +1453,8 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 .ef-provider-card .ef-import-actions { margin: 4px 0 8px; }
 .ef-provider-card.is-active {
   border-color: var(--pf-ink);
+  /* 交互中的配置卡：左缘信号棒之外再加一层极淡信号底色，选中状态一眼可辨。 */
+  background: color-mix(in srgb, var(--pf-signal) 6%, var(--pf-surface));
 }
 /* 生效来源的选中提示：左缘信号黄短棒（设计契约允许的小面积选中提示）。
    状态指示器：单一 scaleY、200ms、生效源切到该卡时播放一次（transform 不改布局）。 */
@@ -1638,16 +1650,18 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   width: 100%;
   transition: border-color var(--pf-motion), box-shadow var(--pf-motion);
 }
-/* Writing-surface focus: the global signal ring gives way here to a double
-   ink edge (1px border + 1px flush ring) — an unmistakable focus without a
-   halo around typing surfaces. (.ef-note textarea belongs to the reading
+/* Writing-surface focus: double ink edge (1px border + 1px flush ring) plus
+   a soft signal halo outside it — typing surfaces stay legible while the
+   active field is unmistakable. (.ef-note textarea belongs to the reading
    stage and mirrors this via the same tokens, not here.) */
 .ef-field input:focus,
 .ef-field textarea:focus,
 .ef-field select:focus {
   outline: none;
   border-color: var(--pf-ink);
-  box-shadow: 0 0 0 1px var(--pf-ink);
+  box-shadow:
+    0 0 0 1px var(--pf-ink),
+    0 0 0 4px color-mix(in srgb, var(--pf-signal) 32%, transparent);
 }
 .ef-field textarea { min-height: 96px; resize: vertical; }
 .ef-domain-option {

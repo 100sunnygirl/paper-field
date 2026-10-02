@@ -186,6 +186,12 @@ function titleFromPdf(path: string): string {
   return title || "Untitled paper";
 }
 
+/** 短码规范化：大写；留空时按排序号自动生成 D-01 递增。 */
+function domainCodeOf(raw: string, sortOrder: number): string {
+  const code = raw.trim().toUpperCase();
+  return code || `D-${String(sortOrder).padStart(2, "0")}`;
+}
+
 function asMineruStatus(value: string | null): MineruStatus | null {
   if (
     value === "queued" ||
@@ -270,12 +276,14 @@ export const repo = {
     const existing = await engine.select<{ max_order: number | null }>(
       "SELECT MAX(sort_order) AS max_order FROM domains",
     );
+    const sortOrder = (existing[0]?.max_order ?? 0) + 1;
     const domain: Domain = {
       id: uid(),
       name: input.name.trim(),
-      code: input.code.trim().toUpperCase(),
+      // 短码可选：留空时按排序自动生成（D-01 递增），保证界面恒有短码可显示。
+      code: domainCodeOf(input.code, sortOrder),
       summary: input.summary?.trim() || null,
-      sortOrder: (existing[0]?.max_order ?? 0) + 1,
+      sortOrder,
       createdAt: nowIso(),
     };
     await engine.execute(
@@ -287,9 +295,16 @@ export const repo = {
 
   async updateDomain(id: string, input: { name: string; code: string; summary?: string }): Promise<void> {
     const engine = await getEngine();
+    const code = domainCodeOf(input.code, 0);
+    // 编辑时清空短码 → 保留原短码而不是写空串，列表/标题处恒有值。
+    let effectiveCode = code;
+    if (!input.code.trim()) {
+      const rows = await engine.select<{ code: string }>("SELECT code FROM domains WHERE id = ?", [id]);
+      effectiveCode = rows[0]?.code ?? code;
+    }
     await engine.execute("UPDATE domains SET name = ?, code = ?, summary = ? WHERE id = ?", [
       input.name.trim(),
-      input.code.trim().toUpperCase(),
+      effectiveCode,
       input.summary?.trim() || null,
       id,
     ]);

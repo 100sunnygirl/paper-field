@@ -337,7 +337,7 @@ export function DomainDialog() {
         <p>将删除「{current?.name}」及其中全部论文与笔记。此操作不可撤销。</p>
       ) : (
         <>
-          <Field label="名称 / 中文">
+          <Field label="名称 / 中文（必填）">
             <input
               value={name}
               onChange={(e) => setName(e.target.value)}
@@ -345,10 +345,10 @@ export function DomainDialog() {
               autoFocus
             />
           </Field>
-          <Field label="短码">
-            <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="MM-03" />
+          <Field label="短码（可选）">
+            <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="留空自动生成，如 MM-03" />
           </Field>
-          <Field label="简介">
+          <Field label="简介（可选）">
             <textarea value={summary} onChange={(e) => setSummary(e.target.value)} />
           </Field>
         </>

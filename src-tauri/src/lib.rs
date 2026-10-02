@@ -410,7 +410,18 @@ fn build_menu(app: &tauri::App) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> 
         .item(&intake)
         .item(&system)
         .build()?;
-    MenuBuilder::new(app).item(&file).item(&view).build()
+    // macOS 的 ⌘C/⌘V/⌘A/⌘Z 由菜单栏 Edit 菜单提供键等效；缺了这些预置项，
+    // 文本框里的复制/粘贴/全选快捷键会全部失效。
+    let edit = SubmenuBuilder::new(app, "Edit")
+        .undo()
+        .redo()
+        .separator()
+        .cut()
+        .copy()
+        .paste()
+        .select_all()
+        .build()?;
+    MenuBuilder::new(app).item(&file).item(&edit).item(&view).build()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

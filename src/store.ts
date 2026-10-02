@@ -238,8 +238,9 @@ export const useField = create<FieldState>((set, get) => ({
   },
 
   createDomain: async (input) => {
-    if (!input.name.trim() || !input.code.trim()) {
-      throw new Error("领域名称与短码必填");
+    // 只有名称必填；短码留空时由 repo 自动生成（D-01 递增）。
+    if (!input.name.trim()) {
+      throw new Error("领域名称必填");
     }
     const domain = await repo.createDomain(input);
     set({ dialog: null, selectedDomainId: domain.id, mode: "field" });
@@ -249,6 +250,9 @@ export const useField = create<FieldState>((set, get) => ({
   updateDomain: async (input) => {
     const id = get().selectedDomainId;
     if (!id) return;
+    if (!input.name.trim()) {
+      throw new Error("领域名称必填");
+    }
     await repo.updateDomain(id, input);
     set({ dialog: null });
     await get().refresh();

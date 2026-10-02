@@ -591,3 +591,24 @@ describe("deletePaper / deleteDomain 级联", () => {
     expect(await repo.listDomains()).toEqual([]);
   });
 });
+
+describe("domain 短码可选（仅名称必填）", () => {
+  it("短码留空时按排序自动生成 D-01 递增", async () => {
+    const a = await repo.createDomain({ name: "多模态", code: "" });
+    expect(a.code).toBe("D-01");
+    const b = await repo.createDomain({ name: "检索", code: "  " });
+    expect(b.code).toBe("D-02");
+  });
+
+  it("填写短码时规范化为大写并去空白", async () => {
+    const d = await repo.createDomain({ name: "x", code: " mm-3 " });
+    expect(d.code).toBe("MM-3");
+  });
+
+  it("编辑时清空短码保留原值，不写入空串", async () => {
+    const d = await repo.createDomain({ name: "x", code: "MM-9" });
+    await repo.updateDomain(d.id, { name: "y", code: "", summary: "" });
+    const domains = await repo.listDomains();
+    expect(domains.find((x) => x.id === d.id)?.code).toBe("MM-9");
+  });
+});
