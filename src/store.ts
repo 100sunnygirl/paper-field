@@ -268,7 +268,7 @@ export const useField = create<FieldState>((set, get) => ({
 
   importPdfs: async (paths, onProgress) => {
     const domainId = get().selectedDomainId;
-    if (!domainId) throw new Error("先选择一个领域");
+    if (!domainId) throw new Error("请先选择一个领域，再导入 PDF。");
     const unique = [...new Set(paths.map((path) => path.trim()).filter(Boolean))];
     if (!unique.length) throw new Error("请选择至少一个 PDF");
     try {
@@ -314,7 +314,7 @@ export const useField = create<FieldState>((set, get) => ({
       if (!effective) {
         get().setFlash({
           tone: "warn",
-          text: `已导入 ${created.length} 篇${skippedText}。当前没有可用的 MinerU 解析源，论文已入库但未解析，可到系统页配置。`,
+          text: `已导入 ${created.length} 篇${skippedText}。当前没有可用的 MinerU 解析源，论文已入库但未解析，可到设置页启用解析源。`,
         });
         return;
       }
@@ -333,7 +333,7 @@ export const useField = create<FieldState>((set, get) => ({
 
   createManualPaper: async (input) => {
     const domainId = get().selectedDomainId;
-    if (!domainId) throw new Error("先选择一个领域");
+    if (!domainId) throw new Error("请先选择一个领域，再创建论文。");
     const title = input.title.trim();
     if (!title) throw new Error("标题必填");
     try {
@@ -357,7 +357,7 @@ export const useField = create<FieldState>((set, get) => ({
 
   retryMineru: async (paperId) => {
     if (!get().mineru.configured) {
-      get().setFlash({ tone: "warn", text: "尚未启用任何 MinerU 解析源。可在系统页配置本地 / SSH / 官方 API。" });
+      get().setFlash({ tone: "warn", text: "尚未启用任何 MinerU 解析源。可到设置页配置本地 / SSH / 官方 API。" });
       return;
     }
     // 探测结果可能过期：无生效源时先重探一次再下结论。
@@ -367,8 +367,8 @@ export const useField = create<FieldState>((set, get) => ({
       get().setFlash({
         tone: "warn",
         text: detail
-          ? `当前没有可用的 MinerU 解析源（${detail}）。可到系统页查看失败原因。`
-          : "当前没有可用的 MinerU 解析源（本地/SSH/官方 API 均未通过探测），可到系统页配置或查看失败原因。",
+          ? `当前没有可用的 MinerU 解析源（${detail}）。可到设置页查看失败原因。`
+          : "当前没有可用的 MinerU 解析源（本地 / SSH / 官方 API 均未通过探测），可到设置页配置或查看失败原因。",
       });
       return;
     }
@@ -505,7 +505,7 @@ export const useField = create<FieldState>((set, get) => ({
     if (!id) return;
     if (!get().settings.hasKey) {
       if (!quiet) {
-        get().setFlash({ tone: "warn", text: "尚未配置 AI 服务。可在系统页写入，或继续手动录入。" });
+        get().setFlash({ tone: "warn", text: "尚未配置 AI 服务。可到设置页配置，或继续手动录入。" });
       }
       return;
     }
@@ -524,7 +524,7 @@ export const useField = create<FieldState>((set, get) => ({
     const id = paperId ?? get().selectedPaperId;
     if (!id) return;
     if (!get().settings.hasKey) {
-      get().setFlash({ tone: "warn", text: "尚未配置 AI 服务，无法起草阅读笔记。" });
+      get().setFlash({ tone: "warn", text: "尚未配置 AI 服务。可到设置页配置后再起草阅读笔记。" });
       return;
     }
     const paper = await repo.getPaper(id);
@@ -574,7 +574,7 @@ export const useField = create<FieldState>((set, get) => ({
       set({ settings });
       get().setFlash({
         tone: settings.hasKey ? "ok" : "warn",
-        text: settings.hasKey ? "AI 服务设置已保存。" : "已保存端点，但尚未写入 Key。",
+        text: settings.hasKey ? "AI 服务设置已保存。" : "已保存地址与模型，但尚未填写 API Key。",
       });
       if (settings.hasKey) enqueueMineru(() => backfillMeta(mineruHost()));
     } catch (err) {
@@ -589,7 +589,7 @@ export const useField = create<FieldState>((set, get) => ({
       set({ mineru });
       get().setFlash({
         tone: mineru.configured ? "ok" : "warn",
-        text: mineru.configured ? "MinerU 设置已保存，正在重新探测各来源。" : "已保存，尚未启用任何解析源。",
+        text: mineru.configured ? "MinerU 设置已保存，正在重新探测各解析源。" : "已保存，尚未启用任何解析源。",
       });
       // 保存成功后重探（异步，不阻塞返回）；浏览器预览 resolve [] 不抛错。
       void get().probeMineru();

@@ -56,89 +56,115 @@ export function SystemView() {
     <section className="ef-read" id="stage" aria-labelledby="system-title">
       <div className="ef-system">
         <div className="ef-system-inner">
-          <h1 id="system-title">系统</h1>
-          <p className="lede">
-            API Key 只存在本机。没有 Key 时仍可完整手录论文与笔记。LLM 永远不会把论文标成已读。
-          </p>
+          <div className="ef-system-head">
+            <h1 id="system-title">设置</h1>
+            <p className="lede">
+              AI Key 与 MinerU Token 只保存在本机。没有 AI Key 也能完整手动录入论文与笔记；AI 不会自动把论文标成已读。
+            </p>
+          </div>
 
           <div className="ef-system-blocks">
-          <article className="page-block is-primary">
-            <h3>AI 服务设置</h3>
-            <p>
-              OpenAI 兼容的 Chat Completions。桌面端写入本机存储；浏览器预览回退到
-              localStorage。保存后才会启用「补全论文信息」和「起草阅读笔记」。
-            </p>
-            <Field label="Base URL">
-              <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} />
-            </Field>
-            <Field label="模型">
-              <input value={model} onChange={(e) => setModel(e.target.value)} />
-            </Field>
-            <Field label={`API Key ${settings.hasKey ? "（已保存 · 留空则保持）" : "（尚未配置）"}`}>
-              <input
-                type="password"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                placeholder={settings.hasKey ? "••••••••" : "sk-..."}
-                autoComplete="off"
-              />
-            </Field>
-            <div className="ef-import-actions">
-              <Button
-                variant="primary"
-                type="button"
-                onClick={() => {
-                  setLlmMessage(null);
-                  void saveLlmSettings({
-                    baseUrl,
-                    model,
-                    apiKey: apiKey.trim() ? apiKey.trim() : undefined,
-                  }).catch((err: unknown) => {
-                    setLlmMessage({ tone: "error", text: `保存设置失败：${errText(err)}。` });
-                  });
-                }}
-              >
-                保存设置
-              </Button>
-              {settings.hasKey ? (
-                confirmClearKey ? (
-                  <Button type="button" className="ef-btn-danger-solid" onClick={() => void clearSavedKey()}>
-                    确认清除 Key
+            <article className="page-block">
+                <header className="ef-block-head">
+                  <h3>AI 服务设置</h3>
+                  <p>填写 OpenAI 兼容接口的 Base URL、模型与 API Key；保存后即可使用「补全论文信息」与「起草阅读笔记」。</p>
+                </header>
+                <div className="ef-llm-grid">
+                  <Field label="Base URL">
+                    <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} />
+                  </Field>
+                  <Field label="模型">
+                    <input value={model} onChange={(e) => setModel(e.target.value)} />
+                  </Field>
+                  <Field label={`API Key ${settings.hasKey ? "（已保存 · 留空保持不变）" : "（尚未配置）"}`}>
+                    <input
+                      type="password"
+                      value={apiKey}
+                      onChange={(e) => setApiKey(e.target.value)}
+                      placeholder={settings.hasKey ? "••••••••" : "sk-..."}
+                      autoComplete="off"
+                    />
+                  </Field>
+                </div>
+                <div className="ef-import-actions">
+                  <Button
+                    variant="primary"
+                    type="button"
+                    onClick={() => {
+                      setLlmMessage(null);
+                      void saveLlmSettings({
+                        baseUrl,
+                        model,
+                        apiKey: apiKey.trim() ? apiKey.trim() : undefined,
+                      }).catch((err: unknown) => {
+                        setLlmMessage({ tone: "error", text: `保存设置失败：${errText(err)}。` });
+                      });
+                    }}
+                  >
+                    保存设置
                   </Button>
-                ) : (
-                  <Button type="button" variant="danger" onClick={() => setConfirmClearKey(true)}>
-                    清除已保存的 Key…
-                  </Button>
-                )
-              ) : null}
-            </div>
-            {llmMessage ? (
-              <p style={{ color: llmMessage.tone === "error" ? "var(--pf-danger)" : "var(--pf-success)" }}>
-                {llmMessage.text}
-              </p>
-            ) : null}
-          </article>
+                  {settings.hasKey ? (
+                    confirmClearKey ? (
+                      <Button type="button" className="ef-btn-danger-solid" onClick={() => void clearSavedKey()}>
+                        确认清除 Key
+                      </Button>
+                    ) : (
+                      <Button type="button" variant="danger" onClick={() => setConfirmClearKey(true)}>
+                        清除已保存的 Key…
+                      </Button>
+                    )
+                  ) : null}
+                </div>
+                {llmMessage ? (
+                  <p className="ef-foot-msg" style={{ color: llmMessage.tone === "error" ? "var(--pf-danger)" : "var(--pf-success)" }}>
+                    {llmMessage.text}
+                  </p>
+                ) : null}
+              </article>
 
-          <MineruSettings />
+            <MineruSettings />
 
-          <article className="page-block">
-            <h3>数据导出</h3>
-            <p>将当前领域导出为 Markdown 文件夹（README + 每篇论文一个文件）。浏览器预览会下载合并文档。</p>
-            <Button type="button" onClick={() => void exportCurrentDomain()}>
-              导出 {domain?.name ?? "当前领域"}
-            </Button>
-          </article>
+              <article className="page-block">
+                <header className="ef-block-head">
+                  <h3>数据导出</h3>
+                  <p>将当前领域导出为 Markdown 文件夹（README + 每篇论文一个文件）。</p>
+                </header>
+                <Button type="button" onClick={() => void exportCurrentDomain()}>
+                  导出 {domain?.name ?? "当前领域"}
+                </Button>
+              </article>
 
-          <article className="page-block">
-            <h3>快捷键</h3>
-            <p>
-              <span className="kbd">↑</span> <span className="kbd">↓</span> 论文列表 ·{" "}
-              <span className="kbd">{shortcut("N")}</span> 导入 PDF ·{" "}
-              <span className="kbd">{shortcut("R")}</span> 标记已读 ·{" "}
-              <span className="kbd">{shortcut("K")}</span> 搜索（系统页按它跳回现场） ·{" "}
-              <span className="kbd">Esc</span> 关闭对话框
-            </p>
-          </article>
+              <article className="page-block">
+                <header className="ef-block-head">
+                  <h3>快捷键</h3>
+                </header>
+                <ul className="ef-kbd-list">
+                  <li>
+                    <span>在论文列表中移动</span>
+                    <span>
+                      <span className="kbd">↑</span>
+                      <span className="kbd">↓</span>
+                    </span>
+                  </li>
+                  <li>
+                    <span>导入 PDF</span>
+                    <span className="kbd">{shortcut("N")}</span>
+                  </li>
+                  <li>
+                    <span>标记已读</span>
+                    <span className="kbd">{shortcut("R")}</span>
+                  </li>
+                  <li>
+                    <span>搜索</span>
+                    <span className="kbd">{shortcut("K")}</span>
+                  </li>
+                  <li>
+                    <span>关闭对话框 / 抽屉</span>
+                    <span className="kbd">Esc</span>
+                  </li>
+                </ul>
+                <p className="ef-kbd-note">在设置页按 {shortcut("K")} 会先切回阅读模式，再聚焦搜索框。</p>
+              </article>
           </div>
         </div>
       </div>
@@ -325,70 +351,81 @@ function MineruSettings() {
 
   const enabledCount = [localEnabled, sshEnabled, saved.api.hasToken || Boolean(apiToken.trim())].filter(Boolean).length;
   const failureSummary = saved.configured && !effective && healths.length ? summarizeHealths(saved.order, healths) : "";
+  const statusTone = probing ? "is-busy" : effective ? "is-ok" : saved.configured ? "is-error" : "is-idle";
+  const apiEnabled = saved.api.hasToken || Boolean(apiToken.trim());
 
   return (
     <article className="page-block">
-      <h3>MinerU 解析源</h3>
-      <p>
-        导入 PDF 后自动送解析。三种来源按下方回退顺序探测：上方来源不可用时自动切到下一个。
-        SSH 远程即原 doclib.sock 方案（另一台电脑部署），字段原样保留。
-      </p>
+      <header className="ef-block-head">
+        <h3>MinerU 解析源</h3>
+        <p>导入 PDF 后自动送解析：按回退顺序探测，上方解析源不可用时自动切到下一个。</p>
+      </header>
 
-      <div className="ef-effective-row" aria-live="polite">
+      <div className={`ef-statusbar ${statusTone}`} aria-live="polite">
+        <span className="ef-statusbar-dot" aria-hidden="true" />
         {probing ? (
-          <span className="ef-effective-text">正在探测各来源…</span>
+          <span className="ef-statusbar-text">正在探测各解析源…</span>
         ) : effective ? (
-          <span className="ef-effective-text">
+          <span className="ef-statusbar-text">
             当前生效：<b>{providerLabel(effective)}</b>
             <span className="ef-probe-ms">按回退顺序自动选择</span>
           </span>
         ) : saved.configured ? (
-          <span className="ef-effective-text is-error">
-            已启用的来源均未通过探测，导入将只入库不解析。
-          </span>
+          <span className="ef-statusbar-text is-error">已启用的解析源均未通过探测，导入将只入库、不解析。</span>
         ) : (
-          <span className="ef-effective-text">尚未启用任何解析源，导入仅入库。</span>
+          <span className="ef-statusbar-text">尚未启用任何解析源，导入将只入库、不解析。</span>
         )}
+        <Button type="button" size="sm" disabled={probing} onClick={() => void reprobe()}>
+          {probing ? "探测中…" : "重新探测全部"}
+        </Button>
       </div>
       {failureSummary ? (
-        <p className="ef-probe-line is-error" style={{ marginTop: -6 }}>
-          {failureSummary}。可修正配置后点「测试连接」，或到 mineru.net 申请官方 API Token 兜底。
+        <p className="ef-probe-line is-error" style={{ marginTop: -4, marginBottom: 10 }}>
+          {failureSummary}。可修正配置后点击「测试连接」，或到 mineru.net 申请官方 API Token 作为兜底。
         </p>
       ) : null}
 
       <div className="ef-order-row" role="group" aria-label="回退顺序">
         <span className="ef-order-label">回退顺序</span>
-        {order.map((provider, index) => (
-          <span
-            key={provider}
-            className={`ef-order-chip${effective === provider ? " is-effective" : ""}`}
-          >
-            {providerLabel(provider)}
-            <button
-              type="button"
-              aria-label={`上移${providerLabel(provider)}`}
-              disabled={index === 0}
-              onClick={() => moveOrder(index, -1)}
-            >
-              ↑
-            </button>
-            <button
-              type="button"
-              aria-label={`下移${providerLabel(provider)}`}
-              disabled={index === order.length - 1}
-              onClick={() => moveOrder(index, 1)}
-            >
-              ↓
-            </button>
-          </span>
-        ))}
-        <Button type="button" size="sm" disabled={probing} onClick={() => void reprobe()}>
-          {probing ? "探测中…" : "重新探测全部"}
-        </Button>
+        <span className="ef-order-flow">
+          {order.map((provider, index) => (
+            <span key={provider} className="ef-order-item">
+              <span
+                className={`ef-order-chip${effective === provider ? " is-effective" : ""}`}
+              >
+                {providerLabel(provider)}
+                <button
+                  type="button"
+                  aria-label={`上移${providerLabel(provider)}`}
+                  disabled={index === 0}
+                  onClick={() => moveOrder(index, -1)}
+                >
+                  ↑
+                </button>
+                <button
+                  type="button"
+                  aria-label={`下移${providerLabel(provider)}`}
+                  disabled={index === order.length - 1}
+                  onClick={() => moveOrder(index, 1)}
+                >
+                  ↓
+                </button>
+              </span>
+              {index < order.length - 1 ? (
+                <span className="ef-order-sep" aria-hidden="true">
+                  →
+                </span>
+              ) : null}
+            </span>
+          ))}
+        </span>
       </div>
 
       <div className="ef-provider-grid">
-        <section className="ef-provider-card" aria-label="本地 CLI">
+        <section
+          className={`ef-provider-card${localEnabled ? "" : " is-off"}${effective === "local" ? " is-active" : ""}`}
+          aria-label="本地 CLI"
+        >
           <header>
             <label className="ef-provider-toggle">
               <input
@@ -400,7 +437,9 @@ function MineruSettings() {
             </label>
             {effective === "local" ? <span className="ef-active-badge">生效中</span> : null}
           </header>
-          <p className="ef-provider-desc">MinerU 文档库与本应用在同一台电脑时使用。</p>
+          <p className="ef-provider-desc">
+            MinerU 文档库与本应用在同一台电脑时使用。未部署时保持关闭即可——导入会按回退顺序自动落到下一个解析源。
+          </p>
           <Field label="Socket 路径">
             <input
               value={localSocket}
@@ -427,7 +466,10 @@ function MineruSettings() {
           )}
         </section>
 
-        <section className="ef-provider-card" aria-label="SSH 远程">
+        <section
+          className={`ef-provider-card ef-ssh-card${sshEnabled ? "" : " is-off"}${effective === "ssh" ? " is-active" : ""}`}
+          aria-label="SSH 远程"
+        >
           <header>
             <label className="ef-provider-toggle">
               <input
@@ -439,37 +481,45 @@ function MineruSettings() {
             </label>
             {effective === "ssh" ? <span className="ef-active-badge">生效中</span> : null}
           </header>
-          <p className="ef-provider-desc">连接另一台电脑上已部署的 MinerU（原 doclib.sock 方案），PDF 会先拷到远程暂存目录。</p>
-          <Field label="主机">
-            <input value={sshHost} onChange={(e) => setSshHost(e.target.value)} placeholder="imac" />
-          </Field>
-          <Field label="端口">
-            <input value={sshPort} onChange={(e) => setSshPort(e.target.value)} inputMode="numeric" />
-          </Field>
-          <Field label="用户">
-            <input value={sshUser} onChange={(e) => setSshUser(e.target.value)} placeholder="user" />
-          </Field>
-          <Field label="私钥路径">
-            <input
-              value={sshKey}
-              onChange={(e) => setSshKey(e.target.value)}
-              placeholder="~/.ssh/id_ed25519，留空则用 SSH 配置"
-            />
-          </Field>
-          <Field label="远程 Socket 路径">
-            <input
-              value={sshSocket}
-              onChange={(e) => setSshSocket(e.target.value)}
-              placeholder="~/.mineru/doclib.sock"
-            />
-          </Field>
-          <Field label="远程暂存目录">
-            <input
-              value={sshInbox}
-              onChange={(e) => setSshInbox(e.target.value)}
-              placeholder="~/.mineru/paper-field-inbox"
-            />
-          </Field>
+          <p className="ef-provider-desc">
+            连接另一台电脑上已部署的 MinerU，PDF 会先复制到远程暂存目录再提交解析；私钥留空则使用本机 SSH 默认配置。
+          </p>
+          <div className="ef-field-grid">
+            <Field label="主机">
+              <input value={sshHost} onChange={(e) => setSshHost(e.target.value)} placeholder="imac" />
+            </Field>
+            <Field label="端口">
+              <input value={sshPort} onChange={(e) => setSshPort(e.target.value)} inputMode="numeric" />
+            </Field>
+          </div>
+          <div className="ef-field-grid">
+            <Field label="用户">
+              <input value={sshUser} onChange={(e) => setSshUser(e.target.value)} placeholder="user" />
+            </Field>
+            <Field label="私钥路径">
+              <input
+                value={sshKey}
+                onChange={(e) => setSshKey(e.target.value)}
+                placeholder="~/.ssh/id_ed25519"
+              />
+            </Field>
+          </div>
+          <div className="ef-field-grid">
+            <Field label="远程 Socket 路径">
+              <input
+                value={sshSocket}
+                onChange={(e) => setSshSocket(e.target.value)}
+                placeholder="~/.mineru/doclib.sock"
+              />
+            </Field>
+            <Field label="远程暂存目录">
+              <input
+                value={sshInbox}
+                onChange={(e) => setSshInbox(e.target.value)}
+                placeholder="~/.mineru/paper-field-inbox"
+              />
+            </Field>
+          </div>
           <div className="ef-import-actions">
             <Button
               type="button"
@@ -489,35 +539,40 @@ function MineruSettings() {
           )}
         </section>
 
-        <section className="ef-provider-card" aria-label="官方 API">
+        <section
+          className={`ef-provider-card ef-api-card${apiEnabled ? "" : " is-off"}${effective === "api" ? " is-active" : ""}`}
+          aria-label="官方 API"
+        >
           <header>
             <strong className="ef-provider-name">官方 API</strong>
             {effective === "api" ? <span className="ef-active-badge">生效中</span> : null}
           </header>
           <p className="ef-provider-desc">
-            mineru.net 云端解析。无需本机部署；填入 Token 即启用（限额：单文件 200MB / 200 页，批量 50 篇，每日 1000 页）。
+            mineru.net 云端解析，填入 Token 即启用（限额：单文件 200MB / 200 页，批量 50 篇，每日 1000 页）。
           </p>
-          <Field label={`Token ${saved.api.hasToken ? "（已保存 · 留空则保持）" : "（在 mineru.net 获取）"}`}>
-            <input
-              type="password"
-              value={apiToken}
-              onChange={(e) => setApiToken(e.target.value)}
-              placeholder={saved.api.hasToken ? "••••••••" : "eyJhbGci…"}
-              autoComplete="off"
-            />
-          </Field>
-          <Field label="模型版本">
-            <select value={modelVersion} onChange={(e) => setModelVersion(e.target.value as MineruModelVersion)}>
-              <option value="pipeline">pipeline</option>
-              <option value="vlm">vlm</option>
-            </select>
-          </Field>
-          <Field label="语言">
-            <select value={language} onChange={(e) => setLanguage(e.target.value as MineruLanguage)}>
-              <option value="ch">中文</option>
-              <option value="en">English</option>
-            </select>
-          </Field>
+          <div className="ef-field-grid">
+            <Field label={`Token ${saved.api.hasToken ? "（已保存 · 留空保持不变）" : "（在 mineru.net 获取）"}`}>
+              <input
+                type="password"
+                value={apiToken}
+                onChange={(e) => setApiToken(e.target.value)}
+                placeholder={saved.api.hasToken ? "••••••••" : "eyJhbGci…"}
+                autoComplete="off"
+              />
+            </Field>
+            <Field label="模型版本 / 语言">
+              <div className="ef-pair-select">
+                <select value={modelVersion} onChange={(e) => setModelVersion(e.target.value as MineruModelVersion)}>
+                  <option value="pipeline">pipeline</option>
+                  <option value="vlm">vlm</option>
+                </select>
+                <select value={language} onChange={(e) => setLanguage(e.target.value as MineruLanguage)}>
+                  <option value="ch">中文</option>
+                  <option value="en">English</option>
+                </select>
+              </div>
+            </Field>
+          </div>
           <div className="ef-import-actions">
             <Button
               type="button"
@@ -550,8 +605,9 @@ function MineruSettings() {
       </div>
 
       {localEnabled || sshEnabled ? (
-        <>
-          <Field label="解析档位（本地 / SSH）">
+        <div className="ef-params">
+          <span className="ef-params-label">解析参数（本地 / SSH）</span>
+          <Field label="解析档位">
             <select value={tier} onChange={(e) => setTier(e.target.value as MineruTier)} aria-label="解析档位">
               <option value="flash">flash</option>
               <option value="basic">basic</option>
@@ -559,20 +615,20 @@ function MineruSettings() {
               <option value="advanced">advanced</option>
             </select>
           </Field>
-          <Field label="页码范围（本地 / SSH；官方 API 非 all 时按页码提交）">
+          <Field label="页码范围（默认 all；官方 API 非 all 时按页码提交）">
             <input value={pageRange} onChange={(e) => setPageRange(e.target.value)} placeholder="all" />
           </Field>
-        </>
+        </div>
       ) : null}
 
-      <div className="ef-import-actions">
+      <footer className="ef-block-foot">
         <Button
           variant="primary"
           type="button"
           onClick={() => {
             setMessage(null);
             void save(currentInput())
-              .then(() => setMessage({ tone: "ok", text: `MinerU 设置已保存（启用 ${enabledCount} 个来源）。` }))
+              .then(() => setMessage({ tone: "ok", text: `MinerU 设置已保存（已启用 ${enabledCount} 个解析源）。` }))
               .catch((err: unknown) => {
                 setMessage({ tone: "error", text: `保存 MinerU 设置失败：${errText(err)}。` });
               });
@@ -580,12 +636,12 @@ function MineruSettings() {
         >
           保存设置
         </Button>
-      </div>
-      {message ? (
-        <p style={{ color: message.tone === "error" ? "var(--pf-danger)" : "var(--pf-success)" }}>
-          {message.text}
-        </p>
-      ) : null}
+        {message ? (
+          <span className="ef-foot-msg" style={{ color: message.tone === "error" ? "var(--pf-danger)" : "var(--pf-success)" }}>
+            {message.text}
+          </span>
+        ) : null}
+      </footer>
     </article>
   );
 }

@@ -42,9 +42,6 @@ export function Rail({ mode }: { mode: AppMode }) {
         );
       })}
       <div className="ef-rail-fill" />
-      <span className="ef-rail-sign" aria-hidden="true">
-        PAPER FIELD
-      </span>
       <button
         type="button"
         className="ef-mode"
@@ -110,7 +107,7 @@ export function Dock({
         <span className="ef-mark" aria-hidden="true" />
         <span>
           <strong>PAPER FIELD</strong>
-          <small>论文现场 · 阅读工作台</small>
+          <small>论文阅读工作台</small>
         </span>
       </div>
       {mode !== "system" ? (
@@ -142,7 +139,7 @@ export function Dock({
             <div className="ef-search-scope" aria-label="跨领域搜索结果">
               <div className="ef-search-scope-head">
                 <span>
-                  全部领域匹配 {scopeSearching ? "…" : (scopeResults?.length ?? 0)} 篇
+                  全部领域共匹配 {scopeSearching ? "…" : (scopeResults?.length ?? 0)} 篇
                 </span>
                 <button type="button" onClick={() => setScopeOpen(false)}>
                   收起
@@ -193,7 +190,7 @@ export function StatusStrip() {
   const mineruLabel = effectiveProvider
     ? `MinerU：${MINERU_PROVIDER_LABELS[effectiveProvider]}`
     : mineru.configured
-      ? "MinerU 不可用"
+      ? "MinerU 不可用，可到设置页查看原因"
       : "MinerU 未配置";
   return (
     <footer className="ef-status">
@@ -211,10 +208,10 @@ export function StatusStrip() {
             ? `作业等待 ${stats.queued}`
             : "队列空闲"}
       </span>
-      <span>{settings.hasKey ? "AI 已配置" : "未配置 AI"}</span>
+      <span>{settings.hasKey ? "AI 服务已配置" : "尚未配置 AI 服务"}</span>
       <span>{mineruLabel}</span>
       <span className="right">
-        快捷操作 <span className="mono">{shortcut("K")}</span> 搜索
+        <span className="mono">{shortcut("K")}</span> 搜索
       </span>
     </footer>
   );

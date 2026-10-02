@@ -113,7 +113,7 @@ describe("Dock · 跨领域搜索下拉", () => {
     render(<DockFromStore />);
 
     fireEvent.change(screen.getByLabelText("搜索论文"), { target: { value: "transformer" } });
-    expect(await screen.findByText(/全部领域匹配 2 篇/)).toBeInTheDocument();
+    expect(await screen.findByText(/全部领域共匹配 2 篇/)).toBeInTheDocument();
     expect(screen.getByText("Vision Transformer")).toBeInTheDocument();
     expect(screen.getByText(/多模态 · Alice · 未读/)).toBeInTheDocument();
     expect(repo.searchAll).toHaveBeenCalledWith("transformer");
@@ -125,9 +125,9 @@ describe("Dock · 跨领域搜索下拉", () => {
     render(<DockFromStore />);
     const input = screen.getByLabelText("搜索论文");
     fireEvent.change(input, { target: { value: "vision" } });
-    await waitFor(() => expect(screen.getByText(/全部领域匹配 1 篇/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/全部领域共匹配 1 篇/)).toBeInTheDocument());
     fireEvent.change(input, { target: { value: "" } });
-    await waitFor(() => expect(screen.queryByText(/全部领域匹配/)).toBeNull());
+    await waitFor(() => expect(screen.queryByText(/全部领域共匹配/)).toBeNull());
   });
 
   it("无命中时提示调整搜索词", async () => {
@@ -159,7 +159,7 @@ describe("Dock · 跨领域搜索下拉", () => {
     render(<DockFromStore />);
     const input = screen.getByLabelText("搜索论文");
     fireEvent.change(input, { target: { value: "vision" } });
-    await waitFor(() => expect(screen.getByText(/全部领域匹配 1 篇/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/全部领域共匹配 1 篇/)).toBeInTheDocument());
 
     const windowKeydown = vi.fn();
     window.addEventListener("keydown", windowKeydown);
@@ -168,7 +168,7 @@ describe("Dock · 跨领域搜索下拉", () => {
     } finally {
       window.removeEventListener("keydown", windowKeydown);
     }
-    await waitFor(() => expect(screen.queryByText(/全部领域匹配/)).toBeNull());
+    await waitFor(() => expect(screen.queryByText(/全部领域共匹配/)).toBeNull());
     expect(windowKeydown).not.toHaveBeenCalled();
   });
 });

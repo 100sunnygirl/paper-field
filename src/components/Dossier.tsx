@@ -239,7 +239,7 @@ function ContextPanel({
         ) : null}
         {paper.pdfPath && paper.mineruProvider ? (
           <p className="ef-missing">
-            解析来源：{MINERU_PROVIDER_LABELS[paper.mineruProvider] ?? paper.mineruProvider}
+            解析源：{MINERU_PROVIDER_LABELS[paper.mineruProvider] ?? paper.mineruProvider}
           </p>
         ) : null}
         {paper.mineruError ? <p style={{ color: "var(--pf-danger)" }}>{paper.mineruError}</p> : null}
@@ -307,9 +307,9 @@ function ContextPanel({
           </span>
         </h2>
         {settings.hasKey ? (
-          <p>用于补全元数据或起草笔记草稿。不会自动把论文标成已读。</p>
+          <p>用于补全论文信息或起草阅读笔记。AI 不会自动把论文标成已读。</p>
         ) : (
-          <p>尚未配置服务。阅读与手动笔记不受影响。</p>
+          <p>尚未配置 AI 服务，可到设置页配置。手动阅读与笔记不受影响。</p>
         )}
         <div className="ef-ai-buttons">
           <Button
@@ -465,7 +465,7 @@ export function ReadingStage({
           <div className="ef-reading-grid">
             <Empty
               title="选择一篇论文"
-              body="从左侧列表选择论文，阅读摘要并撰写现场笔记。打开 PDF 是本页的主操作。"
+              body="从左侧列表选择一篇论文，阅读摘要、撰写阅读笔记，或直接打开 PDF。"
               action={
                 mode === "field" ? (
                   <Button type="button" variant="primary" onClick={() => openDialog("paper")}>
@@ -557,7 +557,7 @@ export function ReadingStage({
             type="button"
             className="ef-pdf-action"
             variant="primary"
-            onClick={() => setFlash({ tone: "warn", text: "这篇论文还没有本地 PDF。" })}
+            onClick={() => setFlash({ tone: "warn", text: "这篇论文还没有本地 PDF，可在「编辑论文信息」中补充公开 PDF 链接。" })}
           >
             <Icon name="file" />
             打开 PDF
@@ -649,14 +649,14 @@ export function ReadingStage({
                   dangerouslySetInnerHTML={{ __html: renderMarkdown(paper.parsedMarkdown) }}
                 />
               ) : (
-                <p className="ef-empty-note">尚未解析出全文。</p>
+                <p className="ef-empty-note">尚未解析出全文。导入 PDF 并启用解析源后，这里会显示解析结果。</p>
               )}
             </details>
             <div className="ef-notes-heading">
-              <h2>现场笔记</h2>
-              <span className="ef-overline">FIELD NOTES</span>
+              <h2>阅读笔记</h2>
+              <span className="ef-overline">READING NOTES</span>
             </div>
-            <p className="ef-notes-caption">保留自己的判断，也区分 AI 起草与人工修订。</p>
+            <p className="ef-notes-caption">每块笔记都标注来源：手动笔记或 AI 起草；AI 不会静默覆盖你改过的笔记。</p>
             {NOTE_DISPLAY_ORDER.map((kind, index) => (
               <NoteEditor
                 key={kind}

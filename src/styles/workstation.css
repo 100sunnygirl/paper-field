@@ -21,6 +21,10 @@
   --pf-body-leading: 1.85;
   --pf-label-size: 13px;
   --pf-title-size: clamp(36px, 20px + 1vw, 44px);
+  /* Type scale: T2 secondary page title, T3 block title, meta helper text. */
+  --pf-t2: 22px;
+  --pf-t3: 17px;
+  --pf-meta: 13px;
   --pf-radius: 2px;
   --pf-rail-width: 76px;
   /* Side columns grow gently with the window so wide screens are not all canvas. */
@@ -40,6 +44,9 @@
   --pf-space-8: 32px;
   --pf-space-12: 48px;
   --pf-direct: 160ms ease;
+  /* Short restrained motion for new transitions; elevation for floating layers only. */
+  --pf-motion: 140ms ease;
+  --pf-elev-1: 0 8px 24px rgba(25, 25, 25, 0.08);
   --ink: var(--pf-ink);
   --paper: var(--pf-canvas);
   --signal: var(--pf-signal);
@@ -366,6 +373,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   border-radius: var(--pf-radius);
   font-size: 12px;
   font-weight: 500;
+  transition: background-color var(--pf-motion), color var(--pf-motion);
 }
 .ef-mode .ef-ico { width: 21px; height: 21px; }
 .ef-mode:hover { background: #e0e3da; color: var(--pf-ink); }
@@ -383,14 +391,6 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   background: var(--pf-signal);
 }
 .ef-rail-fill { flex: 1; }
-.ef-rail-sign {
-  font-family: var(--pf-font-mono);
-  font-size: 10px;
-  writing-mode: vertical-rl;
-  color: var(--pf-muted);
-  letter-spacing: 0.2em;
-  margin-bottom: 10px;
-}
 
 /* Library / paper list */
 .ef-nav {
@@ -423,8 +423,8 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   margin-top: 9px;
 }
 .ef-domain-picker h2 {
-  font-size: 25px;
-  font-weight: 700;
+  font-size: var(--pf-t3);
+  font-weight: 650;
   margin: 0;
   line-height: 1.4;
   letter-spacing: -0.02em;
@@ -506,12 +506,13 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   padding: 18px 12px 17px;
   margin-bottom: 6px;
   border-radius: var(--pf-radius);
+  transition: background-color var(--pf-motion), border-color var(--pf-motion);
 }
 .ef-row:hover { background: #edefe7; }
 .ef-row.is-selected {
   background: white;
-  border-color: #c7cbc0;
-  box-shadow: 0 2px 0 #e1e4da;
+  /* 选中深度由边框明度承担（从既有 token 派生），列表行不持有投影。 */
+  border-color: color-mix(in srgb, var(--pf-ink) 30%, var(--pf-divider));
 }
 .ef-row.is-selected::before {
   content: "";
@@ -546,6 +547,8 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   align-items: center;
 }
 .ef-row-status .ef-ico { width: 13px; height: 13px; }
+.ef-row-status.is-read { color: var(--pf-success); font-weight: 600; }
+.ef-row-status.is-read .ef-ico { color: var(--pf-success); }
 .ef-row h3 {
   margin: 0;
   font-size: 15px;
@@ -567,7 +570,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   display: flex;
   justify-content: space-between;
   color: var(--pf-muted);
-  font-size: 12px;
+  font-size: var(--pf-meta);
   margin-top: 8px;
   gap: 8px;
 }
@@ -612,7 +615,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   max-width: 36rem;
 }
 .empty h2 {
-  font-size: 28px;
+  font-size: var(--pf-t2);
   line-height: 1.3;
   letter-spacing: -0.03em;
   margin: 0 0 12px;
@@ -682,7 +685,8 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   padding: 6px;
   background: white;
   border: 1px solid #b8c0ad;
-  box-shadow: 4px 4px 0 #dde2d3;
+  box-shadow: var(--pf-elev-1);
+  animation: pf-pop 140ms ease-out;
   z-index: 12;
 }
 .ef-action-menu[hidden] { display: none; }
@@ -746,9 +750,12 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   display: flex;
   align-items: center;
   gap: 10px;
-  font-size: 12px;
+  /* 区段标识档：为 T1 主标题让出对比度（内容含中文，不套 mono 栈）。 */
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.1em;
   color: var(--pf-muted);
-  margin-bottom: 15px;
+  margin-bottom: 18px;
 }
 .ef-category-rule {
   width: 20px;
@@ -761,7 +768,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   line-height: 1.35;
   letter-spacing: -0.025em;
   font-weight: 700;
-  margin: 0 0 10px;
+  margin: 0 0 14px;
   color: var(--pf-ink);
 }
 .ef-paper-en {
@@ -807,7 +814,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   margin: 0;
 }
 .ef-notes-heading {
-  margin-top: 30px;
+  margin-top: 36px;
   margin-bottom: 2px;
   display: flex;
   align-items: center;
@@ -815,15 +822,15 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   gap: 20px;
 }
 .ef-notes-heading h2 {
-  font-size: 22px;
-  font-weight: 700;
+  font-size: var(--pf-t3);
+  font-weight: 650;
   line-height: 1.5;
   margin: 0;
   letter-spacing: -0.02em;
   color: var(--pf-ink);
 }
 .ef-notes-caption {
-  font-size: 12px;
+  font-size: var(--pf-meta);
   margin: 7px 0 0;
   color: var(--pf-muted);
   line-height: 1.6;
@@ -909,7 +916,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   margin-top: 12px;
 }
 .ef-edit-hint {
-  font-size: 12px;
+  font-size: var(--pf-meta);
   color: var(--pf-muted);
   margin-right: auto;
   line-height: 1.5;
@@ -951,12 +958,6 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   color: var(--pf-ink);
   font-weight: 650;
 }
-.ef-context-title small {
-  font-family: var(--pf-font-mono);
-  font-size: 10px;
-  font-weight: 400;
-  color: var(--pf-muted);
-}
 .ef-status-select {
   display: flex;
   align-items: center;
@@ -976,7 +977,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   cursor: pointer;
 }
 .ef-read-date {
-  font-size: 12px;
+  font-size: var(--pf-meta);
   color: var(--pf-muted);
   margin: 10px 0 0;
 }
@@ -1008,7 +1009,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   color: var(--pf-muted);
 }
 .ef-identifier {
-  font-size: 12px;
+  font-size: var(--pf-meta);
   line-height: 1.65;
   overflow-wrap: anywhere;
   margin-top: 12px;
@@ -1026,7 +1027,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   align-items: center;
   gap: 6px;
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--pf-meta);
   color: var(--pf-secondary);
   list-style: none;
 }
@@ -1039,7 +1040,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 .ef-metadata-details summary::-webkit-details-marker { display: none; }
 .ef-author-details {
   padding: 8px 0 0;
-  font-size: 12px;
+  font-size: var(--pf-meta);
   line-height: 1.75;
 }
 .ef-author-details p { margin: 0 0 12px; }
@@ -1062,6 +1063,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   text-decoration: none;
   font-size: 13px;
   color: var(--pf-secondary);
+  transition: background-color var(--pf-motion), color var(--pf-motion), border-color var(--pf-motion);
 }
 .ef-toc a .mono { font-size: 11px; color: var(--pf-muted); }
 .ef-toc a:hover { background: #e8ebe1; color: var(--pf-ink); }
@@ -1082,7 +1084,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 .ef-ai-context p {
   margin: 0 0 13px;
   color: var(--pf-secondary);
-  font-size: 12px;
+  font-size: var(--pf-meta);
   line-height: 1.8;
 }
 .ef-ai-buttons { display: grid; grid-template-columns: 1fr; gap: 7px; }
@@ -1099,26 +1101,54 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   overflow: auto;
   padding: 32px clamp(32px, 3vw, 64px) 72px;
 }
-.ef-system-inner { max-width: 1240px; }
-.ef-system-blocks {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 16px;
-  align-items: start;
-}
+.ef-system-inner { max-width: 1100px; }
+.ef-system-head { margin: 0 0 22px; }
 .ef-system h1 {
-  font-size: 32px;
+  font-size: var(--pf-t2);
   line-height: 1.3;
   margin: 0 0 8px;
   font-weight: 700;
 }
 .ef-system .lede {
-  margin: 0 0 28px;
+  margin: 0;
   color: var(--pf-secondary);
   font-size: 15px;
   line-height: 1.7;
   max-width: 760px;
 }
+.ef-system-blocks {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+  max-width: 1040px;
+}
+.ef-llm-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  column-gap: 12px;
+}
+@media (max-width: 860px) {
+  .ef-llm-grid { grid-template-columns: 1fr; }
+}
+.ef-block-head { margin: 0 0 14px; }
+.ef-block-head h3 { margin: 0 0 6px; font-size: var(--pf-t3); font-weight: 650; }
+.ef-block-head p { margin: 0; }
+.ef-kbd-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px 32px;
+  font-size: 13px;
+  color: var(--pf-secondary);
+}
+@media (max-width: 560px) {
+  .ef-kbd-list { grid-template-columns: 1fr; }
+}
+.ef-kbd-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.ef-kbd-note { margin: 12px 0 0; font-size: var(--pf-meta); color: var(--pf-muted); }
 .page-block {
   background: var(--pf-surface);
   border: 1px solid var(--pf-divider);
@@ -1127,8 +1157,8 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 }
 .page-block h3 {
   margin: 0 0 10px;
-  font-size: 18px;
-  font-weight: 700;
+  font-size: var(--pf-t3);
+  font-weight: 650;
 }
 .page-block p { margin: 0 0 14px; color: var(--pf-secondary); line-height: 1.7; }
 
@@ -1145,32 +1175,51 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 }
 
 /* MinerU 三源配置卡片 */
-.ef-effective-row {
+.ef-statusbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   border: 1px solid var(--pf-divider);
-  background: #fff;
-  padding: 10px 12px;
+  background: var(--pf-surface);
+  padding: 9px 14px;
   margin: 0 0 12px;
   font-size: 13px;
   color: var(--pf-secondary);
 }
-.ef-effective-row .ef-effective-text b { color: var(--pf-ink); font-weight: 700; }
-.ef-effective-row .ef-effective-text.is-error { color: var(--pf-danger); }
+.ef-statusbar-dot { width: 8px; height: 8px; flex: none; background: var(--pf-muted); }
+.ef-statusbar.is-ok .ef-statusbar-dot { background: var(--pf-success); }
+.ef-statusbar.is-error .ef-statusbar-dot { background: var(--pf-danger); }
+.ef-statusbar.is-busy .ef-statusbar-dot { background: var(--pf-control-border); }
+.ef-statusbar-text { min-width: 0; }
+.ef-statusbar-text b { color: var(--pf-ink); font-weight: 700; }
+.ef-statusbar-text.is-error { color: var(--pf-danger); }
+.ef-statusbar .ef-btn { margin-left: auto; flex: none; }
 .ef-order-row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  margin: 0 0 14px;
+  margin: 0 0 12px;
 }
-.ef-order-label { font-size: 12px; font-weight: 600; color: var(--pf-ink); }
+.ef-order-label { font-size: 12px; font-weight: 600; color: var(--pf-ink); margin-right: 4px; }
+.ef-order-flow { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px; counter-reset: pf-order; }
+.ef-order-item { display: inline-flex; align-items: center; gap: 6px; }
+.ef-order-item::before {
+  counter-increment: pf-order;
+  content: counter(pf-order);
+  font-family: var(--pf-font-mono);
+  font-size: 11px;
+  color: var(--pf-muted);
+}
+.ef-order-sep { color: var(--pf-muted); font-size: 11px; }
 .ef-order-chip {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
   border: 1px solid var(--pf-divider);
   background: #fff;
-  padding: 3px 4px 3px 9px;
-  font-size: 12px;
+  padding: 3px 4px 3px 8px;
+  font-size: var(--pf-meta);
   color: var(--pf-secondary);
 }
 .ef-order-chip.is-effective {
@@ -1194,24 +1243,43 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 .ef-order-chip button:disabled { opacity: 0.35; cursor: default; }
 .ef-provider-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 12px;
-  margin: 4px 0 16px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
+  margin: 0 0 14px;
 }
+/* 单独成行的字段（如本地 Socket）不拉伸满宽 */
+.ef-provider-card > .ef-field { max-width: 520px; }
 .ef-provider-card {
   border: 1px solid var(--pf-divider);
   background: #fff;
-  padding: 14px 16px;
+  padding: 14px 16px 12px;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
 }
 .ef-provider-card header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  margin-bottom: 8px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--pf-divider);
+  margin-bottom: 12px;
 }
-.ef-provider-card .ef-provider-name { font-size: 15px; font-weight: 700; color: var(--pf-ink); }
+.ef-provider-card.is-off .ef-provider-desc,
+.ef-provider-card.is-off .ef-field,
+.ef-provider-card.is-off .ef-import-actions { opacity: 0.55; }
+.ef-field-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  column-gap: 12px;
+}
+.ef-pair-select { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+@media (max-width: 760px) {
+  .ef-field-grid,
+  .ef-ssh-card .ef-field-grid { grid-template-columns: 1fr; }
+}
+.ef-provider-card .ef-provider-name { font-size: 15px; font-weight: 650; color: var(--pf-ink); }
 .ef-provider-toggle {
   display: inline-flex;
   align-items: center;
@@ -1221,24 +1289,58 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   cursor: pointer;
 }
 .ef-provider-toggle input { width: 15px; height: 15px; accent-color: var(--pf-ink); }
-.ef-provider-toggle strong { font-weight: 700; }
+.ef-provider-toggle strong { font-weight: 650; }
 .ef-provider-desc {
-  font-size: 12.5px;
+  font-size: var(--pf-meta);
   color: var(--pf-muted);
   line-height: 1.6;
   margin: 0 0 12px;
 }
 .ef-active-badge {
   font-size: 11px;
-  color: var(--pf-ink);
+  background: var(--pf-ink);
+  color: var(--pf-surface);
   border: 1px solid var(--pf-ink);
   padding: 2px 6px;
   white-space: nowrap;
 }
 .ef-provider-card .ef-field { margin-bottom: 12px; }
 .ef-provider-card .ef-import-actions { margin: 4px 0 8px; }
-.ef-probe-line {
+.ef-provider-card.is-active {
+  border-color: var(--pf-ink);
+  /* 生效来源的选中提示：左缘信号黄短棒（设计契约允许的小面积选中提示） */
+  box-shadow: inset 3px 0 0 0 var(--pf-signal);
+}
+/* SSH 字段最多：整卡铺满一行，六字段三列两行 */
+.ef-ssh-card .ef-field-grid { grid-template-columns: repeat(3, 1fr); }
+.ef-params {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 20px;
+  align-items: flex-start;
+  border: 1px solid var(--pf-divider);
+  background: var(--pf-canvas);
+  padding: 12px 14px;
+  margin: 0 0 14px;
+}
+.ef-params-label {
+  flex: 0 0 100%;
   font-size: 12px;
+  font-weight: 600;
+  color: var(--pf-ink);
+}
+.ef-params .ef-field { margin: 0; flex: 1; min-width: 200px; max-width: 340px; }
+.ef-block-foot {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  border-top: 1px solid var(--pf-divider);
+  padding-top: 14px;
+}
+.ef-foot-msg { font-size: 13px; margin: 0; }
+.ef-probe-line {
+  font-size: var(--pf-meta);
   margin: 6px 0 0;
   color: var(--pf-muted);
   line-height: 1.6;
@@ -1269,7 +1371,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   gap: 14px;
   padding: 0 18px;
   color: #555b4e;
-  font-size: 11px;
+  font-size: 12px;
   overflow: hidden;
 }
 .ef-status b { color: var(--pf-ink); font-weight: 600; }
@@ -1286,6 +1388,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   display: grid;
   place-items: center;
   padding: 24px;
+  animation: pf-fade 160ms ease-out;
 }
 .ef-dialog {
   width: min(500px, 100%);
@@ -1294,7 +1397,8 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   background: var(--pf-surface);
   color: var(--pf-ink);
   border: 1px solid var(--pf-ink);
-  box-shadow: 7px 7px 0 #c6cbbe;
+  box-shadow: var(--pf-elev-1);
+  animation: pf-rise 160ms cubic-bezier(0.2, 0, 0, 1);
 }
 .ef-dialog.is-wide { width: min(640px, 100%); }
 .ef-dialog-head {
@@ -1306,7 +1410,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   border-top: 3px solid var(--pf-ink);
 }
 .ef-dialog.is-danger .ef-dialog-head { border-top-color: var(--pf-danger); }
-.ef-dialog-head h2 { font-size: 20px; margin: 0; font-weight: 700; }
+.ef-dialog-head h2 { font-size: var(--pf-t3); margin: 0; font-weight: 650; }
 .ef-dialog-body { padding: 20px 24px; }
 .ef-dialog-body p {
   margin: 0 0 12px;
@@ -1347,6 +1451,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 .ef-dialog.context-drawer {
   width: min(420px, 100%);
   max-height: 85vh;
+  animation: pf-slide 160ms ease-out;
 }
 .ef-dialog.context-drawer .ef-context {
   display: block;
@@ -1435,9 +1540,34 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   font-size: 13px;
   border-left: 4px solid var(--pf-signal);
   max-width: calc(100vw - 32px);
+  animation: pf-flash-rise 160ms ease-out;
 }
 .ef-flash.error { border-color: var(--pf-danger); }
 .ef-flash.ok { border-color: var(--pf-success); }
+
+/* Entrance keyframes: opacity + ≤8px shift only, mount-played, exit is instant. */
+@keyframes pf-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes pf-rise {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes pf-slide {
+  from { opacity: 0; transform: translateX(8px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@keyframes pf-pop {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+/* pf-flash-rise keeps the -50% horizontal centring component of .ef-flash:
+   sharing pf-rise would drop it during the animation and snap back at the end. */
+@keyframes pf-flash-rise {
+  from { opacity: 0; transform: translate(-50%, 8px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
 
 .loading-cal {
   height: 100%;
@@ -1473,8 +1603,6 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 
 /* System page: two columns once there is room, AI settings taking the wider one. */
 @media (min-width: 1280px) {
-  .ef-system-blocks { grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr); }
-  .ef-system-blocks .is-primary { grid-row: 1 / 3; }
   .page-block { padding: 26px 28px; }
 }
 
@@ -1510,7 +1638,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
     bottom: 28px;
     z-index: 25;
     width: 292px;
-    box-shadow: 8px 0 0 rgba(25, 25, 25, 0.08);
+    box-shadow: var(--pf-elev-1);
   }
   .ef-shell.is-list-open .ef-nav { display: flex; }
   .ef-read { grid-area: read; }
@@ -1560,7 +1688,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
     bottom: 0;
     left: calc(50% - 12px);
   }
-  .ef-rail-fill, .ef-rail-sign { display: none; }
+  .ef-rail-fill { display: none; }
   .ef-toolbar {
     min-height: 58px;
     height: auto;
@@ -1596,10 +1724,13 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .ef-shell,
   .ef-shell *,
   .ef-shell *::before,
   .ef-shell *::after,
+  .ef-backdrop,
   .ef-backdrop *,
+  .ef-flash,
   .loading-cal * {
     animation: none !important;
     transition: none !important;
@@ -1624,7 +1755,8 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   right: 0;
   background: var(--pf-surface);
   border: 1px solid var(--pf-ink);
-  box-shadow: 4px 4px 0 rgba(25, 25, 25, 0.16);
+  box-shadow: var(--pf-elev-1);
+  animation: pf-pop 140ms ease-out;
   color: var(--pf-ink);
   max-height: min(420px, 60vh);
   overflow: auto;
@@ -1670,7 +1802,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 .ef-search-scope-meta {
   display: block;
   margin-top: 3px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--pf-muted);
 }
 

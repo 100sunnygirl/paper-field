@@ -24,10 +24,10 @@ export function PaperRow({
       aria-current={selected ? "true" : undefined}
     >
       <div className="ef-row-top">
-        <span className="mono">
-          {pad2(index + 1)} / PAPER
-        </span>
-        <span className="ef-row-status">
+        <span className="mono">{pad2(index + 1)}</span>
+        <span
+          className={`ef-row-status ${paper.readingStatus === "read" ? "is-read" : ""}`.trim()}
+        >
           {paper.readingStatus === "read" ? <Icon name="check" /> : null}
           {READING_STATUS_LABELS[paper.readingStatus]}
         </span>
@@ -35,7 +35,7 @@ export function PaperRow({
       <h3>{title}</h3>
       {english ? <p className="ef-row-en">{english}</p> : null}
       <div className="ef-row-meta">
-        <span>{[paper.venue, paper.year].filter(Boolean).join(" · ") || "待补全会议信息"}</span>
+        <span>{[paper.venue, paper.year].filter(Boolean).join(" · ") || "会议 / 期刊待补充"}</span>
         <span>{paper.firstAuthor || "作者待补充"}</span>
         {paper.mineruStatus && paper.mineruStatus !== "done" ? (
           <span>{MINERU_STATUS_LABELS[paper.mineruStatus]}</span>

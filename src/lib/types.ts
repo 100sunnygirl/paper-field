@@ -176,10 +176,10 @@ export const NOTE_LABELS: Record<NoteKind, { zh: string; en: string }> = {
 };
 
 export const MODE_LABELS: Record<AppMode, { zh: string; en: string; index: string }> = {
-  field: { zh: "现场", en: "FIELD", index: "01" },
+  field: { zh: "阅读", en: "FIELD", index: "01" },
   archive: { zh: "归档", en: "ARCHIVE", index: "02" },
   intake: { zh: "入库", en: "INTAKE", index: "03" },
-  system: { zh: "系统", en: "SYSTEM", index: "04" },
+  system: { zh: "设置", en: "SYSTEM", index: "04" },
 };
 
 export const READING_STATUS_LABELS: Record<ReadingStatus, string> = {

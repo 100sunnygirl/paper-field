@@ -171,7 +171,7 @@ describe("PaperDialog · 导入执行与进度", () => {
     vi.mocked(normalizePdf).mockImplementation(async (path: string) => path);
   }
 
-  it("导入中显示「正在入库 n/总数 · 当前文件」", async () => {
+  it("导入中显示「正在导入 n/总数 · 当前文件」", async () => {
     setupTwoPdfs();
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
@@ -188,14 +188,14 @@ describe("PaperDialog · 导入执行与进度", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "导入 2" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "导入 2" }));
 
-    expect(await screen.findByText(/正在入库 1\/2 · a\.pdf/)).toBeInTheDocument();
+    expect(await screen.findByText(/正在导入 1\/2 · a\.pdf/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "导入中…" })).toBeDisabled();
 
     release();
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "导入 2" })).toBeEnabled(),
     );
-    expect(screen.queryByText(/正在入库/)).toBeNull();
+    expect(screen.queryByText(/正在导入/)).toBeNull();
   });
 
   it("重复导入产生「跳过 N 篇已在库中」提示（真实 store 链路 + mock repo）", async () => {
@@ -246,7 +246,7 @@ describe("PaperDialog · 手动添加表单校验", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "创建论文" }));
     expect(
-      await screen.findByText("标题必填。没有 PDF 也可以先建条目，之后在编辑论文信息中补充。"),
+      await screen.findByText("标题必填。没有 PDF 也可以先建条目，之后可通过「编辑论文信息」补充。"),
     ).toBeInTheDocument();
     expect(createManualPaper).not.toHaveBeenCalled();
     expect(screen.getByLabelText("标题（必填）")).toHaveAttribute("aria-invalid", "true");

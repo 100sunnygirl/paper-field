@@ -105,7 +105,7 @@ export function PaperDialog() {
         </>
       }
     >
-      <p>选择本机 PDF，或一个目录中的全部 PDF。文件名会先当作标题，导入后立即交给 MinerU 解析。没有 PDF 也可手动录入。</p>
+      <p>选择本机 PDF，或一个目录中的全部 PDF。文件名会先当作标题，导入后立即交给 MinerU 解析。没有 PDF 时也可手动添加论文。</p>
       {isTauri() ? (
         <div className="ef-import-actions">
           <Button type="button" onClick={() => void pickFiles()} disabled={busy}>
@@ -134,10 +134,10 @@ export function PaperDialog() {
       {!isTauri() ? <ManualPaperForm onCreated={() => undefined} /> : null}
       {busy && progress ? (
         <p aria-live="polite">
-          正在入库 {progress.done}/{progress.total} · {progress.current}
+          正在导入 {progress.done}/{progress.total} · {progress.current}
         </p>
       ) : busy ? (
-        <p aria-live="polite">正在入库…</p>
+        <p aria-live="polite">正在导入…</p>
       ) : null}
       {items.length ? (
         <ul className="ef-import-list">
@@ -218,7 +218,7 @@ function ManualPaperForm({ onCreated }: { onCreated: () => void }) {
           disabled={busy}
           onClick={() => {
             if (!title.trim()) {
-              setError("标题必填。没有 PDF 也可以先建条目，之后在编辑论文信息中补充。");
+              setError("标题必填。没有 PDF 也可以先建条目，之后可通过「编辑论文信息」补充。");
               return;
             }
             setError(null);
@@ -321,7 +321,7 @@ export function DomainDialog() {
       }
     >
       {confirmDelete ? (
-        <p>将删除「{current?.name}」及其论文列表关联。此操作不可撤销。</p>
+        <p>将删除「{current?.name}」及其中全部论文与笔记。此操作不可撤销。</p>
       ) : (
         <>
           <Field label="名称 / 中文">
@@ -332,7 +332,7 @@ export function DomainDialog() {
               autoFocus
             />
           </Field>
-          <Field label="代码">
+          <Field label="短码">
             <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="MM-03" />
           </Field>
           <Field label="简介">
@@ -433,7 +433,7 @@ export function DeletePaperDialog() {
       <p>
         <strong>{paper?.titleZh || paper?.title}</strong>
       </p>
-      <p>将删除这篇论文及其笔记。取消会安全返回，不会改动任何内容。</p>
+      <p>将删除这篇论文及其全部笔记。此操作不可撤销。</p>
     </Dialog>
   );
 }
@@ -464,7 +464,7 @@ export function ConfirmNotesDialog() {
         </>
       }
     >
-      <p>你已经改过笔记。AI 不会静默覆盖。确认后五块现场笔记都会被起草阅读笔记替换。</p>
+      <p>你已经修改过笔记，AI 不会静默覆盖。确认后五个笔记板块都会替换为 AI 草稿。</p>
     </Dialog>
   );
 }
@@ -499,8 +499,8 @@ export function ConfirmMetaDialog() {
       }
     >
       <p>
-        你已经手改过论文信息。AI 不会静默覆盖。选「保留我的修改」只补全空白字段；
-        选「用 AI 结果覆盖」会用 AI 结果覆盖你修改过的字段。
+        你已经手动修改过论文信息，AI 不会静默覆盖。「保留我的修改」只补全空白字段；
+        「用 AI 结果覆盖」会覆盖你修改过的字段。
       </p>
     </Dialog>
   );
@@ -527,7 +527,7 @@ export function EditPaperDialog() {
   // dirty 时否决关闭并提示；第二次 Esc / 关闭仍可放行（ui.tsx 的 hasVetoedOnce 约定）。
   function vetoClose(): boolean {
     if (metaDirty || crewDirty) {
-      setFlash({ tone: "warn", text: "论文信息尚未保存。再按一次 Esc 可放弃修改。" });
+      setFlash({ tone: "warn", text: "论文信息尚未保存。点击「保存论文信息」保存，或再按一次 Esc 放弃修改。" });
       return true;
     }
     return false;
@@ -650,7 +650,7 @@ function MetaEditor({
         <input value={draft.arxivId} onChange={(e) => setDraft({ ...draft, arxivId: e.target.value })} />
       </Field>
       <Field label="本地 PDF">
-        <input value={paper.pdfPath ?? "未绑定本地文件"} readOnly />
+        <input value={paper.pdfPath ?? "尚未关联本地 PDF"} readOnly />
       </Field>
       <Field label="公开 PDF 链接">
         <input value={draft.pdfUrl} onChange={(e) => setDraft({ ...draft, pdfUrl: e.target.value })} />
@@ -727,7 +727,7 @@ function CrewEditor({
               {author.name}
               {author.isCorresponding ? " · 通讯" : ""}
             </strong>
-            <small>{[author.affiliation, author.lab].filter(Boolean).join(" / ") || "未填写机构"}</small>
+            <small>{[author.affiliation, author.lab].filter(Boolean).join(" / ") || "机构待补充"}</small>
           </article>
         ))}
         <Button type="button" onClick={() => setEditing(true)}>

@@ -74,7 +74,7 @@ export default function App() {
           return;
         }
         if (mode === "system") {
-          // 系统模式不渲染搜索框：先切回现场模式，再等 React 提交 Dock 后聚焦。
+          // 设置模式不渲染搜索框：先切回阅读模式，再等 React 提交 Dock 后聚焦。
           // setMode 是异步 zustand 更新，单帧 rAF 可能在 #global-search 挂载前触发，
           // 因此用双 rAF；第二帧仍取不到时静默返回。
           void setMode("field").finally(() => {

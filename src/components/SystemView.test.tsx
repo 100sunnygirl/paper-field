@@ -44,7 +44,7 @@ describe("SystemView · MinerU 三源卡片", () => {
       expect(within(ssh).getByText(label)).toBeInTheDocument();
     }
     expect(
-      within(ssh).getByText(/连接另一台电脑上已部署的 MinerU（原 doclib.sock 方案）/),
+      within(ssh).getByText(/连接另一台电脑上已部署的 MinerU，PDF 会先复制到远程暂存目录/),
     ).toBeInTheDocument();
   });
 
@@ -67,7 +67,7 @@ describe("SystemView · MinerU 三源卡片", () => {
       ]),
     });
     render(<SystemView />);
-    expect(screen.getByText(/已启用的来源均未通过探测/)).toBeInTheDocument();
+    expect(screen.getByText(/已启用的解析源均未通过探测/)).toBeInTheDocument();
     expect(
       screen.getByText(/本地 CLI：socket 文件不存在；SSH 远程：连接超时；官方 API：Token 无效/),
     ).toBeInTheDocument();
@@ -76,7 +76,7 @@ describe("SystemView · MinerU 三源卡片", () => {
   it("未启用任何源：显示「尚未启用任何解析源，导入仅入库。」", () => {
     useField.setState({ mineru: mineruState({ configured: false, local: { enabled: false, socketPath: "~/.mineru/doclib.sock" }, ssh: { ...DEFAULT_MINERU.ssh }, api: { ...DEFAULT_MINERU.api } }) });
     render(<SystemView />);
-    expect(screen.getByText("尚未启用任何解析源，导入仅入库。")).toBeInTheDocument();
+    expect(screen.getByText("尚未启用任何解析源，导入将只入库、不解析。")).toBeInTheDocument();
   });
 
   it("探测成功的源显示延迟毫秒数", () => {
@@ -163,8 +163,9 @@ describe("SystemView · 回退顺序调整", () => {
     const saveMineruSettings = vi.fn(async (_input: MineruSaveInput) => undefined);
     useField.setState({ mineru: mineruState(), effectiveProvider: "local", saveMineruSettings });
     render(<SystemView />);
-    fireEvent.click(screen.getAllByRole("button", { name: "保存设置" }).at(-1)!);
+    const mineruBlock = screen.getByText("MinerU 解析源").closest("article") as HTMLElement;
+    fireEvent.click(within(mineruBlock).getByRole("button", { name: "保存设置" }));
     await waitFor(() => expect(saveMineruSettings).toHaveBeenCalledTimes(1));
-    expect(await screen.findByText(/MinerU 设置已保存（启用 3 个来源）/)).toBeInTheDocument();
+    expect(await screen.findByText(/MinerU 设置已保存（已启用 3 个解析源）/)).toBeInTheDocument();
   });
 });

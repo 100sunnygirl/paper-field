@@ -142,7 +142,7 @@ describe("EditPaperDialog · dirty 关闭否决（F8）", () => {
     expect(container.querySelector('[role="dialog"]')).not.toBeNull();
     expect(useField.getState().flash).toMatchObject({
       tone: "warn",
-      text: "论文信息尚未保存。再按一次 Esc 可放弃修改。",
+      text: "论文信息尚未保存。点击「保存论文信息」保存，或再按一次 Esc 放弃修改。",
     });
 
     fireEvent.mouseDown(backdropOf(container));

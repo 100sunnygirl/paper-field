@@ -72,7 +72,7 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
           <div className="ef-domain-picker">
             <h2>归档</h2>
           </div>
-          <p className="ef-nav-sum">只有你手动标记已读的论文会出现在这里。LLM 不会自动标记已读。</p>
+          <p className="ef-nav-sum">只有你手动标记已读的论文会出现在这里。AI 不会自动标记已读。</p>
         </div>
       ) : null}
 
