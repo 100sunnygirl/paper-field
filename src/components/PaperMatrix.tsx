@@ -1,3 +1,4 @@
+import type { CSSProperties } from "react";
 import { MINERU_STATUS_LABELS, READING_STATUS_LABELS, type PaperListItem } from "../lib/types";
 import { pad2 } from "../lib/util";
 import { Icon } from "./ui";
@@ -19,7 +20,10 @@ export function PaperRow({
   return (
     <button
       type="button"
-      className={`ef-row ${selected ? "is-selected" : ""}`}
+      className={`ef-row pf-stagger ${selected ? "is-selected" : ""}`.trim()}
+      /* --pf-i drives .pf-stagger's per-row delay; capped at 12 inside the
+         utility so a full-column remount stays ≤ ~450ms total. */
+      style={{ "--pf-i": index } as CSSProperties}
       onClick={onSelect}
       aria-current={selected ? "true" : undefined}
     >

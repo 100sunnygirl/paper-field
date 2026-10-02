@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import {
   testMineru,
   type MineruLanguage,
@@ -64,9 +64,9 @@ export function SystemView() {
           </div>
 
           <div className="ef-system-blocks">
-            <article className="page-block">
-                <header className="ef-block-head">
-                  <h3>AI 服务设置</h3>
+            <article className="page-block pf-stagger" style={{ "--pf-i": 0 } as CSSProperties}>
+              <header className="ef-block-head">
+                <h3>AI 服务设置</h3>
                   <p>填写 OpenAI 兼容接口的 Base URL、模型与 API Key；保存后即可使用「补全论文信息」与「起草阅读笔记」。</p>
                 </header>
                 <div className="ef-llm-grid">
@@ -122,9 +122,9 @@ export function SystemView() {
                 ) : null}
               </article>
 
-            <MineruSettings />
+              <MineruSettings />
 
-              <article className="page-block">
+              <article className="page-block pf-stagger" style={{ "--pf-i": 2 } as CSSProperties}>
                 <header className="ef-block-head">
                   <h3>数据导出</h3>
                   <p>将当前领域导出为 Markdown 文件夹（README + 每篇论文一个文件）。</p>
@@ -134,7 +134,7 @@ export function SystemView() {
                 </Button>
               </article>
 
-              <article className="page-block">
+              <article className="page-block pf-stagger" style={{ "--pf-i": 3 } as CSSProperties}>
                 <header className="ef-block-head">
                   <h3>快捷键</h3>
                 </header>
@@ -355,7 +355,7 @@ function MineruSettings() {
   const apiEnabled = saved.api.hasToken || Boolean(apiToken.trim());
 
   return (
-    <article className="page-block">
+    <article className="page-block pf-stagger" style={{ "--pf-i": 1 } as CSSProperties}>
       <header className="ef-block-head">
         <h3>MinerU 解析源</h3>
         <p>导入 PDF 后自动送解析：按回退顺序探测，上方解析源不可用时自动切到下一个。</p>
@@ -540,7 +540,7 @@ function MineruSettings() {
         </section>
 
         <section
-          className={`ef-provider-card ef-api-card${apiEnabled ? "" : " is-off"}${effective === "api" ? " is-active" : ""}`}
+          className={`ef-provider-card${apiEnabled ? "" : " is-off"}${effective === "api" ? " is-active" : ""}`}
           aria-label="官方 API"
         >
           <header>

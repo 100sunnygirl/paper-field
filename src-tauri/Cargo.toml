@@ -1,6 +1,6 @@
 [package]
 name = "paper-field"
-version = "0.2.1"
+version = "0.2.2"
 description = "Paper Field / 论文现场 — local-first research notes"
 authors = ["Paper Field"]
 edition = "2021"

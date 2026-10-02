@@ -43,10 +43,41 @@
   --pf-space-6: 24px;
   --pf-space-8: 32px;
   --pf-space-12: 48px;
-  --pf-direct: 160ms ease;
-  /* Short restrained motion for new transitions; elevation for floating layers only. */
-  --pf-motion: 140ms ease;
-  --pf-elev-1: 0 8px 24px rgba(25, 25, 25, 0.08);
+  /* Motion & depth ladder. No bare durations/easings anywhere: every
+     animation and transition references a --pf-t-* / --pf-ease-* token.
+     Order: press < state < direct < enter < settle; loops have exactly two
+     rhythms — breathe (--pf-t-loop) and sweep (--pf-t-sweep), no third. */
+  --pf-ease-direct: cubic-bezier(0.3, 0, 0.2, 1);
+  --pf-ease-out: cubic-bezier(0.2, 0, 0, 1);
+  --pf-ease-loop: ease-in-out;
+  /* Token API: every duration token below is a duration+easing COMPOUND.
+     Never append a separate easing after var(--pf-t-*) / var(--pf-direct) /
+     var(--pf-motion) — a second timing function invalidates the whole
+     animation/transition shorthand, which then silently resolves to none.
+     Sole exception: --pf-t-tick-delay fills the delay slot (bare time). */
+  --pf-t-press: 80ms var(--pf-ease-direct);
+  /* --pf-t-tick-delay: marker→tick two-stage selection rhythm (40ms). */
+  --pf-t-tick-delay: 40ms;
+  --pf-direct: 160ms var(--pf-ease-direct);
+  --pf-motion: 140ms var(--pf-ease-direct);
+  --pf-t-enter: 200ms var(--pf-ease-out);
+  --pf-t-settle: 300ms var(--pf-ease-direct);
+  --pf-t-loop: 1800ms var(--pf-ease-loop);
+  --pf-t-sweep: 1100ms var(--pf-ease-loop);
+  /* Press & selection geometry: :active sinks, list stagger (items capped at
+     12 → ≤450ms per sequence), left-edge selection bar width. */
+  --pf-nudge: 1px;
+  --pf-stagger: 18ms;
+  --pf-marker: 3px;
+  --pf-hover-flat: #eceee7;
+  --pf-hover-quiet: #eef1e8;
+  /* Elevation for floating layers only: square print-hard cards with a top
+     light and a near shadow. Dock/rail/list depth stays flat — lightness
+     steps, never shadows. */
+  --pf-elev-1: inset 0 1px 0 rgba(255, 255, 255, 0.65), 0 2px 4px rgba(25, 25, 25, 0.08), 0 10px 24px rgba(25, 25, 25, 0.07);
+  --pf-elev-2: inset 0 1px 0 rgba(255, 255, 255, 0.7), 0 4px 10px rgba(25, 25, 25, 0.1), 0 24px 56px rgba(25, 25, 25, 0.14);
+  --pf-edge-hard: 2px 2px 0 0 var(--pf-ink);
+  --pf-edge-hard-hover: 1px 1px 0 0 var(--pf-ink);
   --ink: var(--pf-ink);
   --paper: var(--pf-canvas);
   --signal: var(--pf-signal);
@@ -142,28 +173,44 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   font-weight: 500;
   font-size: var(--pf-label-size);
   white-space: nowrap;
-  transition: background var(--pf-direct), border-color var(--pf-direct), box-shadow var(--pf-direct);
+  transition: background var(--pf-direct), border-color var(--pf-direct), box-shadow var(--pf-direct),
+    transform var(--pf-t-press);
 }
 .ef-btn:hover:not(:disabled) {
-  background: #eceee7;
+  background: var(--pf-hover-flat);
   border-color: var(--pf-ink);
+}
+/* Press physics: every button sinks 1px while held — transform only, so
+   surrounding toolbars never reflow. Primary overrides with a deeper press. */
+.ef-btn:active:not(:disabled) {
+  transform: translateY(var(--pf-nudge));
 }
 .ef-btn-primary {
   background: var(--pf-signal);
   border-color: var(--pf-ink);
   font-weight: 650;
-  box-shadow: 2px 2px 0 var(--pf-ink);
+  box-shadow: var(--pf-edge-hard);
+  transition: background var(--pf-direct), border-color var(--pf-direct),
+    box-shadow var(--pf-t-press),
+    transform var(--pf-t-press);
 }
 .ef-btn-primary:hover:not(:disabled) {
   background: #e9e500;
-  box-shadow: 1px 1px 0 var(--pf-ink);
+  box-shadow: var(--pf-edge-hard-hover);
+}
+/* The signature press: the yellow block sinks 2px into the paper as its
+   hard edge collapses. Shadow and transform interpolate together at press
+   timing; layout dimensions are untouched. */
+.ef-btn-primary:active:not(:disabled) {
+  box-shadow: 0 0 0 0 var(--pf-ink);
+  transform: translate(2px, 2px);
 }
 .ef-btn-text {
   border-color: transparent;
   background: transparent;
 }
 .ef-btn-text:hover:not(:disabled) {
-  background: #eceee7;
+  background: var(--pf-hover-flat);
   border-color: #d6d8d1;
 }
 .ef-btn-danger {
@@ -206,6 +253,14 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   border-color: #d8dad3;
   box-shadow: none;
 }
+/* Toggled buttons (manual-add in the import dialog) share the filter-row
+   selected look: ink fill, white label. :not(:disabled) keeps this above
+   the hover tie and never overrides the disabled surface. */
+.ef-btn.is-active:not(:disabled) {
+  background: var(--pf-ink);
+  color: #fff;
+  border-color: var(--pf-ink);
+}
 .ef-icon-btn {
   width: 36px;
   min-height: 36px;
@@ -217,7 +272,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   height: 8px;
   margin-right: 6px;
   background: var(--pf-signal);
-  animation: breathe 1800ms ease-in-out infinite;
+  animation: breathe var(--pf-t-loop) infinite;
 }
 @keyframes breathe {
   0%, 100% { opacity: 1; }
@@ -313,6 +368,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   padding: 0 12px;
   color: #c5c7bf;
   min-width: 0;
+  transition: border-color var(--pf-motion);
 }
 .ef-search:focus-within { border-color: var(--pf-signal); }
 .ef-search input {
@@ -375,7 +431,13 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   font-weight: 500;
   transition: background-color var(--pf-motion), color var(--pf-motion);
 }
-.ef-mode .ef-ico { width: 21px; height: 21px; }
+/* Rail icon lift is the only icon motion in the shell: dock & toolbar icons stay put. */
+.ef-mode .ef-ico {
+  width: 21px;
+  height: 21px;
+  transition: transform var(--pf-t-press);
+}
+.ef-mode:hover .ef-ico { transform: translateY(calc(-1 * var(--pf-nudge))); }
 .ef-mode:hover { background: #e0e3da; color: var(--pf-ink); }
 .ef-mode[aria-current="page"] {
   background: var(--pf-ink);
@@ -387,8 +449,11 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   left: 0;
   top: 15px;
   bottom: 15px;
-  width: 3px;
+  width: var(--pf-marker);
   background: var(--pf-signal);
+  /* State indicator: single scale property, once per state change.
+     --pf-t-enter carries its own easing — never append a second one. */
+  animation: pf-marker-in var(--pf-t-enter);
 }
 .ef-rail-fill { flex: 1; }
 
@@ -438,6 +503,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   border-radius: var(--pf-radius);
   display: grid;
   place-items: center;
+  transition: background-color var(--pf-motion), border-color var(--pf-motion);
 }
 .ef-domain-select:hover { border-color: var(--pf-ink); background: #f0f2e9; }
 .ef-nav-sum {
@@ -464,6 +530,8 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   background: var(--pf-ink);
   height: 3px;
   position: relative;
+  /* Mark-as-read grows the fill smoothly: width transition only, no layout motion. */
+  transition: width var(--pf-t-settle);
 }
 .ef-progress > i::after {
   content: "";
@@ -508,7 +576,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   border-radius: var(--pf-radius);
   transition: background-color var(--pf-motion), border-color var(--pf-motion);
 }
-.ef-row:hover { background: #edefe7; }
+.ef-row:hover { background: var(--pf-hover-flat); }
 .ef-row.is-selected {
   background: white;
   /* 选中深度由边框明度承担（从既有 token 派生），列表行不持有投影。 */
@@ -520,17 +588,21 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   left: -1px;
   top: 17px;
   bottom: 17px;
-  width: 3px;
+  width: var(--pf-marker);
   background: var(--pf-ink);
+  /* State indicator: ink bar grows (scaleY only); list rows never carry shadows. */
+  animation: pf-marker-in var(--pf-t-enter);
 }
 .ef-row.is-selected::after {
   content: "";
   position: absolute;
   left: 2px;
   top: 17px;
-  width: 3px;
+  width: var(--pf-marker);
   height: 22px;
   background: var(--pf-signal);
+  /* Signal tick pops one beat after the marker (scaleX only; both bridges the delay). */
+  animation: pf-tick-in var(--pf-motion) var(--pf-t-tick-delay) both;
 }
 .ef-row-top {
   display: flex;
@@ -623,6 +695,12 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 }
 .empty p { margin: 0; color: var(--pf-muted); line-height: 1.7; }
 .empty-action { margin-top: 16px; }
+/* Entrance scoped to the shell umbrella on purpose: the fatal-storage-error
+   .empty renders outside .ef-shell and stays motionless, and the
+   prefers-reduced-motion fallback keeps covering every animated instance. */
+.ef-shell .empty {
+  animation: pf-rise var(--pf-t-enter) both;
+}
 
 /* Reading workspace: toolbar on top, scrolling document in the centre,
    context rail pinned to the right edge as its own column. */
@@ -661,6 +739,17 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   padding: 0 28px;
   background: #f9faf6;
   border-bottom: 1px solid var(--pf-divider);
+  /* data-scrolled is written by Dossier only when the reading scroll crosses
+     0 — a state switch, so the lift rides --pf-motion (instant under
+     prefers-reduced-motion, as intended). */
+  transition: background-color var(--pf-motion), border-color var(--pf-motion), box-shadow var(--pf-motion);
+}
+/* Scrolled toolbar: paper-white bar, deepened rule and a 1px hard hairline —
+   print-hard depth from edges, not from blur. */
+.ef-read[data-scrolled] .ef-toolbar {
+  background: var(--pf-surface);
+  border-bottom-color: color-mix(in srgb, var(--pf-ink) 20%, var(--pf-divider));
+  box-shadow: 0 1px 0 rgba(25, 25, 25, 0.06);
 }
 .ef-toolbar-label {
   display: flex;
@@ -686,7 +775,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   background: white;
   border: 1px solid #b8c0ad;
   box-shadow: var(--pf-elev-1);
-  animation: pf-pop 140ms ease-out;
+  animation: pf-pop var(--pf-motion);
   z-index: 12;
 }
 .ef-action-menu[hidden] { display: none; }
@@ -701,8 +790,13 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   padding: 0 9px;
   font-size: 13px;
   text-align: left;
+  transition: background-color var(--pf-motion), transform var(--pf-t-press);
 }
-.ef-action-menu button:hover { background: #eef1e7; }
+/* Menu item hover: quiet panel wash + a 1px press-ward nudge (fast lane). */
+.ef-action-menu button:hover {
+  background: var(--pf-hover-quiet);
+  transform: translateX(var(--pf-nudge));
+}
 .ef-action-menu .danger {
   color: var(--pf-danger);
   border-top: 1px solid var(--pf-divider);
@@ -745,6 +839,13 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   width: 48px;
   height: 3px;
   background: var(--pf-signal);
+}
+/* 换文进场：纸面整体 rise 一次（opacity + 8px，:mount 播放、退场即时）。
+   Dossier 给 article 挂 key={paper.id}，换文即重放。纸面自身保持平面——
+   无投影无边框变化；正文（摘要/笔记/全文）零动效。选择器锁在 .ef-shell
+   伞内，prefers-reduced-motion 兜底继续全覆盖。 */
+.ef-shell .ef-reading-grid .ef-document {
+  animation: pf-rise var(--pf-t-enter);
 }
 .ef-paper-category {
   display: flex;
@@ -879,6 +980,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   color: var(--pf-secondary);
   padding: 0 6px;
   border-radius: var(--pf-radius);
+  transition: background-color var(--pf-motion), border-color var(--pf-motion), color var(--pf-motion), transform var(--pf-t-press);
 }
 .ef-note-edit .ef-ico { width: 14px; height: 14px; }
 .ef-note-edit:hover {
@@ -886,6 +988,8 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   border-color: #cdd1c4;
   color: var(--pf-ink);
 }
+/* 按压入纸：press 快车道的 1px 下沉（transform，不改布局）。 */
+.ef-note-edit:active { transform: translateY(var(--pf-nudge)); }
 .ef-note-text {
   color: var(--pf-body);
   font-size: var(--pf-body-size);
@@ -908,6 +1012,14 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   line-height: 1.8;
   resize: vertical;
   border-radius: var(--pf-radius);
+  transition: border-color var(--pf-motion), box-shadow var(--pf-motion);
+}
+/* 书写表面聚焦：与控件层 .ef-field 同一双墨线（1px 描边 + 1px 贴边环），
+   单一聚焦语言；文本域聚焦恒可见，不出现无焦点提示的书写面。 */
+.ef-note textarea:focus {
+  outline: none;
+  border-color: var(--pf-ink);
+  box-shadow: 0 0 0 1px var(--pf-ink);
 }
 .ef-edit-actions {
   display: flex;
@@ -1030,7 +1142,10 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   font-size: var(--pf-meta);
   color: var(--pf-secondary);
   list-style: none;
+  transition: transform var(--pf-t-press);
 }
+/* 按压下沉挂在 summary 行上：图标自身的 90° 旋转（--pf-direct）不受组合干扰。 */
+.ef-metadata-details summary:active { transform: translateY(var(--pf-nudge)); }
 .ef-metadata-details summary .ef-ico {
   width: 12px;
   height: 12px;
@@ -1066,7 +1181,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   transition: background-color var(--pf-motion), color var(--pf-motion), border-color var(--pf-motion);
 }
 .ef-toc a .mono { font-size: 11px; color: var(--pf-muted); }
-.ef-toc a:hover { background: #e8ebe1; color: var(--pf-ink); }
+.ef-toc a:hover { background: var(--pf-hover-quiet); color: var(--pf-ink); }
 .ef-toc a.is-active {
   border-left-color: var(--pf-ink);
   color: var(--pf-ink);
@@ -1186,10 +1301,20 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   font-size: 13px;
   color: var(--pf-secondary);
 }
-.ef-statusbar-dot { width: 8px; height: 8px; flex: none; background: var(--pf-muted); }
+.ef-statusbar-dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  background: var(--pf-muted);
+  transition: background-color var(--pf-motion);
+}
 .ef-statusbar.is-ok .ef-statusbar-dot { background: var(--pf-success); }
 .ef-statusbar.is-error .ef-statusbar-dot { background: var(--pf-danger); }
-.ef-statusbar.is-busy .ef-statusbar-dot { background: var(--pf-control-border); }
+/* 探测中：呼吸点（loop 令牌与 breathe 写法归控件层，本区只引用）。 */
+.ef-statusbar.is-busy .ef-statusbar-dot {
+  background: var(--pf-control-border);
+  animation: breathe var(--pf-t-loop) infinite;
+}
 .ef-statusbar-text { min-width: 0; }
 .ef-statusbar-text b { color: var(--pf-ink); font-weight: 700; }
 .ef-statusbar-text.is-error { color: var(--pf-danger); }
@@ -1238,8 +1363,11 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   font-size: 11px;
   line-height: 1;
   cursor: pointer;
+  /* 按压微位移走 press 档；边框/颜色 hover 走 direct 档。 */
+  transition: border-color var(--pf-direct), color var(--pf-direct), transform var(--pf-t-press);
 }
 .ef-order-chip button:hover:not(:disabled) { border-color: var(--pf-ink); color: var(--pf-ink); }
+.ef-order-chip button:active:not(:disabled) { transform: translateY(var(--pf-nudge)); }
 .ef-order-chip button:disabled { opacity: 0.35; cursor: default; }
 .ef-provider-grid {
   display: grid;
@@ -1250,12 +1378,15 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 /* 单独成行的字段（如本地 Socket）不拉伸满宽 */
 .ef-provider-card > .ef-field { max-width: 520px; }
 .ef-provider-card {
+  /* 信号条 ::before 的定位锚；卡片本体保持平面（1px 边框 + 明度差，不悬停浮起）。 */
+  position: relative;
   border: 1px solid var(--pf-divider);
   background: #fff;
   padding: 14px 16px 12px;
   min-width: 0;
   display: flex;
   flex-direction: column;
+  transition: border-color var(--pf-direct), box-shadow var(--pf-direct);
 }
 .ef-provider-card header {
   display: flex;
@@ -1269,6 +1400,10 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 .ef-provider-card.is-off .ef-provider-desc,
 .ef-provider-card.is-off .ef-field,
 .ef-provider-card.is-off .ef-import-actions { opacity: 0.55; }
+/* 启停开关的明暗变化纳入过渡（仅透明度，不改布局）。 */
+.ef-provider-card .ef-provider-desc,
+.ef-provider-card .ef-field,
+.ef-provider-card .ef-import-actions { transition: opacity var(--pf-direct); }
 .ef-field-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -1308,8 +1443,18 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 .ef-provider-card .ef-import-actions { margin: 4px 0 8px; }
 .ef-provider-card.is-active {
   border-color: var(--pf-ink);
-  /* 生效来源的选中提示：左缘信号黄短棒（设计契约允许的小面积选中提示） */
-  box-shadow: inset 3px 0 0 0 var(--pf-signal);
+}
+/* 生效来源的选中提示：左缘信号黄短棒（设计契约允许的小面积选中提示）。
+   状态指示器：单一 scaleY、200ms、生效源切到该卡时播放一次（transform 不改布局）。 */
+.ef-provider-card.is-active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: var(--pf-marker);
+  background: var(--pf-signal);
+  animation: pf-marker-in var(--pf-t-enter);
 }
 /* SSH 字段最多：整卡铺满一行，六字段三列两行 */
 .ef-ssh-card .ef-field-grid { grid-template-columns: repeat(3, 1fr); }
@@ -1338,7 +1483,8 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   border-top: 1px solid var(--pf-divider);
   padding-top: 14px;
 }
-.ef-foot-msg { font-size: 13px; margin: 0; }
+/* aria-live 结果文本：仅淡入（mount 时一次），不改文本时序。 */
+.ef-foot-msg { font-size: 13px; margin: 0; animation: pf-fade var(--pf-motion); }
 .ef-probe-line {
   font-size: var(--pf-meta);
   margin: 6px 0 0;
@@ -1346,8 +1492,9 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   line-height: 1.6;
   overflow-wrap: anywhere;
 }
-.ef-probe-line.is-ok { color: var(--pf-success); }
-.ef-probe-line.is-error { color: var(--pf-danger); }
+/* ok↔error 切换同名动画不重放，探测轮询期间不闪烁。 */
+.ef-probe-line.is-ok { color: var(--pf-success); animation: pf-fade var(--pf-motion); }
+.ef-probe-line.is-error { color: var(--pf-danger); animation: pf-fade var(--pf-motion); }
 .ef-probe-ms {
   font-family: SFMono-Regular, Consolas, monospace;
   font-size: 11px;
@@ -1388,7 +1535,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   display: grid;
   place-items: center;
   padding: 24px;
-  animation: pf-fade 160ms ease-out;
+  animation: pf-fade var(--pf-t-enter);
 }
 .ef-dialog {
   width: min(500px, 100%);
@@ -1397,8 +1544,9 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   background: var(--pf-surface);
   color: var(--pf-ink);
   border: 1px solid var(--pf-ink);
-  box-shadow: var(--pf-elev-1);
-  animation: pf-rise 160ms cubic-bezier(0.2, 0, 0, 1);
+  /* Dialogs sit at the top of the elevation ladder: elev-2, 1px ink edge kept. */
+  box-shadow: var(--pf-elev-2);
+  animation: pf-rise var(--pf-t-enter);
 }
 .ef-dialog.is-wide { width: min(640px, 100%); }
 .ef-dialog-head {
@@ -1418,6 +1566,9 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   line-height: 1.7;
   font-size: 14px;
 }
+/* Import-progress sweep bar: decorative 3px track, always alongside the
+   aria-live text status, never replacing it. */
+.ef-dialog-body .pf-sweep { margin: 6px 0 8px; }
 .ef-import-actions {
   display: flex;
   gap: 8px;
@@ -1451,7 +1602,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 .ef-dialog.context-drawer {
   width: min(420px, 100%);
   max-height: 85vh;
-  animation: pf-slide 160ms ease-out;
+  animation: pf-slide var(--pf-t-enter);
 }
 .ef-dialog.context-drawer .ef-context {
   display: block;
@@ -1485,6 +1636,18 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   padding: 9px 11px;
   border-radius: var(--pf-radius);
   width: 100%;
+  transition: border-color var(--pf-motion), box-shadow var(--pf-motion);
+}
+/* Writing-surface focus: the global signal ring gives way here to a double
+   ink edge (1px border + 1px flush ring) — an unmistakable focus without a
+   halo around typing surfaces. (.ef-note textarea belongs to the reading
+   stage and mirrors this via the same tokens, not here.) */
+.ef-field input:focus,
+.ef-field textarea:focus,
+.ef-field select:focus {
+  outline: none;
+  border-color: var(--pf-ink);
+  box-shadow: 0 0 0 1px var(--pf-ink);
 }
 .ef-field textarea { min-height: 96px; resize: vertical; }
 .ef-domain-option {
@@ -1499,11 +1662,26 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   margin: 8px 0;
   cursor: pointer;
   text-align: left;
+  position: relative;
+  transition: background var(--pf-motion), border-color var(--pf-motion), box-shadow var(--pf-motion);
 }
 .ef-domain-option strong { font-size: 15px; display: block; }
 .ef-domain-option .mono { font-size: 12px; color: var(--pf-muted); }
-.ef-domain-option:hover { border-color: var(--pf-ink); background: #f0f2e9; }
-.ef-domain-option.is-current { border-color: var(--pf-ink); box-shadow: inset 3px 0 0 var(--pf-signal); }
+.ef-domain-option:hover { border-color: var(--pf-ink); background: var(--pf-hover-flat); }
+/* Current option: the 3px signal bar lives on a ::before so pf-marker-in can
+   grow it once from the top; the box-shadow transition smooths the focus ring
+   and border emphasis. */
+.ef-domain-option.is-current { border-color: var(--pf-ink); }
+.ef-domain-option.is-current::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: var(--pf-marker);
+  background: var(--pf-signal);
+  animation: pf-marker-in var(--pf-t-enter);
+}
 .ef-btn-danger-solid {
   background: var(--pf-danger) !important;
   color: white !important;
@@ -1540,7 +1718,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   font-size: 13px;
   border-left: 4px solid var(--pf-signal);
   max-width: calc(100vw - 32px);
-  animation: pf-flash-rise 160ms ease-out;
+  animation: pf-flash-rise var(--pf-t-enter);
 }
 .ef-flash.error { border-color: var(--pf-danger); }
 .ef-flash.ok { border-color: var(--pf-success); }
@@ -1568,6 +1746,68 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   from { opacity: 0; transform: translate(-50%, 8px); }
   to { opacity: 1; transform: translate(-50%, 0); }
 }
+/* State-indicator keyframes (selection bars/ticks): exempt from the ≤8px
+   entrance rule above, but restricted to a single scale property, ≤200ms,
+   played once when the state first appears — and still disabled by the
+   prefers-reduced-motion fallback. Origins are locked here so consumers
+   cannot drift. */
+@keyframes pf-marker-in {
+  from { transform: scaleY(0); transform-origin: top; }
+  to { transform: scaleY(1); transform-origin: top; }
+}
+@keyframes pf-tick-in {
+  from { transform: scaleX(0); transform-origin: left; }
+  to { transform: scaleX(1); transform-origin: left; }
+}
+/* pf-drawer-left is a content entrance: opacity + ≤8px shift, mount-played. */
+@keyframes pf-drawer-left {
+  from { opacity: 0; transform: translateX(-8px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+/* ---- Reusable motion utilities (foundation-owned) ----
+   Deliberately scoped to the .ef-shell / .ef-backdrop umbrellas: the
+   prefers-reduced-motion fallback covers exactly those subtrees, so elements
+   outside the umbrellas render without motion by construction. Do not unscope.
+   Canonical attachments for the keyframes above (consumers own the rules).
+   CAVEAT: --pf-t-enter / --pf-motion already carry their easing, so appending
+   a separate var(--pf-ease-*) yields TWO timing functions — the animation
+   shorthand becomes invalid at computed-value time and silently resolves to
+   animation-name: none (verified in headless Chrome). Compound tokens only:
+   selection bar  → animation: pf-marker-in var(--pf-t-enter);
+   selection tick → animation: pf-tick-in var(--pf-motion) var(--pf-t-tick-delay) both;
+   nav overlay    → animation: pf-drawer-left var(--pf-t-enter); */
+.ef-shell .pf-enter,
+.ef-backdrop .pf-enter {
+  animation: pf-rise var(--pf-t-enter) both;
+}
+.ef-shell .pf-stagger,
+.ef-backdrop .pf-stagger {
+  animation: pf-rise var(--pf-t-enter) both;
+  /* --pf-i is injected inline per item (index from the map); capped at 12 so
+     a full-column remount stays ≤ ~420ms in total. */
+  animation-delay: calc(min(var(--pf-i, 0), 12) * var(--pf-stagger));
+}
+/* Sweep loading indicator: 3px track, ≤40% signal-yellow block, the single
+   rhythm of .loading-cal's calSweep. The only new yellow surface in the
+   system — do not raise its height or make it steady. Decorative only: it
+   accompanies a text status, never replaces one. */
+.ef-shell .pf-sweep,
+.ef-backdrop .pf-sweep {
+  height: 3px;
+  width: 100%;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--pf-ink) 12%, transparent);
+}
+.ef-shell .pf-sweep::before,
+.ef-backdrop .pf-sweep::before {
+  content: "";
+  display: block;
+  height: 100%;
+  width: 40%;
+  background: var(--pf-signal);
+  animation: calSweep var(--pf-t-sweep) infinite;
+}
 
 .loading-cal {
   height: 100%;
@@ -1586,7 +1826,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   height: 100%;
   width: 40%;
   background: var(--pf-signal);
-  animation: calSweep 1.1s infinite;
+  animation: calSweep var(--pf-t-sweep) infinite;
 }
 @keyframes calSweep {
   from { transform: translateX(-120%); }
@@ -1638,9 +1878,13 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
     bottom: 28px;
     z-index: 25;
     width: 292px;
-    box-shadow: var(--pf-elev-1);
+    box-shadow: var(--pf-elev-2);
   }
-  .ef-shell.is-list-open .ef-nav { display: flex; }
+  .ef-shell.is-list-open .ef-nav {
+    display: flex;
+    /* Top-layer overlay: drawer entrance, ≤8px shift, mount-played. */
+    animation: pf-drawer-left var(--pf-t-enter);
+  }
   .ef-read { grid-area: read; }
   .ef-list-back { display: inline-flex; }
   .ef-brand { min-width: 240px; }
@@ -1719,7 +1963,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   }
   .ef-flash { bottom: 78px; }
   .ef-crew-edit { grid-template-columns: 1fr; }
-  .ef-btn-primary { box-shadow: 1px 1px 0 var(--pf-ink); }
+  .ef-btn-primary { box-shadow: var(--pf-edge-hard-hover); }
   .ef-system { padding: 20px 16px 88px; }
 }
 
@@ -1730,8 +1974,12 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   .ef-shell *::after,
   .ef-backdrop,
   .ef-backdrop *,
+  .ef-backdrop *::before,
+  .ef-backdrop *::after,
   .ef-flash,
-  .loading-cal * {
+  .loading-cal *,
+  .loading-cal *::before,
+  .loading-cal *::after {
     animation: none !important;
     transition: none !important;
     scroll-behavior: auto !important;
@@ -1756,7 +2004,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   background: var(--pf-surface);
   border: 1px solid var(--pf-ink);
   box-shadow: var(--pf-elev-1);
-  animation: pf-pop 140ms ease-out;
+  animation: pf-pop var(--pf-motion);
   color: var(--pf-ink);
   max-height: min(420px, 60vh);
   overflow: auto;
@@ -1791,7 +2039,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   cursor: pointer;
 }
 .ef-search-scope-item:last-child { border-bottom: 0; }
-.ef-search-scope-item:hover { background: #f0f2eb; }
+.ef-search-scope-item:hover { background: var(--pf-hover-quiet); }
 .ef-search-scope-title {
   display: block;
   font-size: 13px;
@@ -1805,6 +2053,18 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   font-size: 12px;
   color: var(--pf-muted);
 }
+/* Cross-domain search tips (searching / no hits). The searching variant
+   carries an 8px .ef-pulse square before the text (Shell.tsx). */
+.ef-search-scope-tip {
+  display: flex;
+  align-items: center;
+  margin: 0;
+  padding: 14px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--pf-secondary);
+}
+.ef-search-scope-tip .ef-pulse { flex: none; }
 
 /* ---- Parsed full text (MinerU) collapsible block in the reading stage ---- */
 .ef-fulltext {
@@ -1823,7 +2083,10 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   font-weight: 650;
   color: var(--pf-ink);
   list-style: none;
+  transition: transform var(--pf-t-press);
 }
+/* 同 .ef-metadata-details：:active 下沉在行上，图标 90° 旋转独立过渡。 */
+.ef-fulltext summary:active { transform: translateY(var(--pf-nudge)); }
 .ef-fulltext summary .ef-ico {
   width: 14px;
   height: 14px;

@@ -146,7 +146,10 @@ export function Dock({
                 </button>
               </div>
               {scopeSearching ? (
-                <p className="ef-search-scope-tip">正在跨领域检索…</p>
+                <p className="ef-search-scope-tip">
+                  <i className="ef-pulse" aria-hidden="true" />
+                  正在跨领域检索…
+                </p>
               ) : scopeResults?.length ? (
                 scopeResults.slice(0, 8).map((item) => (
                   <button

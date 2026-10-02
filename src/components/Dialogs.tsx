@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { listPdfs, normalizePdf } from "../lib/mineru";
 import { repo } from "../lib/repo";
 import type { Author, PaperDetail } from "../lib/types";
@@ -132,17 +132,27 @@ export function PaperDialog() {
       )}
       {isTauri() && manualOpen ? <ManualPaperForm onCreated={() => setManualOpen(false)} /> : null}
       {!isTauri() ? <ManualPaperForm onCreated={() => undefined} /> : null}
-      {busy && progress ? (
-        <p aria-live="polite">
-          正在导入 {progress.done}/{progress.total} · {progress.current}
-        </p>
-      ) : busy ? (
-        <p aria-live="polite">正在导入…</p>
+      {busy ? (
+        <>
+          {/* 装饰性扫动条：仅加载期间存在，3px 高，伴随文字状态不替代。 */}
+          <div className="pf-sweep" aria-hidden="true" />
+          {progress ? (
+            <p aria-live="polite">
+              正在导入 {progress.done}/{progress.total} · {progress.current}
+            </p>
+          ) : (
+            <p aria-live="polite">正在导入…</p>
+          )}
+        </>
       ) : null}
       {items.length ? (
         <ul className="ef-import-list">
-          {items.map((item) => (
-            <li key={item.path}>
+          {items.map((item, index) => (
+            <li
+              key={item.path}
+              className="pf-stagger"
+              style={{ "--pf-i": index } as CSSProperties}
+            >
               <span>{item.name}</span>
               {item.duplicate ? <em>已在库中</em> : null}
             </li>
@@ -181,7 +191,7 @@ function ManualPaperForm({ onCreated }: { onCreated: () => void }) {
   const titleMissing = Boolean(busy === false && error && !title.trim());
 
   return (
-    <div className="ef-manual-paper">
+    <div className="ef-manual-paper pf-enter">
       <Field label="标题（必填）">
         <input
           value={title}

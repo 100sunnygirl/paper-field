@@ -417,6 +417,31 @@ export function ReadingStage({
     return () => observer.disconnect();
   }, [paper?.id]);
 
+  // 滚动动态：仅当阅读滚动越过 0 时在 .ef-read 上写 data-scrolled（跨界才写，
+  // 不做逐帧 DOM 写入），工具条据此提白加深分隔线。passive 监听，无滚动逻辑负担。
+  useEffect(() => {
+    const root = scrollRef.current;
+    const stage = root?.closest(".ef-read");
+    if (!root || !stage) return;
+    const setScrolled = (scrolled: boolean) => {
+      if (scrolled) stage.setAttribute("data-scrolled", "true");
+      else stage.removeAttribute("data-scrolled");
+    };
+    let scrolled = root.scrollTop > 0;
+    setScrolled(scrolled);
+    const onScroll = () => {
+      const next = root.scrollTop > 0;
+      if (next === scrolled) return;
+      scrolled = next;
+      setScrolled(next);
+    };
+    root.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      root.removeEventListener("scroll", onScroll);
+      setScrolled(false);
+    };
+  }, [paper?.id]);
+
   const venueLine = useMemo(() => {
     if (!paper) return "";
     return [paper.venue, paper.year].filter(Boolean).join(" ");
@@ -571,12 +596,11 @@ export function ReadingStage({
           <Button
             type="button"
             variant="text"
-            className="more-btn"
             aria-expanded={menuOpen}
             aria-controls="action-menu"
             onClick={() => setMenuOpen((open) => !open)}
           >
-            <span className="more-word">更多</span>
+            <span>更多</span>
             <Icon name="down" />
           </Button>
           <div className="ef-action-menu" id="action-menu" hidden={!menuOpen}>
@@ -617,7 +641,7 @@ export function ReadingStage({
 
       <div className="ef-read-scroll" ref={scrollRef} id="read-scroll">
         <div className="ef-reading-grid">
-          <article className="ef-document" id="document">
+          <article className="ef-document" id="document" key={paper.id}>
             <div className="ef-paper-category">
               <span>研究论文</span>
               <i className="ef-category-rule" aria-hidden="true" />
