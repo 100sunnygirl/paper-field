@@ -11,14 +11,13 @@ use serde::{Deserialize, Serialize};
 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
 use tauri::path::BaseDirectory;
 use tauri::{AppHandle, Emitter, Manager, State};
-use tauri_plugin_store::StoreExt;
 
 struct LlmState {
     jobs: Mutex<HashMap<String, tokio::task::AbortHandle>>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 struct LlmSettingsFile {
     base_url: String,
     model: String,
@@ -69,28 +68,15 @@ fn read_settings(app: &AppHandle) -> Result<LlmSettingsFile, String> {
         return Ok(LlmSettingsFile::default());
     }
     let raw = fs::read_to_string(path).map_err(|e| e.to_string())?;
-    serde_json::from_str(&raw).map_err(|e| e.to_string())
+    // 残缺/异格式文件（如历史镜像写入）不再让启动失败：退回默认值，
+    // 字段级 serde(default) 已尽力恢复 baseUrl/model。
+    serde_json::from_str(&raw).or_else(|_| Ok(LlmSettingsFile::default()))
 }
 
 fn write_settings(app: &AppHandle, settings: &LlmSettingsFile) -> Result<(), String> {
     let path = settings_path(app)?;
     let raw = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
     fs::write(path, raw).map_err(|e| e.to_string())
-}
-
-fn persist_store(app: &AppHandle, settings: &LlmSettingsFile) {
-    if let Ok(store) = app.store("llm-settings.json") {
-        let _ = store.set("baseUrl", serde_json::Value::String(settings.base_url.clone()));
-        let _ = store.set("model", serde_json::Value::String(settings.model.clone()));
-        let _ = store.set(
-            "hasKey",
-            serde_json::Value::Bool(!settings.api_key.trim().is_empty()),
-        );
-        // 历史版本曾把明文 apiKey 镜像进插件存储的磁盘 JSON；
-        // 只停止写入无法清除既有残留，这里每次保存都主动删除并落盘。
-        let _ = store.delete("apiKey");
-        let _ = store.save();
-    }
 }
 
 #[tauri::command]
@@ -127,7 +113,8 @@ fn save_llm_settings(
         settings.api_key = trimmed;
     }
     write_settings(&app, &settings)?;
-    persist_store(&app, &settings);
+    // 不再写插件存储镜像：macOS 上 plugin-store 的路径与 AppConfig 同目录同名，
+    // 镜像落盘会以键值格式覆盖真正的设置文件（曾导致保存后应用无法启动）。
     Ok(LlmSettingsPublic {
         base_url: settings.base_url,
         model: settings.model,
@@ -526,5 +513,28 @@ mod llm_tests {
         assert!(is_response_format_rejection(400, "json_object not supported"));
         assert!(!is_response_format_rejection(401, "response_format"));
         assert!(!is_response_format_rejection(400, "invalid model"));
+    }
+}
+
+#[cfg(test)]
+mod settings_file_tests {
+    use super::*;
+
+    #[test]
+    fn settings_file_tolerates_clobbered_store_format() {
+        // 历史镜像写入的键值格式（无 api_key）曾让启动解析失败；现在字段级
+        // serde(default) 恢复 baseUrl/model，缺省字段回落默认值。
+        let clobbered = r#"{"hasKey":true,"model":"deepseek-flash","baseUrl":"https://api.deepseek.com"}"#;
+        let parsed: LlmSettingsFile = serde_json::from_str(clobbered).expect("应可解析");
+        assert_eq!(parsed.model, "deepseek-flash");
+        assert_eq!(parsed.base_url, "https://api.deepseek.com");
+        assert_eq!(parsed.api_key, "");
+    }
+
+    #[test]
+    fn settings_file_parses_canonical_format() {
+        let canonical = r#"{"baseUrl":"https://api.deepseek.com","model":"m","apiKey":"sk-1"}"#;
+        let parsed: LlmSettingsFile = serde_json::from_str(canonical).expect("应可解析");
+        assert_eq!(parsed.api_key, "sk-1");
     }
 }
