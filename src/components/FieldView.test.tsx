@@ -73,3 +73,47 @@ describe("PaperNav · INTAKE 批量重试入口", () => {
     expect(screen.queryByRole("button", { name: "全部重试" })).toBeNull();
   });
 });
+
+describe("PaperNav · INTAKE 任务列表只显示进行中的作业", () => {
+  function job(id: string, status: "queued" | "running" | "done" | "error" | "cancelled") {
+    return {
+      id,
+      paperId: "p-1",
+      type: "mineruParse" as const,
+      status,
+      prompt: null,
+      resultJson: null,
+      error: null,
+      createdAt: "2024-01-01T00:00:00.000Z",
+      startedAt: null,
+      finishedAt: null,
+    };
+  }
+
+  it("完成的作业不再堆在列表里，进行中的照常显示", () => {
+    useField.setState({
+      mode: "intake",
+      intake: [],
+      jobs: [
+        job("j1", "done"),
+        job("j2", "running"),
+        job("j3", "queued"),
+        job("j4", "error"),
+        job("j5", "cancelled"),
+      ],
+    });
+
+    render(<PaperNav />);
+    expect(screen.getByText(/MinerU 解析 · 运行中/)).toBeInTheDocument();
+    expect(screen.getByText(/MinerU 解析 · 等待/)).toBeInTheDocument();
+    expect(screen.queryByText(/完成/)).toBeNull();
+    expect(screen.queryByText(/失败/)).toBeNull();
+    expect(screen.queryByText(/已取消/)).toBeNull();
+  });
+
+  it("没有进行中作业时显示空态文案", () => {
+    useField.setState({ mode: "intake", intake: [], jobs: [job("j1", "done")] });
+    render(<PaperNav />);
+    expect(screen.getByText("当前没有进行中的 AI 作业。")).toBeInTheDocument();
+  });
+});

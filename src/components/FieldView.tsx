@@ -115,20 +115,27 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
 
       {mode === "intake" ? (
         <div className="ef-job-list">
-          {jobs.slice(0, 6).map((job) => (
-            <div key={job.id} className="ef-job-row">
-              <span className={`status-${job.status}`}>
-                {job.status === "running" ? <i className="ef-pulse" aria-hidden="true" /> : null}
-                {JOB_TYPE_LABELS[job.type]} · {JOB_STATUS_LABELS[job.status]}
-              </span>
-              {job.status === "running" || job.status === "queued" ? (
-                <Button type="button" size="sm" onClick={() => void cancelJob(job.id)}>
-                  取消
-                </Button>
-              ) : null}
-            </div>
-          ))}
-          {jobs.length === 0 ? <p className="ef-nav-sum">当前没有 AI 作业。</p> : null}
+          {/* 只显示进行中的作业：完成/失败的历史堆在这里会刷屏（曾经的「MinerU 解析 · 完成」墙），
+              结果通知走右上角弹窗，失败可重试的入口在下方「解析失败 · N 篇」。 */}
+          {jobs
+            .filter((job) => job.status === "queued" || job.status === "running")
+            .slice(0, 6)
+            .map((job) => (
+              <div key={job.id} className="ef-job-row">
+                <span className={`status-${job.status}`}>
+                  {job.status === "running" ? <i className="ef-pulse" aria-hidden="true" /> : null}
+                  {JOB_TYPE_LABELS[job.type]} · {JOB_STATUS_LABELS[job.status]}
+                </span>
+                {job.status === "running" || job.status === "queued" ? (
+                  <Button type="button" size="sm" onClick={() => void cancelJob(job.id)}>
+                    取消
+                  </Button>
+                ) : null}
+              </div>
+            ))}
+          {jobs.filter((job) => job.status === "queued" || job.status === "running").length === 0 ? (
+            <p className="ef-nav-sum">当前没有进行中的 AI 作业。</p>
+          ) : null}
         </div>
       ) : null}
 

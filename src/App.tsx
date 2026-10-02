@@ -43,7 +43,8 @@ export default function App() {
 
   useEffect(() => {
     if (!flash) return;
-    const t = window.setTimeout(() => setFlash(null), 4200);
+    // 错误类信息需要更长阅读时间；其余与原节奏一致。
+    const t = window.setTimeout(() => setFlash(null), flash.tone === "error" ? 8000 : 4200);
     return () => window.clearTimeout(t);
   }, [flash, setFlash]);
 
@@ -187,7 +188,20 @@ export default function App() {
         </>
       )}
       <StatusStrip />
-      {flash ? <div className={`ef-flash ${flash.tone}`}>{flash.text}</div> : null}
+      {/* 通知弹窗：右上角、自动消失（错误类停留更久）、可手动关闭。 */}
+      {flash ? (
+        <div className={`ef-flash ${flash.tone}`} role="status">
+          <span>{flash.text}</span>
+          <button
+            type="button"
+            className="ef-flash-close"
+            aria-label="关闭通知"
+            onClick={() => setFlash(null)}
+          >
+            ×
+          </button>
+        </div>
+      ) : null}
       <PaperDialog />
       <DomainDialog />
       <DomainPickerDialog />

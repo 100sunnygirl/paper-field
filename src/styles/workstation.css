@@ -1720,22 +1720,46 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   padding: 2px 6px;
 }
 
+/* 通知弹窗：右上角悬浮，叠加在对话框（z-index 100）之上；墨底白字，
+   左缘色条区分 tone，入场右向滑入（pf-slide），可手动关闭。 */
 .ef-flash {
   position: fixed;
-  z-index: 80;
-  left: 50%;
-  bottom: 47px;
-  transform: translateX(-50%);
+  z-index: 120;
+  top: 16px;
+  right: 16px;
   background: var(--pf-ink);
   color: #fff;
-  padding: 12px 18px;
+  padding: 12px 14px;
   font-size: 13px;
+  line-height: 1.5;
   border-left: 4px solid var(--pf-signal);
-  max-width: calc(100vw - 32px);
-  animation: pf-flash-rise var(--pf-t-enter);
+  border-radius: var(--pf-radius);
+  box-shadow: var(--pf-elev-2);
+  max-width: min(400px, calc(100vw - 32px));
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  animation: pf-slide var(--pf-t-enter);
 }
 .ef-flash.error { border-color: var(--pf-danger); }
 .ef-flash.ok { border-color: var(--pf-success); }
+.ef-flash-close {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  color: #fff;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  opacity: 0.65;
+}
+.ef-flash-close:hover { opacity: 1; }
 
 /* Entrance keyframes: opacity + ≤8px shift only, mount-played, exit is instant. */
 @keyframes pf-fade {
@@ -1753,12 +1777,6 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 @keyframes pf-pop {
   from { opacity: 0; transform: translateY(-4px); }
   to { opacity: 1; transform: translateY(0); }
-}
-/* pf-flash-rise keeps the -50% horizontal centring component of .ef-flash:
-   sharing pf-rise would drop it during the animation and snap back at the end. */
-@keyframes pf-flash-rise {
-  from { opacity: 0; transform: translate(-50%, 8px); }
-  to { opacity: 1; transform: translate(-50%, 0); }
 }
 /* State-indicator keyframes (selection bars/ticks): exempt from the ≤8px
    entrance rule above, but restricted to a single scale property, ≤200ms,
