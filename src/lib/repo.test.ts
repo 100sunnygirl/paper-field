@@ -612,3 +612,47 @@ describe("domain 短码可选（仅名称必填）", () => {
     expect(domains.find((x) => x.id === d.id)?.code).toBe("MM-9");
   });
 });
+
+describe("deleteDomain（领域删除完整性）", () => {
+  it("删除领域时论文与全部关联数据（笔记/解析/作业/作者关联/作者行）一并移除，其他领域不受影响", async () => {
+    const a = await repo.createDomain({ name: "领域A", code: "A-1" });
+    const b = await repo.createDomain({ name: "领域B", code: "B-1" });
+    const pa = await repo.createPaper({ domainId: a.id, pdfPath: "/x/a.pdf" });
+    const pb = await repo.createPaper({ domainId: b.id, pdfPath: "/x/b.pdf" });
+    await repo.saveParsedMarkdown(pa.id, "# 全文");
+    await repo.createJob(pa.id, "mineruParse", "/x/a.pdf");
+    await repo.replaceAuthors(pa.id, [{ name: "张三" }, { name: "李四" }]);
+    await repo.replaceAuthors(pb.id, [{ name: "王五" }]);
+
+    await repo.deleteDomain(a.id);
+
+    expect(await repo.listPapers(a.id)).toHaveLength(0);
+    expect(await repo.listPapers(b.id)).toHaveLength(1);
+    const engine = holder.engine!;
+    const counts = async (sql: string) =>
+      (await engine.select<{ n: number }>(sql))[0]?.n ?? 0;
+    expect(await counts("SELECT COUNT(*) AS n FROM papers WHERE domain_id = '" + a.id + "'")).toBe(0);
+    expect(await counts("SELECT COUNT(*) AS n FROM paper_parse WHERE paper_id = '" + pa.id + "'")).toBe(0);
+    expect(await counts("SELECT COUNT(*) AS n FROM llm_jobs WHERE paper_id = '" + pa.id + "'")).toBe(0);
+    expect(await counts("SELECT COUNT(*) AS n FROM paper_authors WHERE paper_id = '" + pa.id + "'")).toBe(0);
+    expect(await counts("SELECT COUNT(*) AS n FROM notes WHERE paper_id = '" + pa.id + "'")).toBe(0);
+    // 孤儿作者清理：张三/李四随领域删除，王五保留
+    const names = await engine.select<{ name: string }>("SELECT name FROM authors ORDER BY name");
+    expect(names.map((row) => row.name)).toEqual(["王五"]);
+  });
+
+  it("删除中途失败时整体回滚，领域与论文保持原状", async () => {
+    const a = await repo.createDomain({ name: "领域A", code: "A-1" });
+    await repo.createPaper({ domainId: a.id, pdfPath: "/x/a.pdf" });
+    const engine = holder.engine!;
+    // 破坏一张关联表，让删除序列在中途失败
+    await engine.execute("DROP TABLE notes");
+
+    await expect(repo.deleteDomain(a.id)).rejects.toThrow();
+
+    // 回滚后论文与领域仍在
+    expect(await repo.listPapers(a.id)).toHaveLength(1);
+    const domains = await repo.listDomains();
+    expect(domains.some((d) => d.id === a.id)).toBe(true);
+  });
+});
