@@ -207,15 +207,37 @@ async function processOne(host: Host, paperId: string, force: boolean): Promise<
   }
 }
 
+/** 连续失败达到该值即熔断剩余批次：解析源大概率繁忙或不可用，继续只会逐篇耗时超时。 */
+const CONSECUTIVE_FAIL_LIMIT = 3;
+
 export async function runMineruBatch(host: Host, paperIds: string[], force = false): Promise<void> {
   // 守卫语义：order 中无任何启用源 → 静默返回（入口 importPdfs/retryMineru 已给出指引）。
   if (!host.mineru().configured) return;
   let ok = 0;
   let fail = 0;
+  let consecutiveFails = 0;
+  let pausedCount = 0;
   for (const paperId of paperIds) {
+    if (consecutiveFails >= CONSECUTIVE_FAIL_LIMIT) {
+      pausedCount = paperIds.length - ok - fail;
+      break;
+    }
     const result = await processOne(host, paperId, force);
-    if (result === "ok") ok += 1;
-    if (result === "fail") fail += 1;
+    if (result === "ok") {
+      ok += 1;
+      consecutiveFails = 0;
+    } else if (result === "fail") {
+      fail += 1;
+      consecutiveFails += 1;
+    }
+    // cancelled / skip 不计入连续失败，也不打断计数。
+  }
+  if (pausedCount) {
+    host.flash(
+      "error",
+      `MinerU 解析连续失败 ${consecutiveFails} 篇，已暂停剩余 ${pausedCount} 篇。解析源可能繁忙或不可用，可在设置页测试连接，稍后在 INTAKE 页重试。`,
+    );
+    return;
   }
   if (fail) {
     host.flash("error", `MinerU 解析失败 ${fail} 篇，可在资料栏重试。`);

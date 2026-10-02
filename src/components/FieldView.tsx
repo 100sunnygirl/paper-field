@@ -30,10 +30,12 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
   const archiveFilter = useField((s) => s.archiveFilter);
   const setArchiveFilter = useField((s) => s.setArchiveFilter);
   const cancelJob = useField((s) => s.cancelJob);
+  const retryFailedMineru = useField((s) => s.retryFailedMineru);
   const search = useField((s) => s.search);
 
   const domain = domains.find((d) => d.id === selectedDomainId) ?? null;
   const list = mode === "archive" ? archive : mode === "intake" ? intake : papers;
+  const failedParseCount = intake.filter((p) => p.mineruStatus === "error").length;
   const domainRead = papers.filter((p) => p.readingStatus === "read").length;
   const fill = papers.length ? domainRead / papers.length : 0;
 
@@ -83,6 +85,14 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
             <h2>入库</h2>
           </div>
           <p className="ef-nav-sum">尚未读完的论文，以及 MinerU 解析和 AI 补全作业。</p>
+          {failedParseCount ? (
+            <div className="ef-job-row">
+              <span className="status-error">解析失败 · {failedParseCount} 篇</span>
+              <Button type="button" size="sm" onClick={() => void retryFailedMineru()}>
+                全部重试
+              </Button>
+            </div>
+          ) : null}
         </div>
       ) : null}
 

@@ -105,7 +105,10 @@ export function PaperDialog() {
         </>
       }
     >
-      <p>选择本机 PDF，或一个目录中的全部 PDF。文件名会先当作标题，导入后立即交给 MinerU 解析。没有 PDF 时也可手动添加论文。</p>
+      <p>
+        选择本机 PDF，或一个目录中的全部 PDF（只读所选目录本身，不进入子目录）。文件名会先当作标题，导入后立即交给
+        MinerU 解析。没有 PDF 时也可手动添加论文。
+      </p>
       {isTauri() ? (
         <div className="ef-import-actions">
           <Button type="button" onClick={() => void pickFiles()} disabled={busy}>

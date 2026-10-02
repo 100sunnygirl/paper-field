@@ -24,13 +24,14 @@ use crate::app_config_dir;
 use crate::mineru_api::ApiClient;
 
 /// 超时常量（with_timeout 的生产值；测试可注入短值）。
-pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_secs(20);
 pub(crate) const SUBMIT_TIMEOUT: Duration = Duration::from_secs(180);
 pub(crate) const POLL_TIMEOUT: Duration = Duration::from_secs(60);
 pub(crate) const FETCH_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// curl 自身 --max-time（比外层超时略小，作为第二道防线）。
-const CURL_PROBE: u64 = 8;
+/// PROBE 需容纳 doclib /status 的慢响应：实测 4.0.5 空闲即 ~5.5s，繁忙时超 8s。
+const CURL_PROBE: u64 = 15;
 const CURL_SUBMIT: u64 = 170;
 const CURL_POLL: u64 = 55;
 const CURL_FETCH: u64 = 290;
@@ -832,7 +833,7 @@ impl Provider {
                     push_ssh_opts(&mut cmd, "-P", ssh, SSH_CONNECT_NORMAL);
                     cmd.arg(pdf).arg(format!("{}:{remote_file}", ssh_target(ssh)));
                     let output = run_command(cmd, None).await?;
-                    command_text(&output)?;
+                    command_text(&output).map_err(|e| hint_local_read_timeout(&e))?;
                     let body = remote_request(
                         ssh,
                         "POST",
@@ -972,7 +973,9 @@ fn aggregate_failures(failures: &[(String, String)]) -> String {
         .join("；")
 }
 
-/// provider=None 时按 order 逐源探测并提交，失败自动试下一源。
+/// provider=None 时按 order 逐源提交。健康探测只用来给候选源排序，不再拦截提交：
+/// 远端解析繁忙时 /status 可能 5 秒以上才响应（实测 doclib 4.0.5 空闲即 ~5.5s），
+/// 探测超时就把论文判死会把「服务忙」误报成「源不可用」，曾造成整批导入失败。
 async fn submit_with_fallback(
     file: &MineruFileV2,
     paper_id: &str,
@@ -983,32 +986,9 @@ async fn submit_with_fallback(
     if order.is_empty() {
         return Err("没有启用任何 MinerU 来源，请先在系统页配置本地 CLI、SSH 远程或官方 API".into());
     }
-    let mut probes = Vec::with_capacity(order.len());
-    for name in &order {
-        let provider = build_provider(file, name)?;
-        let health = provider.health().await;
-        let (ok, message) = match health {
-            Ok(message) => (true, message),
-            Err(message) => (false, message),
-        };
-        probes.push(HealthProbe {
-            provider: name.clone(),
-            ok,
-            message,
-        });
-    }
-    let chosen = pick_provider(&order, &probes)?;
-    let mut candidates = vec![chosen];
-    for probe in &probes {
-        if probe.ok && !candidates.contains(&probe.provider) {
-            candidates.push(probe.provider.clone());
-        }
-    }
-    let mut failures: Vec<(String, String)> = probes
-        .iter()
-        .filter(|p| !p.ok)
-        .map(|p| (p.provider.clone(), p.message.clone()))
-        .collect();
+    let probes = probe_providers(file, &order).await;
+    let candidates = order_candidates(&order, &probes);
+    let mut failures: Vec<(String, String)> = Vec::new();
     for name in &candidates {
         let provider = build_provider(file, name)?;
         match provider
@@ -1020,6 +1000,92 @@ async fn submit_with_fallback(
         }
     }
     Err(aggregate_failures(&failures))
+}
+
+/// 候选顺序：健康源按 order 优先，探测失败的启用源垫底（仍尝试提交，让真实提交结果说话）。
+fn order_candidates(order: &[String], probes: &[HealthProbe]) -> Vec<String> {
+    let mut candidates: Vec<String> = probes
+        .iter()
+        .filter(|p| p.ok)
+        .filter(|p| order.contains(&p.provider))
+        .map(|p| p.provider.clone())
+        .collect();
+    for name in order {
+        if !candidates.contains(name) {
+            candidates.push(name.clone());
+        }
+    }
+    candidates
+}
+
+/// 批量导入时的探测缓存：避免每篇论文各付一次 5 秒级的 /status 往返。
+struct ProbeCacheEntry {
+    key: String,
+    at: Instant,
+    probes: Vec<HealthProbe>,
+}
+
+static PROBE_CACHE: OnceLock<Mutex<Option<ProbeCacheEntry>>> = OnceLock::new();
+const PROBE_CACHE_TTL: Duration = Duration::from_secs(60);
+
+fn probe_cache_key(file: &MineruFileV2, order: &[String]) -> String {
+    let mut parts: Vec<String> = vec![order.join(",")];
+    for name in order {
+        let part = match name.as_str() {
+            "local" => format!("{}:{}", file.local.enabled, file.local.socket_path),
+            "ssh" => format!(
+                "{}:{}:{}:{}:{}:{}",
+                file.ssh.enabled,
+                file.ssh.host,
+                file.ssh.port,
+                file.ssh.user,
+                file.ssh.identity_file,
+                file.ssh.socket_path
+            ),
+            _ => format!("token:{}", !file.api.token.is_empty()),
+        };
+        parts.push(part);
+    }
+    parts.join("|")
+}
+
+async fn probe_providers(file: &MineruFileV2, order: &[String]) -> Vec<HealthProbe> {
+    // 只有一个启用源时无需排序，直接提交：省一次往返，也避免忙时探测误判。
+    if order.len() == 1 {
+        return Vec::new();
+    }
+    let key = probe_cache_key(file, order);
+    let cache = PROBE_CACHE.get_or_init(|| Mutex::new(None));
+    if let Ok(guard) = cache.lock() {
+        if let Some(entry) = guard.as_ref() {
+            if entry.key == key && entry.at.elapsed() < PROBE_CACHE_TTL {
+                return entry.probes.clone();
+            }
+        }
+    }
+    let mut probes = Vec::with_capacity(order.len());
+    for name in order {
+        let (ok, message) = match build_provider(file, name) {
+            Err(message) => (false, message),
+            Ok(provider) => match provider.health().await {
+                Ok(message) => (true, message),
+                Err(message) => (false, message),
+            },
+        };
+        probes.push(HealthProbe {
+            provider: name.clone(),
+            ok,
+            message,
+        });
+    }
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some(ProbeCacheEntry {
+            key,
+            at: Instant::now(),
+            probes: probes.clone(),
+        });
+    }
+    probes
 }
 
 // ---------- 进程执行（async，显式 stdin EOF，超时由 with_timeout + kill_on_drop 兜底） ----------
@@ -1053,8 +1119,20 @@ async fn run_command(
     Ok(output)
 }
 
-fn command_text(output: &std::process::Output) -> Result<String, String> {
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+/// scp 读本地文件超时通常不是 SSH 问题：iCloud/云盘「优化储存」会把文件清成占位，
+/// 读取时才开始下载，超时即报 `read local "...": Operation timed out`。附上可操作提示。
+fn hint_local_read_timeout(message: &str) -> String {
+    if message.contains("read local") && message.contains("Operation timed out") {
+        format!(
+            "{message}（本地文件读取超时：该 PDF 可能在 iCloud/云盘中尚未下载到本机，\
+             请先双击打开该文件完成下载，再重新解析）"
+        )
+    } else {
+        message.to_string()
+    }
+}
+
+fn command_text(output: &std::process::Output) -> Result<String, String> {    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     if output.status.success() {
         return Ok(stdout);
     }
@@ -1553,24 +1631,17 @@ pub async fn mineru_markdown(
 
 #[tauri::command]
 pub async fn list_pdfs(directory: String) -> Result<Vec<String>, String> {
-    let root = PathBuf::from(&directory);
+    scan_pdfs_in_dir(&directory)
+}
+
+/// 只列出目录本身（一层）的 PDF，不进入子目录；隐藏文件跳过。
+fn scan_pdfs_in_dir(directory: &str) -> Result<Vec<String>, String> {
+    let root = PathBuf::from(directory);
     if !root.is_dir() {
         return Err("目录不存在".into());
     }
+    let entries = fs::read_dir(&root).map_err(|e| format!("目录无法读取：{e}"))?;
     let mut found = Vec::new();
-    walk_pdfs(&root, &mut found, 0)?;
-    found.sort();
-    if found.is_empty() {
-        return Err("这个目录里没有 PDF".into());
-    }
-    Ok(found)
-}
-
-fn walk_pdfs(dir: &Path, found: &mut Vec<String>, depth: usize) -> Result<(), String> {
-    if depth > 8 || found.len() >= 4000 {
-        return Ok(());
-    }
-    let entries = fs::read_dir(dir).map_err(|e| e.to_string())?;
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
@@ -1579,14 +1650,20 @@ fn walk_pdfs(dir: &Path, found: &mut Vec<String>, depth: usize) -> Result<(), St
         }
         let path = entry.path();
         if path.is_dir() {
-            walk_pdfs(&path, found, depth + 1)?;
-        } else if name.to_ascii_lowercase().ends_with(".pdf") {
-            if let Ok(canon) = canonical_pdf(&path.to_string_lossy()) {
-                found.push(canon.to_string_lossy().to_string());
-            }
+            continue;
+        }
+        if !name.to_ascii_lowercase().ends_with(".pdf") {
+            continue;
+        }
+        if let Ok(canon) = canonical_pdf(&path.to_string_lossy()) {
+            found.push(canon.to_string_lossy().to_string());
         }
     }
-    Ok(())
+    found.sort();
+    if found.is_empty() {
+        return Err("所选目录里没有 PDF（不读取子目录）".into());
+    }
+    Ok(found)
 }
 
 #[tauri::command]
@@ -1759,6 +1836,55 @@ mod tests {
 
         let reordered: Vec<String> = vec!["api".into(), "ssh".into(), "local".into()];
         assert_eq!(pick_provider(&reordered, &probes).unwrap(), "api");
+    }
+
+    #[test]
+    fn order_candidates_puts_healthy_first_and_keeps_unhealthy_tail() {
+        let order: Vec<String> = vec!["local".into(), "ssh".into(), "api".into()];
+        // ssh 探测失败（如远端忙导致 /status 超时）时仍要排在候选里，靠真实提交定成败。
+        let probes = vec![
+            HealthProbe { provider: "local".into(), ok: true, message: "已连接".into() },
+            HealthProbe { provider: "ssh".into(), ok: false, message: "curl: (28) timed out".into() },
+            HealthProbe { provider: "api".into(), ok: true, message: "已连接".into() },
+        ];
+        let candidates = order_candidates(&order, &probes);
+        assert_eq!(
+            candidates,
+            vec!["local".to_string(), "api".to_string(), "ssh".to_string()]
+        );
+    }
+
+    #[test]
+    fn order_candidates_without_probes_keeps_enabled_order() {
+        // 单一启用源跳过探测（probes 为空）时，候选就是原顺序。
+        let order: Vec<String> = vec!["ssh".into()];
+        assert_eq!(order_candidates(&order, &[]), vec!["ssh".to_string()]);
+        let multi: Vec<String> = vec!["ssh".into(), "api".into()];
+        assert_eq!(order_candidates(&multi, &[]), vec!["ssh".to_string(), "api".to_string()]);
+    }
+
+    #[test]
+    fn probe_cache_key_changes_with_order_and_host() {
+        let mut file = default_file_v2();
+        file.ssh.enabled = true;
+        file.api.token = "tok".into();
+        let order: Vec<String> = vec!["ssh".into(), "api".into()];
+        let base = probe_cache_key(&file, &order);
+        file.ssh.host = "other.local".into();
+        assert_ne!(probe_cache_key(&file, &order), base);
+        let reordered: Vec<String> = vec!["api".into(), "ssh".into()];
+        assert_ne!(probe_cache_key(&file, &reordered), base);
+    }
+
+    #[test]
+    fn hint_local_read_timeout_maps_icloud_placeholder_error() {
+        let raw = r#"scp: read local "/Users/x/Desktop/a.pdf": Operation timed out"#;
+        let hinted = hint_local_read_timeout(raw);
+        assert!(hinted.contains(raw), "保留原始错误：{hinted}");
+        assert!(hinted.contains("尚未下载到本机"), "应附中文提示：{hinted}");
+        // 其他 scp 错误原样返回
+        let other = r#"scp: Connection closed by remote host"#;
+        assert_eq!(hint_local_read_timeout(other), other);
     }
 
     #[test]
@@ -2016,5 +2142,60 @@ mod tests {
                 "解析全文未包含样本论文关键词"
             );
         }
+    }
+
+    // ---------- list_pdfs：只读所选目录一层，不进入子目录 ----------
+
+    fn temp_scan_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("pf-list-pdfs-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("创建临时目录失败");
+        dir
+    }
+
+    #[test]
+    fn scan_pdfs_in_dir_reads_only_top_level() {
+        let dir = temp_scan_dir("top");
+        fs::write(dir.join("a.pdf"), b"x").unwrap();
+        fs::write(dir.join("B.PDF"), b"x").unwrap();
+        fs::write(dir.join(".hidden.pdf"), b"x").unwrap();
+        fs::write(dir.join("note.txt"), b"x").unwrap();
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        fs::write(dir.join("sub").join("child.pdf"), b"x").unwrap();
+
+        let list = scan_pdfs_in_dir(&dir.to_string_lossy()).expect("扫描应成功");
+        let names: Vec<String> = list
+            .iter()
+            .map(|p| {
+                Path::new(p)
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_string()
+            })
+            .collect();
+        // 只取目录本身：子目录里的 child.pdf、隐藏文件与非 PDF 都不出现。
+        assert_eq!(names, vec!["B.PDF".to_string(), "a.pdf".to_string()]);
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn scan_pdfs_in_dir_errors_when_pdfs_only_in_subdir() {
+        let dir = temp_scan_dir("subonly");
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        fs::write(dir.join("sub").join("child.pdf"), b"x").unwrap();
+
+        let err = scan_pdfs_in_dir(&dir.to_string_lossy()).expect_err("应报没有 PDF");
+        assert!(err.contains("没有 PDF"), "错误文案应说明没有 PDF：{err}");
+
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn scan_pdfs_in_dir_rejects_missing_dir() {
+        let missing = std::env::temp_dir().join("pf-list-pdfs-missing");
+        let err = scan_pdfs_in_dir(&missing.to_string_lossy()).expect_err("应报目录不存在");
+        assert_eq!(err, "目录不存在");
     }
 }

@@ -12,9 +12,12 @@ vi.mock("./lib/repo", () => ({
     listPapers: vi.fn(async () => []),
     listArchive: vi.fn(async () => []),
     listIntake: vi.fn(async () => []),
+    listFailedMineru: vi.fn(async () => [] as string[]),
+    setMineruState: vi.fn(async () => undefined),
   },
 }));
 
+import { DEFAULT_MINERU } from "./lib/mineru";
 import { repo } from "./lib/repo";
 
 function listItem(id: string): PaperListItem {
@@ -66,6 +69,8 @@ beforeEach(() => {
   vi.mocked(repo.listArchive).mockClear();
   vi.mocked(repo.listIntake).mockClear();
   vi.mocked(repo.listPapers).mockClear();
+  vi.mocked(repo.listFailedMineru).mockReset();
+  vi.mocked(repo.setMineruState).mockReset();
 });
 
 describe("navigatePapers（缺陷 9：未选中时的首末落点）", () => {
@@ -161,5 +166,53 @@ describe("refresh 在三种模式下的搜索接线", () => {
     useField.setState({ mode: "field", selectedDomainId: "d-1", selectedPaperId: "gone" });
     await useField.getState().refresh();
     expect(useField.getState().selectedPaperId).toBe("a");
+  });
+});
+
+describe("retryFailedMineru（INTAKE 批量重试）", () => {
+  const configuredMineru = {
+    ...DEFAULT_MINERU,
+    ssh: { ...DEFAULT_MINERU.ssh, enabled: true },
+    configured: true,
+  };
+
+  it("把全部解析失败论文重置为 queued 并重新排队", async () => {
+    vi.mocked(repo.listFailedMineru).mockResolvedValue(["e1", "e2"]);
+    useField.setState({ mineru: configuredMineru });
+
+    await useField.getState().retryFailedMineru();
+
+    expect(repo.setMineruState).toHaveBeenCalledTimes(2);
+    expect(repo.setMineruState).toHaveBeenCalledWith("e1", {
+      status: "queued",
+      error: null,
+      parseId: null,
+      parseIds: [],
+      docRef: null,
+      provider: null,
+    });
+    const flash = useField.getState().flash;
+    expect(flash?.tone).toBe("ok");
+    expect(flash?.text).toContain("已将 2 篇重新发送到 MinerU 解析");
+  });
+
+  it("没有失败论文时提示且不动数据", async () => {
+    vi.mocked(repo.listFailedMineru).mockResolvedValue([]);
+    useField.setState({ mineru: configuredMineru });
+
+    await useField.getState().retryFailedMineru();
+
+    expect(repo.setMineruState).not.toHaveBeenCalled();
+    expect(useField.getState().flash?.text).toBe("没有解析失败的论文。");
+  });
+
+  it("未配置解析源时给出设置页指引", async () => {
+    vi.mocked(repo.listFailedMineru).mockResolvedValue(["e1"]);
+    useField.setState({ mineru: DEFAULT_MINERU });
+
+    await useField.getState().retryFailedMineru();
+
+    expect(repo.setMineruState).not.toHaveBeenCalled();
+    expect(useField.getState().flash?.text).toContain("尚未启用任何 MinerU 解析源");
   });
 });

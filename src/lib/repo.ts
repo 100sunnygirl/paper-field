@@ -918,6 +918,17 @@ export const repo = {
     return rows.map((row) => row.id);
   },
 
+  /** 解析失败的论文（供 INTAKE 页批量重试）；跨领域，按失败时间先后排序。 */
+  async listFailedMineru(): Promise<string[]> {
+    const engine = await getEngine();
+    const rows = await engine.select<{ id: string }>(
+      `SELECT id FROM papers
+        WHERE pdf_path IS NOT NULL AND pdf_path != '' AND mineru_status = 'error'
+        ORDER BY updated_at ASC`,
+    );
+    return rows.map((row) => row.id);
+  },
+
   async listReadyForMeta(): Promise<string[]> {
     const engine = await getEngine();
     const rows = await engine.select<{ id: string }>(

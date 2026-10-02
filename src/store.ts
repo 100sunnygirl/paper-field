@@ -92,6 +92,8 @@ interface FieldState {
     pdfPath?: string;
   }) => Promise<void>;
   retryMineru: (paperId: string) => Promise<void>;
+  /** INTAKE 页批量重试：把全部解析失败（error）论文重新提交给 MinerU。 */
+  retryFailedMineru: () => Promise<void>;
   savePaperPatch: (patch: Parameters<typeof repo.updatePaper>[1]) => Promise<void>;
   saveAuthors: (authors: PaperDetail["authors"]) => Promise<void>;
   saveNote: (kind: NoteKind, content: string) => Promise<void>;
@@ -160,7 +162,7 @@ export const useField = create<FieldState>((set, get) => ({
       const selectedDomainId = domains[0]?.id ?? null;
       set({ domains, selectedDomainId, settings, mineru, ready: true, error: null });
       await get().refresh();
-      // 探测不阻断 ready：浏览器预览直接返回 []，桌面端最多 10s，完成后异步更新状态条。
+      // 探测不阻断 ready：浏览器预览直接返回 []，桌面端最多 20s，完成后异步更新状态条。
       void get().probeMineru();
       enqueueMineru(() => resumeMineru(mineruHost()));
     } catch (err) {
@@ -389,6 +391,44 @@ export const useField = create<FieldState>((set, get) => ({
       enqueueMineru(() => runMineruBatch(mineruHost(), [paperId], true));
     } catch (err) {
       get().setFlash({ tone: "error", text: `重新解析失败：${errText(err)}，数据未改动。` });
+      throw err;
+    }
+  },
+
+  retryFailedMineru: async () => {
+    let failedIds: string[] = [];
+    try {
+      failedIds = await repo.listFailedMineru();
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `读取失败列表出错：${errText(err)}，数据未改动。` });
+      throw err;
+    }
+    if (!failedIds.length) {
+      get().setFlash({ tone: "warn", text: "没有解析失败的论文。" });
+      return;
+    }
+    if (!get().mineru.configured) {
+      get().setFlash({ tone: "warn", text: "尚未启用任何 MinerU 解析源。可到设置页配置本地 / SSH / 官方 API。" });
+      return;
+    }
+    try {
+      // 与单篇重试同构：重置解析状态后重新提交；连续失败由批次熔断兜底提示。
+      for (const id of failedIds) {
+        clearMineruCancel(id);
+        await repo.setMineruState(id, {
+          status: "queued",
+          error: null,
+          parseId: null,
+          parseIds: [],
+          docRef: null,
+          provider: null,
+        });
+      }
+      await get().refresh();
+      get().setFlash({ tone: "ok", text: `已将 ${failedIds.length} 篇重新发送到 MinerU 解析。` });
+      enqueueMineru(() => runMineruBatch(mineruHost(), failedIds, true));
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `批量重试失败：${errText(err)}，数据未改动。` });
       throw err;
     }
   },

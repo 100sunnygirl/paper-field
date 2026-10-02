@@ -386,3 +386,51 @@ describe("runMineruBatch 守卫", () => {
     expect(host.flash).not.toHaveBeenCalled();
   });
 });
+
+describe("runMineruBatch · 连续失败熔断", () => {
+  function paperMap(ids: string[]): Record<string, PaperDetail> {
+    const papers: Record<string, PaperDetail> = {};
+    for (const id of ids) papers[id] = paperState({ id });
+    return papers;
+  }
+
+  it("连续 3 篇提交失败后暂停剩余批次并给出指引", async () => {
+    const ids = ["p1", "p2", "p3", "p4", "p5"];
+    const papers = paperMap(ids);
+    const host = makeHostBase({ paper: papers.p1 });
+    vi.mocked(repo.getPaper).mockImplementation(async (id: string) => papers[id] ?? null);
+    // 模拟远端繁忙：提交一律超时失败
+    vi.mocked(mineruSubmit).mockRejectedValue(new Error("SSH 远程：curl: (28) Operation timed out"));
+
+    await runMineruBatch(host, ids, false);
+
+    // 第 4、5 篇不再尝试
+    expect(mineruSubmit).toHaveBeenCalledTimes(3);
+    const [tone, text] = host.flash.mock.calls.at(-1)!;
+    expect(tone).toBe("error");
+    expect(text).toContain("连续失败 3 篇");
+    expect(text).toContain("已暂停剩余 2 篇");
+    expect(text).toContain("INTAKE");
+  });
+
+  it("失败被成功打断则不熔断，仍走普通失败汇总", async () => {
+    const ids = ["p1", "p2", "p3"];
+    const papers = paperMap(ids);
+    const host = makeHostBase({ paper: papers.p1 });
+    vi.mocked(repo.getPaper).mockImplementation(async (id: string) => papers[id] ?? null);
+    vi.mocked(mineruSubmit)
+      .mockRejectedValueOnce(new Error("busy"))
+      // p2 提交即完成（status=done 直接取全文）
+      .mockResolvedValueOnce(submitResult({ status: "done" }))
+      .mockRejectedValueOnce(new Error("busy"));
+    vi.mocked(mineruMarkdown).mockResolvedValue("# md");
+
+    await runMineruBatch(host, ids, false);
+
+    expect(mineruSubmit).toHaveBeenCalledTimes(3);
+    const [tone, text] = host.flash.mock.calls.at(-1)!;
+    expect(tone).toBe("error");
+    expect(text).toContain("解析失败 2 篇");
+    expect(text).not.toContain("已暂停");
+  });
+});
