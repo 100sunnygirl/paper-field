@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { completeChat, extractErrorDetail, friendlyLlmError } from "./settings";
+import { invoke } from "@tauri-apps/api/core";
+import { completeChat, extractErrorDetail, friendlyLlmError, saveSettings } from "./settings";
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(async () => ({ baseUrl: "", model: "", hasKey: false })),
+}));
 
 function jsonResponse(
   status: number,
@@ -117,5 +122,38 @@ describe("completeChat · 浏览器分支重试策略", () => {
   it("未配置 Key 时抛 NO_API_KEY", async () => {
     localStorage.removeItem("paper-field.llm");
     await expect(completeChat(INPUT)).rejects.toThrow("NO_API_KEY");
+  });
+});
+
+describe("saveSettings · Tauri 边界三态（缺陷：undefined 丢字段）", () => {
+  function asTauri() {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: {}, configurable: true });
+  }
+
+  afterEach(() => {
+    delete (window as unknown as Record<string, unknown>)["__TAURI_INTERNALS__"];
+    vi.mocked(invoke).mockClear();
+  });
+
+  it("留空(undefined) → 显式传 null：字段不丢，后端保留已存 Key", async () => {
+    asTauri();
+    await saveSettings({ baseUrl: "https://x/v1", model: "m" });
+    expect(invoke).toHaveBeenCalledWith("save_llm_settings", {
+      baseUrl: "https://x/v1",
+      model: "m",
+      apiKey: null,
+    });
+  });
+
+  it("空串原样传递（= 清除已存 Key）", async () => {
+    asTauri();
+    await saveSettings({ baseUrl: "https://x/v1", model: "m", apiKey: "" });
+    expect(vi.mocked(invoke).mock.calls[0][1]).toMatchObject({ apiKey: "" });
+  });
+
+  it("有值原样传递（trim 由后端负责）", async () => {
+    asTauri();
+    await saveSettings({ baseUrl: "https://x/v1", model: "m", apiKey: "sk-1" });
+    expect(vi.mocked(invoke).mock.calls[0][1]).toMatchObject({ apiKey: "sk-1" });
   });
 });

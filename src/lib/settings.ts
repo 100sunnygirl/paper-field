@@ -58,7 +58,9 @@ export async function saveSettings(input: {
     await invoke("save_llm_settings", {
       baseUrl: input.baseUrl.trim() || DEFAULT_BASE,
       model: input.model.trim() || DEFAULT_MODEL,
-      apiKey: input.apiKey,
+      // undefined 会被 JSON 序列化丢弃，Rust 命令侧会报 missing field `apiKey`；
+      // 三态在边界统一：undefined→null（保留已存）、""→""（清除）、其他→写入。
+      apiKey: input.apiKey ?? null,
     });
     return;
   }

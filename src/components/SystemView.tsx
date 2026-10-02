@@ -95,6 +95,7 @@ export function SystemView() {
                       void saveLlmSettings({
                         baseUrl,
                         model,
+                        // 留空 = 保留已存 Key（settings.saveSettings 在 Tauri 边界转为 null 传给后端）。
                         apiKey: apiKey.trim() ? apiKey.trim() : undefined,
                       }).catch((err: unknown) => {
                         setLlmMessage({ tone: "error", text: `保存设置失败：${errText(err)}。` });
