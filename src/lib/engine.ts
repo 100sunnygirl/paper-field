@@ -7,6 +7,15 @@ export interface SqlEngine {
   select<T>(sql: string, params?: unknown[]): Promise<T[]>;
 }
 
+// SQLite 落盘失败的单出口：App 挂载后注入 handler 走 toast 通知
+// （经 toasts.notify 收口自动入运行日志）；未注入时退回 console.error 兜底。
+// 两条路径互斥，不得并存（也不在 engine 内直接写日志，避免第二套通道）。
+let onPersistFailure: ((message: string) => void) | null = null;
+
+export function setPersistFailureHandler(handler: ((message: string) => void) | null): void {
+  onPersistFailure = handler;
+}
+
 class SqlJsEngine implements SqlEngine {
   private persistTimer: number | null = null;
 
@@ -39,6 +48,10 @@ class SqlJsEngine implements SqlEngine {
     if (this.persistTimer !== null) window.clearTimeout(this.persistTimer);
     this.persistTimer = window.setTimeout(() => {
       persistSqlJs(this.db.export()).catch((err) => {
+        if (onPersistFailure) {
+          onPersistFailure(`本地 SQLite 持久化失败：${err instanceof Error ? err.message : String(err)}`);
+          return;
+        }
         console.error("Failed to persist local SQLite", err);
       });
     }, 80);

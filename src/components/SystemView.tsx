@@ -11,6 +11,7 @@ import {
 import { providerLabel, summarizeHealths } from "../lib/mineruPlan";
 import { shortcut } from "../lib/util";
 import { useField } from "../store";
+import { LogPanel } from "./LogPanel";
 import { Button, Field } from "./ui";
 
 function errText(err: unknown): string {
@@ -125,7 +126,9 @@ export function SystemView() {
 
               <MineruSettings />
 
-              <article className="page-block pf-stagger" style={{ "--pf-i": 2 } as CSSProperties}>
+              <LogPanel />
+
+              <article className="page-block pf-stagger" style={{ "--pf-i": 3 } as CSSProperties}>
                 <header className="ef-block-head">
                   <h3>数据导出</h3>
                   <p>将当前领域导出为 Markdown 文件夹（README + 每篇论文一个文件）。</p>
@@ -135,7 +138,7 @@ export function SystemView() {
                 </Button>
               </article>
 
-              <article className="page-block pf-stagger" style={{ "--pf-i": 3 } as CSSProperties}>
+              <article className="page-block pf-stagger" style={{ "--pf-i": 4 } as CSSProperties}>
                 <header className="ef-block-head">
                   <h3>快捷键</h3>
                 </header>

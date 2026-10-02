@@ -13,7 +13,10 @@ import { ReadingStage } from "./components/Dossier";
 import { PaperNav } from "./components/FieldView";
 import { Dock, Rail, StatusStrip } from "./components/Shell";
 import { SystemView } from "./components/SystemView";
+import { Toasts } from "./components/Toasts";
 import { useField } from "./store";
+import { setPersistFailureHandler } from "./lib/engine";
+import { notify } from "./toasts";
 import "./styles/workstation.css";
 
 export default function App() {
@@ -24,8 +27,6 @@ export default function App() {
   const domains = useField((s) => s.domains);
   const selectedDomainId = useField((s) => s.selectedDomainId);
   const search = useField((s) => s.search);
-  const flash = useField((s) => s.flash);
-  const setFlash = useField((s) => s.setFlash);
   const paper = useField((s) => s.paper);
   const navigatePapers = useField((s) => s.navigatePapers);
   const openDialog = useField((s) => s.openDialog);
@@ -38,15 +39,15 @@ export default function App() {
   const [contextOpen, setContextOpen] = useState(false);
 
   useEffect(() => {
-    void init();
-  }, [init]);
+    // engine 的 SQLite 落盘失败改走 toast 通知（经 notify 收口自动入运行日志），
+    // 卸载时摘除 handler、恢复 engine 内的 console.error 兜底（单出口互斥）。
+    setPersistFailureHandler((message) => notify("error", message));
+    return () => setPersistFailureHandler(null);
+  }, []);
 
   useEffect(() => {
-    if (!flash) return;
-    // 错误类信息需要更长阅读时间；其余与原节奏一致。
-    const t = window.setTimeout(() => setFlash(null), flash.tone === "error" ? 8000 : 4200);
-    return () => window.clearTimeout(t);
-  }, [flash, setFlash]);
+    void init();
+  }, [init]);
 
   useEffect(() => {
     setListOpen(false);
@@ -188,20 +189,6 @@ export default function App() {
         </>
       )}
       <StatusStrip />
-      {/* 通知弹窗：右上角、自动消失（错误类停留更久）、可手动关闭。 */}
-      {flash ? (
-        <div className={`ef-flash ${flash.tone}`} role="status">
-          <span>{flash.text}</span>
-          <button
-            type="button"
-            className="ef-flash-close"
-            aria-label="关闭通知"
-            onClick={() => setFlash(null)}
-          >
-            ×
-          </button>
-        </div>
-      ) : null}
       <PaperDialog />
       <DomainDialog />
       <DomainPickerDialog />
@@ -209,6 +196,9 @@ export default function App() {
       <EditPaperDialog />
       <ConfirmNotesDialog />
       <ConfirmMetaDialog />
+      {/* 通知弹窗：右上角堆叠、各自自动消失（错误类停留更久）、可手动关闭；
+          挂在各 Dialog 之后，层叠由 z-index 变量控制（toast 120 > dialog 30）。 */}
+      <Toasts />
     </div>
   );
 }

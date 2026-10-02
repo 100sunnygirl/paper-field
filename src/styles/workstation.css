@@ -71,6 +71,9 @@
   --pf-marker: 3px;
   --pf-hover-flat: #eceee7;
   --pf-hover-quiet: #eef1e8;
+  /* Floating-layer stacking ladder: toasts sit above everything — dialog
+     backdrop (30), dock (30) and the skip link (100). */
+  --pf-z-toast: 120;
   /* Elevation for floating layers only: square print-hard cards with a top
      light and a near shadow. Dock/rail/list depth stays flat — lightness
      steps, never shadows. */
@@ -1720,13 +1723,21 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   padding: 2px 6px;
 }
 
-/* 通知弹窗：右上角悬浮，叠加在对话框（z-index 100）之上；墨底白字，
-   左缘色条区分 tone，入场右向滑入（pf-slide），可手动关闭。 */
-.ef-flash {
+/* 通知弹窗：右上角悬浮堆叠（多条各自独立计时、悬停/聚焦暂停），叠加在对话框
+   backdrop（z 30）、dock（z 30）与 skip-link（z 100）之上，层叠值收口在
+   --pf-z-toast；墨底白字，左缘色条区分 tone，入场右向滑入（pf-slide），
+   可手动关闭。 */
+.ef-toast-stack {
   position: fixed;
-  z-index: 120;
+  z-index: var(--pf-z-toast);
   top: 16px;
   right: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: min(400px, calc(100vw - 32px));
+}
+.ef-toast {
   background: var(--pf-ink);
   color: #fff;
   padding: 12px 14px;
@@ -1735,15 +1746,14 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   border-left: 4px solid var(--pf-signal);
   border-radius: var(--pf-radius);
   box-shadow: var(--pf-elev-2);
-  max-width: min(400px, calc(100vw - 32px));
   display: flex;
   align-items: flex-start;
   gap: 12px;
   animation: pf-slide var(--pf-t-enter);
 }
-.ef-flash.error { border-color: var(--pf-danger); }
-.ef-flash.ok { border-color: var(--pf-success); }
-.ef-flash-close {
+.ef-toast.error { border-color: var(--pf-danger); }
+.ef-toast.ok { border-color: var(--pf-success); }
+.ef-toast-close {
   flex: none;
   width: 22px;
   height: 22px;
@@ -1759,7 +1769,62 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   line-height: 1;
   opacity: 0.65;
 }
-.ef-flash-close:hover { opacity: 1; }
+.ef-toast-close:hover { opacity: 1; }
+
+/* ---- 运行日志面板（设置页）：只读列表 + 级别过滤 ----
+   级别色全复用既有变量：error → danger、info/debug → muted、warn 行左缘
+   signal 黄条（与 .ef-toast 的 warn tone 同一语义），不新增色板。 */
+.ef-log-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.ef-log-chips { display: flex; gap: 6px; }
+.ef-log-chip {
+  border: 1px solid var(--pf-control-border);
+  background: var(--pf-surface);
+  color: var(--pf-secondary);
+  font-size: var(--pf-label-size);
+  padding: 3px 10px;
+  cursor: pointer;
+}
+.ef-log-chip.is-on {
+  background: var(--pf-ink);
+  border-color: var(--pf-ink);
+  color: #fff;
+}
+.ef-log-actions { display: inline-flex; gap: 8px; }
+.ef-log-list {
+  max-height: 260px;
+  overflow: auto;
+  border: 1px solid var(--pf-divider);
+  background: var(--pf-surface);
+  font-family: var(--pf-font-mono);
+  font-size: 12px;
+  line-height: 1.7;
+}
+.ef-log-row {
+  display: flex;
+  gap: 10px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--pf-divider);
+}
+.ef-log-row:last-child { border-bottom: 0; }
+.ef-log-row.is-error .ef-log-level { color: var(--pf-danger); font-weight: 700; }
+.ef-log-row.is-warn {
+  border-left: 2px solid var(--pf-signal);
+  font-weight: 600;
+}
+.ef-log-row.is-info .ef-log-level { color: var(--pf-muted); }
+.ef-log-row.is-debug { color: var(--pf-muted); font-style: italic; }
+.ef-log-stamp { color: var(--pf-muted); flex: none; }
+.ef-log-level { flex: none; min-width: 42px; }
+.ef-log-scope { flex: none; color: var(--pf-secondary); }
+.ef-log-msg { min-width: 0; overflow-wrap: anywhere; }
+.ef-log-empty { padding: 14px 10px; color: var(--pf-muted); margin: 0; }
 
 /* Entrance keyframes: opacity + ≤8px shift only, mount-played, exit is instant. */
 @keyframes pf-fade {
@@ -1993,7 +2058,13 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
     bottom: 64px;
     width: min(320px, 88vw);
   }
-  .ef-flash { bottom: 78px; }
+  /* 窄屏改为底部堆叠：column-reverse 让最新一条贴着屏幕底边（靠近拇指），
+     视觉顺序与桌面端「新条在上」的读向保持一致。 */
+  .ef-toast-stack {
+    top: auto;
+    bottom: 78px;
+    flex-direction: column-reverse;
+  }
   .ef-crew-edit { grid-template-columns: 1fr; }
   .ef-btn-primary { box-shadow: var(--pf-edge-hard-hover); }
   .ef-system { padding: 20px 16px 88px; }
@@ -2008,7 +2079,8 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   .ef-backdrop *,
   .ef-backdrop *::before,
   .ef-backdrop *::after,
-  .ef-flash,
+  .ef-toast-stack,
+  .ef-toast,
   .loading-cal *,
   .loading-cal *::before,
   .loading-cal *::after {

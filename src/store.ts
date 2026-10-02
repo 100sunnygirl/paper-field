@@ -15,6 +15,8 @@ import { pickProviderFromHealths, providerLabel, summarizeHealths } from "./lib/
 import { DRAFT_NOTES_SYSTEM, PREPARE_META_SYSTEM, draftNotesUserPrompt, normalizeMeta, normalizeNotes, prepareMetaUserPrompt } from "./lib/prompts";
 import { repo } from "./lib/repo";
 import { cancelChat, completeChat, loadSettings, saveSettings } from "./lib/settings";
+import { log } from "./lib/logger";
+import { dismissAll, notify } from "./toasts";
 import type {
   AppMode,
   Domain,
@@ -38,6 +40,11 @@ interface Flash {
 interface FieldState {
   ready: boolean;
   error: string | null;
+  /**
+   * @deprecated 旧「全局单条」通知的镜像，只写不清（下一次 setFlash 才覆盖），
+   * 仅服务既有测试的动作后立即断言（store.test / Dialogs.test / EditPaperDialog.test），
+   * UI 已不再读取。新代码请直接用 toasts.notify / dismiss；测试断言迁移后删除本字段。
+   */
   flash: Flash | null;
   mode: AppMode;
   domains: Domain[];
@@ -146,7 +153,16 @@ export const useField = create<FieldState>((set, get) => ({
   unsavedNote: false,
   loadError: null,
 
-  setFlash: (flash) => set({ flash }),
+  // 【通知唯一入口 / 日志唯一收口】flash 字段的唯一写入口就是本函数：写入镜像的同时
+  // 桥接 toasts 层（评审裁定的收口层）——非 null 走 notify（emit / refresh 等事件与
+  // 日志联动都在那里），null 沿用旧语义「立即关掉当前通知」清空整个堆叠。
+  // 任何代码不得绕过 setFlash 直接 setState({flash})，也不得绕过 notify 另发通知——
+  // 否则会出现「有弹窗、无日志」的盲区（store.test.ts 有零 IPC + 收口防回归用例）。
+  setFlash: (flash) => {
+    set({ flash });
+    if (flash) notify(flash.tone, flash.text);
+    else dismissAll("manual");
+  },
   setUnsavedNote: (value) => set({ unsavedNote: value }),
   openDialog: (dialog) => set({ dialog }),
   closeDialog: () => set({ dialog: null, pendingDraftJob: null }),
@@ -166,6 +182,8 @@ export const useField = create<FieldState>((set, get) => ({
       void get().probeMineru();
       enqueueMineru(() => resumeMineru(mineruHost()));
     } catch (err) {
+      // init 失败渲染整页「存储无法打开」（不走 flash），收口覆盖不到，须单独记日志。
+      log.error("store", "存储初始化失败", err);
       set({
         error: err instanceof Error ? err.message : String(err),
         ready: true,
@@ -716,6 +734,7 @@ async function runJob(
 ) {
   const controller = new AbortController();
   abortMap.set(jobId, controller);
+  log.info("llm", `AI 作业开始（${jobId}）`);
   await repo.updateJob(jobId, { status: "running", startedAt: nowIso() });
   await useField.getState().refresh();
   try {
@@ -732,12 +751,15 @@ async function runJob(
       resultJson: raw,
       finishedAt: nowIso(),
     });
+    log.info("llm", `AI 作业完成（${jobId}）`);
     if (!quiet) {
       useField.getState().setFlash({ tone: "ok", text: "AI 作业完成。阅读状态未改动。" });
     }
   } catch (err) {
     if (controller.signal.aborted) return;
     const message = err instanceof Error ? err.message : String(err);
+    // flash 联动已记下用户可见文案；这里补一条作业维度的 error（带 jobId）。
+    log.error("llm", `AI 作业失败（${jobId}）`, message);
     await repo.updateJob(jobId, {
       status: "error",
       error: message,

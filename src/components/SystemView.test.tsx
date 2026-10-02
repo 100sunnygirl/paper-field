@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SystemView } from "./SystemView";
 import { useField } from "../store";
 import { DEFAULT_MINERU, type MineruSaveInput, type MineruSettingsV2 } from "../lib/mineru";
+import { clear as clearLog, log } from "../lib/logger";
 import type { ProviderHealth } from "../lib/mineru";
 
 function mineruState(overrides: Partial<MineruSettingsV2> = {}): MineruSettingsV2 {
@@ -167,5 +168,61 @@ describe("SystemView · 回退顺序调整", () => {
     fireEvent.click(within(mineruBlock).getByRole("button", { name: "保存设置" }));
     await waitFor(() => expect(saveMineruSettings).toHaveBeenCalledTimes(1));
     expect(await screen.findByText(/MinerU 设置已保存（已启用 3 个解析源）/)).toBeInTheDocument();
+  });
+});
+
+describe("SystemView · 运行日志面板", () => {
+  beforeEach(async () => {
+    useField.setState(useField.getInitialState(), true);
+    localStorage.clear();
+    await clearLog();
+  });
+
+  it("渲染种入的日志条目（最新在上）", () => {
+    log.info("mineru", "解析批次开始：共 3 篇");
+    log.error("ui", "导入失败：文件损坏");
+    render(<SystemView />);
+    const list = screen.getByRole("log", { name: "运行日志" });
+    expect(within(list).getByText(/解析批次开始：共 3 篇/)).toBeInTheDocument();
+    expect(within(list).getByText(/导入失败：文件损坏/)).toBeInTheDocument();
+    // 最新在上：error 行在 info 行之前
+    const rows = Array.from(list.querySelectorAll(".ef-log-row"));
+    expect(rows[0]!.textContent).toContain("导入失败");
+    expect(rows[1]!.textContent).toContain("解析批次开始");
+  });
+
+  it("级别过滤：切到「错误」只保留 error 行", () => {
+    log.info("mineru", "INFO-ONLY-ROW");
+    log.error("ui", "ERROR-ROW");
+    render(<SystemView />);
+    fireEvent.click(screen.getByRole("button", { name: "错误" }));
+    const list = screen.getByRole("log", { name: "运行日志" });
+    expect(within(list).getByText(/ERROR-ROW/)).toBeInTheDocument();
+    expect(within(list).queryByText(/INFO-ONLY-ROW/)).not.toBeInTheDocument();
+  });
+
+  it("「清空…」两步确认：第一步只出现确认按钮且日志仍在，确认后列表清空", async () => {
+    log.warn("store", "WARN-ROW");
+    render(<SystemView />);
+    fireEvent.click(screen.getByRole("button", { name: "清空…" }));
+    // 第一步：换成确认按钮，但日志尚未清
+    expect(screen.getByRole("button", { name: "确认清空" })).toBeInTheDocument();
+    expect(screen.getByText(/WARN-ROW/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "确认清空" }));
+    await waitFor(() => expect(screen.getByText("暂无日志。")).toBeInTheDocument());
+  });
+
+  it("「复制」把日志文本写入剪贴板（最新在上、一行一条）", async () => {
+    log.info("app", "COPY-ROW");
+    const writeText = vi.fn(async (_text: string) => undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    render(<SystemView />);
+    fireEvent.click(screen.getByRole("button", { name: "复制" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    expect(writeText.mock.calls[0]![0]).toContain("COPY-ROW");
+    expect(writeText.mock.calls[0]![0]).toContain("INFO app COPY-ROW");
   });
 });

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PaperDetail, PaperListItem } from "./lib/types";
 import { useField } from "./store";
 
@@ -18,8 +18,15 @@ vi.mock("./lib/repo", () => ({
   },
 }));
 
+// 仅为「零动态加载」断言提供 spy：非 Tauri 分支的收口链路本就不应触碰 plugin-store。
+vi.mock("@tauri-apps/plugin-store", () => ({
+  load: vi.fn(),
+}));
+
 import { DEFAULT_MINERU } from "./lib/mineru";
+import { clear as clearLog, getEntries, log } from "./lib/logger";
 import { repo } from "./lib/repo";
+import { bindToastLog, dismissAll } from "./toasts";
 
 function listItem(id: string): PaperListItem {
   return {
@@ -237,5 +244,82 @@ describe("createDomain / updateDomain（仅名称必填）", () => {
     });
     await useField.getState().createDomain({ name: "多模态", code: "" });
     expect(repo.createDomain).toHaveBeenCalledWith({ name: "多模态", code: "" });
+  });
+});
+
+describe("setFlash × notify：通知唯一收口", () => {
+  beforeEach(async () => {
+    // toasts 堆叠是模块级单例：先摘 sink 清空堆叠（前序用例的残留通知），
+    // 再清日志缓冲，保证本组断言只看到自己的事件。
+    bindToastLog(null);
+    dismissAll("manual");
+    await clearLog();
+    // 与 main.tsx 同规则的 sink（产品侧唯一注入点在 main.tsx，测试环境不经 main）：
+    // emit 按 tone 映射级别（ok→info / warn→warn / error→error），dismiss / evict
+    // 记 info，refresh 高频只记 debug。
+    bindToastLog((event) => {
+      if (event.action === "emit") {
+        if (event.tone === "error") log.error("ui", event.text);
+        else if (event.tone === "warn") log.warn("ui", event.text);
+        else log.info("ui", event.text);
+        return;
+      }
+      if (event.action === "refresh") {
+        log.debug("ui", `通知刷新停留计时：${event.text}`);
+        return;
+      }
+      if (event.action === "evict") {
+        log.info("ui", `通知超出堆叠上限被逐出：${event.text}`);
+        return;
+      }
+      log.info("ui", `通知关闭（${event.reason === "auto" ? "自动消退" : "手动关闭"}）：${event.text}`);
+    });
+  });
+
+  afterEach(() => {
+    bindToastLog(null);
+  });
+
+  it("error / warn / ok 通知经 notify 收口入运行日志（scope=ui，ok 为 info 级）；null 清空堆叠并记关闭", () => {
+    useField.getState().setFlash({ tone: "error", text: "保存失败：网络错误" });
+    useField.getState().setFlash({ tone: "warn", text: "请先保存笔记" });
+    useField.getState().setFlash({ tone: "ok", text: "已保存。" });
+    useField.getState().setFlash(null);
+    const entries = getEntries();
+    expect(entries).toHaveLength(6);
+    expect(entries[0]).toMatchObject({ level: "error", scope: "ui", message: "保存失败：网络错误" });
+    expect(entries[1]).toMatchObject({ level: "warn", scope: "ui", message: "请先保存笔记" });
+    expect(entries[2]).toMatchObject({ level: "info", scope: "ui", message: "已保存。" });
+    // setFlash(null) 桥接为清空堆叠：在场 3 条各记一条手动关闭日志。
+    expect(entries.slice(3).map((e) => e.message)).toEqual([
+      "通知关闭（手动关闭）：保存失败：网络错误",
+      "通知关闭（手动关闭）：请先保存笔记",
+      "通知关闭（手动关闭）：已保存。",
+    ]);
+  });
+
+  it("flash 字段照常写入（兼容直接读取 state.flash 的既有用法）", () => {
+    useField.getState().setFlash({ tone: "warn", text: "W" });
+    expect(useField.getState().flash).toEqual({ tone: "warn", text: "W" });
+    useField.getState().setFlash(null);
+    expect(useField.getState().flash).toBeNull();
+  });
+
+  it("非 Tauri 下收口链路零 IPC、零 plugin-store 动态加载（绕过校验防回归）", async () => {
+    vi.useFakeTimers();
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const { load } = await import("@tauri-apps/plugin-store");
+      vi.mocked(invoke).mockClear();
+      vi.mocked(load).mockClear();
+      useField.getState().setFlash({ tone: "error", text: "boom" });
+      useField.getState().setFlash({ tone: "warn", text: "careful" });
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(getEntries().length).toBeGreaterThanOrEqual(2);
+      expect(invoke).not.toHaveBeenCalled();
+      expect(load).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

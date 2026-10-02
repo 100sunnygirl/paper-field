@@ -5,6 +5,7 @@ import {
   type MineruSettingsV2,
 } from "./mineru";
 import type { MineruProviderKind } from "./types";
+import { log } from "./logger";
 import { repo } from "./repo";
 import { nowIso } from "./util";
 
@@ -29,7 +30,8 @@ export function clearMineruCancel(paperId: string): void {
 
 export function enqueueMineru(task: () => Promise<void>): void {
   chain = chain.then(task).catch((err: unknown) => {
-    console.error(err);
+    // 后台任务链在此终结错误：这里曾是全应用唯一无痕的错误路径，必须留日志。
+    log.error("mineru", "后台解析任务异常退出", err);
   });
 }
 
@@ -202,6 +204,7 @@ async function processOne(host: Host, paperId: string, force: boolean): Promise<
     }
     await repo.updateJob(job.id, { status: "error", error: message, finishedAt: nowIso() });
     await repo.setMineruState(paperId, { status: "error", error: message });
+    log.error("mineru", `论文解析失败（${paperId}）`, message);
     await host.refresh();
     return "fail";
   }
@@ -213,6 +216,7 @@ const CONSECUTIVE_FAIL_LIMIT = 3;
 export async function runMineruBatch(host: Host, paperIds: string[], force = false): Promise<void> {
   // 守卫语义：order 中无任何启用源 → 静默返回（入口 importPdfs/retryMineru 已给出指引）。
   if (!host.mineru().configured) return;
+  log.info("mineru", `解析批次开始：共 ${paperIds.length} 篇`);
   let ok = 0;
   let fail = 0;
   let consecutiveFails = 0;
@@ -233,12 +237,14 @@ export async function runMineruBatch(host: Host, paperIds: string[], force = fal
     // cancelled / skip 不计入连续失败，也不打断计数。
   }
   if (pausedCount) {
+    log.warn("mineru", `连续失败 ${consecutiveFails} 篇，熔断暂停剩余 ${pausedCount} 篇`);
     host.flash(
       "error",
       `MinerU 解析连续失败 ${consecutiveFails} 篇，已暂停剩余 ${pausedCount} 篇。解析源可能繁忙或不可用，可在设置页测试连接，稍后在 INTAKE 页重试。`,
     );
     return;
   }
+  log.info("mineru", `解析批次结束：成功 ${ok} 篇，失败 ${fail} 篇`);
   if (fail) {
     host.flash("error", `MinerU 解析失败 ${fail} 篇，可在资料栏重试。`);
   } else if (ok && !host.hasKey()) {
