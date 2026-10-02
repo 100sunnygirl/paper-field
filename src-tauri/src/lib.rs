@@ -4,8 +4,8 @@ mod mineru_api;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Mutex;
-use std::time::Duration;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
@@ -161,47 +161,195 @@ async fn llm_complete(
     joined
 }
 
-async fn call_chat(
+/// LLM 请求策略（对齐 OpenAI 官方 SDK 默认行为：max_retries=2，仅重试瞬时错误）。
+const LLM_MAX_RETRIES: u32 = 2;
+const LLM_BACKOFF_BASE_MS: u64 = 800;
+const LLM_BACKOFF_JITTER_MS: u64 = 400;
+/// Retry-After 超过该值视为额度类限流而非瞬时拥塞，直接失败（lobe-chat #13572 的教训）。
+const LLM_RETRY_AFTER_CAP_SECS: u64 = 30;
+
+static LLM_HTTP: OnceLock<reqwest::Client> = OnceLock::new();
+
+fn llm_http_client() -> &'static reqwest::Client {
+    LLM_HTTP.get_or_init(|| {
+        reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(15))
+            .timeout(Duration::from_secs(120))
+            .use_rustls_tls()
+            .build()
+            .expect("build llm http client")
+    })
+}
+
+/// 单次请求的可重试性分类；finish_reason 类错误一律不重试。
+enum ChatError {
+    /// 非 2xx：状态码 + 响应体原文 + 服务端要求的等待秒数（如有）。
+    Http { status: u16, body: String, retry_after: Option<u64> },
+    /// 连接失败 / 超时等传输层错误。
+    Network(String),
+    /// finish_reason=length：JSON 可能被截断（官方文档：JSON mode 只在不截断时保证合法）。
+    Truncated,
+    /// finish_reason=content_filter。
+    ContentFilter,
+    /// 响应里没有 content。
+    EmptyContent,
+}
+
+fn should_retry_status(status: u16) -> bool {
+    status == 408 || status == 429 || status >= 500
+}
+
+/// 指数退避 + 抖动（官方 Cookbook 建议加 jitter 防惊群）：800ms、1600ms 基数 + 0-400ms 抖动。
+fn backoff_delay_ms(attempt: u32) -> u64 {
+    let jitter = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.subsec_millis() as u64 % LLM_BACKOFF_JITTER_MS)
+        .unwrap_or(0);
+    (LLM_BACKOFF_BASE_MS << attempt.min(4)) + jitter
+}
+
+fn parse_retry_after_secs(value: &str) -> Option<u64> {
+    value.trim().parse::<u64>().ok().filter(|s| *s > 0)
+}
+
+/// OpenAI 兼容端点的标准错误体 {"error":{"message":..}}；解析失败时退回原文前 240 字符。
+fn extract_error_detail(body: &str) -> String {
+    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(body) {
+        if let Some(message) = parsed["error"]["message"].as_str() {
+            return message.chars().take(240).collect();
+        }
+    }
+    body.chars().take(240).collect()
+}
+
+/// 把状态码 + 细节翻译成用户可行动的中文提示。
+fn friendly_llm_error(status: u16, detail: String) -> String {
+    match status {
+        401 | 403 => format!("LLM 鉴权失败：请检查设置页的 API Key（{detail}）"),
+        404 => format!("接口不存在：请检查 Base URL 与模型名（{detail}）"),
+        429 => format!("请求被限流或额度不足（{detail}）"),
+        s if s >= 500 => format!("LLM 服务端错误（HTTP {s}）：{detail}"),
+        s => format!("LLM HTTP {s}：{detail}"),
+    }
+}
+
+/// 部分第三方 OpenAI 兼容端点不支持 response_format；命中时去掉该字段重试一次。
+fn is_response_format_rejection(status: u16, body: &str) -> bool {
+    if status != 400 {
+        return false;
+    }
+    let lower = body.to_ascii_lowercase();
+    lower.contains("response_format") || lower.contains("json_object")
+}
+
+async fn chat_once(
     settings: &LlmSettingsFile,
     system_prompt: &str,
     user_prompt: &str,
-) -> Result<String, String> {
+    use_json_mode: bool,
+) -> Result<String, ChatError> {
     let url = format!(
         "{}/chat/completions",
         settings.base_url.trim_end_matches('/')
     );
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(15))
-        .timeout(Duration::from_secs(120))
-        .use_rustls_tls()
-        .build()
-        .map_err(|e| e.to_string())?;
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "model": settings.model,
         "temperature": 0.2,
-        "response_format": { "type": "json_object" },
         "messages": [
             { "role": "system", "content": system_prompt },
             { "role": "user", "content": user_prompt }
         ]
     });
-    let response = client
+    if use_json_mode {
+        body["response_format"] = serde_json::json!({ "type": "json_object" });
+    }
+    let response = llm_http_client()
         .post(url)
         .bearer_auth(settings.api_key.trim())
         .json(&body)
         .send()
         .await
-        .map_err(|e| e.to_string())?;
-    let status = response.status();
-    let text = response.text().await.map_err(|e| e.to_string())?;
-    if !status.is_success() {
-        return Err(format!("LLM HTTP {}: {}", status, text.chars().take(240).collect::<String>()));
+        .map_err(|e| ChatError::Network(e.to_string()))?;
+    let status = response.status().as_u16();
+    let retry_after = response
+        .headers()
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .and_then(parse_retry_after_secs);
+    let text = response
+        .text()
+        .await
+        .map_err(|e| ChatError::Network(e.to_string()))?;
+    if !(200..300).contains(&status) {
+        return Err(ChatError::Http { status, body: text, retry_after });
     }
-    let parsed: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    let parsed: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| ChatError::Network(e.to_string()))?;
+    let finish_reason = parsed["choices"][0]["finish_reason"].as_str();
+    if finish_reason == Some("length") {
+        return Err(ChatError::Truncated);
+    }
+    if finish_reason == Some("content_filter") {
+        return Err(ChatError::ContentFilter);
+    }
     parsed["choices"][0]["message"]["content"]
         .as_str()
+        .filter(|s| !s.trim().is_empty())
         .map(|s| s.to_string())
-        .ok_or_else(|| "模型返回为空".into())
+        .ok_or(ChatError::EmptyContent)
+}
+
+async fn call_chat(
+    settings: &LlmSettingsFile,
+    system_prompt: &str,
+    user_prompt: &str,
+) -> Result<String, String> {
+    let mut use_json_mode = true;
+    let mut attempt: u32 = 0;
+    loop {
+        match chat_once(settings, system_prompt, user_prompt, use_json_mode).await {
+            Ok(content) => return Ok(content),
+            Err(ChatError::Http { status, body, retry_after }) => {
+                // response_format 不被支持：去掉字段立刻重试一次（不消耗退避预算）。
+                if use_json_mode && is_response_format_rejection(status, &body) {
+                    use_json_mode = false;
+                    continue;
+                }
+                let detail = extract_error_detail(&body);
+                if !should_retry_status(status) || attempt >= LLM_MAX_RETRIES {
+                    return Err(friendly_llm_error(status, detail));
+                }
+                let delay = if let Some(secs) = retry_after {
+                    // Retry-After 过长 → 大概率额度耗尽类限流，重试只会白等（lobe-chat #13572 教训）。
+                    if secs > LLM_RETRY_AFTER_CAP_SECS {
+                        return Err(format!(
+                            "请求被限流（服务端要求等待 {secs} 秒），已停止重试：{detail}"
+                        ));
+                    }
+                    secs * 1000
+                } else {
+                    backoff_delay_ms(attempt)
+                };
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+                attempt += 1;
+            }
+            // 传输层错误可重试；finish_reason / 空内容是确定性失败，直接返回。
+            Err(ChatError::Network(message)) => {
+                if attempt >= LLM_MAX_RETRIES {
+                    return Err(format!("LLM 网络错误：{message}"));
+                }
+                tokio::time::sleep(Duration::from_millis(backoff_delay_ms(attempt))).await;
+                attempt += 1;
+            }
+            Err(ChatError::Truncated) => {
+                return Err("模型输出被截断（finish_reason=length），JSON 可能不完整。请重试，或在设置中换用输出上限更高的模型。".into());
+            }
+            Err(ChatError::ContentFilter) => {
+                return Err("模型拒绝了这次请求（内容过滤）。".into());
+            }
+            Err(ChatError::EmptyContent) => return Err("模型返回为空".into()),
+        }
+    }
 }
 
 #[tauri::command]
@@ -303,4 +451,69 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Paper Field");
+}
+
+#[cfg(test)]
+mod llm_tests {
+    use super::*;
+
+    #[test]
+    fn should_retry_only_transient_statuses() {
+        // 官方 SDK 语义：408/429/5xx 可重试；4xx 客户端错误不重试。
+        for status in [408u16, 429, 500, 502, 503] {
+            assert!(should_retry_status(status), "{status} 应可重试");
+        }
+        for status in [400u16, 401, 403, 404, 422] {
+            assert!(!should_retry_status(status), "{status} 不应重试");
+        }
+    }
+
+    #[test]
+    fn backoff_is_bounded_with_jitter() {
+        for attempt in 0..3 {
+            let delay = backoff_delay_ms(attempt);
+            let base = LLM_BACKOFF_BASE_MS << attempt;
+            assert!(delay >= base, "attempt {attempt}: {delay} < {base}");
+            assert!(delay < base + LLM_BACKOFF_JITTER_MS, "attempt {attempt}: {delay}");
+        }
+    }
+
+    #[test]
+    fn retry_after_parses_seconds_only() {
+        assert_eq!(parse_retry_after_secs("7"), Some(7));
+        assert_eq!(parse_retry_after_secs(" 30 "), Some(30));
+        assert_eq!(parse_retry_after_secs("0"), None);
+        assert_eq!(parse_retry_after_secs("Wed, 21 Oct 2015 07:28:00 GMT"), None);
+    }
+
+    #[test]
+    fn error_detail_prefers_standard_error_shape() {
+        let body = r#"{"error":{"message":"Incorrect API key provided: sk-xxx","type":"invalid_request_error","code":"invalid_api_key"}}"#;
+        assert_eq!(
+            extract_error_detail(body),
+            "Incorrect API key provided: sk-xxx"
+        );
+        // 非标准体退回原文截断
+        assert_eq!(extract_error_detail("plain text"), "plain text");
+    }
+
+    #[test]
+    fn friendly_errors_map_to_actionable_chinese() {
+        assert!(friendly_llm_error(401, "bad key".into()).contains("API Key"));
+        assert!(friendly_llm_error(404, "no route".into()).contains("Base URL"));
+        assert!(friendly_llm_error(429, "slow down".into()).contains("限流"));
+        assert!(friendly_llm_error(500, "boom".into()).contains("服务端"));
+        assert!(friendly_llm_error(400, "x".into()).starts_with("LLM HTTP 400"));
+    }
+
+    #[test]
+    fn response_format_rejection_detected_from_400_body() {
+        assert!(is_response_format_rejection(
+            400,
+            r#"{"error":{"message":"'response_format' is not supported"}}"#
+        ));
+        assert!(is_response_format_rejection(400, "json_object not supported"));
+        assert!(!is_response_format_rejection(401, "response_format"));
+        assert!(!is_response_format_rejection(400, "invalid model"));
+    }
 }
