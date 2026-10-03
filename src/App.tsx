@@ -138,6 +138,11 @@ export default function App() {
 
   const domain = domains.find((d) => d.id === selectedDomainId) ?? null;
 
+  // 舞台刷出（pf-wipe，源设计 ef-reveal）：舞台三面以 mode+domain 为 key，
+  // 模式/领域切换与启动时重挂、各播一次「左→右硬边刷出 + 10px 回位」。
+  // 外壳（rail/dock/status）不挂动画 —— 只有内容「换纸」，chrome 保持常驻。
+  const stageKey = `${mode}:${selectedDomainId ?? "none"}`;
+
   if (!ready) {
     return (
       <div className="loading-cal" role="status">
@@ -174,11 +179,12 @@ export default function App() {
       <Rail mode={mode} />
       <Dock domain={domain} search={search} />
       {mode === "system" ? (
-        <SystemView />
+        <SystemView key={stageKey} />
       ) : (
         <>
-          <PaperNav onPaperChosen={() => setListOpen(false)} />
+          <PaperNav key={stageKey} onPaperChosen={() => setListOpen(false)} />
           <ReadingStage
+            key={stageKey}
             focus={focus}
             onToggleFocus={() => setFocus((value) => !value)}
             listOpen={listOpen}

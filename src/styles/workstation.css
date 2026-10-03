@@ -64,6 +64,13 @@
   --pf-t-settle: 300ms var(--pf-ease-direct);
   --pf-t-loop: 1800ms var(--pf-ease-loop);
   --pf-t-sweep: 1100ms var(--pf-ease-loop);
+  /* 舞台刷出（源设计：bjtu-hpc-submit-skill 登录页 ef-reveal）：新视图 clip-path
+     左→右硬边刷出 + 10px 水平回位，一条缓动 650ms 一次到位。缓动按源设计保留
+     独立贝塞尔（起步极快、收尾柔停），是 direct/out/loop 之外唯一登记的进场
+     缓动；位移 10px 为源设计原值，是入场 ≤8px 契约的唯一登记例外（纯几何刷出，
+     不含 opacity 参与制造的运动错觉）。 */
+  --pf-t-wipe: 650ms cubic-bezier(0.22, 0.8, 0.2, 1);
+  --pf-wipe-shift: 10px;
   /* Press & selection geometry: :active sinks, list stagger (items capped at
      12 → ≤450ms per sequence), left-edge selection bar width. */
   --pf-nudge: 1px;
@@ -1860,6 +1867,20 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 @keyframes pf-drawer-left {
   from { opacity: 0; transform: translateX(-8px); }
   to { opacity: 1; transform: translateX(0); }
+}
+/* 舞台刷出：模式/领域切换与启动揭幕时，舞台三面（.ef-nav / .ef-read / .ef-system）
+   在 App 以 mode+domain 为 key 重挂后各自播放一次。fill 只用 backwards —— 起播前
+   即处于遮蔽态（首帧无闪现），结束后回归自然样式：clip-path 不残留，菜单浮层、
+   卡片阴影与滚动容器都不受长期裁剪。作用域在 .ef-shell 伞内，reduced-motion
+   兜底块按构造覆盖（animation: none 直接落定）。 */
+@keyframes pf-wipe {
+  from { clip-path: inset(0 100% 0 0); transform: translateX(calc(var(--pf-wipe-shift) * -1)); }
+  to { clip-path: inset(0); transform: none; }
+}
+.ef-shell .ef-nav,
+.ef-shell .ef-read,
+.ef-shell .ef-system {
+  animation: pf-wipe var(--pf-t-wipe) backwards;
 }
 
 /* ---- Reusable motion utilities (foundation-owned) ----

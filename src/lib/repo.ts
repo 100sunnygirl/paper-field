@@ -234,23 +234,6 @@ function mapListItem(row: PaperRow): PaperListItem {
   };
 }
 
-/** 删除一篇论文的全部关联行（须在事务内调用）。 */
-async function removePaperRows(engine: SqlEngine, id: string): Promise<void> {
-  await engine.execute("DELETE FROM llm_jobs WHERE paper_id = ?", [id]);
-  await engine.execute("DELETE FROM paper_parse WHERE paper_id = ?", [id]);
-  await engine.execute("DELETE FROM notes WHERE paper_id = ?", [id]);
-  await engine.execute("DELETE FROM paper_authors WHERE paper_id = ?", [id]);
-  await engine.execute("DELETE FROM papers WHERE id = ?", [id]);
-}
-
-/** 清理不再被任何论文引用的作者行。作者与论文一一挂载（同名隔离，不跨论文共享），
- *  没有关联的作者行即垃圾——否则删除领域后 authors 表会无限累积孤儿。 */
-async function sweepOrphanAuthors(engine: SqlEngine): Promise<void> {
-  await engine.execute(
-    "DELETE FROM authors WHERE id NOT IN (SELECT author_id FROM paper_authors)",
-  );
-}
-
 async function emptyNotes(engine: SqlEngine, paperId: string, at: string): Promise<void> {  for (const kind of NOTE_KINDS) {
     await engine.execute(
       `INSERT OR IGNORE INTO notes (id, paper_id, kind, content, source, user_edited, revised_at)
@@ -327,25 +310,13 @@ export const repo = {
   },
 
   async deleteDomain(id: string): Promise<void> {
+    // 整域删除原子性由 pf_domain_cascade → pf_paper_cascade 触发器在单语句内完成
+    // （论文/笔记/解析/作业/作者关联一次清完、孤儿作者扫除），中途失败整条语句
+    // 自动回滚，不留下「领域还在但论文没了」或「删了一半」的状态。
+    // 不再用 BEGIN IMMEDIATE…COMMIT：plugin-sql 的 sqlx 连接池下各语句会落在不同
+    // 连接上，事务错位曾把池连接留在持锁的未提交状态（详见 schema.ts 触发器注释）。
     const engine = await getEngine();
-    // 整域删除必须原子：论文/笔记/解析/作业/作者关联一次清完，中途失败整体回滚，
-    // 不留下「领域还在但论文没了」或「删了一半」的状态。
-    await engine.execute("BEGIN IMMEDIATE");
-    try {
-      const papers = await engine.select<{ id: string }>(
-        "SELECT id FROM papers WHERE domain_id = ?",
-        [id],
-      );
-      for (const paper of papers) {
-        await removePaperRows(engine, paper.id);
-      }
-      await engine.execute("DELETE FROM domains WHERE id = ?", [id]);
-      await sweepOrphanAuthors(engine);
-      await engine.execute("COMMIT");
-    } catch (err) {
-      await engine.execute("ROLLBACK").catch(() => undefined);
-      throw err;
-    }
+    await engine.execute("DELETE FROM domains WHERE id = ?", [id]);
   },
 
   async listPapers(domainId: string, search = ""): Promise<PaperListItem[]> {
@@ -647,15 +618,9 @@ export const repo = {
   },
 
   async deletePaper(id: string): Promise<void> {
+    // 同 deleteDomain：单语句删除，级联清理由 pf_paper_cascade 触发器完成。
     const engine = await getEngine();
-    await engine.execute("BEGIN IMMEDIATE");
-    try {
-      await removePaperRows(engine, id);
-      await engine.execute("COMMIT");
-    } catch (err) {
-      await engine.execute("ROLLBACK").catch(() => undefined);
-      throw err;
-    }
+    await engine.execute("DELETE FROM papers WHERE id = ?", [id]);
   },
 
   async replaceAuthors(
