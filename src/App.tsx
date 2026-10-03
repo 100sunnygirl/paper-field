@@ -3,6 +3,7 @@ import { isTauri } from "./lib/util";
 import {
   ConfirmMetaDialog,
   ConfirmNotesDialog,
+  DeleteCheckedPapersDialog,
   DeletePaperDialog,
   DomainDialog,
   DomainPickerDialog,
@@ -199,6 +200,7 @@ export default function App() {
       <DomainDialog />
       <DomainPickerDialog />
       <DeletePaperDialog />
+      <DeleteCheckedPapersDialog />
       <EditPaperDialog />
       <ConfirmNotesDialog />
       <ConfirmMetaDialog />

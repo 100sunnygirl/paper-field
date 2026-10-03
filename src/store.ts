@@ -51,6 +51,10 @@ interface FieldState {
   selectedDomainId: string | null;
   papers: PaperListItem[];
   selectedPaperId: string | null;
+  /** 列表批量选择模式：行点击改为勾选，配合工具栏做批量删除等操作。 */
+  batchMode: boolean;
+  /** 批量模式下勾选的论文 id；refresh 时会向当前列表裁剪（搜索/切换后不残留）。 */
+  checkedPaperIds: string[];
   paper: PaperDetail | null;
   archive: PaperListItem[];
   intake: PaperListItem[];
@@ -70,6 +74,7 @@ interface FieldState {
     | "edit-domain"
     | "move-paper"
     | "delete-paper"
+    | "delete-checked"
     | "pick-domain"
     | "edit-paper"
     | null;
@@ -110,6 +115,11 @@ interface FieldState {
   setReadingStatus: (status: "unread" | "reading" | "read") => Promise<void>;
   movePaper: (domainId: string) => Promise<void>;
   deletePaper: () => Promise<void>;
+  setBatchMode: (on: boolean) => void;
+  toggleCheckedPaper: (id: string) => void;
+  setCheckedPaperIds: (ids: string[]) => void;
+  /** 删除当前勾选的全部论文（先经 delete-checked 对话框确认）。 */
+  deleteCheckedPapers: () => Promise<void>;
   setUnsavedNote: (value: boolean) => void;
   runPrepareMeta: (paperId?: string, overwrite?: boolean, quiet?: boolean) => Promise<void>;
   runDraftNotes: (paperId?: string, overwrite?: boolean) => Promise<void>;
@@ -137,6 +147,8 @@ export const useField = create<FieldState>((set, get) => ({
   selectedDomainId: null,
   papers: [],
   selectedPaperId: null,
+  batchMode: false,
+  checkedPaperIds: [],
   paper: null,
   archive: [],
   intake: [],
@@ -216,7 +228,13 @@ export const useField = create<FieldState>((set, get) => ({
         : (state.mode === "field" ? papers : state.mode === "archive" ? archive : intake)[0]?.id ??
           null;
     const paper = selectedPaperId ? await repo.getPaper(selectedPaperId) : null;
-    set({ stats, jobs, domains, papers, archive, intake, selectedPaperId, paper });
+    // 勾选集向当前列表裁剪：搜索词变化、切换领域/模式后，已不可见的论文不再参与批量操作。
+    const checkedPaperIds = state.checkedPaperIds.filter((id) =>
+      (state.mode === "archive" ? archive : state.mode === "intake" ? intake : papers).some(
+        (p) => p.id === id,
+      ),
+    );
+    set({ stats, jobs, domains, papers, archive, intake, selectedPaperId, paper, checkedPaperIds });
   },
 
   setMode: async (mode) => {
@@ -558,6 +576,43 @@ export const useField = create<FieldState>((set, get) => ({
       get().setFlash({ tone: "ok", text: "论文已删除。" });
     } catch (err) {
       get().setFlash({ tone: "error", text: `删除论文失败：${errText(err)}，数据未改动。` });
+      throw err;
+    }
+  },
+
+  setBatchMode: (on) => {
+    // 退出时清空勾选，避免下次进入批量模式残留旧选中。
+    set(on ? { batchMode: true } : { batchMode: false, checkedPaperIds: [] });
+  },
+
+  toggleCheckedPaper: (id) => {
+    const current = get().checkedPaperIds;
+    set({
+      checkedPaperIds: current.includes(id)
+        ? current.filter((item) => item !== id)
+        : [...current, id],
+    });
+  },
+
+  setCheckedPaperIds: (ids) => set({ checkedPaperIds: ids }),
+
+  deleteCheckedPapers: async () => {
+    const ids = [...get().checkedPaperIds];
+    if (!ids.length) return;
+    try {
+      await repo.deletePapers(ids);
+      set({
+        dialog: null,
+        batchMode: false,
+        checkedPaperIds: [],
+        selectedPaperId: null,
+        paper: null,
+        unsavedNote: false,
+      });
+      await get().refresh();
+      get().setFlash({ tone: "ok", text: `已删除 ${ids.length} 篇论文。` });
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `批量删除失败：${errText(err)}，数据未改动。` });
       throw err;
     }
   },

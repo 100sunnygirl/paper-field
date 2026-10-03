@@ -3,32 +3,58 @@ import { MINERU_STATUS_LABELS, READING_STATUS_LABELS, type PaperListItem } from 
 import { pad2 } from "../lib/util";
 import { Icon } from "./ui";
 
+/** 批量模式与「全选」共用的复选方块：行首替代序号出现，视觉与状态徽标同源。 */
+export function CheckSquare({ on }: { on: boolean }) {
+  return (
+    <span className={`ef-row-check ${on ? "is-on" : ""}`.trim()} aria-hidden="true">
+      {on ? <Icon name="check" /> : null}
+    </span>
+  );
+}
+
 export function PaperRow({
   paper,
   index,
   selected,
   onSelect,
+  batch = false,
+  checked = false,
+  onToggleCheck,
 }: {
   paper: PaperListItem;
   index: number;
   selected: boolean;
   onSelect: () => void;
+  /** 批量选择模式：点击行改为勾选/取消，选中态让位给勾选态。 */
+  batch?: boolean;
+  checked?: boolean;
+  onToggleCheck?: () => void;
   compact?: boolean;
 }) {
   const title = paper.titleZh || paper.title;
   const english = paper.titleZh ? paper.title : "";
+  const className = [
+    "ef-row",
+    "pf-stagger",
+    !batch && selected ? "is-selected" : "",
+    batch && checked ? "is-checked" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
   return (
     <button
       type="button"
-      className={`ef-row pf-stagger ${selected ? "is-selected" : ""}`.trim()}
+      className={className}
       /* --pf-i drives .pf-stagger's per-row delay; capped at 12 inside the
          utility so a full-column remount stays ≤ ~450ms total. */
       style={{ "--pf-i": index } as CSSProperties}
-      onClick={onSelect}
-      aria-current={selected ? "true" : undefined}
+      onClick={batch ? onToggleCheck : onSelect}
+      role={batch ? "checkbox" : undefined}
+      aria-checked={batch ? checked : undefined}
+      aria-current={!batch && selected ? "true" : undefined}
     >
       <div className="ef-row-top">
-        <span className="mono">{pad2(index + 1)}</span>
+        {batch ? <CheckSquare on={checked} /> : <span className="mono">{pad2(index + 1)}</span>}
         <span
           className={`ef-row-status ${paper.readingStatus === "read" ? "is-read" : ""}`.trim()}
         >
@@ -53,10 +79,16 @@ export function PaperMatrix({
   papers,
   selectedId,
   onSelect,
+  batch = false,
+  checkedIds = [],
+  onToggleCheck,
 }: {
   papers: PaperListItem[];
   selectedId: string | null;
   onSelect: (id: string) => void;
+  batch?: boolean;
+  checkedIds?: string[];
+  onToggleCheck?: (id: string) => void;
   compact?: boolean;
 }) {
   return (
@@ -68,6 +100,9 @@ export function PaperMatrix({
           index={index}
           selected={paper.id === selectedId}
           onSelect={() => onSelect(paper.id)}
+          batch={batch}
+          checked={checkedIds.includes(paper.id)}
+          onToggleCheck={() => onToggleCheck?.(paper.id)}
         />
       ))}
     </div>

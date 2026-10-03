@@ -41,6 +41,12 @@ const ICONS = {
   close: <path d="m5 5 14 14M19 5 5 19" />,
   menu: <path d="M3 6h18M3 12h18M3 18h18" />,
   trash: <path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7" />,
+  batch: (
+    <>
+      <rect x="4" y="4" width="16" height="16" />
+      <path d="m8 12 3 3 6-7" />
+    </>
+  ),
 } as const;
 
 export type IconName = keyof typeof ICONS;

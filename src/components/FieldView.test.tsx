@@ -117,3 +117,76 @@ describe("PaperNav · INTAKE 任务列表只显示进行中的作业", () => {
     expect(screen.getByText("当前没有进行中的 AI 作业。")).toBeInTheDocument();
   });
 });
+
+describe("PaperNav · 批量选择与批量删除", () => {
+  it("列表非空时显示批量选择入口，空列表不显示", () => {
+    useField.setState({ mode: "field", papers: [intakeItem("a", null)] });
+    const { unmount } = render(<PaperNav />);
+    expect(screen.getByRole("button", { name: "批量选择论文" })).toBeInTheDocument();
+    unmount();
+
+    useField.setState({ papers: [] });
+    render(<PaperNav />);
+    expect(screen.queryByRole("button", { name: "批量选择论文" })).toBeNull();
+  });
+
+  it("点击入口进入批量模式，行变为复选框；Esc 或「退出」退出并清空勾选", () => {
+    useField.setState({ mode: "field", papers: [intakeItem("a", null), intakeItem("b", null)] });
+    render(<PaperNav />);
+    fireEvent.click(screen.getByRole("button", { name: "批量选择论文" }));
+    expect(useField.getState().batchMode).toBe(true);
+    expect(screen.getByRole("checkbox", { name: "全选" })).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: /论文 a/ })).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: /论文 b/ })).toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(useField.getState().batchMode).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "批量选择论文" }));
+    useField.getState().toggleCheckedPaper("a");
+    fireEvent.click(screen.getByRole("button", { name: "退出" }));
+    expect(useField.getState().batchMode).toBe(false);
+    expect(useField.getState().checkedPaperIds).toEqual([]);
+  });
+
+  it("批量模式下点击行切换勾选，不再打开论文", () => {
+    const selectPaper = vi.fn(async () => undefined);
+    const toggleCheckedPaper = vi.fn();
+    useField.setState({
+      mode: "field",
+      papers: [intakeItem("a", null)],
+      batchMode: true,
+      selectPaper,
+      toggleCheckedPaper,
+    });
+    render(<PaperNav />);
+    fireEvent.click(screen.getByRole("checkbox", { name: /论文 a/ }));
+    expect(toggleCheckedPaper).toHaveBeenCalledWith("a");
+    expect(selectPaper).not.toHaveBeenCalled();
+  });
+
+  it("全选在「全部勾选 / 全部清空」间切换", () => {
+    useField.setState({
+      mode: "field",
+      papers: [intakeItem("a", null), intakeItem("b", null)],
+      batchMode: true,
+    });
+    render(<PaperNav />);
+    fireEvent.click(screen.getByRole("checkbox", { name: "全选" }));
+    expect(useField.getState().checkedPaperIds).toEqual(["a", "b"]);
+    fireEvent.click(screen.getByRole("checkbox", { name: "全选" }));
+    expect(useField.getState().checkedPaperIds).toEqual([]);
+  });
+
+  it("无勾选时删除禁用；有勾选时显示计数并打开确认对话框", () => {
+    useField.setState({ mode: "field", papers: [intakeItem("a", null)], batchMode: true });
+    const { rerender } = render(<PaperNav />);
+    expect(screen.getByRole("button", { name: "删除" })).toBeDisabled();
+
+    useField.setState({ checkedPaperIds: ["a"] });
+    rerender(<PaperNav />);
+    expect(screen.getByText("已选 1 / 1")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "删除" }));
+    expect(useField.getState().dialog).toBe("delete-checked");
+  });
+});

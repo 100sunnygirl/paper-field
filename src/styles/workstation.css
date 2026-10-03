@@ -664,6 +664,44 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   margin-top: 8px;
   gap: 8px;
 }
+/* 批量选择：列表头工具栏（全选 / 计数 / 删除 / 退出）与行首复选方块。
+   is-batch 允许换行：窄屏导航列 272px 时四个控件一行放不下。 */
+.ef-list-head.is-batch { flex-wrap: wrap; gap: 6px 10px; }
+.ef-list-head-right { display: inline-flex; align-items: center; gap: 6px; }
+.ef-batch-toggle { min-height: 28px; padding: 4px 6px; color: var(--pf-muted); }
+.ef-batch-toggle:hover:not(:disabled) { color: var(--pf-ink); }
+.ef-batch-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: none;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  color: var(--pf-muted);
+  cursor: pointer;
+}
+.ef-batch-all:hover { color: var(--pf-ink); }
+.ef-batch-count { color: var(--pf-muted); }
+.ef-batch-actions { display: inline-flex; align-items: center; gap: 6px; }
+.ef-row-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  border: 1px solid var(--pf-divider);
+  border-radius: 2px;
+  background: #fff;
+  color: transparent;
+  transition: background-color var(--pf-motion), border-color var(--pf-motion), color var(--pf-motion);
+}
+.ef-row-check .ef-ico { width: 11px; height: 11px; }
+.ef-row-check.is-on { background: var(--pf-ink); border-color: var(--pf-ink); color: #fff; }
+.ef-row.is-checked {
+  background: var(--pf-hover-flat);
+  border-color: color-mix(in srgb, var(--pf-ink) 18%, var(--pf-divider));
+}
 .filter-row {
   display: flex;
   flex-wrap: wrap;

@@ -451,6 +451,41 @@ export function DeletePaperDialog() {
   );
 }
 
+/** 批量模式下的删除确认：与单篇删除同构，只报数量不逐篇列名（数量即用户刚勾选的结果）。 */
+export function DeleteCheckedPapersDialog() {
+  const dialog = useField((s) => s.dialog);
+  const closeDialog = useField((s) => s.closeDialog);
+  const checkedPaperIds = useField((s) => s.checkedPaperIds);
+  const deleteCheckedPapers = useField((s) => s.deleteCheckedPapers);
+
+  return (
+    <Dialog
+      open={dialog === "delete-checked" && checkedPaperIds.length > 0}
+      title="删除选中的论文？"
+      onClose={closeDialog}
+      danger
+      footer={
+        <>
+          <Button type="button" onClick={closeDialog}>
+            取消
+          </Button>
+          <Button
+            type="button"
+            className="ef-btn-danger-solid"
+            onClick={() => void deleteCheckedPapers()}
+          >
+            确认删除
+          </Button>
+        </>
+      }
+    >
+      <p>
+        将删除选中的 <strong>{checkedPaperIds.length}</strong> 篇论文及其全部笔记。此操作不可撤销。
+      </p>
+    </Dialog>
+  );
+}
+
 export function ConfirmNotesDialog() {
   const dialog = useField((s) => s.dialog);
   const closeDialog = useField((s) => s.closeDialog);

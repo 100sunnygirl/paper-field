@@ -1,10 +1,10 @@
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { listPdfs, normalizePdf } from "../lib/mineru";
 import { repo } from "../lib/repo";
 import { useField } from "../store";
-import { PaperDialog } from "./Dialogs";
+import { DeleteCheckedPapersDialog, PaperDialog } from "./Dialogs";
 import type { Paper } from "../lib/types";
 
 vi.mock("../lib/mineru", async (importOriginal) => {
@@ -77,6 +77,37 @@ beforeEach(() => {
 
 afterEach(() => {
   delete (window as unknown as Record<string, unknown>)["__TAURI_INTERNALS__"];
+});
+
+describe("DeleteCheckedPapersDialog · 批量删除确认", () => {
+  it("显示勾选数量，确认后调用批量删除、取消则关闭", () => {
+    const deleteCheckedPapers = vi.fn(async () => undefined);
+    useField.setState({
+      dialog: "delete-checked",
+      checkedPaperIds: ["a", "b", "c"],
+      deleteCheckedPapers,
+    });
+    render(<DeleteCheckedPapersDialog />);
+    expect(screen.getByText("删除选中的论文？")).toBeInTheDocument();
+    expect(screen.getByText(/将删除选中的/)).toBeInTheDocument();
+    expect(screen.getByText("3")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    expect(useField.getState().dialog).toBeNull();
+    expect(deleteCheckedPapers).not.toHaveBeenCalled();
+
+    act(() => {
+      useField.setState({ dialog: "delete-checked" });
+    });
+    fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
+    expect(deleteCheckedPapers).toHaveBeenCalledTimes(1);
+  });
+
+  it("勾选为空时不渲染（防绕过工具栏直接开对话框）", () => {
+    useField.setState({ dialog: "delete-checked", checkedPaperIds: [] });
+    render(<DeleteCheckedPapersDialog />);
+    expect(screen.queryByText("删除选中的论文？")).toBeNull();
+  });
 });
 
 describe("PaperDialog · 来源选择", () => {

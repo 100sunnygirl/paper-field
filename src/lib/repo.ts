@@ -623,6 +623,18 @@ export const repo = {
     await engine.execute("DELETE FROM papers WHERE id = ?", [id]);
   },
 
+  async deletePapers(ids: string[]): Promise<void> {
+    // 同 deletePaper（触发器级联），按 500 个分块：一条 IN (…) 的绑定参数
+    // 不能超过 SQLite 的变量上限，整库勾选删除时单语句会炸。
+    if (!ids.length) return;
+    const engine = await getEngine();
+    for (let i = 0; i < ids.length; i += 500) {
+      const chunk = ids.slice(i, i + 500);
+      const placeholders = chunk.map(() => "?").join(", ");
+      await engine.execute(`DELETE FROM papers WHERE id IN (${placeholders})`, chunk);
+    }
+  },
+
   async replaceAuthors(
     paperId: string,
     authors: Array<{

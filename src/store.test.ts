@@ -15,6 +15,7 @@ vi.mock("./lib/repo", () => ({
     listFailedMineru: vi.fn(async () => [] as string[]),
     createDomain: vi.fn(),
     setMineruState: vi.fn(async () => undefined),
+    deletePapers: vi.fn(async () => undefined),
   },
 }));
 
@@ -80,6 +81,7 @@ beforeEach(() => {
   vi.mocked(repo.listFailedMineru).mockReset();
   vi.mocked(repo.setMineruState).mockReset();
   vi.mocked(repo.createDomain).mockReset();
+  vi.mocked(repo.deletePapers).mockReset();
 });
 
 describe("navigatePapers（缺陷 9：未选中时的首末落点）", () => {
@@ -223,6 +225,70 @@ describe("retryFailedMineru（INTAKE 批量重试）", () => {
 
     expect(repo.setMineruState).not.toHaveBeenCalled();
     expect(useField.getState().flash?.text).toContain("尚未启用任何 MinerU 解析源");
+  });
+});
+
+describe("批量选择与批量删除（batchMode / deleteCheckedPapers）", () => {
+  it("deleteCheckedPapers：按勾选批量删除、退出批量模式、清空勾选并提示", async () => {
+    vi.mocked(repo.listPapers).mockResolvedValue([]);
+    useField.setState({
+      mode: "field",
+      selectedDomainId: "d-1",
+      batchMode: true,
+      checkedPaperIds: ["a", "b"],
+      papers: [listItem("a"), listItem("b")],
+      selectedPaperId: "a",
+      unsavedNote: true,
+    });
+
+    await useField.getState().deleteCheckedPapers();
+
+    expect(repo.deletePapers).toHaveBeenCalledWith(["a", "b"]);
+    const state = useField.getState();
+    expect(state.batchMode).toBe(false);
+    expect(state.checkedPaperIds).toEqual([]);
+    expect(state.selectedPaperId).toBeNull();
+    expect(state.unsavedNote).toBe(false);
+    expect(state.flash).toMatchObject({ tone: "ok" });
+    expect(state.flash?.text).toContain("已删除 2 篇论文");
+  });
+
+  it("deleteCheckedPapers 失败时提示且状态原样（不退出批量模式）", async () => {
+    vi.mocked(repo.deletePapers).mockRejectedValue(new Error("db locked"));
+    useField.setState({ batchMode: true, checkedPaperIds: ["a"], papers: [listItem("a")] });
+
+    await expect(useField.getState().deleteCheckedPapers()).rejects.toThrow("db locked");
+    const state = useField.getState();
+    expect(state.flash).toMatchObject({ tone: "error" });
+    expect(state.flash?.text).toContain("数据未改动");
+    expect(state.batchMode).toBe(true);
+    expect(state.checkedPaperIds).toEqual(["a"]);
+  });
+
+  it("未勾选时 deleteCheckedPapers 直接返回，不触发删除", async () => {
+    await useField.getState().deleteCheckedPapers();
+    expect(repo.deletePapers).not.toHaveBeenCalled();
+  });
+
+  it("toggleCheckedPaper 在勾选/取消间切换；退出批量模式清空勾选", () => {
+    useField.setState({ batchMode: true, checkedPaperIds: [] });
+    useField.getState().toggleCheckedPaper("a");
+    expect(useField.getState().checkedPaperIds).toEqual(["a"]);
+    useField.getState().toggleCheckedPaper("b");
+    expect(useField.getState().checkedPaperIds).toEqual(["a", "b"]);
+    useField.getState().toggleCheckedPaper("a");
+    expect(useField.getState().checkedPaperIds).toEqual(["b"]);
+
+    useField.getState().setBatchMode(false);
+    expect(useField.getState().batchMode).toBe(false);
+    expect(useField.getState().checkedPaperIds).toEqual([]);
+  });
+
+  it("refresh 把勾选向当前列表裁剪（搜索/切换后旧勾选不残留）", async () => {
+    vi.mocked(repo.listPapers).mockResolvedValue([listItem("a")]);
+    useField.setState({ mode: "field", selectedDomainId: "d-1", checkedPaperIds: ["a", "ghost"] });
+    await useField.getState().refresh();
+    expect(useField.getState().checkedPaperIds).toEqual(["a"]);
   });
 });
 

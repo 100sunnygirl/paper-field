@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import {
   JOB_STATUS_LABELS,
   JOB_TYPE_LABELS,
@@ -5,7 +6,7 @@ import {
 } from "../lib/types";
 import { pad2 } from "../lib/util";
 import { useField } from "../store";
-import { PaperMatrix } from "./PaperMatrix";
+import { CheckSquare, PaperMatrix } from "./PaperMatrix";
 import { Button, Icon } from "./ui";
 
 const ARCHIVE_FILTERS: Array<{ value: OpenSource | "all"; label: string }> = [
@@ -32,12 +33,28 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
   const cancelJob = useField((s) => s.cancelJob);
   const retryFailedMineru = useField((s) => s.retryFailedMineru);
   const search = useField((s) => s.search);
+  const batchMode = useField((s) => s.batchMode);
+  const checkedPaperIds = useField((s) => s.checkedPaperIds);
+  const setBatchMode = useField((s) => s.setBatchMode);
+  const toggleCheckedPaper = useField((s) => s.toggleCheckedPaper);
+  const setCheckedPaperIds = useField((s) => s.setCheckedPaperIds);
 
   const domain = domains.find((d) => d.id === selectedDomainId) ?? null;
   const list = mode === "archive" ? archive : mode === "intake" ? intake : papers;
   const failedParseCount = intake.filter((p) => p.mineruStatus === "error").length;
   const domainRead = papers.filter((p) => p.readingStatus === "read").length;
   const fill = papers.length ? domainRead / papers.length : 0;
+  const allChecked = list.length > 0 && checkedPaperIds.length === list.length;
+
+  // 批量模式下 Esc 退出。对话框打开时 Dialog 的捕获层会拦截 Esc，不会误退批量模式。
+  useEffect(() => {
+    if (!batchMode) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setBatchMode(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [batchMode, setBatchMode]);
 
   return (
     <aside className="ef-nav" aria-label="领域与论文列表">
@@ -139,11 +156,61 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
         </div>
       ) : null}
 
-      <div className="ef-list-head">
-        <span>
-          {mode === "archive" ? "已读归档 · 全部领域" : mode === "intake" ? "待处理论文" : "本领域论文"}
-        </span>
-        <span className="mono">{pad2(list.length)}</span>
+      <div className={`ef-list-head ${batchMode ? "is-batch" : ""}`.trim()}>
+        {batchMode ? (
+          <>
+            <button
+              type="button"
+              className="ef-batch-all"
+              role="checkbox"
+              aria-checked={allChecked}
+              onClick={() => setCheckedPaperIds(allChecked ? [] : list.map((p) => p.id))}
+            >
+              <CheckSquare on={allChecked} />
+              全选
+            </button>
+            <span className="ef-batch-count mono" aria-live="polite">
+              已选 {checkedPaperIds.length} / {list.length}
+            </span>
+            <span className="ef-batch-actions">
+              <Button
+                type="button"
+                size="sm"
+                variant="danger"
+                disabled={!checkedPaperIds.length}
+                onClick={() => openDialog("delete-checked")}
+              >
+                <Icon name="trash" />
+                删除
+              </Button>
+              <Button type="button" size="sm" variant="text" onClick={() => setBatchMode(false)}>
+                退出
+              </Button>
+            </span>
+          </>
+        ) : (
+          <>
+            <span>
+              {mode === "archive" ? "已读归档 · 全部领域" : mode === "intake" ? "待处理论文" : "本领域论文"}
+            </span>
+            <span className="ef-list-head-right">
+              <span className="mono">{pad2(list.length)}</span>
+              {list.length ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="text"
+                  className="ef-batch-toggle"
+                  aria-label="批量选择论文"
+                  title="批量选择论文"
+                  onClick={() => setBatchMode(true)}
+                >
+                  <Icon name="batch" />
+                </Button>
+              ) : null}
+            </span>
+          </>
+        )}
       </div>
 
       {list.length === 0 ? (
@@ -164,6 +231,9 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
             void selectPaper(id);
             onPaperChosen?.();
           }}
+          batch={batchMode}
+          checkedIds={checkedPaperIds}
+          onToggleCheck={(id) => toggleCheckedPaper(id)}
         />
       )}
 

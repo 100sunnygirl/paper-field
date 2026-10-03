@@ -590,6 +590,28 @@ describe("deletePaper / deleteDomain 级联", () => {
     expect(await repo.getPaper(paper.id)).toBeNull();
     expect(await repo.listDomains()).toEqual([]);
   });
+
+  it("deletePapers：只删勾选集合，级联清理与单删一致，空数组不动数据", async () => {
+    const engine = holder.engine!;
+    const domainId = await makeDomain();
+    const a = await repo.createPaper({ domainId, title: "a" });
+    const b = await repo.createPaper({ domainId, title: "b" });
+    await repo.createPaper({ domainId, title: "c" });
+    await repo.saveParsedMarkdown(b.id, "# b");
+
+    await repo.deletePapers([]);
+    expect((await repo.listPapers(domainId)).length).toBe(3);
+
+    await repo.deletePapers([a.id, b.id]);
+    const rest = await repo.listPapers(domainId);
+    expect(rest.map((p) => p.title)).toEqual(["c"]);
+    expect(await repo.getPaper(a.id)).toBeNull();
+    const parseRows = await engine.select<{ c: number }>(
+      "SELECT COUNT(*) AS c FROM paper_parse WHERE paper_id = ?",
+      [b.id],
+    );
+    expect(Number(parseRows[0]?.c)).toBe(0);
+  });
 });
 
 describe("domain 短码可选（仅名称必填）", () => {
