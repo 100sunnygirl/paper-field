@@ -28,7 +28,10 @@ const ICONS = {
     </>
   ),
   plus: <path d="M12 5v14M5 12h14" />,
+  minus: <path d="M5 12h14" />,
   down: <path d="m6 9 6 6 6-6" />,
+  up: <path d="m6 15 6-6 6 6" />,
+  activity: <path d="M3 12h4l3-7 4 14 3-7h4" />,
   right: <path d="m9 6 6 6-6 6" />,
   external: <path d="M14 3h7v7m0-7L10 14M10 4H4v16h16v-6" />,
   file: <path d="M5 3h9l5 5v13H5zM14 3v5h5M8 13h8M8 17h6" />,

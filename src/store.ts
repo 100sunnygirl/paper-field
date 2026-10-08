@@ -10,7 +10,15 @@ import {
   type MineruSettingsV2,
   type ProviderHealth,
 } from "./lib/mineru";
-import { backfillMeta, cancelMineruPaper, clearMineruCancel, enqueueMineru, resumeMineru, runMineruBatch } from "./lib/mineruRun";
+import {
+  backfillMeta,
+  cancelMineruPaper,
+  clearMineruCancel,
+  enqueueMineru,
+  enqueueMineruBatch,
+  resumeMineru,
+} from "./lib/mineruRun";
+import { endBatchItem, endJob, getActivity, trackJob, type JobOutcome } from "./lib/activity";
 import { pickProviderFromHealths, providerLabel, summarizeHealths } from "./lib/mineruPlan";
 import { DRAFT_NOTES_SYSTEM, PREPARE_META_SYSTEM, draftNotesUserPrompt, normalizeMeta, normalizeNotes, prepareMetaUserPrompt } from "./lib/prompts";
 import { repo } from "./lib/repo";
@@ -81,6 +89,8 @@ interface FieldState {
   pendingDraftJob: string | null;
   unsavedNote: boolean;
   loadError: string | null;
+  /** 作业面板（状态条「作业」入口 / ⌘J）：非模态浮层，不拦截阅读区操作。 */
+  jobsOpen: boolean;
   init: () => Promise<void>;
   setMode: (mode: AppMode) => Promise<void>;
   selectDomain: (id: string | null) => Promise<void>;
@@ -121,6 +131,11 @@ interface FieldState {
   /** 删除当前勾选的全部论文（先经 delete-checked 对话框确认）。 */
   deleteCheckedPapers: () => Promise<void>;
   setUnsavedNote: (value: boolean) => void;
+  setJobsOpen: (open: boolean) => void;
+  /** 作业面板「移出队列」：该篇轮到时直接跳过（不提交 MinerU），解析状态保持不变。 */
+  dequeueMineruPaper: (batchId: number, paperId: string) => void;
+  /** 作业面板「停止批次」：取消正在解析的一篇，并把本批其余排队论文移出队列。 */
+  stopMineruBatch: (batchId: number) => Promise<void>;
   runPrepareMeta: (paperId?: string, overwrite?: boolean, quiet?: boolean) => Promise<void>;
   runDraftNotes: (paperId?: string, overwrite?: boolean) => Promise<void>;
   cancelJob: (jobId: string) => Promise<void>;
@@ -164,6 +179,7 @@ export const useField = create<FieldState>((set, get) => ({
   pendingDraftJob: null,
   unsavedNote: false,
   loadError: null,
+  jobsOpen: false,
 
   // 【通知唯一入口 / 日志唯一收口】flash 字段的唯一写入口就是本函数：写入镜像的同时
   // 桥接 toasts 层（评审裁定的收口层）——非 null 走 notify（emit / refresh 等事件与
@@ -176,6 +192,39 @@ export const useField = create<FieldState>((set, get) => ({
     else dismissAll("manual");
   },
   setUnsavedNote: (value) => set({ unsavedNote: value }),
+  setJobsOpen: (open) => set({ jobsOpen: open }),
+
+  dequeueMineruPaper: (batchId, paperId) => {
+    // 复用 mineruRun 的取消集合：processOne 轮到该篇时先查取消标记、直接返回 cancelled，
+    // 不建作业也不改论文的解析状态；实况这边立即记为已取消，面板与状态条同步出列。
+    cancelMineruPaper(paperId);
+    endBatchItem(batchId, paperId, "cancelled");
+  },
+
+  stopMineruBatch: async (batchId) => {
+    const batch = getActivity().batches.find((item) => item.id === batchId);
+    if (!batch || batch.kind !== "mineru") return;
+    const pending = batch.paperIds.filter(
+      (id) => !batch.results[id] && id !== batch.currentPaperId,
+    );
+    for (const id of pending) get().dequeueMineruPaper(batchId, id);
+    const current = batch.currentPaperId;
+    let stopped = pending.length;
+    if (current) {
+      const active = get().jobs.filter(
+        (job) => job.paperId === current && (job.status === "queued" || job.status === "running"),
+      );
+      // 当前一篇已建作业（解析或解析后的自动补全）→ 走既有取消；尚未建作业 → 打取消标记。
+      if (active.length) {
+        for (const job of active) await get().cancelJob(job.id);
+      } else {
+        cancelMineruPaper(current);
+      }
+      stopped += 1;
+    }
+    log.info("mineru", `作业面板停止解析批次：${stopped} 篇不再处理`);
+    get().setFlash({ tone: "ok", text: `已停止本批解析，${stopped} 篇不再处理。可在资料栏单独重新解析。` });
+  },
   openDialog: (dialog) => set({ dialog }),
   closeDialog: () => set({ dialog: null, pendingDraftJob: null }),
 
@@ -366,7 +415,7 @@ export const useField = create<FieldState>((set, get) => ({
           text: `已导入 ${created.length} 篇${skippedText}，正在用${providerLabel(effective)}解析。`,
         });
       }
-      enqueueMineru(() => runMineruBatch(mineruHost(), created, false));
+      enqueueMineruBatch(mineruHost(), created, false);
     } catch (err) {
       get().setFlash({ tone: "error", text: `导入失败：${errText(err)}，数据未改动。` });
       throw err;
@@ -390,7 +439,7 @@ export const useField = create<FieldState>((set, get) => ({
         tone: "ok",
         text: paper.pdfPath ? `已创建「${title}」，正在安排解析。` : `已创建「${title}」。`,
       });
-      if (paper.pdfPath) enqueueMineru(() => runMineruBatch(mineruHost(), [paper.id], false));
+      if (paper.pdfPath) enqueueMineruBatch(mineruHost(), [paper.id], false);
     } catch (err) {
       get().setFlash({ tone: "error", text: `创建论文失败：${errText(err)}，数据未改动。` });
       throw err;
@@ -428,7 +477,7 @@ export const useField = create<FieldState>((set, get) => ({
       });
       await get().refresh();
       get().setFlash({ tone: "ok", text: "已将这篇论文发送到 MinerU 解析。" });
-      enqueueMineru(() => runMineruBatch(mineruHost(), [paperId], true));
+      enqueueMineruBatch(mineruHost(), [paperId], true);
     } catch (err) {
       get().setFlash({ tone: "error", text: `重新解析失败：${errText(err)}，数据未改动。` });
       throw err;
@@ -466,7 +515,7 @@ export const useField = create<FieldState>((set, get) => ({
       }
       await get().refresh();
       get().setFlash({ tone: "ok", text: `已将 ${failedIds.length} 篇重新发送到 MinerU 解析。` });
-      enqueueMineru(() => runMineruBatch(mineruHost(), failedIds, true));
+      enqueueMineruBatch(mineruHost(), failedIds, true);
     } catch (err) {
       get().setFlash({ tone: "error", text: `批量重试失败：${errText(err)}，数据未改动。` });
       throw err;
@@ -631,7 +680,7 @@ export const useField = create<FieldState>((set, get) => ({
     const prompt = prepareMetaUserPrompt(paper);
     const job = await repo.createJob(id, "prepareMeta", prompt);
     await get().refresh();
-    await runJob(job.id, PREPARE_META_SYSTEM, prompt, async (raw) => {
+    await runJob(job.id, id, PREPARE_META_SYSTEM, prompt, async (raw) => {
       const meta = normalizeMeta(extractJson(raw), paper.title);
       await repo.applyPreparedMeta(id, meta, overwrite);
     }, quiet);
@@ -654,7 +703,7 @@ export const useField = create<FieldState>((set, get) => ({
     const job = await repo.createJob(id, "draftNotes", prompt);
     set({ dialog: null, pendingDraftJob: null });
     await get().refresh();
-    await runJob(job.id, DRAFT_NOTES_SYSTEM, prompt, async (raw) => {
+    await runJob(job.id, id, DRAFT_NOTES_SYSTEM, prompt, async (raw) => {
       const notes = normalizeNotes(extractJson(raw));
       await repo.applyDraftedNotes(id, notes, true);
     });
@@ -786,6 +835,7 @@ function errText(err: unknown): string {
 
 async function runJob(
   jobId: string,
+  paperId: string,
   system: string,
   user: string,
   apply: (raw: string) => Promise<void>,
@@ -794,6 +844,9 @@ async function runJob(
   const controller = new AbortController();
   abortMap.set(jobId, controller);
   log.info("llm", `AI 作业开始（${jobId}）`);
+  // 作业实况：请求模型 → 写入结果；quiet 即解析后的自动补全，面板标注「自动」。
+  trackJob(jobId, paperId, "request", { auto: quiet });
+  let outcome: JobOutcome = "error";
   await repo.updateJob(jobId, { status: "running", startedAt: nowIso() });
   await useField.getState().refresh();
   try {
@@ -803,19 +856,27 @@ async function runJob(
       user,
       signal: controller.signal,
     });
-    if (controller.signal.aborted) return;
+    if (controller.signal.aborted) {
+      outcome = "cancelled";
+      return;
+    }
+    trackJob(jobId, paperId, "apply");
     await apply(raw);
     await repo.updateJob(jobId, {
       status: "done",
       resultJson: raw,
       finishedAt: nowIso(),
     });
+    outcome = "done";
     log.info("llm", `AI 作业完成（${jobId}）`);
     if (!quiet) {
       useField.getState().setFlash({ tone: "ok", text: "AI 作业完成。阅读状态未改动。" });
     }
   } catch (err) {
-    if (controller.signal.aborted) return;
+    if (controller.signal.aborted) {
+      outcome = "cancelled";
+      return;
+    }
     const message = err instanceof Error ? err.message : String(err);
     // flash 联动已记下用户可见文案；这里补一条作业维度的 error（带 jobId）。
     log.error("llm", `AI 作业失败（${jobId}）`, message);
@@ -826,6 +887,7 @@ async function runJob(
     });
     useField.getState().setFlash({ tone: "error", text: message });
   } finally {
+    endJob(jobId, outcome);
     abortMap.delete(jobId);
     await useField.getState().refresh();
   }

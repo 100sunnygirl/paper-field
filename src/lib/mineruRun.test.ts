@@ -3,8 +3,10 @@ import type { MineruParsePoll, MineruSettingsV2, MineruSubmitResult } from "./mi
 import {
   cancelMineruPaper,
   clearMineruCancel,
+  enqueueMineruBatch,
   runMineruBatch,
 } from "./mineruRun";
+import { getActivity, queueBatch, resetActivity, subscribeActivity } from "./activity";
 import type { PaperDetail } from "./types";
 
 vi.mock("./mineru", () => ({
@@ -432,5 +434,109 @@ describe("runMineruBatch · 连续失败熔断", () => {
     expect(tone).toBe("error");
     expect(text).toContain("解析失败 2 篇");
     expect(text).not.toContain("已暂停");
+  });
+});
+
+describe("作业实况（作业面板的数据来源）", () => {
+  beforeEach(() => {
+    resetActivity();
+  });
+
+  it("批次登记 → 逐篇结果 → 正常结束；作业结束后移出实况并计入本次完成", async () => {
+    const paper = paperState();
+    const host = makeHost(paper);
+    vi.mocked(mineruSubmit).mockResolvedValue(submitResult({ status: "done" }));
+    vi.mocked(mineruMarkdown).mockResolvedValue("# md");
+
+    await runMineruBatch(host, ["p-1"], false);
+
+    const [batch] = getActivity().batches;
+    expect(batch).toMatchObject({ kind: "mineru", state: "done", results: { "p-1": "ok" }, currentPaperId: null });
+    expect(getActivity().jobs).toEqual({});
+    expect(getActivity().tally.done).toBe(1);
+  });
+
+  it("轮询推进阶段：提交（未定源）→ 解析（实际来源 + 官方 API 页进度）→ 取回全文", async () => {
+    const paper = paperState();
+    const host = makeHost(paper);
+    vi.mocked(mineruSubmit).mockResolvedValue(
+      submitResult({ provider: "api", parseIds: [], shortId: "batch-1", status: "running" }),
+    );
+    vi.mocked(mineruParseStatuses)
+      .mockResolvedValueOnce([poll("parsing", { id: "p-1", progress: "3/10" })])
+      .mockResolvedValueOnce([poll("done", { id: "p-1", progress: "10/10" })]);
+    vi.mocked(mineruMarkdown).mockResolvedValue("# md");
+    const stages: string[] = [];
+    const off = subscribeActivity(() => {
+      const live = getActivity().jobs["job-1"];
+      if (live && stages.at(-1) !== live.stage) stages.push(live.stage);
+    });
+
+    vi.useFakeTimers();
+    const run = runMineruBatch(host, ["p-1"], false);
+    await vi.advanceTimersByTimeAsync(100);
+    // 第一次轮询后停在解析阶段：来源与页进度已写入实况，批次当前篇为 p-1。
+    expect(getActivity().jobs["job-1"]).toMatchObject({
+      stage: "parse",
+      provider: "api",
+      pages: { done: 3, total: 10 },
+    });
+    expect(getActivity().batches[0].currentPaperId).toBe("p-1");
+    await vi.advanceTimersByTimeAsync(4_100);
+    await run;
+    off();
+
+    expect(stages).toEqual(["submit", "parse", "fetch"]);
+    expect(getActivity().jobs).toEqual({});
+  });
+
+  it("失败计入本次失败；连续失败熔断后批次记为 halted，剩余论文没有结果", async () => {
+    const papers: Record<string, PaperDetail> = {};
+    for (const id of ["p1", "p2", "p3", "p4"]) papers[id] = paperState({ id });
+    const host = makeHostBase({ paper: papers.p1 });
+    vi.mocked(repo.getPaper).mockImplementation(async (id: string) => papers[id] ?? null);
+    vi.mocked(mineruSubmit).mockRejectedValue(new Error("busy"));
+
+    await runMineruBatch(host, ["p1", "p2", "p3", "p4"], false);
+
+    const [batch] = getActivity().batches;
+    expect(batch.state).toBe("halted");
+    expect(batch.results).toEqual({ p1: "fail", p2: "fail", p3: "fail" });
+    expect(getActivity().tally.failed).toBe(3);
+  });
+
+  it("enqueueMineruBatch 入链即登记为等待，轮到后开始并跑完", async () => {
+    const paper = paperState();
+    const host = makeHost(paper);
+    vi.mocked(mineruSubmit).mockResolvedValue(submitResult({ status: "done" }));
+    vi.mocked(mineruMarkdown).mockResolvedValue("# md");
+
+    enqueueMineruBatch(host, ["p-1"], false);
+    expect(getActivity().batches[0]).toMatchObject({ state: "waiting", paperIds: ["p-1"] });
+
+    await vi.waitFor(() => expect(getActivity().batches[0]?.state).toBe("done"));
+    expect(mineruSubmit).toHaveBeenCalledTimes(1);
+  });
+
+  it("解析源已全部停用：预登记的批次直接作废，不留结果小结", async () => {
+    const paper = paperState();
+    const host = makeHost(paper, { configured: false });
+    const batchId = queueBatch("mineru", ["p-1"]);
+
+    await runMineruBatch(host, ["p-1"], false, batchId);
+
+    expect(getActivity().batches).toEqual([]);
+    expect(mineruSubmit).not.toHaveBeenCalled();
+  });
+
+  it("移出队列的论文轮到时直接跳过：记为取消，不提交 MinerU", async () => {
+    const paper = paperState();
+    const host = makeHost(paper);
+    cancelMineruPaper("p-1");
+
+    await runMineruBatch(host, ["p-1"], false);
+
+    expect(mineruSubmit).not.toHaveBeenCalled();
+    expect(getActivity().batches[0].results).toEqual({ "p-1": "cancelled" });
   });
 });

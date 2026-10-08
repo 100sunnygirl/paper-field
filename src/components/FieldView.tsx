@@ -32,6 +32,7 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
   const setArchiveFilter = useField((s) => s.setArchiveFilter);
   const cancelJob = useField((s) => s.cancelJob);
   const retryFailedMineru = useField((s) => s.retryFailedMineru);
+  const setJobsOpen = useField((s) => s.setJobsOpen);
   const search = useField((s) => s.search);
   const batchMode = useField((s) => s.batchMode);
   const checkedPaperIds = useField((s) => s.checkedPaperIds);
@@ -161,6 +162,10 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
           {jobs.filter((job) => job.status === "queued" || job.status === "running").length === 0 ? (
             <p className="ef-nav-sum">当前没有进行中的 AI 作业。</p>
           ) : null}
+          <Button type="button" variant="link" className="ef-jobs-link" onClick={() => setJobsOpen(true)}>
+            在作业面板查看阶段与进度
+            <Icon name="right" />
+          </Button>
         </div>
       ) : null}
 

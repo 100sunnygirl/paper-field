@@ -5,6 +5,19 @@ import {
   type MineruSettingsV2,
 } from "./mineru";
 import type { MineruProviderKind } from "./types";
+import {
+  beginBatchItem,
+  discardBatch,
+  endBatchItem,
+  endJob,
+  finishBatch,
+  parsePageProgress,
+  patchJobLive,
+  queueBatch,
+  startBatch,
+  trackJob,
+  type JobOutcome,
+} from "./activity";
 import { log } from "./logger";
 import { repo } from "./repo";
 import { nowIso } from "./util";
@@ -35,6 +48,15 @@ export function enqueueMineru(task: () => Promise<void>): void {
   });
 }
 
+/**
+ * 入链一个解析批次，并立即在作业实况里登记为「等待」：
+ * 前序批次还在跑时，作业面板就能列出这批排队的论文。
+ */
+export function enqueueMineruBatch(host: Host, paperIds: string[], force = false): void {
+  const batchId = queueBatch("mineru", paperIds);
+  enqueueMineru(() => runMineruBatch(host, paperIds, force, batchId));
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
@@ -50,6 +72,7 @@ async function retireActive(paperId: string): Promise<void> {
 
 async function pollMarkdown(
   host: Host,
+  jobId: string,
   paperId: string,
   provider: MineruProviderKind,
   docRef: string,
@@ -69,9 +92,11 @@ async function pollMarkdown(
     // 「无 parseIds 直接取 markdown」仅对 doclib 成立；官方 API 的 parseIds 恒为空，
     // 必须先轮询 batch 状态等到 done 再取 full.md，否则会在 running 阶段过早取结果。
     if (!parseIds.length && provider !== "api") {
+      trackJob(jobId, paperId, "fetch");
       return mineruMarkdown(provider, docRef, tier, pageRange);
     }
     const polls = await pollStatuses(provider, docRef, parseIds);
+    patchJobLive(jobId, { pages: parsePageProgress(polls.map((item) => item.progress)) });
     const waiting = polls.some((item) => item.status === "pending" || item.status === "parsing");
     const failed = polls.find((item) => item.status === "failed");
     const settled = polls.some((item) => item.status === "done" || item.status === "superseded");
@@ -79,6 +104,7 @@ async function pollMarkdown(
       throw new Error(failed.error || "MinerU 解析失败");
     }
     if (!waiting) {
+      trackJob(jobId, paperId, "fetch");
       return mineruMarkdown(provider, docRef, tier, pageRange);
     }
     await sleep(4000);
@@ -107,13 +133,13 @@ async function pollStatuses(provider: MineruProviderKind, docRef: string, parseI
  * 关键语义：overwrite=false —— repo.applyPreparedMeta 的用户编辑锁生效，
  * 自动补全永不覆盖用户手改过的字段；quiet=true 避免 flash 刷屏。
  */
-async function autoPrepare(host: Host, paperId: string): Promise<boolean> {
-  if (!host.hasKey()) return false;
+async function autoPrepare(host: Host, paperId: string): Promise<"ok" | "fail" | "skip"> {
+  if (!host.hasKey()) return "skip";
   const paper = await repo.getPaper(paperId);
-  if (!paper || paper.llmPreparedAt || !paper.parsedMarkdown.trim()) return false;
+  if (!paper || paper.llmPreparedAt || !paper.parsedMarkdown.trim()) return "skip";
   await host.prepare(paperId, false, true);
   const after = await repo.getPaper(paperId);
-  return Boolean(after?.llmPreparedAt);
+  return after?.llmPreparedAt ? "ok" : "fail";
 }
 
 async function processOne(host: Host, paperId: string, force: boolean): Promise<"ok" | "fail" | "cancelled" | "skip"> {
@@ -133,6 +159,8 @@ async function processOne(host: Host, paperId: string, force: boolean): Promise<
   await retireActive(paperId);
   const job = await repo.createJob(paperId, "mineruParse", paper.pdfPath);
   await repo.updateJob(job.id, { status: "running", startedAt: nowIso() });
+  // 作业实况：各出口在改写作业状态的同一刻 endJob；finally 只兜底意外抛错（已结束则无操作）。
+  let outcome: JobOutcome = "error";
   try {
     let docRef = paper.mineruDocRef;
     let parseIds = paper.mineruParseIds;
@@ -144,6 +172,7 @@ async function processOne(host: Host, paperId: string, force: boolean): Promise<
       (paper.mineruStatus === "submitted" || paper.mineruStatus === "parsing") &&
       Boolean(docRef) &&
       Boolean(provider);
+    trackJob(job.id, paperId, canResume ? "parse" : "submit", { provider: canResume ? provider : null });
     if (!canResume) {
       await repo.setMineruState(paperId, { status: "queued", error: null });
       await host.refresh();
@@ -162,6 +191,7 @@ async function processOne(host: Host, paperId: string, force: boolean): Promise<
         error: null,
       });
       await host.refresh();
+      trackJob(job.id, paperId, submitted.status === "done" ? "fetch" : "parse", { provider });
       if (submitted.status === "done") {
         const markdown = await mineruMarkdown(
           provider,
@@ -172,6 +202,8 @@ async function processOne(host: Host, paperId: string, force: boolean): Promise<
         await repo.saveParsedMarkdown(paperId, markdown);
         await repo.setMineruState(paperId, { status: "done", error: null });
         await repo.updateJob(job.id, { status: "done", finishedAt: nowIso() });
+        outcome = "done";
+        endJob(job.id, outcome);
         await host.refresh();
         await autoPrepare(host, paperId);
         return "ok";
@@ -180,6 +212,7 @@ async function processOne(host: Host, paperId: string, force: boolean): Promise<
     if (!docRef || !provider) throw new Error("MinerU 没有返回文档编号");
     const markdown = await pollMarkdown(
       host,
+      job.id,
       paperId,
       provider,
       docRef,
@@ -190,6 +223,8 @@ async function processOne(host: Host, paperId: string, force: boolean): Promise<
     await repo.saveParsedMarkdown(paperId, markdown);
     await repo.setMineruState(paperId, { status: "done", error: null });
     await repo.updateJob(job.id, { status: "done", finishedAt: nowIso() });
+    outcome = "done";
+    endJob(job.id, outcome);
     await host.refresh();
     await autoPrepare(host, paperId);
     return "ok";
@@ -198,59 +233,90 @@ async function processOne(host: Host, paperId: string, force: boolean): Promise<
     if (cancelled.has(paperId) || message === "CANCELLED") {
       cancelled.delete(paperId);
       await repo.updateJob(job.id, { status: "cancelled", error: "cancelled", finishedAt: nowIso() });
+      outcome = "cancelled";
+      endJob(job.id, outcome);
       await repo.setMineruState(paperId, { status: "cancelled" });
       await host.refresh();
       return "cancelled";
     }
     await repo.updateJob(job.id, { status: "error", error: message, finishedAt: nowIso() });
+    endJob(job.id, outcome);
     await repo.setMineruState(paperId, { status: "error", error: message });
     log.error("mineru", `论文解析失败（${paperId}）`, message);
     await host.refresh();
     return "fail";
+  } finally {
+    endJob(job.id, outcome);
   }
 }
 
 /** 连续失败达到该值即熔断剩余批次：解析源大概率繁忙或不可用，继续只会逐篇耗时超时。 */
 const CONSECUTIVE_FAIL_LIMIT = 3;
 
-export async function runMineruBatch(host: Host, paperIds: string[], force = false): Promise<void> {
+export async function runMineruBatch(
+  host: Host,
+  paperIds: string[],
+  force = false,
+  /** enqueueMineruBatch 入链时预登记的批次；直接调用（如启动恢复）时现场登记。 */
+  batchId?: number,
+): Promise<void> {
   // 守卫语义：order 中无任何启用源 → 静默返回（入口 importPdfs/retryMineru 已给出指引）。
-  if (!host.mineru().configured) return;
-  log.info("mineru", `解析批次开始：共 ${paperIds.length} 篇`);
-  let ok = 0;
-  let fail = 0;
-  let consecutiveFails = 0;
-  let pausedCount = 0;
-  for (const paperId of paperIds) {
-    if (consecutiveFails >= CONSECUTIVE_FAIL_LIMIT) {
-      pausedCount = paperIds.length - ok - fail;
-      break;
-    }
-    const result = await processOne(host, paperId, force);
-    if (result === "ok") {
-      ok += 1;
-      consecutiveFails = 0;
-    } else if (result === "fail") {
-      fail += 1;
-      consecutiveFails += 1;
-    }
-    // cancelled / skip 不计入连续失败，也不打断计数。
-  }
-  if (pausedCount) {
-    log.warn("mineru", `连续失败 ${consecutiveFails} 篇，熔断暂停剩余 ${pausedCount} 篇`);
-    host.flash(
-      "error",
-      `MinerU 解析连续失败 ${consecutiveFails} 篇，已暂停剩余 ${pausedCount} 篇。解析源可能繁忙或不可用，可在设置页测试连接，稍后在 INTAKE 页重试。`,
-    );
+  if (!host.mineru().configured) {
+    if (batchId !== undefined) discardBatch(batchId);
     return;
   }
-  log.info("mineru", `解析批次结束：成功 ${ok} 篇，失败 ${fail} 篇`);
-  if (fail) {
-    host.flash("error", `MinerU 解析失败 ${fail} 篇，可在资料栏重试。`);
-  } else if (ok && !host.hasKey()) {
-    host.flash("warn", "解析完成。尚未配置 AI，书目仍使用文件名，可稍后补全。");
-  } else if (ok) {
-    host.flash("ok", `MinerU 解析完成 ${ok} 篇。阅读状态未改动。`);
+  const id = batchId ?? queueBatch("mineru", paperIds);
+  startBatch(id);
+  // 正常走完记 done；熔断提前返回或意外抛错记 halted（剩余论文在面板上显示为已暂停）。
+  let state: "done" | "halted" = "halted";
+  try {
+    log.info("mineru", `解析批次开始：共 ${paperIds.length} 篇`);
+    let ok = 0;
+    let fail = 0;
+    let consecutiveFails = 0;
+    let pausedCount = 0;
+    for (const paperId of paperIds) {
+      if (consecutiveFails >= CONSECUTIVE_FAIL_LIMIT) {
+        pausedCount = paperIds.length - ok - fail;
+        break;
+      }
+      // 作业面板「移出队列」的论文：轮到时直接出列，不读库、不在面板上闪一下「处理中」。
+      if (cancelled.has(paperId)) {
+        cancelled.delete(paperId);
+        endBatchItem(id, paperId, "cancelled");
+        continue;
+      }
+      beginBatchItem(id, paperId);
+      const result = await processOne(host, paperId, force);
+      endBatchItem(id, paperId, result);
+      if (result === "ok") {
+        ok += 1;
+        consecutiveFails = 0;
+      } else if (result === "fail") {
+        fail += 1;
+        consecutiveFails += 1;
+      }
+      // cancelled / skip 不计入连续失败，也不打断计数。
+    }
+    if (pausedCount) {
+      log.warn("mineru", `连续失败 ${consecutiveFails} 篇，熔断暂停剩余 ${pausedCount} 篇`);
+      host.flash(
+        "error",
+        `MinerU 解析连续失败 ${consecutiveFails} 篇，已暂停剩余 ${pausedCount} 篇。解析源可能繁忙或不可用，可在设置页测试连接，稍后在 INTAKE 页重试。`,
+      );
+      return;
+    }
+    state = "done";
+    log.info("mineru", `解析批次结束：成功 ${ok} 篇，失败 ${fail} 篇`);
+    if (fail) {
+      host.flash("error", `MinerU 解析失败 ${fail} 篇，可在资料栏重试。`);
+    } else if (ok && !host.hasKey()) {
+      host.flash("warn", "解析完成。尚未配置 AI，书目仍使用文件名，可稍后补全。");
+    } else if (ok) {
+      host.flash("ok", `MinerU 解析完成 ${ok} 篇。阅读状态未改动。`);
+    }
+  } finally {
+    finishBatch(id, state);
   }
 }
 
@@ -264,9 +330,21 @@ export async function resumeMineru(host: Host): Promise<void> {
 export async function backfillMeta(host: Host): Promise<void> {
   if (!host.hasKey()) return;
   const ids = await repo.listReadyForMeta();
+  if (!ids.length) return;
+  const batchId = queueBatch("meta", ids);
+  startBatch(batchId);
+  let state: "done" | "halted" = "halted";
   let filled = 0;
-  for (const id of ids) {
-    if (await autoPrepare(host, id)) filled += 1;
+  try {
+    for (const id of ids) {
+      beginBatchItem(batchId, id);
+      const result = await autoPrepare(host, id);
+      endBatchItem(batchId, id, result);
+      if (result === "ok") filled += 1;
+    }
+    state = "done";
+  } finally {
+    finishBatch(batchId, state);
   }
   if (filled) host.flash("ok", `已为 ${filled} 篇论文补全信息。阅读状态未改动。`);
 }
