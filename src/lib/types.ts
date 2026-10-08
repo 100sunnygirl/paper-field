@@ -130,10 +130,35 @@ export interface FieldStats {
   running: number;
 }
 
-export interface LlmSettings {
+/** 单个 LLM 提供商的公共视图：密钥永不回显，只返回 hasKey。 */
+export interface LlmProviderView {
+  id: string;
+  /** 命中预设时为预设 id（openai/deepseek/…），自定义为 null。 */
+  presetId: string | null;
+  label: string;
   baseUrl: string;
   model: string;
+  enabled: boolean;
+  /** 是否已保存 API Key（requiresKey=false 的本地服务可无 Key）。 */
   hasKey: boolean;
+  requiresKey: boolean;
+}
+
+/** 轻量用量统计（按 providerId 记账，llm_settings 合并返回）。 */
+export interface LlmUsage {
+  requests: number;
+  errors: number;
+  inputTokens: number;
+  outputTokens: number;
+  /** epoch 毫秒；从未使用为 null。 */
+  lastUsedAt: number | null;
+}
+
+/** LLM 设置 v2 公共视图：providers 顺序即回退顺序；usage 以 providerId 为键。 */
+export interface LlmSettings {
+  version: 2;
+  providers: LlmProviderView[];
+  usage: Record<string, LlmUsage>;
 }
 
 export interface PreparedMeta {

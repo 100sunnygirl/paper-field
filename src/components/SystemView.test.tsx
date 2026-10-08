@@ -1,10 +1,12 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SystemView } from "./SystemView";
 import { useField } from "../store";
 import { DEFAULT_MINERU, type MineruSaveInput, type MineruSettingsV2 } from "../lib/mineru";
 import { clear as clearLog, log } from "../lib/logger";
 import type { ProviderHealth } from "../lib/mineru";
+import type { LlmProviderView, LlmSettings } from "../lib/types";
+import type { LlmSaveInput } from "../lib/settings";
 
 function mineruState(overrides: Partial<MineruSettingsV2> = {}): MineruSettingsV2 {
   return {
@@ -168,6 +170,295 @@ describe("SystemView · 回退顺序调整", () => {
     fireEvent.click(within(mineruBlock).getByRole("button", { name: "保存设置" }));
     await waitFor(() => expect(saveMineruSettings).toHaveBeenCalledTimes(1));
     expect(await screen.findByText(/MinerU 设置已保存（已启用 3 个解析源）/)).toBeInTheDocument();
+  });
+});
+
+// ---------- AI 服务设置（多提供商 v2）：状态条 / 卡片 / 预设 / 三态 Key / 测试 / 增删排序 / 用量 ----------
+
+function llmProviderViews(): LlmProviderView[] {
+  return [
+    {
+      id: "p-1",
+      presetId: "deepseek",
+      label: "DeepSeek",
+      baseUrl: "https://api.deepseek.com/v1",
+      model: "deepseek-chat",
+      enabled: true,
+      hasKey: true,
+      requiresKey: true,
+    },
+    {
+      id: "p-2",
+      presetId: null,
+      label: "自定义服务",
+      baseUrl: "https://my-proxy.example/v1",
+      model: "m-2",
+      enabled: true,
+      hasKey: false,
+      requiresKey: true,
+    },
+  ];
+}
+
+function llmSettings(overrides: Partial<LlmSettings> = {}): LlmSettings {
+  return {
+    version: 2,
+    providers: llmProviderViews(),
+    usage: {
+      "p-1": { requests: 5, errors: 1, inputTokens: 1200, outputTokens: 800, lastUsedAt: Date.UTC(2024, 6, 3, 9, 30) },
+    },
+    ...overrides,
+  };
+}
+
+/** 浏览器镜像存档（含明文 apiKey）：testLlmProvider / listLlmModels 按已保存配置发请求。 */
+function primeLlmBrowser() {
+  localStorage.setItem(
+    "paper-field.llm",
+    JSON.stringify({
+      version: 2,
+      providers: [
+        {
+          id: "p-1",
+          presetId: "deepseek",
+          label: "DeepSeek",
+          baseUrl: "https://api.deepseek.com/v1",
+          model: "deepseek-chat",
+          enabled: true,
+          requiresKey: true,
+          apiKey: "sk-1",
+        },
+      ],
+    }),
+  );
+}
+
+function llmBlock(): HTMLElement {
+  return screen.getByText("AI 服务设置").closest("article") as HTMLElement;
+}
+
+function jsonResponse(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), { status });
+}
+
+describe("SystemView · AI 服务设置（多提供商）", () => {
+  beforeEach(() => {
+    useField.setState(useField.getInitialState(), true);
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("状态条统计已启用数、标出首个可用提供商「生效中」，缺 Key 的卡片无徽标", () => {
+    useField.setState({ settings: llmSettings() });
+    render(<SystemView />);
+    expect(screen.getByText(/已启用 2 个提供商/)).toHaveTextContent("DeepSeek");
+    expect(screen.getByText("按顺序自动回退")).toBeInTheDocument();
+    const first = screen.getByRole("region", { name: "DeepSeek" });
+    expect(within(first).getByText("生效中")).toBeInTheDocument();
+    const second = screen.getByRole("region", { name: "自定义服务" });
+    expect(within(second).queryByText("生效中")).not.toBeInTheDocument();
+  });
+
+  it("未配置任何提供商：状态条引导去配置，不渲染卡片与用量表", () => {
+    useField.setState({ settings: { version: 2, providers: [], usage: {} } });
+    render(<SystemView />);
+    expect(screen.getByText(/尚未配置任何 AI 服务/)).toBeInTheDocument();
+    expect(llmBlock().querySelectorAll(".ef-provider-card")).toHaveLength(0);
+    expect(within(llmBlock()).queryByRole("table")).not.toBeInTheDocument();
+  });
+
+  it("预设下拉选中智谱：自动填充 baseUrl / label / 推荐模型，并随保存提交", async () => {
+    const saveLlmSettings = vi.fn(async (_input: LlmSaveInput) => undefined);
+    useField.setState({ settings: llmSettings(), saveLlmSettings });
+    render(<SystemView />);
+    fireEvent.change(within(screen.getByRole("region", { name: "自定义服务" })).getByLabelText("预设"), {
+      target: { value: "zhipu" },
+    });
+    const zhipu = screen.getByRole("region", { name: "智谱 GLM" });
+    expect(within(zhipu).getByLabelText("Base URL")).toHaveValue("https://open.bigmodel.cn/api/paas/v4");
+    expect(within(zhipu).getByLabelText("模型")).toHaveValue("glm-4.5");
+    fireEvent.click(within(llmBlock()).getByRole("button", { name: "保存设置" }));
+    await waitFor(() => expect(saveLlmSettings).toHaveBeenCalledTimes(1));
+    const input = saveLlmSettings.mock.calls[0]![0]!;
+    expect(input.providers).toHaveLength(2);
+    expect(input.providers[1]).toMatchObject({
+      id: "p-2",
+      presetId: "zhipu",
+      label: "智谱 GLM",
+      baseUrl: "https://open.bigmodel.cn/api/paas/v4",
+      model: "glm-4.5",
+      requiresKey: true,
+    });
+    expect(await within(llmBlock()).findByText(/AI 服务设置已保存（已启用 2 个提供商）/)).toBeInTheDocument();
+  });
+
+  it("保存三态 Key：留空=保留（null）、输入=写入；「清除 Key」两步确认提交空串", async () => {
+    const saveLlmSettings = vi.fn(async (_input: LlmSaveInput) => undefined);
+    useField.setState({ settings: llmSettings(), saveLlmSettings });
+    render(<SystemView />);
+    // p-2 尚未配置 Key：输入新 Key；p-1 已存 Key：留空保持。
+    const second = screen.getByRole("region", { name: "自定义服务" });
+    fireEvent.change(within(second).getByLabelText("API Key（尚未配置）"), { target: { value: "sk-new" } });
+    fireEvent.click(within(llmBlock()).getByRole("button", { name: "保存设置" }));
+    await waitFor(() => expect(saveLlmSettings).toHaveBeenCalledTimes(1));
+    expect(saveLlmSettings.mock.calls[0]![0].providers.map((p) => p.apiKey)).toEqual([null, "sk-new"]);
+
+    // 清除 p-1 的已存 Key：两步确认后立即保存，且只对该行传空串
+    //（p-2 的草稿在桩动作下未被 store 回写重置，仍按写入提交）。
+    const first = screen.getByRole("region", { name: "DeepSeek" });
+    fireEvent.click(within(first).getByRole("button", { name: "清除 Key…" }));
+    fireEvent.click(within(first).getByRole("button", { name: "确认清除 Key" }));
+    await waitFor(() => expect(saveLlmSettings).toHaveBeenCalledTimes(2));
+    expect(saveLlmSettings.mock.calls[1]![0].providers.map((p) => p.apiKey)).toEqual(["", "sk-new"]);
+    expect(await within(llmBlock()).findByText(/已清除该提供商在本机保存的 API Key/)).toBeInTheDocument();
+    expect(within(first).queryByRole("button", { name: "清除 Key…" })).not.toBeInTheDocument();
+  });
+
+  it("已存 Key 的行输入新草稿后点「测试连接」：替换也算脏，先落盘再测", async () => {
+    const saveLlmSettings = vi.fn(async (_input: LlmSaveInput) => undefined);
+    useField.setState({ settings: llmSettings(), saveLlmSettings });
+    primeLlmBrowser();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse(200, { choices: [{ message: { content: "ok" } }] })),
+    );
+    render(<SystemView />);
+    // p-1 已存 Key（hasKey=true）：输入新草稿是「替换」而非「保留」，
+    // 不先落盘的话后端按盘上旧 Key 测试，会误报「测试通过」。
+    const first = screen.getByRole("region", { name: "DeepSeek" });
+    fireEvent.change(within(first).getByLabelText("API Key（已保存 · 留空保持不变）"), {
+      target: { value: "sk-2" },
+    });
+    fireEvent.click(within(first).getByRole("button", { name: "测试连接" }));
+    await waitFor(() => expect(saveLlmSettings).toHaveBeenCalledTimes(1));
+    expect(saveLlmSettings.mock.calls[0]![0].providers[0]).toMatchObject({ id: "p-1", apiKey: "sk-2" });
+    expect(await within(first).findByText(/连接正常 · \d+ms/)).toBeInTheDocument();
+  });
+
+  it("测试连接：成功行内显示延迟，失败显示中文可行动原因", async () => {
+    useField.setState({ settings: llmSettings(), saveLlmSettings: vi.fn(async () => undefined) });
+    primeLlmBrowser();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(200, { choices: [{ message: { content: "ok" } }] }))
+      .mockResolvedValueOnce(jsonResponse(401, { error: { message: "Incorrect API key" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SystemView />);
+    const first = screen.getByRole("region", { name: "DeepSeek" });
+    fireEvent.click(within(first).getByRole("button", { name: "测试连接" }));
+    expect(await within(first).findByText(/连接正常 · \d+ms/)).toBeInTheDocument();
+    // p-2 未保存到本机镜像：直接指引先保存。
+    const second = screen.getByRole("region", { name: "自定义服务" });
+    fireEvent.click(within(second).getByRole("button", { name: "测试连接" }));
+    expect(await within(second).findByText(/找不到该提供商配置，请先保存/)).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("测试连接失败（401）：行内显示鉴权失败的可行动信息", async () => {
+    useField.setState({ settings: llmSettings(), saveLlmSettings: vi.fn(async () => undefined) });
+    primeLlmBrowser();
+    vi.stubGlobal("fetch", vi.fn(async () => jsonResponse(401, { error: { message: "Incorrect API key" } })));
+    render(<SystemView />);
+    const first = screen.getByRole("region", { name: "DeepSeek" });
+    fireEvent.click(within(first).getByRole("button", { name: "测试连接" }));
+    expect(await within(first).findByText(/LLM 鉴权失败：请检查设置页的 API Key/)).toBeInTheDocument();
+  });
+
+  it("获取模型列表：datalist 候选 = 拉取列表 ∪ 预设推荐（去重）", async () => {
+    useField.setState({ settings: llmSettings(), saveLlmSettings: vi.fn(async () => undefined) });
+    primeLlmBrowser();
+    const fetchMock = vi.fn(
+      async (_url: string, _init?: RequestInit) =>
+        jsonResponse(200, { data: [{ id: "deepseek-coder" }, { id: "deepseek-chat" }] }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    render(<SystemView />);
+    const first = screen.getByRole("region", { name: "DeepSeek" });
+    fireEvent.click(within(first).getByRole("button", { name: "获取模型列表" }));
+    expect(await within(first).findByText(/已获取 2 个模型/)).toBeInTheDocument();
+    expect(fetchMock.mock.calls[0]![0]).toBe("https://api.deepseek.com/v1/models");
+    const options = Array.from(first.querySelectorAll("datalist option")).map((option) =>
+      option.getAttribute("value"),
+    );
+    // 拉取列表由 lib 侧排序（chat 在 coder 前），∪ 预设推荐去重后追加 reasoner。
+    expect(options).toEqual(["deepseek-chat", "deepseek-coder", "deepseek-reasoner"]);
+  });
+
+  it("添加提供商（预设 + 自定义）：追加卡片并随保存提交", async () => {
+    const saveLlmSettings = vi.fn(async (_input: LlmSaveInput) => undefined);
+    useField.setState({ settings: llmSettings(), saveLlmSettings });
+    render(<SystemView />);
+    fireEvent.change(screen.getByLabelText("提供商预设"), { target: { value: "ollama" } });
+    fireEvent.click(screen.getByRole("button", { name: "添加提供商" }));
+    const ollama = screen.getByRole("region", { name: "Ollama 本地" });
+    expect(within(ollama).getByLabelText("Base URL")).toHaveValue("http://localhost:11434/v1");
+    expect(within(ollama).getByLabelText("API Key（免 Key 服务 · 可留空）")).toBeInTheDocument();
+    // 自定义：地址与模型留空手填。
+    fireEvent.change(screen.getByLabelText("提供商预设"), { target: { value: "__custom__" } });
+    fireEvent.click(screen.getByRole("button", { name: "添加提供商" }));
+    expect(screen.getAllByRole("region", { name: "自定义服务" })).toHaveLength(2);
+    fireEvent.click(within(llmBlock()).getByRole("button", { name: "保存设置" }));
+    await waitFor(() => expect(saveLlmSettings).toHaveBeenCalledTimes(1));
+    const providers = saveLlmSettings.mock.calls[0]![0].providers;
+    expect(providers).toHaveLength(4);
+    expect(providers[2]).toMatchObject({
+      presetId: "ollama",
+      label: "Ollama 本地",
+      baseUrl: "http://localhost:11434/v1",
+      requiresKey: false,
+      enabled: true,
+      apiKey: null,
+    });
+    expect(providers[3]).toMatchObject({ presetId: null, label: "自定义服务", baseUrl: "", model: "" });
+  });
+
+  it("删除提供商：两步确认后立即保存剩余列表", async () => {
+    const saveLlmSettings = vi.fn(async (_input: LlmSaveInput) => undefined);
+    useField.setState({ settings: llmSettings(), saveLlmSettings });
+    render(<SystemView />);
+    const second = screen.getByRole("region", { name: "自定义服务" });
+    fireEvent.click(within(second).getByRole("button", { name: "删除…" }));
+    fireEvent.click(within(second).getByRole("button", { name: "确认删除" }));
+    await waitFor(() => expect(saveLlmSettings).toHaveBeenCalledTimes(1));
+    expect(saveLlmSettings.mock.calls[0]![0].providers.map((p) => p.id)).toEqual(["p-1"]);
+    expect(screen.queryByRole("region", { name: "自定义服务" })).not.toBeInTheDocument();
+  });
+
+  it("排序：↑↓ 立即保存新顺序，卡片顺序同步，首末按钮禁用", async () => {
+    const saveLlmSettings = vi.fn(async (_input: LlmSaveInput) => undefined);
+    useField.setState({ settings: llmSettings(), saveLlmSettings });
+    render(<SystemView />);
+    fireEvent.click(screen.getByRole("button", { name: "下移DeepSeek" }));
+    await waitFor(() => expect(saveLlmSettings).toHaveBeenCalledTimes(1));
+    expect(saveLlmSettings.mock.calls[0]![0].providers.map((p) => p.id)).toEqual(["p-2", "p-1"]);
+    const labels = Array.from(llmBlock().querySelectorAll(".ef-provider-card")).map((card) =>
+      card.getAttribute("aria-label"),
+    );
+    expect(labels).toEqual(["自定义服务", "DeepSeek"]);
+    expect(screen.getByRole("button", { name: "上移自定义服务" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "下移DeepSeek" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "上移DeepSeek" })).toBeEnabled();
+  });
+
+  it("用量小结表：按 providerId 渲染请求 / 失败 / tokens 入出 / 最近使用", () => {
+    useField.setState({ settings: llmSettings() });
+    render(<SystemView />);
+    const table = within(llmBlock()).getByRole("table");
+    const used = within(table).getByText("DeepSeek").closest("tr")!;
+    expect(used.textContent).toContain("5");
+    expect(used.textContent).toContain("1");
+    expect(used.textContent).toContain("1200");
+    expect(used.textContent).toContain("800");
+    // 最近使用按本机时区渲染「YYYY.MM.DD HH:mm」。
+    const local = new Date(Date.UTC(2024, 6, 3, 9, 30));
+    const hhmm = `${String(local.getHours()).padStart(2, "0")}:${String(local.getMinutes()).padStart(2, "0")}`;
+    expect(used.textContent).toMatch(new RegExp(`2024\\.07\\.03 ${hhmm}`));
+    const unused = within(table).getByText("自定义服务").closest("tr")!;
+    expect(unused.textContent).toContain("0");
+    expect(unused.textContent).toContain("—");
   });
 });
 

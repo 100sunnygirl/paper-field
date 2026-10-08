@@ -16,6 +16,7 @@ import {
   type PaperDetail,
   type ReadingStatus,
 } from "../lib/types";
+import { hasUsableProvider } from "../lib/settings";
 import { formatDate, pad2 } from "../lib/util";
 import { useField } from "../store";
 import { Button, ButtonLink, Dialog, Empty, ExternalResource, Icon } from "./ui";
@@ -309,7 +310,7 @@ function ContextPanel({
           <Icon name="spark" />
           AI 助手
         </h2>
-        {settings.hasKey ? (
+        {hasUsableProvider(settings) ? (
           <p>用于补全论文信息或起草阅读笔记。AI 不会自动把论文标成已读。</p>
         ) : (
           <p>尚未配置 AI 服务，可到设置页配置。手动阅读与笔记不受影响。</p>
@@ -317,7 +318,7 @@ function ContextPanel({
         <div className="ef-ai-buttons">
           <Button
             type="button"
-            disabled={!settings.hasKey || Boolean(active.length)}
+            disabled={!hasUsableProvider(settings) || Boolean(active.length)}
             onClick={() => {
               // AI 不会静默覆盖：手动改过的论文信息先经确认对话框选择保留或覆盖。
               if (paper.userMetaTouched) {
@@ -332,7 +333,7 @@ function ContextPanel({
           </Button>
           <Button
             type="button"
-            disabled={!settings.hasKey || Boolean(active.length)}
+            disabled={!hasUsableProvider(settings) || Boolean(active.length)}
             onClick={() => void runDraftNotes(paper.id)}
           >
             <Icon name="edit" />
@@ -350,7 +351,7 @@ function ContextPanel({
             </Button>
           </div>
         ))}
-        {settings.hasKey ? null : (
+        {hasUsableProvider(settings) ? null : (
           <Button type="button" variant="link" onClick={() => void setMode("system")}>
             配置 AI 服务
             <Icon name="right" />

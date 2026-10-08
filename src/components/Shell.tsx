@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { repo } from "../lib/repo";
+import { hasUsableProvider } from "../lib/settings";
 import {
   MINERU_PROVIDER_LABELS,
   MODE_LABELS,
@@ -211,7 +212,7 @@ export function StatusStrip() {
             ? `作业等待 ${stats.queued}`
             : "队列空闲"}
       </span>
-      <span>{settings.hasKey ? "AI 服务已配置" : "尚未配置 AI 服务"}</span>
+      <span>{hasUsableProvider(settings) ? "AI 服务已配置" : "尚未配置 AI 服务"}</span>
       <span>{mineruLabel}</span>
       <span className="right">
         <span className="mono">{shortcut("K")}</span> 搜索

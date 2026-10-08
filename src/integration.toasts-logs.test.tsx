@@ -59,13 +59,16 @@ vi.mock("./lib/mineru", async (importOriginal) => {
 
 vi.mock("./lib/settings", () => ({
   loadSettings: vi.fn(async () => ({
-    baseUrl: "https://api.openai.com/v1",
-    model: "gpt-4o-mini",
-    hasKey: false,
+    version: 2,
+    providers: [],
+    usage: {},
   })),
-  saveSettings: vi.fn(async () => undefined),
+  saveSettings: vi.fn(async () => ({ version: 2, providers: [], usage: {} })),
   completeChat: vi.fn(async () => '{"title":"补全标题"}'),
   cancelChat: vi.fn(async () => undefined),
+  // 门禁派生口径（与真实实现同义）：任一 enabled 且（requiresKey ? hasKey : 免 Key）。
+  hasUsableProvider: (settings: { providers: Array<{ enabled: boolean; requiresKey: boolean; hasKey: boolean }> }) =>
+    settings.providers.some((provider) => provider.enabled && (!provider.requiresKey || provider.hasKey)),
 }));
 
 vi.mock("./lib/export", async (importOriginal) => {
@@ -231,12 +234,12 @@ beforeEach(async () => {
   vi.mocked(mineruProbe).mockReset().mockResolvedValue([]);
   vi.mocked(mineruSubmit).mockReset();
   vi.mocked(mineruMarkdown).mockReset();
-  vi.mocked(saveSettings).mockReset().mockResolvedValue(undefined);
+  vi.mocked(saveSettings).mockReset().mockResolvedValue({ version: 2, providers: [], usage: {} });
   vi.mocked(loadSettings).mockReset().mockResolvedValue({
-    baseUrl: "https://api.openai.com/v1",
-    model: "gpt-4o-mini",
-    hasKey: false,
-  });
+    version: 2,
+    providers: [],
+    usage: {},
+  } as Awaited<ReturnType<typeof loadSettings>>);
   vi.mocked(exportDomain).mockReset();
 });
 
@@ -320,8 +323,23 @@ describe("导入 × MinerU 解析联动的通知触达", () => {
       selectedDomainId: "d-1",
       mineru: enabledMineru,
       effectiveProvider: "local",
-      // hasKey=true 走「解析完成 N 篇」ok 主路径（false 会降级为「尚未配置 AI」warn）。
-      settings: { baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini", hasKey: true },
+      // 可用提供商（enabled + hasKey）走「解析完成 N 篇」ok 主路径（无可用会降级为「尚未配置 AI」warn）。
+      settings: {
+        version: 2,
+        providers: [
+          {
+            id: "p-llm",
+            presetId: "openai",
+            label: "OpenAI",
+            baseUrl: "https://api.openai.com/v1",
+            model: "gpt-4o-mini",
+            enabled: true,
+            hasKey: true,
+            requiresKey: true,
+          },
+        ],
+        usage: {},
+      },
     });
     vi.mocked(repo.getPaper).mockImplementation(async () => detailOf("p-1", { pdfPath: "/papers/a.pdf" }));
     vi.mocked(repo.importLocalPdfs).mockImplementation(async () => ({
@@ -442,12 +460,23 @@ describe("导入 × MinerU 解析联动的通知触达", () => {
 // ---------- MinerU 解析后的自动补全（saveLlmSettings → backfillMeta → runJob 深链） ----------
 
 describe("设置保存 × MinerU 补全深链路", () => {
-  it("保存 AI 设置（带 key）→ 后台补全 1 篇 → ok 通知与 llm 作业日志；quiet 补全不刷「AI 作业完成」", async () => {
-    vi.mocked(saveSettings).mockResolvedValue(undefined);
+  it("保存 AI 设置（带可用提供商）→ 后台补全 1 篇 → ok 通知与 llm 作业日志；quiet 补全不刷「AI 作业完成」", async () => {
+    vi.mocked(saveSettings).mockResolvedValue({ version: 2, providers: [], usage: {} });
     vi.mocked(loadSettings).mockResolvedValue({
-      baseUrl: "https://api.openai.com/v1",
-      model: "gpt-4o-mini",
-      hasKey: true,
+      version: 2,
+      providers: [
+        {
+          id: "p-llm",
+          presetId: "openai",
+          label: "OpenAI",
+          baseUrl: "https://api.openai.com/v1",
+          model: "gpt-4o-mini",
+          enabled: true,
+          hasKey: true,
+          requiresKey: true,
+        },
+      ],
+      usage: {},
     } as Awaited<ReturnType<typeof loadSettings>>);
     vi.mocked(repo.listReadyForMeta).mockResolvedValue(["p-9"]);
     vi.mocked(repo.createJob).mockResolvedValue({
@@ -474,7 +503,20 @@ describe("设置保存 × MinerU 补全深链路", () => {
     });
 
     await act(async () => {
-      await useField.getState().saveLlmSettings({ baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini", apiKey: "sk-x" });
+      await useField.getState().saveLlmSettings({
+        providers: [
+          {
+            id: "p-llm",
+            presetId: "openai",
+            label: "OpenAI",
+            baseUrl: "https://api.openai.com/v1",
+            model: "gpt-4o-mini",
+            enabled: true,
+            requiresKey: true,
+            apiKey: "sk-x",
+          },
+        ],
+      });
     });
     await vi.waitFor(() =>
       expect(getToasts().some((t) => t.text.includes("已为 1 篇论文补全信息"))).toBe(true),
@@ -495,7 +537,7 @@ describe("设置保存 × MinerU 补全深链路", () => {
 
     await expect(
       act(async () => {
-        await useField.getState().saveLlmSettings({ baseUrl: "b", model: "m" });
+        await useField.getState().saveLlmSettings({ providers: [] });
       }),
     ).rejects.toThrow("磁盘只读");
 
@@ -505,21 +547,52 @@ describe("设置保存 × MinerU 补全深链路", () => {
     );
   });
 
-  it("保存地址与模型但未填 key：降级为 warn 通知", async () => {
-    vi.mocked(saveSettings).mockResolvedValue(undefined);
+  it("保存提供商但无任何可用（缺 Key）：降级为 warn 通知", async () => {
+    vi.mocked(saveSettings).mockResolvedValue({ version: 2, providers: [], usage: {} });
     vi.mocked(loadSettings).mockResolvedValue({
-      baseUrl: "https://api.openai.com/v1",
-      model: "gpt-4o-mini",
-      hasKey: false,
+      version: 2,
+      providers: [
+        {
+          id: "p-llm",
+          presetId: "openai",
+          label: "OpenAI",
+          baseUrl: "https://api.openai.com/v1",
+          model: "gpt-4o-mini",
+          enabled: true,
+          hasKey: false,
+          requiresKey: true,
+        },
+      ],
+      usage: {},
     } as Awaited<ReturnType<typeof loadSettings>>);
 
     await act(async () => {
-      await useField.getState().saveLlmSettings({ baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini" });
+      await useField.getState().saveLlmSettings({
+        providers: [
+          {
+            id: "p-llm",
+            presetId: "openai",
+            label: "OpenAI",
+            baseUrl: "https://api.openai.com/v1",
+            model: "gpt-4o-mini",
+            enabled: true,
+            requiresKey: true,
+            apiKey: null,
+          },
+        ],
+      });
     });
 
-    expect(useField.getState().flash).toMatchObject({ tone: "warn", text: "已保存地址与模型，但尚未填写 API Key。" });
+    expect(useField.getState().flash).toMatchObject({
+      tone: "warn",
+      text: "已保存提供商列表，但当前没有可用的 AI 服务：请启用并填写 API Key，或使用免 Key 的本地服务。",
+    });
     expect(getEntries()).toContainEqual(
-      expect.objectContaining({ level: "warn", scope: "ui", message: "已保存地址与模型，但尚未填写 API Key。" }),
+      expect.objectContaining({
+        level: "warn",
+        scope: "ui",
+        message: "已保存提供商列表，但当前没有可用的 AI 服务：请启用并填写 API Key，或使用免 Key 的本地服务。",
+      }),
     );
   });
 

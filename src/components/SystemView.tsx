@@ -9,7 +9,15 @@ import {
   type ProviderHealth,
 } from "../lib/mineru";
 import { providerLabel, summarizeHealths } from "../lib/mineruPlan";
-import { shortcut } from "../lib/util";
+import {
+  LLM_PRESETS,
+  listLlmModels,
+  presetById,
+  testLlmProvider,
+  type LlmSaveInput,
+} from "../lib/settings";
+import type { LlmProviderView } from "../lib/types";
+import { formatDate, pad2, shortcut, uid } from "../lib/util";
 import { useField } from "../store";
 import { LogPanel } from "./LogPanel";
 import { Button, Field } from "./ui";
@@ -19,39 +27,10 @@ function errText(err: unknown): string {
 }
 
 export function SystemView() {
-  const settings = useField((s) => s.settings);
-  const saveLlmSettings = useField((s) => s.saveLlmSettings);
   const exportCurrentDomain = useField((s) => s.exportCurrentDomain);
   const domains = useField((s) => s.domains);
   const selectedDomainId = useField((s) => s.selectedDomainId);
   const domain = domains.find((d) => d.id === selectedDomainId);
-  const [baseUrl, setBaseUrl] = useState(settings.baseUrl);
-  const [model, setModel] = useState(settings.model);
-  const [apiKey, setApiKey] = useState("");
-  const [llmMessage, setLlmMessage] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
-  const [confirmClearKey, setConfirmClearKey] = useState(false);
-
-  useEffect(() => {
-    setBaseUrl(settings.baseUrl);
-    setModel(settings.model);
-  }, [settings.baseUrl, settings.model]);
-
-  useEffect(() => {
-    if (!settings.hasKey) setConfirmClearKey(false);
-  }, [settings.hasKey]);
-
-  async function clearSavedKey() {
-    setConfirmClearKey(false);
-    setLlmMessage(null);
-    try {
-      // 显式传空串 = 清除（Rust 侧 Some("")）；undefined 才是「保留已存」。
-      await saveLlmSettings({ baseUrl, model, apiKey: "" });
-      setApiKey("");
-      setLlmMessage({ tone: "ok", text: "已清除本机保存的 API Key。" });
-    } catch (err) {
-      setLlmMessage({ tone: "error", text: `清除 Key 失败：${errText(err)}。` });
-    }
-  }
 
   return (
     <section className="ef-read" id="stage" aria-labelledby="system-title">
@@ -65,64 +44,7 @@ export function SystemView() {
           </div>
 
           <div className="ef-system-blocks">
-            <article className="page-block pf-stagger" style={{ "--pf-i": 0 } as CSSProperties}>
-              <header className="ef-block-head">
-                <h3>AI 服务设置</h3>
-                  <p>填写 OpenAI 兼容接口的 Base URL、模型与 API Key；保存后即可使用「补全论文信息」与「起草阅读笔记」。</p>
-                </header>
-                <div className="ef-llm-grid">
-                  <Field label="Base URL">
-                    <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} />
-                  </Field>
-                  <Field label="模型">
-                    <input value={model} onChange={(e) => setModel(e.target.value)} />
-                  </Field>
-                  <Field label={`API Key ${settings.hasKey ? "（已保存 · 留空保持不变）" : "（尚未配置）"}`}>
-                    <input
-                      type="password"
-                      value={apiKey}
-                      onChange={(e) => setApiKey(e.target.value)}
-                      placeholder={settings.hasKey ? "••••••••" : "sk-..."}
-                      autoComplete="off"
-                    />
-                  </Field>
-                </div>
-                <div className="ef-import-actions">
-                  <Button
-                    variant="primary"
-                    type="button"
-                    onClick={() => {
-                      setLlmMessage(null);
-                      void saveLlmSettings({
-                        baseUrl,
-                        model,
-                        // 留空 = 保留已存 Key（settings.saveSettings 在 Tauri 边界转为 null 传给后端）。
-                        apiKey: apiKey.trim() ? apiKey.trim() : undefined,
-                      }).catch((err: unknown) => {
-                        setLlmMessage({ tone: "error", text: `保存设置失败：${errText(err)}。` });
-                      });
-                    }}
-                  >
-                    保存设置
-                  </Button>
-                  {settings.hasKey ? (
-                    confirmClearKey ? (
-                      <Button type="button" className="ef-btn-danger-solid" onClick={() => void clearSavedKey()}>
-                        确认清除 Key
-                      </Button>
-                    ) : (
-                      <Button type="button" variant="danger" onClick={() => setConfirmClearKey(true)}>
-                        清除已保存的 Key…
-                      </Button>
-                    )
-                  ) : null}
-                </div>
-                {llmMessage ? (
-                  <p className={`ef-foot-msg is-${llmMessage.tone}`}>
-                    {llmMessage.text}
-                  </p>
-                ) : null}
-              </article>
+            <LlmSettingsBlock />
 
               <MineruSettings />
 
@@ -173,6 +95,481 @@ export function SystemView() {
         </div>
       </div>
     </section>
+  );
+}
+
+// ---------- AI 服务设置（多提供商 v2：预设 + 模型发现 + 测试连接 + 顺序回退 + 用量） ----------
+
+/** 预设下拉里「自定义」项的哨兵值（presetId 存 null）。 */
+const CUSTOM_PRESET = "__custom__";
+
+/** 可编辑行 = 公共视图 + 本地 Key 草稿（空串 = 留空保持，三态在保存边界统一）。 */
+interface ProviderRow extends LlmProviderView {
+  apiKeyDraft: string;
+}
+
+function toRow(view: LlmProviderView): ProviderRow {
+  return { ...view, apiKeyDraft: "" };
+}
+
+/** 门禁派生口径（与 hasUsableProvider 对齐）：enabled 且（requiresKey ? 已存或新填 Key : 免 Key）。 */
+function rowUsable(row: ProviderRow): boolean {
+  return row.enabled && (!row.requiresKey || row.hasKey || row.apiKeyDraft.trim().length > 0);
+}
+
+function keyFieldLabel(row: ProviderRow): string {
+  if (!row.requiresKey) return "API Key（免 Key 服务 · 可留空）";
+  return row.hasKey ? "API Key（已保存 · 留空保持不变）" : "API Key（尚未配置）";
+}
+
+function formatUsedAt(lastUsedAt: number | null | undefined): string {
+  if (!lastUsedAt) return "—";
+  const date = new Date(lastUsedAt);
+  if (Number.isNaN(date.getTime())) return "—";
+  return `${formatDate(date.toISOString())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
+}
+
+function LlmSettingsBlock() {
+  const saved = useField((s) => s.settings);
+  const saveLlmSettings = useField((s) => s.saveLlmSettings);
+
+  const [rows, setRows] = useState<ProviderRow[]>(saved.providers.map(toRow));
+  const [message, setMessage] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
+  const [testResults, setTestResults] = useState<Record<string, { tone: "ok" | "error"; text: string }>>({});
+  const [modelResults, setModelResults] = useState<Record<string, { tone: "ok" | "error"; text: string }>>({});
+  const [fetchedModels, setFetchedModels] = useState<Record<string, string[]>>({});
+  const [testingId, setTestingId] = useState<string | null>(null);
+  const [fetchingId, setFetchingId] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [confirmClearKeyId, setConfirmClearKeyId] = useState<string | null>(null);
+  const [addChoice, setAddChoice] = useState(LLM_PRESETS[0]?.id ?? CUSTOM_PRESET);
+
+  useEffect(() => {
+    setRows(saved.providers.map(toRow));
+    setConfirmDeleteId(null);
+    setConfirmClearKeyId(null);
+  }, [saved]);
+
+  function updateRow(id: string, patch: Partial<ProviderRow>) {
+    setRows((prev) => prev.map((row) => (row.id === id ? { ...row, ...patch } : row)));
+  }
+
+  function currentInput(nextRows: ProviderRow[] = rows): LlmSaveInput {
+    return {
+      providers: nextRows.map((row) => ({
+        id: row.id,
+        presetId: row.presetId,
+        label: row.label.trim() || "自定义服务",
+        baseUrl: row.baseUrl.trim(),
+        model: row.model.trim(),
+        enabled: row.enabled,
+        requiresKey: row.requiresKey,
+        // 留空 = 保留已存（null 三态）；显式清除走「清除 Key」按钮（空串）。
+        apiKey: row.apiKeyDraft.trim() ? row.apiKeyDraft.trim() : null,
+      })),
+    };
+  }
+
+  function isDirty(): boolean {
+    const cur = currentInput().providers;
+    if (cur.length !== saved.providers.length) return true;
+    return cur.some((provider, index) => {
+      const old = saved.providers[index];
+      return (
+        !old ||
+        old.id !== provider.id ||
+        old.presetId !== provider.presetId ||
+        old.label !== provider.label ||
+        old.baseUrl !== provider.baseUrl ||
+        old.model !== provider.model ||
+        old.enabled !== provider.enabled ||
+        old.requiresKey !== provider.requiresKey ||
+        // Key 三态：null=保留已存（不脏）；非空草稿=替换已存（必脏——盘上 Key 不回显，
+        // 输入了就是换新，测试连接前须先落盘）；空串=清除（已存才脏）。
+        // Key 三态：null=保留已存（不脏）；非空草稿=替换已存（必脏——盘上 Key 不回显，
+        // 输入了就是换新，测试连接前须先落盘）；空串=清除（已存才脏）。
+        provider.apiKey !== null && (provider.apiKey !== "" || old.hasKey)
+      );
+    });
+  }
+
+  function applyPreset(id: string, value: string) {
+    if (value === CUSTOM_PRESET) {
+      // 自定义只换身份，不覆盖手填的地址与模型。
+      updateRow(id, { presetId: null, label: "自定义服务" });
+      return;
+    }
+    const preset = presetById(value);
+    if (!preset) return;
+    updateRow(id, {
+      presetId: preset.id,
+      label: preset.label,
+      baseUrl: preset.baseUrl,
+      // 推荐模型直接落到输入框；无推荐（如 Ollama）留空，等「获取模型列表」。
+      model: preset.models[0] ?? "",
+      requiresKey: preset.requiresKey,
+    });
+  }
+
+  function addProvider() {
+    const preset = presetById(addChoice);
+    const row: ProviderRow = {
+      id: uid(),
+      presetId: preset?.id ?? null,
+      label: preset?.label ?? "自定义服务",
+      baseUrl: preset?.baseUrl ?? "",
+      model: preset?.models[0] ?? "",
+      enabled: true,
+      hasKey: false,
+      requiresKey: preset?.requiresKey ?? true,
+      apiKeyDraft: "",
+    };
+    setRows((prev) => [...prev, row]);
+    setMessage(null);
+  }
+
+  function moveRow(index: number, delta: -1 | 1) {
+    const target = index + delta;
+    if (target < 0 || target >= rows.length) return;
+    const next = [...rows];
+    const [item] = next.splice(index, 1);
+    next.splice(target, 0, item);
+    setRows(next);
+    setMessage(null);
+    // 顺序即回退优先级：调整后立即保存（同 Mineru 回退顺序的口径）。
+    void saveLlmSettings(currentInput(next)).catch((err: unknown) => {
+      setMessage({ tone: "error", text: `保存回退顺序失败：${errText(err)}。` });
+    });
+  }
+
+  async function removeRow(id: string) {
+    const next = rows.filter((row) => row.id !== id);
+    setConfirmDeleteId(null);
+    setRows(next);
+    setMessage(null);
+    try {
+      await saveLlmSettings(currentInput(next));
+    } catch (err) {
+      setMessage({ tone: "error", text: `删除提供商失败：${errText(err)}。` });
+    }
+  }
+
+  async function clearKey(id: string) {
+    setConfirmClearKeyId(null);
+    setMessage(null);
+    try {
+      // 三态里的「清除」：该行传空串，其余行保持 null（保留已存）。
+      const providers = currentInput().providers.map((provider) =>
+        provider.id === id ? { ...provider, apiKey: "" } : provider,
+      );
+      await saveLlmSettings({ providers });
+      updateRow(id, { apiKeyDraft: "", hasKey: false });
+      setMessage({ tone: "ok", text: "已清除该提供商在本机保存的 API Key。" });
+    } catch (err) {
+      setMessage({ tone: "error", text: `清除 Key 失败：${errText(err)}。` });
+    }
+  }
+
+  async function testRow(row: ProviderRow) {
+    setMessage(null);
+    setTestingId(row.id);
+    try {
+      // 表单有未保存修改时先落盘，测试的才是用户眼前这份配置。
+      if (isDirty()) await saveLlmSettings(currentInput());
+      const result = await testLlmProvider(row.id);
+      setTestResults((prev) => ({
+        ...prev,
+        [row.id]: result.ok
+          ? { tone: "ok", text: `${result.message} · ${result.latencyMs}ms` }
+          : { tone: "error", text: result.message },
+      }));
+    } catch (err) {
+      setTestResults((prev) => ({ ...prev, [row.id]: { tone: "error", text: errText(err) } }));
+    } finally {
+      setTestingId(null);
+    }
+  }
+
+  async function fetchModels(row: ProviderRow) {
+    setMessage(null);
+    setFetchingId(row.id);
+    try {
+      if (isDirty()) await saveLlmSettings(currentInput());
+      const models = await listLlmModels(row.id);
+      setFetchedModels((prev) => ({ ...prev, [row.id]: models }));
+      setModelResults((prev) => ({
+        ...prev,
+        [row.id]: { tone: "ok", text: `已获取 ${models.length} 个模型，可在「模型」输入框的下拉中选择。` },
+      }));
+    } catch (err) {
+      setModelResults((prev) => ({ ...prev, [row.id]: { tone: "error", text: errText(err) } }));
+    } finally {
+      setFetchingId(null);
+    }
+  }
+
+  const enabledCount = rows.filter((row) => row.enabled).length;
+  const firstUsable = rows.find(rowUsable);
+  const statusTone = firstUsable ? "is-ok" : rows.length ? "is-error" : "";
+
+  return (
+    <article className="page-block pf-stagger" style={{ "--pf-i": 0 } as CSSProperties}>
+      <header className="ef-block-head">
+        <h3>AI 服务设置</h3>
+        <p>
+          配置 OpenAI 兼容的 AI 服务，可添加多个提供商并按顺序自动回退；保存后即可使用「补全论文信息」与「起草阅读笔记」。
+        </p>
+      </header>
+
+      <div className={`ef-statusbar ${statusTone}`} aria-live="polite">
+        <span className="ef-statusbar-dot" aria-hidden="true" />
+        {firstUsable ? (
+          <span className="ef-statusbar-text">
+            已启用 {enabledCount} 个提供商 · 当前生效：<b>{firstUsable.label}</b>
+            <span className="ef-probe-ms">按顺序自动回退</span>
+          </span>
+        ) : rows.length ? (
+          <span className="ef-statusbar-text is-error">
+            已添加 {rows.length} 个提供商，但没有可用的：请启用并填写 API Key，或使用免 Key 的本地服务。
+          </span>
+        ) : (
+          <span className="ef-statusbar-text">
+            尚未配置任何 AI 服务。可在下方添加提供商，或继续手动录入论文与笔记。
+          </span>
+        )}
+      </div>
+
+      <div className="ef-provider-grid">
+        {rows.map((row, index) => {
+          const active = firstUsable?.id === row.id;
+          const preset = presetById(row.presetId);
+          // datalist 候选 = 拉取列表 ∪ 预设推荐（去重，拉取的在前列出）。
+          const modelOptions = [...new Set([...(fetchedModels[row.id] ?? []), ...(preset?.models ?? [])])];
+          return (
+            <section
+              key={row.id}
+              className={`ef-provider-card${row.enabled ? "" : " is-off"}${active ? " is-active" : ""}`}
+              aria-label={row.label}
+            >
+              <header>
+                <label className="ef-provider-toggle">
+                  <input
+                    type="checkbox"
+                    checked={row.enabled}
+                    onChange={(e) => updateRow(row.id, { enabled: e.target.checked })}
+                  />
+                  <strong>{row.label}</strong>
+                </label>
+                {active ? <span className="ef-active-badge">生效中</span> : null}
+                <span className="ef-provider-tools">
+                  <button
+                    type="button"
+                    className="ef-sort-btn"
+                    aria-label={`上移${row.label}`}
+                    disabled={index === 0}
+                    onClick={() => moveRow(index, -1)}
+                  >
+                    ↑
+                  </button>
+                  <button
+                    type="button"
+                    className="ef-sort-btn"
+                    aria-label={`下移${row.label}`}
+                    disabled={index === rows.length - 1}
+                    onClick={() => moveRow(index, 1)}
+                  >
+                    ↓
+                  </button>
+                </span>
+              </header>
+              <div className="ef-field-grid">
+                <Field label="预设">
+                  <select
+                    value={row.presetId ?? CUSTOM_PRESET}
+                    onChange={(e) => applyPreset(row.id, e.target.value)}
+                  >
+                    {LLM_PRESETS.map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.label}
+                      </option>
+                    ))}
+                    <option value={CUSTOM_PRESET}>自定义</option>
+                  </select>
+                </Field>
+                <Field label="Base URL">
+                  <input
+                    value={row.baseUrl}
+                    onChange={(e) => updateRow(row.id, { baseUrl: e.target.value })}
+                    placeholder="https://api.example.com/v1"
+                  />
+                </Field>
+              </div>
+              <Field label="模型">
+                <input
+                  value={row.model}
+                  onChange={(e) => updateRow(row.id, { model: e.target.value })}
+                  list={`ef-models-${row.id}`}
+                  placeholder="model-id"
+                />
+                <datalist id={`ef-models-${row.id}`}>
+                  {modelOptions.map((model) => (
+                    <option key={model} value={model} />
+                  ))}
+                </datalist>
+              </Field>
+              <Field label={keyFieldLabel(row)}>
+                <input
+                  type="password"
+                  value={row.apiKeyDraft}
+                  onChange={(e) => updateRow(row.id, { apiKeyDraft: e.target.value })}
+                  placeholder={row.hasKey ? "••••••••" : "sk-..."}
+                  autoComplete="off"
+                />
+              </Field>
+              <div className="ef-import-actions">
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={testingId === row.id}
+                  onClick={() => void testRow(row)}
+                >
+                  {testingId === row.id ? "测试中…" : "测试连接"}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={fetchingId === row.id}
+                  onClick={() => void fetchModels(row)}
+                >
+                  {fetchingId === row.id ? "获取中…" : "获取模型列表"}
+                </Button>
+                {row.hasKey ? (
+                  confirmClearKeyId === row.id ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="ef-btn-danger-solid"
+                      onClick={() => void clearKey(row.id)}
+                    >
+                      确认清除 Key
+                    </Button>
+                  ) : (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="danger"
+                      onClick={() => setConfirmClearKeyId(row.id)}
+                    >
+                      清除 Key…
+                    </Button>
+                  )
+                ) : null}
+                {confirmDeleteId === row.id ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="ef-btn-danger-solid"
+                    onClick={() => void removeRow(row.id)}
+                  >
+                    确认删除
+                  </Button>
+                ) : (
+                  <Button type="button" size="sm" variant="danger" onClick={() => setConfirmDeleteId(row.id)}>
+                    删除…
+                  </Button>
+                )}
+              </div>
+              {testResults[row.id] ? (
+                <p className={`ef-probe-line ${testResults[row.id]!.tone === "ok" ? "is-ok" : "is-error"}`}>
+                  {testResults[row.id]!.text}
+                </p>
+              ) : null}
+              {modelResults[row.id] ? (
+                <p className={`ef-probe-line ${modelResults[row.id]!.tone === "ok" ? "is-ok" : "is-error"}`}>
+                  {modelResults[row.id]!.text}
+                </p>
+              ) : null}
+            </section>
+          );
+        })}
+      </div>
+
+      <div className="ef-add-provider" role="group" aria-label="添加提供商">
+        <span className="ef-add-label">添加提供商</span>
+        <select aria-label="提供商预设" value={addChoice} onChange={(e) => setAddChoice(e.target.value)}>
+          {LLM_PRESETS.map((preset) => (
+            <option key={preset.id} value={preset.id}>
+              {preset.label}
+              {preset.requiresKey ? "" : "（免 Key）"}
+            </option>
+          ))}
+          <option value={CUSTOM_PRESET}>自定义…</option>
+        </select>
+        <Button type="button" size="sm" onClick={addProvider}>
+          添加提供商
+        </Button>
+      </div>
+
+      {saved.providers.length ? (
+        <div className="ef-usage">
+          <span className="ef-params-label">用量小结</span>
+          <table className="ef-usage-table">
+            <thead>
+              <tr>
+                <th>提供商</th>
+                <th className="num">请求</th>
+                <th className="num">失败</th>
+                <th className="num">Tokens 入</th>
+                <th className="num">Tokens 出</th>
+                <th>最近使用</th>
+              </tr>
+            </thead>
+            <tbody>
+              {saved.providers.map((provider) => {
+                const usage = saved.usage[provider.id];
+                return (
+                  <tr key={provider.id}>
+                    <td>{provider.label}</td>
+                    <td className="num">{usage?.requests ?? 0}</td>
+                    <td className="num">{usage?.errors ?? 0}</td>
+                    <td className="num">{usage?.inputTokens ?? 0}</td>
+                    <td className="num">{usage?.outputTokens ?? 0}</td>
+                    <td>{formatUsedAt(usage?.lastUsedAt)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+
+      <footer className="ef-block-foot">
+        <Button
+          variant="primary"
+          type="button"
+          onClick={() => {
+            setMessage(null);
+            void saveLlmSettings(currentInput())
+              .then(() =>
+                setMessage({
+                  tone: "ok",
+                  text: `AI 服务设置已保存（已启用 ${rows.filter((row) => row.enabled).length} 个提供商）。`,
+                }),
+              )
+              .catch((err: unknown) => {
+                setMessage({ tone: "error", text: `保存 AI 服务设置失败：${errText(err)}。` });
+              });
+          }}
+        >
+          保存设置
+        </Button>
+        {message ? (
+          <span className={`ef-foot-msg is-${message.tone}`}>
+            {message.text}
+          </span>
+        ) : null}
+      </footer>
+    </article>
   );
 }
 
