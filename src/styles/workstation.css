@@ -2002,6 +2002,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   font-size: var(--pf-fs-tag);
   line-height: 1;
   cursor: pointer;
+  border-radius: var(--pf-radius);
   /* 按压微位移走 press 档；边框/颜色 hover 走 direct 档。 */
   transition: border-color var(--pf-direct), color var(--pf-direct), transform var(--pf-t-press);
 }
@@ -2168,6 +2169,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   font-size: var(--pf-fs-tag);
   line-height: 1;
   cursor: pointer;
+  border-radius: var(--pf-radius);
   transition: border-color var(--pf-direct), color var(--pf-direct), transform var(--pf-t-press);
 }
 .ef-sort-btn:hover:not(:disabled) { border-color: var(--pf-ink); color: var(--pf-ink); }
@@ -2440,6 +2442,18 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 }
 .ef-field [aria-invalid="true"] { border-color: var(--pf-danger); }
 .ef-field textarea { min-height: 96px; resize: vertical; line-height: var(--pf-lh-ui); }
+/* 下拉与输入框同一张脸：去掉系统圆角/系统箭头，右缘留位画墨色箭头，
+   使 select 与 input 的方角、高度、内边距完全一致（设置页两块表单共用）。 */
+.ef-field select,
+.ef-add-provider select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 32px;
+  background-color: var(--pf-surface);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23191919' stroke-width='1.5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 11px center;
+}
 .ef-domain-option {
   display: flex;
   align-items: center;

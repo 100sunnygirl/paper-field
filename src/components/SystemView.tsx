@@ -382,6 +382,7 @@ function LlmSettingsBlock() {
                   </button>
                 </span>
               </header>
+              {/* 四字段共用同一 2×2 栅格：列宽一致、右边缘对齐（窄屏 1 列折叠）。 */}
               <div className="ef-field-grid">
                 <Field label="预设">
                   <select
@@ -403,29 +404,29 @@ function LlmSettingsBlock() {
                     placeholder="https://api.example.com/v1"
                   />
                 </Field>
+                <Field label="模型">
+                  <input
+                    value={row.model}
+                    onChange={(e) => updateRow(row.id, { model: e.target.value })}
+                    list={`ef-models-${row.id}`}
+                    placeholder="model-id"
+                  />
+                  <datalist id={`ef-models-${row.id}`}>
+                    {modelOptions.map((model) => (
+                      <option key={model} value={model} />
+                    ))}
+                  </datalist>
+                </Field>
+                <Field label={keyFieldLabel(row)}>
+                  <input
+                    type="password"
+                    value={row.apiKeyDraft}
+                    onChange={(e) => updateRow(row.id, { apiKeyDraft: e.target.value })}
+                    placeholder={row.hasKey ? "••••••••" : "sk-..."}
+                    autoComplete="off"
+                  />
+                </Field>
               </div>
-              <Field label="模型">
-                <input
-                  value={row.model}
-                  onChange={(e) => updateRow(row.id, { model: e.target.value })}
-                  list={`ef-models-${row.id}`}
-                  placeholder="model-id"
-                />
-                <datalist id={`ef-models-${row.id}`}>
-                  {modelOptions.map((model) => (
-                    <option key={model} value={model} />
-                  ))}
-                </datalist>
-              </Field>
-              <Field label={keyFieldLabel(row)}>
-                <input
-                  type="password"
-                  value={row.apiKeyDraft}
-                  onChange={(e) => updateRow(row.id, { apiKeyDraft: e.target.value })}
-                  placeholder={row.hasKey ? "••••••••" : "sk-..."}
-                  autoComplete="off"
-                />
-              </Field>
               <div className="ef-import-actions">
                 <Button
                   type="button"
