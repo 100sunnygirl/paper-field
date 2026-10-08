@@ -2155,6 +2155,68 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   color: var(--pf-muted);
   margin-left: 6px;
 }
+
+/* AI 提供商卡片（多提供商 v2）：头部排序按钮沿 ef-order-chip button 的视觉，
+   其余复用 ef-provider-card / ef-field-grid / ef-import-actions / ef-probe-line。 */
+.ef-provider-tools { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; flex: none; }
+.ef-sort-btn {
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--pf-divider);
+  background: var(--pf-canvas);
+  color: var(--pf-secondary);
+  font-size: var(--pf-fs-tag);
+  line-height: 1;
+  cursor: pointer;
+  transition: border-color var(--pf-direct), color var(--pf-direct), transform var(--pf-t-press);
+}
+.ef-sort-btn:hover:not(:disabled) { border-color: var(--pf-ink); color: var(--pf-ink); }
+.ef-sort-btn:active:not(:disabled) { transform: translateY(var(--pf-nudge)); }
+.ef-sort-btn:disabled { opacity: 0.35; cursor: default; }
+.ef-add-provider { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 0 0 14px; }
+.ef-add-label { font-size: var(--pf-fs-caption); font-weight: 600; color: var(--pf-ink); }
+.ef-add-provider select {
+  background: var(--pf-surface);
+  border: 1px solid var(--pf-control-border);
+  color: var(--pf-ink);
+  min-height: var(--pf-control-height-sm);
+  padding: 4px 8px;
+  border-radius: var(--pf-radius);
+  font-size: var(--pf-fs-ui);
+  transition: border-color var(--pf-motion), box-shadow var(--pf-motion);
+}
+.ef-add-provider select:hover { border-color: var(--pf-ink); }
+.ef-add-provider select:focus {
+  outline: none;
+  border-color: var(--pf-ink);
+  box-shadow:
+    0 0 0 1px var(--pf-ink),
+    0 0 0 4px color-mix(in srgb, var(--pf-signal) 32%, transparent);
+}
+/* 用量小结表：数字列右对齐 + 等宽字体（同 ef-probe-ms 的口吻）。 */
+.ef-usage {
+  border: 1px dashed var(--pf-line-strong);
+  background: var(--pf-panel);
+  padding: 12px 14px;
+  margin: 0 0 14px;
+}
+.ef-usage-table { width: 100%; border-collapse: collapse; font-size: var(--pf-fs-caption); }
+.ef-usage-table th,
+.ef-usage-table td {
+  text-align: left;
+  padding: 6px 12px 6px 0;
+  border-bottom: 1px dashed var(--pf-divider);
+  color: var(--pf-secondary);
+  white-space: nowrap;
+}
+.ef-usage-table tr:last-child td { border-bottom: 0; }
+.ef-usage-table th { color: var(--pf-muted); font-weight: 600; }
+.ef-usage-table th.num,
+.ef-usage-table td.num {
+  text-align: right;
+  font-family: var(--pf-font-mono);
+  font-variant-numeric: tabular-nums;
+}
 .ef-manual-paper {
   border: 1px solid var(--pf-divider);
   border-left: var(--pf-marker) solid var(--pf-ink);

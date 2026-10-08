@@ -14,7 +14,7 @@ import { backfillMeta, cancelMineruPaper, clearMineruCancel, enqueueMineru, resu
 import { pickProviderFromHealths, providerLabel, summarizeHealths } from "./lib/mineruPlan";
 import { DRAFT_NOTES_SYSTEM, PREPARE_META_SYSTEM, draftNotesUserPrompt, normalizeMeta, normalizeNotes, prepareMetaUserPrompt } from "./lib/prompts";
 import { repo } from "./lib/repo";
-import { cancelChat, completeChat, loadSettings, saveSettings } from "./lib/settings";
+import { cancelChat, completeChat, hasUsableProvider, loadSettings, saveSettings, type LlmSaveInput } from "./lib/settings";
 import { log } from "./lib/logger";
 import { dismissAll, notify } from "./toasts";
 import type {
@@ -124,7 +124,7 @@ interface FieldState {
   runPrepareMeta: (paperId?: string, overwrite?: boolean, quiet?: boolean) => Promise<void>;
   runDraftNotes: (paperId?: string, overwrite?: boolean) => Promise<void>;
   cancelJob: (jobId: string) => Promise<void>;
-  saveLlmSettings: (input: { baseUrl: string; model: string; apiKey?: string }) => Promise<void>;
+  saveLlmSettings: (input: LlmSaveInput) => Promise<void>;
   saveMineruSettings: (input: MineruSaveInput) => Promise<void>;
   probeMineru: () => Promise<ProviderHealth[]>;
   exportCurrentDomain: () => Promise<void>;
@@ -156,7 +156,7 @@ export const useField = create<FieldState>((set, get) => ({
   stats: { read: 0, total: 0, openSource: 0, queued: 0, running: 0 },
   search: "",
   archiveFilter: "all",
-  settings: { baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini", hasKey: false },
+  settings: { version: 2, providers: [], usage: {} },
   mineru: DEFAULT_MINERU,
   mineruHealth: [],
   effectiveProvider: null,
@@ -620,9 +620,9 @@ export const useField = create<FieldState>((set, get) => ({
   runPrepareMeta: async (paperId, overwrite = true, quiet = false) => {
     const id = paperId ?? get().selectedPaperId;
     if (!id) return;
-    if (!get().settings.hasKey) {
+    if (!hasUsableProvider(get().settings)) {
       if (!quiet) {
-        get().setFlash({ tone: "warn", text: "尚未配置 AI 服务。可到设置页配置，或继续手动录入。" });
+        get().setFlash({ tone: "warn", text: "尚未配置可用的 AI 服务。可到设置页添加提供商，或继续手动录入。" });
       }
       return;
     }
@@ -640,8 +640,8 @@ export const useField = create<FieldState>((set, get) => ({
   runDraftNotes: async (paperId, overwrite = false) => {
     const id = paperId ?? get().selectedPaperId;
     if (!id) return;
-    if (!get().settings.hasKey) {
-      get().setFlash({ tone: "warn", text: "尚未配置 AI 服务。可到设置页配置后再起草阅读笔记。" });
+    if (!hasUsableProvider(get().settings)) {
+      get().setFlash({ tone: "warn", text: "尚未配置可用的 AI 服务。可到设置页添加提供商后再起草阅读笔记。" });
       return;
     }
     const paper = await repo.getPaper(id);
@@ -689,11 +689,14 @@ export const useField = create<FieldState>((set, get) => ({
       await saveSettings(input);
       const settings = await loadSettings();
       set({ settings });
+      const usable = hasUsableProvider(settings);
       get().setFlash({
-        tone: settings.hasKey ? "ok" : "warn",
-        text: settings.hasKey ? "AI 服务设置已保存。" : "已保存地址与模型，但尚未填写 API Key。",
+        tone: usable ? "ok" : "warn",
+        text: usable
+          ? "AI 服务设置已保存。"
+          : "已保存提供商列表，但当前没有可用的 AI 服务：请启用并填写 API Key，或使用免 Key 的本地服务。",
       });
-      if (settings.hasKey) enqueueMineru(() => backfillMeta(mineruHost()));
+      if (usable) enqueueMineru(() => backfillMeta(mineruHost()));
     } catch (err) {
       get().setFlash({ tone: "error", text: `保存 AI 服务设置失败：${errText(err)}，数据未改动。` });
       throw err;
@@ -762,7 +765,8 @@ export const useField = create<FieldState>((set, get) => ({
 function mineruHost() {
   return {
     mineru: () => useField.getState().mineru,
-    hasKey: () => useField.getState().settings.hasKey,
+    // 门禁派生口径：任一 enabled 且（requiresKey ? 已存 Key : 免 Key）的提供商。
+    hasKey: () => hasUsableProvider(useField.getState().settings),
     refresh: () => useField.getState().refresh(),
     flash: (tone: "ok" | "warn" | "error", text: string) => useField.getState().setFlash({ tone, text }),
     prepare: (paperId: string, overwrite: boolean, quiet: boolean) =>
