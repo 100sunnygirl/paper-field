@@ -123,6 +123,8 @@
   --pf-t-reveal: 720ms var(--pf-ease-snap);
   --pf-t-loop: 1800ms var(--pf-ease-loop);
   --pf-t-sweep: 1100ms var(--pf-ease-loop);
+  /* 匀速爬行：作业面板「处理中」色块的斜纹，循环一周正好平移一个纹距，首尾无缝。 */
+  --pf-t-crawl: 900ms linear;
   /* 舞台刷出（源设计：bjtu-hpc-submit-skill 登录页 ef-reveal）：新视图 clip-path
      左→右硬边刷出 + 10px 水平回位，一条缓动 650ms 一次到位。缓动按源设计保留
      独立贝塞尔（起步极快、收尾柔停）；位移 10px 为源设计原值（纯几何刷出，
@@ -138,6 +140,9 @@
   /* Floating-layer stacking ladder: toasts sit above everything — dialog
      backdrop (30), dock (30) and the skip link (100). */
   --pf-z-toast: 120;
+  /* 作业面板：高于窄屏列表抽屉（25），低于对话框 backdrop / dock（30）——
+     它是非模态浮层，对话框弹出时应被盖住。 */
+  --pf-z-jobs: 26;
   /* Elevation for floating layers only: square print-hard cards with a top
      light and a near shadow. Dock/rail/list depth stays flat — lightness
      steps, never shadows. */
@@ -2267,6 +2272,49 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   padding: 0 4px;
   margin-right: 2px;
 }
+/* 作业入口：格子本身保持 14px 高（与相邻格的竖向发丝线等高），里面的按钮上下各溢出
+   7px 撑满整条状态条，整格可点。展开作业面板时亮起成「拉出的页签」：墨灰底 + 顶缘信号黄线。 */
+.ef-status > .ef-status-jobs { padding: 0; }
+.ef-status-jobs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--pf-status-height);
+  margin: calc((var(--pf-status-height) - 14px) / -2) 0;
+  padding: 0 12px 0 14px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: var(--pf-fs-caption);
+  white-space: nowrap;
+  transition: background-color var(--pf-motion), color var(--pf-motion), box-shadow var(--pf-motion);
+}
+.ef-status-jobs button:hover { background: var(--pf-ink-2); color: var(--pf-on-dark); }
+.ef-status-jobs.busy button:hover { color: var(--pf-signal); }
+.ef-status-jobs.is-open button {
+  background: var(--pf-ink-3);
+  box-shadow: inset 0 2px 0 var(--pf-signal);
+}
+.ef-status-jobs button:focus-visible { outline-offset: -2px; }
+.ef-status-jobs .ef-pulse { margin-right: 0; }
+.ef-status-jobs .ef-ico { width: 12px; height: 12px; opacity: 0.75; }
+.ef-status-sep { color: var(--pf-on-dark-3); }
+/* 本批进度微表：墨灰轨 + 信号黄填充（只在批次进行中出现）。 */
+.ef-status-meter {
+  position: relative;
+  width: 44px;
+  height: 4px;
+  overflow: hidden;
+  background: var(--pf-ink-3);
+}
+.ef-status-meter::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--pf-meter, 0%);
+  background: var(--pf-signal);
+  transition: width var(--pf-t-settle);
+}
 
 /* ---- Dialog ---- */
 .ef-backdrop {
@@ -2648,6 +2696,615 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 .ef-log-msg { min-width: 0; overflow-wrap: anywhere; }
 .page-block .ef-log-empty { padding: 14px 10px; color: var(--pf-muted); margin: 0; font-size: var(--pf-fs-caption); }
 
+/* ---- 作业面板 ----
+   状态条「作业」入口上拉的非模态浮层：白纸面 + 4px 墨顶线 + 信号黄短梁（与对话框同族），
+   自下而上硬边展开。由粗到细三层读出「在做什么、做到哪」：墨色计数带（运行 / 排队 /
+   本次完成 / 本次失败）→ 批次逐篇色块（一篇一格）→ 单个作业的阶段刻度与进度条。
+   信号黄只出现在「正在发生」的位置：短梁、处理中的色块、当前阶段方格、运行中计数。 */
+.ef-jobs {
+  position: fixed;
+  z-index: var(--pf-z-jobs);
+  left: calc(var(--pf-rail-width) + 12px);
+  bottom: calc(var(--pf-status-height) + 10px);
+  width: min(468px, calc(100vw - var(--pf-rail-width) - 24px));
+  max-height: min(76vh, 720px);
+  display: flex;
+  flex-direction: column;
+  background: var(--pf-surface);
+  color: var(--pf-ink);
+  border: 1px solid var(--pf-ink);
+  border-top-width: 4px;
+  box-shadow: var(--pf-elev-2);
+}
+/* 面板本身只承接程序化焦点（打开时读屏播报标题），不画焦点环。 */
+.ef-jobs:focus,
+.ef-jobs:focus-visible { outline: none; box-shadow: var(--pf-elev-2); }
+.ef-jobs::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: -4px;
+  width: 64px;
+  height: 4px;
+  background: var(--pf-signal);
+  transform-origin: left;
+}
+.ef-shell .ef-jobs { animation: pf-unfold-up var(--pf-t-unfold) backwards; }
+.ef-shell .ef-jobs::before { animation: pf-grow-x var(--pf-t-draw) var(--pf-t-late) backwards; }
+.ef-jobs-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 8px 10px 18px;
+}
+.ef-jobs-head h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: var(--pf-fs-title);
+  line-height: 1.3;
+  font-weight: 700;
+}
+.ef-jobs-state {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 7px;
+  border: 1px solid var(--pf-divider);
+  color: var(--pf-muted);
+  font-size: var(--pf-fs-tag);
+  font-weight: 600;
+  letter-spacing: var(--pf-tracking-tag);
+}
+.ef-jobs-state.is-busy { border-color: var(--pf-ink); color: var(--pf-ink); }
+.ef-jobs-state .ef-pulse { width: 6px; height: 6px; }
+.ef-jobs-spacer { flex: 1; }
+.ef-jobs-head .ef-icon-btn { width: 32px; min-height: 32px; }
+
+/* 计数带：与顶栏 / 状态条同为墨色，大号等宽数字；运行中亮信号黄、失败亮淡红。 */
+.ef-jobs-plate {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 0;
+  background: var(--pf-ink);
+  color: var(--pf-on-dark-2);
+}
+.ef-jobs-plate > div {
+  min-width: 0;
+  padding: 9px 12px 10px 18px;
+}
+.ef-jobs-plate > div + div { border-left: 1px solid var(--pf-ink-3); }
+.ef-jobs-plate dt {
+  font-size: var(--pf-fs-tag);
+  letter-spacing: var(--pf-tracking-tag);
+  line-height: 1.4;
+  color: var(--pf-on-dark-3);
+}
+.ef-jobs-plate dd {
+  margin: 2px 0 0;
+  font-size: var(--pf-fs-h2);
+  font-weight: 700;
+  line-height: 1.2;
+  color: var(--pf-on-dark);
+}
+.ef-jobs-plate .is-live dd { color: var(--pf-signal); }
+.ef-jobs-plate .is-error dd { color: var(--pf-tint-danger); }
+
+/* 滚动区：与阅读画布同一张点阵纸，卡片浮于其上。 */
+.ef-jobs-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px 16px 18px;
+  background-color: var(--pf-canvas);
+  background-image: var(--pf-dot-grid);
+  background-size: 24px 24px;
+  background-attachment: local;
+  scrollbar-width: thin;
+  scrollbar-color: #b1b5a9 transparent;
+}
+.ef-jobs-section { display: flex; flex-direction: column; gap: 8px; }
+/* 小节标题：黄头墨身标记块 + 计数角标 + 引导线，与区段标题同一套写法、caption 档。 */
+.ef-jobs-sub {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: var(--pf-fs-caption);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--pf-ink);
+}
+.ef-jobs-sub::before {
+  content: "";
+  flex: none;
+  width: 4px;
+  height: 12px;
+  background: var(--pf-heading-marker);
+}
+.ef-jobs-sub::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--pf-divider);
+}
+.ef-jobs-sub .ef-count { background: var(--pf-surface); }
+.ef-jobs-note {
+  margin: -8px 0 0;
+  font-size: var(--pf-fs-caption);
+  line-height: var(--pf-lh-ui);
+  color: var(--pf-muted);
+}
+.ef-jobs-empty {
+  margin: 0;
+  padding: 12px;
+  border: 1px dashed var(--pf-line-strong);
+  background: var(--pf-surface);
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
+}
+/* 空闲：墨黄警示斜纹做「等待中」的引子（与 .empty 同语义，缩到面板尺度）。 */
+.ef-jobs-idle {
+  padding: 14px 16px 16px;
+  border: 1px dashed var(--pf-line-strong);
+  background: var(--pf-surface);
+}
+.ef-jobs-idle::before {
+  content: "";
+  display: block;
+  width: 48px;
+  height: 6px;
+  margin-bottom: 12px;
+  background: var(--pf-hazard);
+}
+.ef-jobs-idle strong {
+  display: block;
+  margin-bottom: 4px;
+  font-size: var(--pf-fs-title);
+  font-weight: 700;
+  color: var(--pf-ink);
+}
+.ef-jobs-idle p {
+  margin: 0;
+  font-size: var(--pf-fs-caption);
+  line-height: var(--pf-lh-ui);
+  color: var(--pf-secondary);
+}
+
+/* 批次卡：墨色顶线 + 左端短梁（同设置区块）；短梁只在进行中亮黄，暂停时顶线转红。 */
+.ef-batchcard {
+  position: relative;
+  padding: 14px 16px;
+  background: var(--pf-surface);
+  border: 1px solid var(--pf-divider);
+  border-top: 2px solid var(--pf-ink);
+}
+.ef-batchcard::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: -2px;
+  width: 48px;
+  height: 2px;
+  background: var(--pf-ink);
+}
+.ef-batchcard.is-running::before { background: var(--pf-signal); }
+.ef-batchcard.is-halted { border-top-color: var(--pf-danger); }
+.ef-batchcard.is-halted::before { background: var(--pf-danger); }
+.ef-batchcard-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.ef-batchcard-head h3 {
+  margin: 0;
+  font-size: var(--pf-fs-ui);
+  font-weight: 700;
+  color: var(--pf-ink);
+}
+.ef-batchcard-state {
+  font-size: var(--pf-fs-tag);
+  letter-spacing: var(--pf-tracking-tag);
+  color: var(--pf-muted);
+}
+.ef-batchcard.is-running .ef-batchcard-state { color: var(--pf-ink); font-weight: 600; }
+.ef-batchcard.is-halted .ef-batchcard-state { color: var(--pf-danger); font-weight: 600; }
+.ef-batchcard-num {
+  margin-left: auto;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
+  white-space: nowrap;
+}
+.ef-batchcard-num b {
+  font-size: var(--pf-fs-h2);
+  font-weight: 700;
+  color: var(--pf-ink);
+}
+/* 逐篇色块：一篇一格。完成 = 墨、失败 = 红、取消 / 跳过 = 斜线、处理中 = 信号黄 + 爬行斜纹、
+   排队 = 空格、熔断后未处理 = 虚线空格。悬停看标题与状态（title）。 */
+.ef-segments {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(var(--pf-seg-count, 1), minmax(0, 1fr));
+  gap: 3px;
+  height: 14px;
+}
+.ef-segments li {
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--pf-surface);
+  border: 1px solid var(--pf-line-strong);
+  transition: background-color var(--pf-t-settle), border-color var(--pf-t-settle);
+}
+.ef-segments .is-ok { background: var(--pf-ink); border-color: var(--pf-ink); }
+.ef-segments .is-fail { background: var(--pf-danger); border-color: var(--pf-danger); }
+.ef-segments .is-cancelled,
+.ef-segments .is-skip {
+  background: repeating-linear-gradient(-45deg, var(--pf-line-strong) 0 1px, transparent 1px 4px);
+}
+.ef-segments .is-paused { border-style: dashed; }
+.ef-segments .is-current { background: var(--pf-signal); border-color: var(--pf-ink); }
+/* 斜纹层比宿主宽一个纹距，平移一个纹距（8px 纹距 × √2 ≈ 11.314px）循环，首尾无缝。 */
+.ef-segments .is-current::after,
+.ef-segbar .is-current::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -12px;
+  right: 0;
+  background: repeating-linear-gradient(-45deg, rgba(25, 25, 25, 0.24) 0 3px, transparent 3px 8px);
+}
+.ef-shell .ef-segments .is-current::after,
+.ef-shell .ef-segbar .is-current::after {
+  animation: pf-crawl var(--pf-t-crawl) infinite;
+}
+/* 超过 48 篇改连续分段条：同一套颜色语义，按篇数比例铺宽。 */
+.ef-segbar {
+  display: flex;
+  height: 10px;
+  overflow: hidden;
+  background:
+    repeating-linear-gradient(90deg, transparent 0 calc(10% - 1px), rgba(25, 25, 25, 0.22) calc(10% - 1px) 10%),
+    #dcdfd5;
+}
+.ef-segbar i {
+  position: relative;
+  display: block;
+  height: 100%;
+  overflow: hidden;
+  transition: width var(--pf-t-settle);
+}
+.ef-segbar .is-ok { background: var(--pf-ink); }
+.ef-segbar .is-fail { background: var(--pf-danger); }
+.ef-segbar .is-cancelled,
+.ef-segbar .is-skip {
+  background: repeating-linear-gradient(-45deg, var(--pf-control-border) 0 1px, transparent 1px 4px);
+}
+.ef-segbar .is-current { min-width: 6px; background: var(--pf-signal); }
+.ef-batchcard-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 15px;
+  margin: 10px 0 0;
+  font-size: var(--pf-fs-caption);
+  line-height: 1.5;
+  color: var(--pf-secondary);
+}
+.ef-batchcard-stats > span { position: relative; }
+.ef-batchcard-stats > span + span::before {
+  content: "";
+  position: absolute;
+  left: -8px;
+  top: 4px;
+  bottom: 4px;
+  width: 1px;
+  background: var(--pf-divider);
+}
+.ef-batchcard-alert {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  border-left: var(--pf-marker) solid var(--pf-danger);
+  background: var(--pf-danger-bg);
+  color: var(--pf-danger);
+  font-size: var(--pf-fs-caption);
+  line-height: var(--pf-lh-ui);
+}
+.ef-batchcard-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--pf-divider);
+  font-size: var(--pf-fs-caption);
+  line-height: var(--pf-lh-ui);
+  color: var(--pf-secondary);
+}
+.ef-batchcard-actions > span { flex: 1 1 220px; }
+
+/* 作业卡：左缘黄头墨身标记块（排队中退为灰条）；标题可点，跳到阅读页。 */
+.ef-jobcard {
+  position: relative;
+  padding: 10px 10px 12px 15px;
+  background: var(--pf-surface);
+  border: 1px solid var(--pf-divider);
+}
+.ef-jobcard::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: -1px;
+  bottom: -1px;
+  width: var(--pf-marker);
+  background: var(--pf-heading-marker);
+}
+.ef-jobcard.is-queued::before { background: var(--pf-line-strong); }
+.ef-jobcard-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+}
+.ef-jobcard-type {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--pf-fs-caption);
+  font-weight: 600;
+  color: var(--pf-secondary);
+}
+.ef-jobcard-type .ef-ico { width: 14px; height: 14px; }
+.ef-jobcard-tag {
+  padding: 1px 6px;
+  border: 1px solid var(--pf-divider);
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-muted);
+  white-space: nowrap;
+}
+.ef-jobcard-time {
+  margin-left: auto;
+  font-size: var(--pf-fs-caption);
+  font-weight: 600;
+  color: var(--pf-ink);
+}
+.ef-jobcard-top .ef-btn { min-height: 28px; padding: 0 8px; font-size: var(--pf-fs-caption); }
+.ef-jobcard-title,
+.ef-queue-title,
+.ef-hist-title {
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  text-align: left;
+  color: var(--pf-ink);
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  transition: text-decoration-color var(--pf-motion);
+}
+.ef-jobcard-title:hover,
+.ef-queue-title:hover,
+.ef-hist-title:hover { text-decoration-color: currentColor; }
+.ef-jobcard-title {
+  display: -webkit-box;
+  width: 100%;
+  margin: 2px 0 2px;
+  overflow: hidden;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  font-size: var(--pf-fs-title);
+  font-weight: 600;
+  line-height: var(--pf-lh-snug);
+}
+.ef-jobcard-meta {
+  margin: 0;
+  font-size: var(--pf-fs-caption);
+  line-height: 1.5;
+  color: var(--pf-muted);
+}
+/* 阶段刻度：方格编号 + 引导线。已完成 = 墨块白勾、当前 = 信号黄方格、未到 = 虚线灰框
+   （与笔记序号方格同一套写法）；引导线走过的段落转为墨色。 */
+.ef-steps {
+  list-style: none;
+  margin: 12px 0 10px;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.ef-steps li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
+}
+.ef-steps li:not(:last-child)::after {
+  content: "";
+  flex: 1;
+  min-width: 8px;
+  height: 1px;
+  margin: 0 8px 0 2px;
+  background: var(--pf-divider);
+}
+.ef-steps li.is-done::after { background: var(--pf-ink); }
+.ef-step-label { white-space: nowrap; }
+.ef-step-mark {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 1px dashed var(--pf-line-strong);
+  background: var(--pf-surface);
+  font-size: var(--pf-fs-tag);
+  font-weight: 600;
+  color: var(--pf-muted);
+}
+.ef-step-mark .ef-ico { width: 12px; height: 12px; stroke-width: 2.2; }
+.ef-steps li.is-done { color: var(--pf-secondary); }
+.ef-steps li.is-done .ef-step-mark {
+  border: 1px solid var(--pf-ink);
+  background: var(--pf-ink);
+  color: var(--pf-on-dark);
+}
+.ef-steps li.is-current { color: var(--pf-ink); font-weight: 600; }
+.ef-steps li.is-current .ef-step-mark {
+  border: 1px solid var(--pf-ink);
+  background: var(--pf-signal);
+  color: var(--pf-ink);
+}
+.ef-jobcard-progress { display: flex; flex-direction: column; gap: 6px; }
+.ef-jobcard-progress .ef-progress { margin-top: 0; }
+.ef-jobcard-hint {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0;
+  font-size: var(--pf-fs-caption);
+  line-height: 1.5;
+  color: var(--pf-secondary);
+}
+.ef-jobcard-hint .mono { flex: none; color: var(--pf-muted); }
+
+/* 排队列表：编号 + 标题 + 去向 + 移出；「下一篇」的编号转墨色加粗。 */
+.ef-queue,
+.ef-history {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  background: var(--pf-surface);
+  border: 1px solid var(--pf-divider);
+}
+.ef-queue-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+  padding: 0 6px 0 12px;
+  border-bottom: 1px solid var(--pf-divider);
+  font-size: var(--pf-fs-caption);
+}
+.ef-queue-row:last-child,
+.ef-hist-row:last-child { border-bottom: 0; }
+.ef-queue-index { font-size: var(--pf-fs-tag); color: var(--pf-muted); }
+.ef-queue-row.is-next .ef-queue-index { color: var(--pf-ink); font-weight: 700; }
+.ef-queue-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--pf-fs-caption);
+}
+.ef-queue-meta { color: var(--pf-muted); white-space: nowrap; }
+.ef-queue-row.is-next .ef-queue-meta { color: var(--pf-ink); }
+.ef-queue-remove {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--pf-muted);
+  transition: color var(--pf-motion), border-color var(--pf-motion), background-color var(--pf-motion);
+}
+.ef-queue-remove .ef-ico { width: 12px; height: 12px; }
+.ef-queue-remove:hover {
+  color: var(--pf-danger);
+  border-color: #e4c7c4;
+  background: var(--pf-danger-bg);
+}
+.ef-queue-more { align-self: flex-start; min-height: 28px; font-size: var(--pf-fs-caption); }
+.ef-queue-more .ef-ico { width: 14px; height: 14px; }
+
+/* 最近结束：结果方格（完成绿勾 / 失败红叉 / 取消灰杠）+ 类型与标题 + 用时与时刻。 */
+.ef-hist-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 4px 10px;
+  padding: 9px 10px 9px 12px;
+  border-bottom: 1px solid var(--pf-divider);
+}
+.ef-hist-mark {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  border: 1px solid var(--pf-line-strong);
+  color: var(--pf-muted);
+}
+.ef-hist-mark .ef-ico { width: 12px; height: 12px; stroke-width: 2.2; }
+.ef-hist-row.is-done .ef-hist-mark {
+  border-color: var(--pf-success);
+  background: var(--pf-success-bg);
+  color: var(--pf-success);
+}
+.ef-hist-row.is-error .ef-hist-mark {
+  border-color: var(--pf-danger);
+  background: var(--pf-danger-bg);
+  color: var(--pf-danger);
+}
+.ef-hist-main { min-width: 0; }
+.ef-hist-line {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+  font-size: var(--pf-fs-caption);
+  line-height: 1.6;
+}
+.ef-hist-line b { flex: none; font-weight: 600; color: var(--pf-secondary); }
+.ef-hist-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--pf-fs-caption);
+}
+.ef-hist-note {
+  display: -webkit-box;
+  margin: 2px 0 0;
+  overflow: hidden;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow-wrap: anywhere;
+  font-size: var(--pf-fs-caption);
+  line-height: 1.5;
+  color: var(--pf-muted);
+}
+.ef-hist-row.is-error .ef-hist-note { color: var(--pf-danger); }
+.ef-hist-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  font-size: var(--pf-fs-tag);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.55;
+  color: var(--pf-muted);
+  white-space: nowrap;
+}
+.ef-hist-side > span:first-child {
+  font-family: var(--pf-font-mono);
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+}
+.ef-hist-retry { grid-column: 2 / 4; justify-self: start; margin-top: 2px; }
+.ef-jobs-link { align-self: flex-start; min-height: 28px; font-size: var(--pf-fs-caption); }
+
 /* ---- Keyframes ---- */
 /* Entrance keyframes: opacity + ≤8px shift only, mount-played, exit is instant. */
 @keyframes pf-fade {
@@ -2707,6 +3364,16 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 @keyframes pf-toast-in {
   from { clip-path: inset(0 0 0 100%); transform: translateX(12px); }
   to { clip-path: inset(0); transform: none; }
+}
+/* 自下而上硬边展开（作业面板从状态条上拉）：pf-unfold 的镜像。fill 只 backwards。 */
+@keyframes pf-unfold-up {
+  from { clip-path: inset(100% 0 0 0); transform: translateY(6px); }
+  to { clip-path: inset(0); transform: none; }
+}
+/* 处理中色块的斜纹爬行：平移恰好一个水平纹距，循环首尾无缝。 */
+@keyframes pf-crawl {
+  from { transform: translateX(0); }
+  to { transform: translateX(11.314px); }
 }
 /* 通知停留倒计时：满格到空，线性。 */
 @keyframes pf-life {
@@ -2991,6 +3658,15 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   .ef-crew-edit { grid-template-columns: 1fr; }
   .ef-btn-primary { box-shadow: var(--pf-edge-hard); }
   .ef-system { padding: 20px 16px 88px; }
+  /* 窄屏没有状态条（入口在入库页）：面板贴底部模式轨之上，左右各留 8px。 */
+  .ef-jobs {
+    left: 8px;
+    right: 8px;
+    width: auto;
+    bottom: 72px;
+    max-height: calc(100% - 140px);
+  }
+  .ef-jobs-plate > div { padding-left: 12px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

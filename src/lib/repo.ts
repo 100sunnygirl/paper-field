@@ -14,6 +14,7 @@ import type {
   OpenSource,
   Paper,
   PaperDetail,
+  PaperBrief,
   PaperListItem,
   PreparedMeta,
   ReadingStatus,
@@ -101,7 +102,10 @@ interface JobRow {
   started_at: string | null;
   finished_at: string | null;
   paper_title?: string;
+  paper_title_zh?: string | null;
+  domain_id?: string;
   domain_name?: string;
+  domain_code?: string;
 }
 
 const PAPER_LIST_SQL = `
@@ -826,7 +830,8 @@ export const repo = {
   async listJobs(limit = 40): Promise<LlmJob[]> {
     const engine = await getEngine();
     const rows = await engine.select<JobRow>(
-      `SELECT j.*, p.title AS paper_title, d.name AS domain_name
+      `SELECT j.*, p.title AS paper_title, p.title_zh AS paper_title_zh,
+              p.domain_id AS domain_id, d.name AS domain_name, d.code AS domain_code
          FROM llm_jobs j
          JOIN papers p ON p.id = j.paper_id
          JOIN domains d ON d.id = p.domain_id
@@ -845,7 +850,45 @@ export const repo = {
       startedAt: row.started_at,
       finishedAt: row.finished_at,
       paperTitle: row.paper_title,
+      paperTitleZh: row.paper_title_zh ?? null,
+      domainId: row.domain_id,
       domainName: row.domain_name,
+      domainCode: row.domain_code,
+    }));
+  },
+
+  /** 作业面板用的轻量书目（标题 + 领域）：只查需要的列，不加载作者 / 笔记 / 全文。 */
+  async paperBriefs(ids: string[]): Promise<PaperBrief[]> {
+    const unique = [...new Set(ids)].filter(Boolean);
+    if (!unique.length) return [];
+    const engine = await getEngine();
+    const rows: Array<{
+      id: string;
+      title: string;
+      title_zh: string | null;
+      domain_id: string;
+      domain_name: string;
+      domain_code: string;
+    }> = [];
+    // 分块查询：一次导入上千篇时，IN 列表不超出 SQLite 的绑定参数上限。
+    for (let start = 0; start < unique.length; start += 400) {
+      const chunk = unique.slice(start, start + 400);
+      rows.push(
+        ...(await engine.select<(typeof rows)[number]>(
+          `SELECT p.id, p.title, p.title_zh, p.domain_id, d.name AS domain_name, d.code AS domain_code
+             FROM papers p JOIN domains d ON d.id = p.domain_id
+            WHERE p.id IN (${chunk.map(() => "?").join(", ")})`,
+          chunk,
+        )),
+      );
+    }
+    return rows.map((row) => ({
+      id: row.id,
+      title: row.title,
+      titleZh: row.title_zh,
+      domainId: row.domain_id,
+      domainName: row.domain_name,
+      domainCode: row.domain_code,
     }));
   },
 

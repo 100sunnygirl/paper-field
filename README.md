@@ -20,6 +20,7 @@ The product chrome is a **reading workstation**: charcoal top bar, pale mode rai
 - **Reading-first IA:** the selected paper’s title, abstract, and **现场笔记** (总结 / 亮点 / 不足 / 启示 / 备注) live on a white document stage. Authors, DOI, links, reading status, TOC, and AI actions sit in the context rail. **打开 PDF** is the page primary. LLM never auto-marks read.
 - Modes: 现场 / 归档 / 入库 / 系统 — ARCHIVE and INTAKE keep the same navigator + stage shell; SYSTEM uses the remaining width
 - Status strip with real counts (read x/y, open-source, LLM queue) — no design-contract chrome
+- **Jobs panel (作业面板):** click the strip's job segment or press ⌘J to see what is running — batch progress, per-job stage and page progress, the queue and recent results
 - Search and Markdown export of a domain
 - Keyboard: ↑↓ list, ⌘N 添加论文, ⌘R 标记已读, ⌘K 搜索
 - Move paper across domains via 更多 → 移动到其他领域; delete requires a confirm dialog
@@ -107,6 +108,19 @@ Without a key, add papers and edit every field by hand. Sample domains (多模�
 - 每篇论文实际使用的来源记录在数据库中（资料栏「解析来源」行），重启后仍可继续轮询。
 
 
+## 作业面板 / Jobs panel
+
+底部状态条的「作业运行中 / 作业等待 / 队列空闲」一格可以点击（或按 ⌘J），从状态条上拉出作业面板；入库页的作业区也有入口。面板是非模态浮层，打开时仍可继续阅读，Esc 或再按一次 ⌘J 收起。
+
+| 区块 | 展示什么 |
+|---|---|
+| 计数带 | 运行中 / 排队（含批次里尚未开始的论文）/ 本次启动以来完成与失败的作业数 |
+| 批次卡 | 一次导入、重试或自动补全提交的整批论文：一篇一格的逐篇色块（完成 / 失败 / 取消 / 处理中 / 排队，超过 48 篇改为连续分段条）、成功失败小结、已用时间，以及按已完成各篇平均耗时估算的剩余时间。连续失败熔断后显示为「已暂停」并给出指引；进行中的 MinerU 批次可「停止本批」（二次确认） |
+| 进行中 | 每个作业一张卡：阶段刻度（MinerU：提交 → 解析 → 取回全文；AI：排队 → 请求模型 → 写入结果）、实际解析源或首选 AI 提供商、官方 API 回报的「已解析 n / 总页数」进度条、总用时与本阶段用时，可取消；标题可点，直接跳到该论文 |
+| 排队 | 当前批次与后续批次中尚未开始的论文，「下一篇」置顶；MinerU 排队论文可单独移出队列（轮到时跳过，不提交解析） |
+| 最近结束 | 最近 12 个已结束作业的结果、失败原因、用时与结束时刻；某篇最近一次解析失败或被取消时可直接「重新解析」 |
+
+数据来源：作业状态以 `llm_jobs` 表为准；阶段、批次与页进度是运行时实况（`src/lib/activity.ts`，只存内存，重启即清空——与启动时把残留作业清扫为「应用上次退出」的语义一致）。
 
 ## 从源码安装（macOS）/ Install from source
 
@@ -169,7 +183,8 @@ xattr -dr com.apple.quarantine "/Applications/Paper Field.app"
 | ⌘N / Ctrl+N | 添加论文（选 PDF / 选文件夹 / 手动添加） |
 | ⌘R / Ctrl+R | 标记已读 |
 | ⌘K / Ctrl+K | 搜索；系统模式下按它会先跳回现场再聚焦搜索框 |
-| Esc | Close dialog / 关闭抽屉 |
+| ⌘J / Ctrl+J | 打开 / 收起作业面板 |
+| Esc | Close dialog / 关闭抽屉 / 收起作业面板 |
 
 ## Security notes
 
@@ -186,7 +201,7 @@ default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src
 三项门禁与逐文件覆盖说明见 [docs/TEST_REPORT.md](docs/TEST_REPORT.md)：
 
 ```bash
-npm test                                                   # 前端 vitest（12 文件 / 173 测试）
+npm test                                                   # 前端 vitest（24 文件 / 378 测试）
 npm run build                                              # tsc && vite build
 PATH="$HOME/.cargo/bin:$PATH" cargo test --manifest-path src-tauri/Cargo.toml   # Rust 单测（lib 25 个）
 ```

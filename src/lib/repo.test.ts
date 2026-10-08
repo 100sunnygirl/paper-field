@@ -492,6 +492,25 @@ describe("作业 CRUD 与统计", () => {
     expect(jobs[0].status).toBe("done");
     expect(jobs[0].paperTitle).toBe(paper.title);
     expect(jobs[0].domainName).toContain("MM-01");
+    // 作业面板用：中文标题与所属领域 id / 短码随作业行一并返回（跳转与展示不再二次查询）。
+    expect(jobs[0].paperTitleZh).toBeNull();
+    expect(jobs[0].domainId).toBe(domainId);
+    expect(typeof jobs[0].domainCode).toBe("string");
+  });
+
+  it("paperBriefs 只返回请求的论文标题与领域；空入参不查库", async () => {
+    const domainId = await makeDomain();
+    const a = await repo.createPaper({ domainId, title: "Alpha" });
+    await repo.updatePaper(a.id, { titleZh: "甲" });
+    const b = await repo.createPaper({ domainId, title: "Beta" });
+    await repo.createPaper({ domainId, title: "Gamma" });
+
+    const briefs = await repo.paperBriefs([a.id, b.id, a.id, "missing"]);
+    expect(briefs.map((brief) => brief.title).sort()).toEqual(["Alpha", "Beta"]);
+    const alpha = briefs.find((brief) => brief.id === a.id);
+    expect(alpha).toMatchObject({ titleZh: "甲", domainId });
+    expect(alpha?.domainName).toContain("MM-01");
+    expect(await repo.paperBriefs([])).toEqual([]);
   });
 
   it("stats 汇总论文与作业计数", async () => {

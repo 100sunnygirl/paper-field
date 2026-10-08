@@ -12,6 +12,7 @@ import {
 } from "./components/Dialogs";
 import { ReadingStage } from "./components/Dossier";
 import { PaperNav } from "./components/FieldView";
+import { JobsPanel } from "./components/JobsPanel";
 import { Dock, Rail, StatusStrip } from "./components/Shell";
 import { SystemView } from "./components/SystemView";
 import { Toasts } from "./components/Toasts";
@@ -35,6 +36,7 @@ export default function App() {
   const markRead = useField((s) => s.markRead);
   const dialog = useField((s) => s.dialog);
   const setMode = useField((s) => s.setMode);
+  const setJobsOpen = useField((s) => s.setJobsOpen);
   const [focus, setFocus] = useState(false);
   const [listOpen, setListOpen] = useState(false);
   const [contextOpen, setContextOpen] = useState(false);
@@ -66,9 +68,16 @@ export default function App() {
         closeDialog();
         setListOpen(false);
         setContextOpen(false);
+        setJobsOpen(false);
         return;
       }
       const meta = event.metaKey || event.ctrlKey;
+      if (meta && event.key.toLowerCase() === "j") {
+        // 作业面板是非模态浮层：对话框打开时不叠出来，避免焦点在两层之间来回跳。
+        event.preventDefault();
+        if (!dialog) setJobsOpen(!useField.getState().jobsOpen);
+        return;
+      }
       if (meta && event.key.toLowerCase() === "k") {
         event.preventDefault();
         const input = document.getElementById("global-search") as HTMLInputElement | null;
@@ -115,7 +124,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [closeDialog, dialog, markRead, mode, navigatePapers, openDialog, setMode]);
+  }, [closeDialog, dialog, markRead, mode, navigatePapers, openDialog, setJobsOpen, setMode]);
 
   useEffect(() => {
     if (!isTauri()) return;
@@ -203,6 +212,8 @@ export default function App() {
         </>
       )}
       <StatusStrip />
+      {/* 作业面板：从状态条「作业」入口上拉的非模态浮层，层级低于对话框、高于列表抽屉。 */}
+      <JobsPanel />
       <PaperDialog />
       <DomainDialog />
       <DomainPickerDialog />

@@ -85,6 +85,10 @@ export function SystemView() {
                     <span className="kbd">{shortcut("K")}</span>
                   </li>
                   <li>
+                    <span>作业面板</span>
+                    <span className="kbd">{shortcut("J")}</span>
+                  </li>
+                  <li>
                     <span>关闭对话框 / 抽屉</span>
                     <span className="kbd">Esc</span>
                   </li>

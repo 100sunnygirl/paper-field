@@ -119,7 +119,20 @@ export interface LlmJob {
   startedAt: string | null;
   finishedAt: string | null;
   paperTitle?: string;
+  paperTitleZh?: string | null;
+  domainId?: string;
   domainName?: string;
+  domainCode?: string;
+}
+
+/** 作业面板用的轻量书目：标题与所属领域。 */
+export interface PaperBrief {
+  id: string;
+  title: string;
+  titleZh: string | null;
+  domainId: string;
+  domainName: string;
+  domainCode: string;
 }
 
 export interface FieldStats {
