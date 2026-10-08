@@ -1,10 +1,20 @@
-import { useSyncExternalStore } from "react";
-import { dismiss, getToasts, getVersion, pause, resume, subscribe, type ToastItem } from "../toasts";
+import { useSyncExternalStore, type CSSProperties } from "react";
+import {
+  TOAST_DURATION,
+  dismiss,
+  getToasts,
+  getVersion,
+  pause,
+  resume,
+  subscribe,
+  type ToastItem,
+} from "../toasts";
 
 /** 读屏级别前缀：视觉隐藏，让 polite 的 status 也能念出级别。 */
 const TONE_PREFIX: Record<ToastItem["tone"], string> = { ok: "成功", warn: "提醒", error: "错误" };
 
 function ToastRow({ toast }: { toast: ToastItem }) {
+  const life = toast.durationMs ?? TOAST_DURATION[toast.tone];
   return (
     <div
       className={`ef-toast ${toast.tone}`}
@@ -26,6 +36,16 @@ function ToastRow({ toast }: { toast: ToastItem }) {
       >
         ×
       </button>
+      {/* 停留倒计时条：与 JS 计时同源（时长同值、悬停 / 聚焦同步暂停）；
+          去重刷新时 rev 变化重挂，倒计时从头开始。0 = 不自动消退，不渲染。 */}
+      {life > 0 ? (
+        <i
+          key={toast.rev ?? 0}
+          className="ef-toast-life"
+          aria-hidden="true"
+          style={{ "--pf-toast-life": `${life}ms` } as CSSProperties}
+        />
+      ) : null}
     </div>
   );
 }

@@ -60,7 +60,10 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
     <aside className="ef-nav" aria-label="领域与论文列表">
       {mode === "field" ? (
         <div className="ef-nav-head">
-          <div className="ef-overline">FIELD / {domain?.code ?? "—"}</div>
+          <div className="ef-overline">
+            <span>研究领域</span>
+            {domain?.code ? <span className="ef-code">{domain.code}</span> : null}
+          </div>
           <div className="ef-domain-picker">
             <h2>{domain?.name ?? "未选择领域"}</h2>
             <button
@@ -75,8 +78,9 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
           <p className="ef-nav-sum">{domain?.summary ?? "选择或创建领域，开始组织论文。"}</p>
           <div className="ef-progress-label">
             <span>阅读进度</span>
-            <span>
-              已读 {domainRead} / {papers.length}
+            <span className="ef-progress-value">
+              已读 <b className="mono">{domainRead}</b>
+              <span className="mono"> / {papers.length}</span>
             </span>
           </div>
           <div className="ef-progress" aria-hidden="true">
@@ -87,7 +91,9 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
 
       {mode === "archive" ? (
         <div className="ef-nav-head">
-          <div className="ef-overline">ARCHIVE</div>
+          <div className="ef-overline">
+            <span>全部领域 · 已读</span>
+          </div>
           <div className="ef-domain-picker">
             <h2>归档</h2>
           </div>
@@ -97,7 +103,9 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
 
       {mode === "intake" ? (
         <div className="ef-nav-head">
-          <div className="ef-overline">INTAKE</div>
+          <div className="ef-overline">
+            <span>全部领域 · 未读完</span>
+          </div>
           <div className="ef-domain-picker">
             <h2>入库</h2>
           </div>
@@ -190,11 +198,11 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
           </>
         ) : (
           <>
-            <span>
-              {mode === "archive" ? "已读归档 · 全部领域" : mode === "intake" ? "待处理论文" : "本领域论文"}
+            <span className="ef-list-title">
+              {mode === "archive" ? "已读归档" : mode === "intake" ? "待处理论文" : "本领域论文"}
             </span>
             <span className="ef-list-head-right">
-              <span className="mono">{pad2(list.length)}</span>
+              <span className="ef-count mono">{pad2(list.length)}</span>
               {list.length ? (
                 <Button
                   type="button"

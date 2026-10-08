@@ -8,6 +8,7 @@ import {
   MINERU_STATUS_LABELS,
   NOTE_DISPLAY_ORDER,
   NOTE_LABELS,
+  OPEN_SOURCE_LABELS,
   READING_STATUS_LABELS,
   noteSourceLabel,
   type NoteKind,
@@ -80,13 +81,16 @@ function NoteEditor({
   }
 
   return (
-    <section className="ef-note" id={`note-${kind}`}>
+    <section
+      className={["ef-note", editing ? "is-editing" : "", value.trim() ? "" : "is-empty"].filter(Boolean).join(" ")}
+      id={`note-${kind}`}
+    >
       <div className="ef-note-head">
-        <h3>
-          <span className="ef-note-number">{pad2(index + 1)}</span>
-          {label.zh}
-        </h3>
-        <span className="ef-note-source">{noteSourceLabel(block)}</span>
+        <span className="ef-note-number" aria-hidden="true">
+          {pad2(index + 1)}
+        </span>
+        <h3>{label.zh}</h3>
+        <span className={`ef-note-source is-${block.source}`}>{noteSourceLabel(block)}</span>
         {editing ? null : (
           <button type="button" className="ef-note-edit" onClick={onStart} aria-label={`编辑${label.zh}`}>
             <Icon name="edit" />
@@ -242,7 +246,7 @@ function ContextPanel({
             解析源：{MINERU_PROVIDER_LABELS[paper.mineruProvider] ?? paper.mineruProvider}
           </p>
         ) : null}
-        {paper.mineruError ? <p style={{ color: "var(--pf-danger)" }}>{paper.mineruError}</p> : null}
+        {paper.mineruError ? <p className="ef-missing is-error">{paper.mineruError}</p> : null}
         {paper.pdfPath && !mineru.configured ? (
           <Button type="button" variant="link" onClick={() => void setMode("system")}>
             配置 MinerU 解析源
@@ -300,11 +304,10 @@ function ContextPanel({
         </nav>
       </section>
 
-      <section className="ef-ai-context">
+      <section className="ef-ai-context ef-dark-surface">
         <h2 className="ef-context-title">
-          <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
-            <Icon name="spark" /> AI 助手
-          </span>
+          <Icon name="spark" />
+          AI 助手
         </h2>
         {settings.hasKey ? (
           <p>用于补全论文信息或起草阅读笔记。AI 不会自动把论文标成已读。</p>
@@ -337,7 +340,7 @@ function ContextPanel({
           </Button>
         </div>
         {active.map((job) => (
-          <div key={job.id} className="ef-job-row" style={{ marginTop: 8 }}>
+          <div key={job.id} className="ef-job-row">
             <span>
               {job.status === "running" ? <i className="ef-pulse" aria-hidden="true" /> : null}
               {JOB_TYPE_LABELS[job.type]} · {JOB_STATUS_LABELS[job.status]}
@@ -508,6 +511,13 @@ export function ReadingStage({
 
   const title = paper.titleZh || paper.title;
   const english = paper.titleZh ? paper.title : "";
+  const readingStatusLabel = READING_STATUS_LABELS[paper.readingStatus];
+  const notesWritten = NOTE_DISPLAY_ORDER.filter((kind) => paper.notes[kind].content.trim()).length;
+  const fulltextStatus = paper.parsedMarkdown.trim()
+    ? "MinerU 已解析"
+    : paper.mineruStatus
+      ? `MinerU · ${MINERU_STATUS_LABELS[paper.mineruStatus]}`
+      : "尚未解析";
   const context = (
     <ContextPanel
       paper={paper}
@@ -529,9 +539,17 @@ export function ReadingStage({
           <Icon name="menu" />
           论文列表
         </Button>
+        {/* 两层滑轨：平时显示所在领域；正文滚过 0（.ef-read[data-scrolled]）后
+            论文标题从下方滑入，标题离开视口时工具条仍保留「正在读哪篇」。 */}
         <span className="ef-toolbar-label">
-          <Icon name="file" />
-          论文详情
+          <span className="ef-toolbar-crumb">
+            <Icon name="file" />
+            论文详情<span className="ef-toolbar-sep">/</span>
+            {paper.domain.name}
+          </span>
+          <span className="ef-toolbar-title" aria-hidden="true">
+            {title}
+          </span>
         </span>
         <span className="ef-toolbar-spacer" />
         <Button
@@ -643,9 +661,10 @@ export function ReadingStage({
         <div className="ef-reading-grid">
           <article className="ef-document" id="document" key={paper.id}>
             <div className="ef-paper-category">
-              <span>研究论文</span>
+              {paper.domain.code ? <span className="ef-code">{paper.domain.code}</span> : null}
+              <span>{paper.domain.name}</span>
               <i className="ef-category-rule" aria-hidden="true" />
-              <span>{venueLine || paper.domain.name}</span>
+              <span>{readingStatusLabel}</span>
             </div>
             <h1 id="paper-title" className="ef-read-title" tabIndex={-1}>
               {title}
@@ -656,16 +675,41 @@ export function ReadingStage({
                 ? paper.authors.map((author) => author.name).join(" · ")
                 : "作者信息待补充"}
             </p>
+            {/* 数据铭牌：把散落的元信息收成一排可扫读的格子（全部是真实字段）。 */}
+            <dl className="ef-plate">
+              <div>
+                <dt>来源</dt>
+                <dd>{venueLine || "待补充"}</dd>
+              </div>
+              <div>
+                <dt>arXiv</dt>
+                <dd className="mono">{paper.arxivId || "—"}</dd>
+              </div>
+              <div>
+                <dt>开源状态</dt>
+                <dd>{OPEN_SOURCE_LABELS[paper.codeOpenSource] ?? OPEN_SOURCE_LABELS.unknown}</dd>
+              </div>
+              <div>
+                <dt>笔记</dt>
+                <dd>
+                  <b className="mono">{notesWritten}</b>
+                  <span className="mono"> / {NOTE_DISPLAY_ORDER.length}</span>
+                </dd>
+              </div>
+            </dl>
             <section className="ef-abstract" id="abstract">
               <h2 className="ef-section-label">
-                摘要 <small>ABSTRACT</small>
+                <span>摘要</span>
+                <i className="ef-section-rule" aria-hidden="true" />
               </h2>
               <p>{paper.abstract || "尚未填写摘要。可在「更多」中编辑论文信息。"}</p>
             </section>
-            <details className="ef-metadata-details ef-fulltext" id="fulltext">
-              <summary>
+            <details className="ef-fulltext" id="fulltext">
+              <summary className="ef-section-label">
+                <span>解析全文</span>
+                <small>{fulltextStatus}</small>
+                <i className="ef-section-rule" aria-hidden="true" />
                 <Icon name="right" />
-                解析全文（MinerU）
               </summary>
               {paper.parsedMarkdown.trim() ? (
                 <div
@@ -677,8 +721,13 @@ export function ReadingStage({
               )}
             </details>
             <div className="ef-notes-heading">
-              <h2>阅读笔记</h2>
-              <span className="ef-overline">READING NOTES</span>
+              <h2 className="ef-section-label">
+                <span>阅读笔记</span>
+                <small>
+                  已写 {notesWritten} / {NOTE_DISPLAY_ORDER.length}
+                </small>
+                <i className="ef-section-rule" aria-hidden="true" />
+              </h2>
             </div>
             <p className="ef-notes-caption">每块笔记都标注来源：手动笔记或 AI 起草；AI 不会静默覆盖你改过的笔记。</p>
             {NOTE_DISPLAY_ORDER.map((kind, index) => (

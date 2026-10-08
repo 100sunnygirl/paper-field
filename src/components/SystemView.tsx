@@ -118,7 +118,7 @@ export function SystemView() {
                   ) : null}
                 </div>
                 {llmMessage ? (
-                  <p className="ef-foot-msg" style={{ color: llmMessage.tone === "error" ? "var(--pf-danger)" : "var(--pf-success)" }}>
+                  <p className={`ef-foot-msg is-${llmMessage.tone}`}>
                     {llmMessage.text}
                   </p>
                 ) : null}
@@ -384,7 +384,7 @@ function MineruSettings() {
         </Button>
       </div>
       {failureSummary ? (
-        <p className="ef-probe-line is-error" style={{ marginTop: -4, marginBottom: 10 }}>
+        <p className="ef-probe-line is-error ef-probe-summary">
           {failureSummary}。可修正配置后点击「测试连接」，或到 mineru.net 申请官方 API Token 作为兜底。
         </p>
       ) : null}
@@ -641,7 +641,7 @@ function MineruSettings() {
           保存设置
         </Button>
         {message ? (
-          <span className="ef-foot-msg" style={{ color: message.tone === "error" ? "var(--pf-danger)" : "var(--pf-success)" }}>
+          <span className={`ef-foot-msg is-${message.tone}`}>
             {message.text}
           </span>
         ) : null}

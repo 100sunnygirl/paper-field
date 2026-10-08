@@ -54,10 +54,8 @@ export function PaperRow({
       aria-current={!batch && selected ? "true" : undefined}
     >
       <div className="ef-row-top">
-        {batch ? <CheckSquare on={checked} /> : <span className="mono">{pad2(index + 1)}</span>}
-        <span
-          className={`ef-row-status ${paper.readingStatus === "read" ? "is-read" : ""}`.trim()}
-        >
+        {batch ? <CheckSquare on={checked} /> : <span className="ef-row-index mono">{pad2(index + 1)}</span>}
+        <span className={`ef-row-status is-${paper.readingStatus}`}>
           {paper.readingStatus === "read" ? <Icon name="check" /> : null}
           {READING_STATUS_LABELS[paper.readingStatus]}
         </span>
