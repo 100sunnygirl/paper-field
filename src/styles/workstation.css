@@ -1,32 +1,72 @@
-/* Paper Field: reading workstation */
+/* Paper Field: reading workstation
+ *
+ * 版式三原则（本文件的唯一判据）：
+ * 1. 字号只走阶梯。界面阶梯 11 / 12 / 14 / 16 / 20 / 28 + 论文主标题 display；
+ *    阅读正文另有一条随正文字号缩放的阶梯（--pf-doc-*），保证正文里的
+ *    标题永远比它下面的正文大。任何 font-size 都引用 --pf-fs-* / --pf-doc-*，不写裸值。
+ * 2. 层级靠「字号 + 字重 + 几何」三件套同时拉开：标题带标记块和引导线，
+ *    同级元素用同一套写法；字重只用 400 / 500 / 600 / 700。
+ * 3. 装饰必须承载真实信息：角标、编号、短码、计数——不放零信息的英文小字。
+ */
 :root {
   color-scheme: light;
+
+  /* ---- Color ---- */
   --pf-canvas: #f2f2f0;
   --pf-surface: #ffffff;
+  --pf-panel: #f7f8f4;
   --pf-rail: #ecedea;
   --pf-ink: #191919;
+  --pf-ink-2: #272924;
+  --pf-ink-3: #3a3d36;
   --pf-body: #30332f;
   --pf-secondary: #53574f;
   --pf-muted: #686b64;
   --pf-divider: #d6d8d1;
+  --pf-line-strong: #b5b9ad;
   --pf-control-border: #83877d;
   --pf-signal: #fffa00;
+  --pf-signal-hover: #e9e500;
   --pf-success: #27724c;
   --pf-success-bg: #edf5ef;
   --pf-danger: #ab342d;
+  --pf-danger-bg: #f8eceb;
+  --pf-on-dark: #ffffff;
+  --pf-on-dark-2: #c9ccc3;
+  --pf-on-dark-3: #8e9188;
+  --pf-hover-flat: #eceee7;
+  --pf-hover-quiet: #eef1e8;
+  --pf-tint-success: #8fd3a9;
+  --pf-tint-danger: #f19a92;
+
+  /* ---- Type ---- */
   --pf-font-ui: Inter, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
   --pf-font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  /* Fluid reading scale: 16px body up to ~1600px wide, 18px from ~2100px. */
+  /* 界面阶梯：tag 等宽角标 / caption 元信息 / ui 控件与面板正文 /
+     title 条目标题 / h2 区块与对话框标题 / h1 页面标题 / display 论文主标题。 */
+  --pf-fs-tag: 11px;
+  --pf-fs-caption: 12px;
+  --pf-fs-ui: 14px;
+  --pf-fs-title: 16px;
+  --pf-fs-h2: 20px;
+  --pf-fs-h1: 28px;
+  --pf-fs-display: clamp(34px, 20px + 1.2vw, 46px);
+  /* 阅读阶梯：正文 16px（~1600px 宽）到 18px（~2100px 宽）流式；
+     区段标题 ×1.375、笔记小标题 ×1.125，随正文同步缩放、永不倒挂。 */
   --pf-body-size: clamp(16px, 9.6px + 0.4vw, 18px);
+  --pf-doc-h2: calc(var(--pf-body-size) * 1.375);
+  --pf-doc-h3: calc(var(--pf-body-size) * 1.125);
   --pf-body-leading: 1.85;
-  --pf-label-size: 13px;
-  --pf-title-size: clamp(36px, 20px + 1vw, 44px);
-  /* Type scale: T2 secondary page title, T3 block title, meta helper text. */
-  --pf-t2: 22px;
-  --pf-t3: 17px;
-  --pf-meta: 13px;
+  --pf-lh-tight: 1.25;
+  --pf-lh-snug: 1.45;
+  --pf-lh-ui: 1.6;
+  --pf-tracking-tag: 0.08em;
+
+  /* ---- Geometry ---- */
   --pf-radius: 2px;
   --pf-rail-width: 76px;
+  --pf-dock-height: 68px;
+  --pf-status-height: 28px;
   /* Side columns grow gently with the window so wide screens are not all canvas. */
   --pf-paper-list-width: clamp(292px, 15vw, 340px);
   --pf-context-width: clamp(256px, 14.5vw, 336px);
@@ -36,6 +76,7 @@
   --pf-stage-pad-y: clamp(28px, 1.6vw, 40px);
   --pf-document-pad: clamp(30px, 2.4vw, 56px);
   --pf-control-height: 40px;
+  --pf-control-height-sm: 32px;
   --pf-space-1: 4px;
   --pf-space-2: 8px;
   --pf-space-3: 12px;
@@ -43,41 +84,57 @@
   --pf-space-6: 24px;
   --pf-space-8: 32px;
   --pf-space-12: 48px;
-  /* Motion & depth ladder. No bare durations/easings anywhere: every
-     animation and transition references a --pf-t-* / --pf-ease-* token.
-     Order: press < state < direct < enter < settle; loops have exactly two
-     rhythms — breathe (--pf-t-loop) and sweep (--pf-t-sweep), no third. */
-  --pf-ease-direct: cubic-bezier(0.3, 0, 0.2, 1);
-  --pf-ease-out: cubic-bezier(0.2, 0, 0, 1);
-  --pf-ease-loop: ease-in-out;
-  /* Token API: every duration token below is a duration+easing COMPOUND.
+
+  /* ---- Decoration primitives ----
+     标记块：黄头墨身的竖条，所有标题共用；角标：右上 45° 墨色三角；
+     警示斜纹：墨 / 黄相间，只用于空状态与加载这类「等待」语境。 */
+  --pf-marker: 3px;
+  --pf-heading-marker: linear-gradient(var(--pf-signal) 0 34%, var(--pf-ink) 34% 100%);
+  --pf-notch: linear-gradient(225deg, var(--pf-ink) 0 6px, transparent 6px);
+  --pf-notch-signal: linear-gradient(225deg, var(--pf-signal) 0 6px, transparent 6px);
+  --pf-hazard: repeating-linear-gradient(-45deg, var(--pf-ink) 0 5px, var(--pf-signal) 5px 10px);
+  --pf-dot-grid: radial-gradient(circle, rgba(25, 25, 25, 0.075) 1px, transparent 1.4px);
+
+  /* ---- Motion ----
+     No bare durations/easings anywhere: every animation and transition
+     references a --pf-t-* / --pf-ease-* token.
+     Token API: every duration token below is a duration+easing COMPOUND.
      Never append a separate easing after var(--pf-t-*) / var(--pf-direct) /
      var(--pf-motion) — a second timing function invalidates the whole
      animation/transition shorthand, which then silently resolves to none.
-     Sole exception: --pf-t-tick-delay fills the delay slot (bare time). */
+     Sole exceptions: --pf-t-tick-delay / --pf-t-late fill the delay slot. */
+  --pf-ease-direct: cubic-bezier(0.3, 0, 0.2, 1);
+  --pf-ease-out: cubic-bezier(0.2, 0, 0, 1);
+  /* 机械感缓动：起步利落、收尾硬停——刷出 / 展开 / 色块揭幕共用。 */
+  --pf-ease-snap: cubic-bezier(0.7, 0, 0.15, 1);
+  --pf-ease-loop: ease-in-out;
   --pf-t-press: 80ms var(--pf-ease-direct);
   /* --pf-t-tick-delay: marker→tick two-stage selection rhythm (40ms). */
   --pf-t-tick-delay: 40ms;
+  /* --pf-t-late: decorative second beat (rules, fills) after content lands. */
+  --pf-t-late: 180ms;
   --pf-direct: 160ms var(--pf-ease-direct);
   --pf-motion: 140ms var(--pf-ease-direct);
   --pf-t-enter: 200ms var(--pf-ease-out);
   --pf-t-settle: 300ms var(--pf-ease-direct);
+  --pf-t-unfold: 320ms var(--pf-ease-snap);
+  --pf-t-row: 380ms var(--pf-ease-out);
+  --pf-t-draw: 620ms var(--pf-ease-out);
+  --pf-t-reveal: 720ms var(--pf-ease-snap);
   --pf-t-loop: 1800ms var(--pf-ease-loop);
   --pf-t-sweep: 1100ms var(--pf-ease-loop);
   /* 舞台刷出（源设计：bjtu-hpc-submit-skill 登录页 ef-reveal）：新视图 clip-path
      左→右硬边刷出 + 10px 水平回位，一条缓动 650ms 一次到位。缓动按源设计保留
-     独立贝塞尔（起步极快、收尾柔停），是 direct/out/loop 之外唯一登记的进场
-     缓动；位移 10px 为源设计原值，是入场 ≤8px 契约的唯一登记例外（纯几何刷出，
-     不含 opacity 参与制造的运动错觉）。 */
+     独立贝塞尔（起步极快、收尾柔停）；位移 10px 为源设计原值（纯几何刷出，
+     不含 opacity 参与制造的运动错觉）。刷出边缘另有一条信号黄扫描线同速跟随
+     （pf-scan，同一令牌，永远落在裁剪边内侧）。 */
   --pf-t-wipe: 650ms cubic-bezier(0.22, 0.8, 0.2, 1);
   --pf-wipe-shift: 10px;
   /* Press & selection geometry: :active sinks, list stagger (items capped at
-     12 → ≤450ms per sequence), left-edge selection bar width. */
+     12), left-edge selection bar width. */
   --pf-nudge: 1px;
-  --pf-stagger: 18ms;
-  --pf-marker: 3px;
-  --pf-hover-flat: #eceee7;
-  --pf-hover-quiet: #eef1e8;
+  --pf-stagger: 28ms;
+
   /* Floating-layer stacking ladder: toasts sit above everything — dialog
      backdrop (30), dock (30) and the skip link (100). */
   --pf-z-toast: 120;
@@ -87,7 +144,7 @@
   --pf-elev-1: inset 0 1px 0 rgba(255, 255, 255, 0.65), 0 2px 4px rgba(25, 25, 25, 0.08), 0 10px 24px rgba(25, 25, 25, 0.07);
   --pf-elev-2: inset 0 1px 0 rgba(255, 255, 255, 0.7), 0 4px 10px rgba(25, 25, 25, 0.1), 0 24px 56px rgba(25, 25, 25, 0.14);
   --pf-edge-hard: 2px 2px 0 0 var(--pf-ink);
-  --pf-edge-hard-hover: 1px 1px 0 0 var(--pf-ink);
+  --pf-edge-hard-lift: 3px 3px 0 0 var(--pf-ink);
   --ink: var(--pf-ink);
   --paper: var(--pf-canvas);
   --signal: var(--pf-signal);
@@ -101,10 +158,11 @@ body {
   background: var(--pf-canvas);
   color: var(--pf-ink);
   font-family: var(--pf-font-ui);
-  font-size: 14px;
+  font-size: var(--pf-fs-ui);
   line-height: 1.5;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
 }
 
 button, input, textarea, select { font: inherit; color: inherit; }
@@ -176,8 +234,46 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   box-shadow: none;
 }
 
-/* Buttons */
+/* ---- Shared primitives ---- */
+
+/* 领域短码角标：墨底黄字等宽，全库唯一写法（列表头、论文分类行）。 */
+.ef-code {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  background: var(--pf-ink);
+  color: var(--pf-signal);
+  font-family: var(--pf-font-mono);
+  font-size: var(--pf-fs-tag);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  white-space: nowrap;
+}
+/* 计数角标：墨线框等宽数字。 */
+.ef-count {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 5px;
+  border: 1px solid var(--pf-line-strong);
+  color: var(--pf-ink);
+  font-size: var(--pf-fs-tag);
+  font-weight: 600;
+  line-height: 1;
+}
+.ef-error {
+  margin: 0 0 12px;
+  color: var(--pf-danger);
+  font-size: var(--pf-fs-ui);
+  line-height: var(--pf-lh-ui);
+}
+.ef-field-error { margin: -8px 0 12px; font-size: var(--pf-fs-caption); }
+
+/* ---- Buttons ---- */
 .ef-btn {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -189,11 +285,28 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   background: var(--pf-surface);
   text-decoration: none;
   font-weight: 500;
-  font-size: var(--pf-label-size);
+  font-size: var(--pf-fs-ui);
+  line-height: 1.2;
   white-space: nowrap;
-  transition: background var(--pf-direct), border-color var(--pf-direct), box-shadow var(--pf-direct),
-    transform var(--pf-t-press);
+  transition: background-color var(--pf-direct), border-color var(--pf-direct), color var(--pf-direct),
+    box-shadow var(--pf-direct), transform var(--pf-t-press);
 }
+/* 角标：悬停时右上角弹出一枚 45° 墨色三角（切角语言），
+   只缩放不改布局；主按钮 / 文字按钮 / 链接不挂。 */
+.ef-btn-secondary::after {
+  content: "";
+  position: absolute;
+  top: -1px;
+  right: -1px;
+  width: 9px;
+  height: 9px;
+  background: var(--pf-notch);
+  transform: scale(0);
+  transform-origin: top right;
+  transition: transform var(--pf-direct);
+  pointer-events: none;
+}
+.ef-btn-secondary:hover:not(:disabled)::after { transform: scale(1); }
 .ef-btn:hover:not(:disabled) {
   background: var(--pf-hover-flat);
   border-color: var(--pf-ink);
@@ -206,19 +319,17 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 .ef-btn-primary {
   background: var(--pf-signal);
   border-color: var(--pf-ink);
-  font-weight: 650;
+  color: var(--pf-ink);
+  font-weight: 600;
   box-shadow: var(--pf-edge-hard);
-  transition: background var(--pf-direct), border-color var(--pf-direct),
-    box-shadow var(--pf-t-press),
-    transform var(--pf-t-press);
 }
+/* The signature hover/press pair: the yellow block lifts off the paper
+   (hard edge grows to 3px) and sinks flush into it while held. */
 .ef-btn-primary:hover:not(:disabled) {
-  background: #e9e500;
-  box-shadow: var(--pf-edge-hard-hover);
+  background: var(--pf-signal-hover);
+  box-shadow: var(--pf-edge-hard-lift);
+  transform: translate(-1px, -1px);
 }
-/* The signature press: the yellow block sinks 2px into the paper as its
-   hard edge collapses. Shadow and transform interpolate together at press
-   timing; layout dimensions are untouched. */
 .ef-btn-primary:active:not(:disabled) {
   box-shadow: 0 0 0 0 var(--pf-ink);
   transform: translate(2px, 2px);
@@ -229,7 +340,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 }
 .ef-btn-text:hover:not(:disabled) {
   background: var(--pf-hover-flat);
-  border-color: #d6d8d1;
+  border-color: var(--pf-divider);
 }
 .ef-btn-danger {
   color: var(--pf-danger);
@@ -237,46 +348,52 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   border-color: transparent;
 }
 .ef-btn-danger:hover:not(:disabled) {
-  background: #f8eceb;
+  background: var(--pf-danger-bg);
   border-color: #e4c7c4;
 }
 .ef-btn-link {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
   background: transparent;
   border: 0;
-  min-height: 36px;
+  min-height: 32px;
   padding: 0;
   color: var(--pf-secondary);
   text-decoration: underline;
   text-decoration-thickness: 1px;
   text-underline-offset: 4px;
-  font-size: 13px;
+  font-size: var(--pf-fs-ui);
   box-shadow: none;
 }
+.ef-btn-link .ef-ico { width: 14px; height: 14px; transition: transform var(--pf-direct); }
 .ef-btn-link:hover:not(:disabled) {
   color: var(--pf-ink);
   background: transparent;
   border-color: transparent;
 }
+.ef-btn-link:hover:not(:disabled) .ef-ico { transform: translateX(3px); }
 .ef-btn-sm {
-  min-height: 36px;
+  min-height: var(--pf-control-height-sm);
   padding: 0 10px;
-  font-size: 13px;
+  gap: 6px;
 }
+.ef-btn-sm .ef-ico { width: 16px; height: 16px; }
 .ef-btn:disabled {
   background: #f0f1ed;
-  color: #73766d;
-  border-color: #d8dad3;
+  color: #8a8d84;
+  border-color: #dcded7;
   box-shadow: none;
 }
+.ef-btn-text:disabled,
+.ef-btn-danger:disabled,
+.ef-btn-link:disabled { background: transparent; border-color: transparent; }
 /* Toggled buttons (manual-add in the import dialog) share the filter-row
    selected look: ink fill, white label. :not(:disabled) keeps this above
    the hover tie and never overrides the disabled surface. */
 .ef-btn.is-active:not(:disabled) {
   background: var(--pf-ink);
-  color: #fff;
+  color: var(--pf-on-dark);
   border-color: var(--pf-ink);
 }
 .ef-icon-btn {
@@ -284,12 +401,20 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   min-height: 36px;
   padding: 0;
 }
+.ef-btn-danger-solid {
+  background: var(--pf-danger) !important;
+  color: white !important;
+  border-color: var(--pf-danger) !important;
+  box-shadow: none !important;
+}
 .ef-pulse {
   display: inline-block;
   width: 8px;
   height: 8px;
   margin-right: 6px;
   background: var(--pf-signal);
+  outline: 1px solid var(--pf-ink);
+  outline-offset: -1px;
   animation: breathe var(--pf-t-loop) infinite;
 }
 @keyframes breathe {
@@ -297,12 +422,12 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   50% { opacity: 0.35; }
 }
 
-/* Shell */
+/* ---- Shell ---- */
 .ef-shell {
   height: 100%;
   display: grid;
   grid-template-columns: var(--pf-rail-width) var(--pf-paper-list-width) minmax(0, 1fr);
-  grid-template-rows: 68px minmax(0, 1fr) 28px;
+  grid-template-rows: var(--pf-dock-height) minmax(0, 1fr) var(--pf-status-height);
   grid-template-areas:
     "dock dock dock"
     "rail nav read"
@@ -334,17 +459,30 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 .ef-shell.is-focus .ef-context-toggle { display: inline-flex; }
 .ef-shell[data-mode="system"] .ef-nav { display: none; }
 
-/* Dock */
+/* ---- Dock ---- */
 .ef-dock {
   grid-area: dock;
+  position: relative;
+  z-index: 30;
   display: flex;
   align-items: center;
   gap: 28px;
   background: var(--pf-ink);
   padding: 0 26px;
-  color: #fff;
+  color: var(--pf-on-dark);
   border-bottom: 1px solid #34362f;
   min-width: 0;
+}
+/* 顶栏左下角的信号黄短梁：与左侧模式轨同宽，把顶栏与模式轨焊成一个 L 形骨架。 */
+.ef-dock::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: -1px;
+  width: var(--pf-rail-width);
+  height: 2px;
+  background: var(--pf-signal);
+  pointer-events: none;
 }
 .ef-brand {
   display: flex;
@@ -362,64 +500,74 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 }
 .ef-brand strong {
   display: block;
-  font-size: 20px;
-  font-weight: 800;
-  letter-spacing: -0.6px;
+  font-size: var(--pf-fs-h2);
+  font-weight: 700;
+  letter-spacing: -0.02em;
   line-height: 1.1;
 }
 .ef-brand small {
   display: block;
   margin-top: 5px;
-  font-size: 11px;
-  color: #bec1b8;
-  letter-spacing: 0.12em;
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-on-dark-2);
+  letter-spacing: 0.16em;
+  line-height: 1.2;
 }
 .ef-search {
+  position: relative;
   height: 40px;
   max-width: 580px;
   flex: 1;
   display: flex;
   align-items: center;
   gap: 10px;
-  background: #282a25;
-  border: 1px solid #62655c;
+  background: var(--pf-ink-2);
+  border: 1px solid #5c5f57;
   padding: 0 12px;
-  color: #c5c7bf;
+  color: var(--pf-on-dark-2);
   min-width: 0;
-  transition: border-color var(--pf-motion);
+  transition: border-color var(--pf-motion), background-color var(--pf-motion), box-shadow var(--pf-motion);
 }
-.ef-search:focus-within { border-color: var(--pf-signal); }
+.ef-search:hover { border-color: #8a8d84; }
+/* 聚焦：黄框 + 左缘 3px 黄条内嵌，输入位一眼可辨。 */
+.ef-search:focus-within {
+  border-color: var(--pf-signal);
+  background: #2f322c;
+  box-shadow: inset 3px 0 0 var(--pf-signal);
+}
+.ef-search:focus-within > .ef-ico { color: var(--pf-signal); }
 .ef-search input {
   width: 100%;
   min-width: 0;
-  color: #fff;
+  color: var(--pf-on-dark);
   border: 0;
   background: transparent;
   outline: none;
-  font-size: 14px;
+  font-size: var(--pf-fs-ui);
 }
-.ef-search input::placeholder { color: #babeb3; }
+.ef-search input::placeholder { color: #a9ada1; }
 .ef-search kbd {
   font-family: var(--pf-font-mono);
-  font-size: 11px;
-  color: #caccc5;
-  border: 1px solid #676a61;
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-on-dark-2);
+  border: 1px solid #5c5f57;
   padding: 1px 5px;
   white-space: nowrap;
 }
 .ef-header-spacer { flex: 1; }
 .ef-dock .ef-btn-secondary {
   background: transparent;
-  color: #fff;
-  border-color: #787c72;
+  color: var(--pf-on-dark);
+  border-color: #6f736a;
 }
+.ef-dock .ef-btn-secondary::after { background: var(--pf-notch-signal); }
 .ef-dock .ef-btn-secondary:hover:not(:disabled) {
-  background: #34372e;
-  border-color: #f0f1eb;
+  background: var(--pf-ink-3);
+  border-color: var(--pf-on-dark);
 }
 .ef-dock .ef-btn-secondary .ef-ico { color: var(--pf-signal); }
 
-/* Rail */
+/* ---- Rail ---- */
 .ef-rail {
   grid-area: rail;
   background: var(--pf-rail);
@@ -428,14 +576,14 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   flex-direction: column;
   align-items: center;
   padding: 14px 8px;
-  gap: 8px;
+  gap: 6px;
   min-height: 0;
   z-index: 5;
 }
 .ef-mode {
   position: relative;
   width: 60px;
-  min-height: 70px;
+  min-height: 64px;
   border: 0;
   background: transparent;
   display: flex;
@@ -445,7 +593,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   gap: 6px;
   color: #5d6258;
   border-radius: var(--pf-radius);
-  font-size: 12px;
+  font-size: var(--pf-fs-caption);
   font-weight: 500;
   transition: background-color var(--pf-motion), color var(--pf-motion);
 }
@@ -457,157 +605,217 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 }
 .ef-mode:hover .ef-ico { transform: translateY(calc(-1 * var(--pf-nudge))); }
 .ef-mode:hover { background: #e0e3da; color: var(--pf-ink); }
+/* 当前模式：墨块从左刷入（clip-path，只在获得 aria-current 时播一次），
+   左缘信号黄标记随后从顶部长出。 */
 .ef-mode[aria-current="page"] {
   background: var(--pf-ink);
-  color: #fff;
+  color: var(--pf-on-dark);
+  font-weight: 600;
+  animation: pf-fill-in var(--pf-t-unfold) backwards;
 }
+.ef-mode[aria-current="page"] .ef-ico { color: var(--pf-signal); }
 .ef-mode[aria-current="page"]::before {
   position: absolute;
   content: "";
   left: 0;
-  top: 15px;
-  bottom: 15px;
+  top: 14px;
+  bottom: 14px;
   width: var(--pf-marker);
   background: var(--pf-signal);
   /* State indicator: single scale property, once per state change.
      --pf-t-enter carries its own easing — never append a second one. */
-  animation: pf-marker-in var(--pf-t-enter);
+  animation: pf-marker-in var(--pf-t-enter) var(--pf-t-late) backwards;
 }
 .ef-rail-fill { flex: 1; }
 
-/* Library / paper list */
+/* ---- Library / paper list ---- */
 .ef-nav {
   grid-area: nav;
+  position: relative;
   min-width: 0;
   min-height: 0;
   border-right: 1px solid var(--pf-divider);
-  background: #f7f8f4;
+  background: var(--pf-panel);
   display: flex;
   flex-direction: column;
   overflow: hidden;
   z-index: 2;
 }
 .ef-nav-head {
-  padding: 26px 22px 19px;
+  padding: 24px 22px 20px;
   border-bottom: 1px solid var(--pf-divider);
 }
+/* 区段角标（研究领域 / 全部领域 · 已读…）：caption 档、带一枚墨框黄方块。 */
 .ef-overline {
-  font-family: var(--pf-font-mono);
-  font-size: 11px;
-  letter-spacing: 0.1em;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 18px;
+  font-size: var(--pf-fs-caption);
   font-weight: 500;
+  letter-spacing: var(--pf-tracking-tag);
   color: var(--pf-muted);
 }
+.ef-overline::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  background: var(--pf-signal);
+  outline: 1px solid var(--pf-ink);
+  outline-offset: -1px;
+  flex: none;
+}
+.ef-overline .ef-code { margin-left: auto; }
 .ef-domain-picker {
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 12px;
-  margin-top: 9px;
+  margin-top: 10px;
 }
 .ef-domain-picker h2 {
-  font-size: var(--pf-t3);
-  font-weight: 650;
+  font-size: var(--pf-fs-h2);
+  font-weight: 700;
   margin: 0;
-  line-height: 1.4;
-  letter-spacing: -0.02em;
+  line-height: var(--pf-lh-tight);
+  letter-spacing: -0.01em;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .ef-domain-select {
-  height: 36px;
-  width: 36px;
+  position: relative;
+  height: 32px;
+  width: 32px;
+  flex: none;
   padding: 0;
   border: 1px solid var(--pf-control-border);
-  background: white;
+  background: var(--pf-surface);
   border-radius: var(--pf-radius);
   display: grid;
   place-items: center;
-  transition: background-color var(--pf-motion), border-color var(--pf-motion);
+  transition: background-color var(--pf-motion), border-color var(--pf-motion), color var(--pf-motion);
 }
-.ef-domain-select:hover { border-color: var(--pf-ink); background: #f0f2e9; }
+.ef-domain-select .ef-ico { width: 16px; height: 16px; transition: transform var(--pf-direct); }
+.ef-domain-select:hover { border-color: var(--pf-ink); background: var(--pf-ink); color: var(--pf-signal); }
+.ef-domain-select:hover .ef-ico { transform: translateY(1px); }
 .ef-nav-sum {
-  font-size: 13px;
+  font-size: var(--pf-fs-caption);
   color: var(--pf-secondary);
   line-height: 1.7;
-  margin: 13px 0 19px;
+  margin: 10px 0 18px;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 .ef-progress-label {
   display: flex;
   justify-content: space-between;
-  align-items: center;
-  font-size: 12px;
-  color: var(--pf-secondary);
+  align-items: baseline;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
 }
+.ef-progress-value { color: var(--pf-secondary); }
+.ef-progress-value b {
+  font-size: var(--pf-fs-ui);
+  font-weight: 700;
+  color: var(--pf-ink);
+  margin-left: 2px;
+}
+/* 进度轨：4px 墨灰轨道 + 每 10% 一道刻度；填充为墨色、末端一枚信号黄端帽。
+   挂载时从左长出一次（transform），之后标记已读走 width 过渡。 */
 .ef-progress {
-  height: 3px;
-  background: #d9dcd2;
+  height: 4px;
   margin-top: 9px;
   overflow: hidden;
+  background:
+    repeating-linear-gradient(90deg, transparent 0 calc(10% - 1px), rgba(25, 25, 25, 0.22) calc(10% - 1px) 10%),
+    #dcdfd5;
 }
 .ef-progress > i {
   display: block;
   background: var(--pf-ink);
-  height: 3px;
+  height: 4px;
   position: relative;
-  /* Mark-as-read grows the fill smoothly: width transition only, no layout motion. */
+  transform-origin: left;
   transition: width var(--pf-t-settle);
+  animation: pf-grow-x var(--pf-t-draw) var(--pf-t-late) backwards;
 }
 .ef-progress > i::after {
   content: "";
   position: absolute;
   right: 0;
   top: 0;
-  height: 3px;
-  width: 10px;
+  height: 4px;
+  width: 8px;
   background: var(--pf-signal);
 }
 .ef-list-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 21px 22px 11px;
-  font-size: 12px;
+  gap: 10px;
+  padding: 18px 22px 10px;
+  font-size: var(--pf-fs-caption);
   color: var(--pf-muted);
+}
+.ef-list-title {
+  font-weight: 600;
+  color: var(--pf-secondary);
+  letter-spacing: var(--pf-tracking-tag);
 }
 .ef-paper-list {
   overflow: auto;
   flex: 1;
-  padding: 0 10px;
+  padding: 0 10px 12px;
   min-height: 0;
+  scrollbar-width: thin;
+  scrollbar-color: #b1b5a9 transparent;
 }
 .ef-nav-foot {
-  padding: 16px 22px 20px;
+  padding: 14px 22px 16px;
   border-top: 1px solid var(--pf-divider);
-  font-size: 12px;
+  font-size: var(--pf-fs-caption);
   color: var(--pf-muted);
 }
 .ef-nav-foot .ef-btn { width: 100%; background: transparent; }
 
+/* 论文行：行间以发丝线分隔；悬停时左缘灰条长出，选中时换成墨条 + 信号黄
+   短钩，卡面提白并在右上角切出墨色角标。列表行不持有投影。 */
 .ef-row {
   position: relative;
   display: block;
   width: 100%;
   text-align: left;
   border: 1px solid transparent;
+  border-bottom-color: var(--pf-divider);
   background: transparent;
-  padding: 18px 12px 17px;
-  margin-bottom: 6px;
-  border-radius: var(--pf-radius);
+  padding: 14px 12px 15px 16px;
+  border-radius: 0;
   transition: background-color var(--pf-motion), border-color var(--pf-motion);
 }
-.ef-row:hover { background: var(--pf-hover-flat); }
-.ef-row.is-selected {
-  background: white;
-  /* 选中深度由边框明度承担（从既有 token 派生），列表行不持有投影。 */
-  border-color: color-mix(in srgb, var(--pf-ink) 30%, var(--pf-divider));
-}
-.ef-row.is-selected::before {
+.ef-row::before {
   content: "";
   position: absolute;
   left: -1px;
-  top: 17px;
-  bottom: 17px;
+  top: 14px;
+  bottom: 14px;
   width: var(--pf-marker);
+  background: var(--pf-line-strong);
+  transform: scaleY(0);
+  transition: transform var(--pf-direct), background-color var(--pf-direct);
+}
+.ef-row:hover { background: var(--pf-hover-flat); }
+.ef-row:hover::before { transform: scaleY(1); }
+.ef-row.is-selected {
+  background: var(--pf-notch) no-repeat top right, var(--pf-surface);
+  background-size: 9px 9px, auto;
+  /* 选中深度由边框明度承担（从既有 token 派生），列表行不持有投影。 */
+  border-color: color-mix(in srgb, var(--pf-ink) 32%, var(--pf-divider));
+}
+.ef-row.is-selected::before {
   background: var(--pf-ink);
+  transform: none;
   /* State indicator: ink bar grows (scaleY only); list rows never carry shadows. */
   animation: pf-marker-in var(--pf-t-enter);
 }
@@ -615,9 +823,9 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   content: "";
   position: absolute;
   left: 2px;
-  top: 17px;
+  top: 14px;
   width: var(--pf-marker);
-  height: 22px;
+  height: 18px;
   background: var(--pf-signal);
   /* Signal tick pops one beat after the marker (scaleX only; both bridges the delay). */
   animation: pf-tick-in var(--pf-motion) var(--pf-t-tick-delay) both;
@@ -627,30 +835,47 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   justify-content: space-between;
   align-items: center;
   gap: 10px;
-  margin-bottom: 9px;
-  font-size: 11px;
+  margin-bottom: 6px;
+  font-size: var(--pf-fs-tag);
   color: var(--pf-muted);
 }
+.ef-row-index { font-size: var(--pf-fs-tag); letter-spacing: 0.04em; }
+.ef-row.is-selected .ef-row-index { color: var(--pf-ink); font-weight: 700; }
 .ef-row-status {
-  display: flex;
+  display: inline-flex;
   gap: 4px;
   align-items: center;
+  font-size: var(--pf-fs-tag);
+  font-weight: 600;
+  letter-spacing: 0.04em;
 }
-.ef-row-status .ef-ico { width: 13px; height: 13px; }
-.ef-row-status.is-read { color: var(--pf-success); font-weight: 600; }
-.ef-row-status.is-read .ef-ico { color: var(--pf-success); }
+.ef-row-status .ef-ico { width: 12px; height: 12px; }
+.ef-row-status.is-read { color: var(--pf-success); }
+.ef-row-status.is-reading { color: var(--pf-ink); }
+.ef-row-status.is-reading::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  background: var(--pf-signal);
+  outline: 1px solid var(--pf-ink);
+  outline-offset: -1px;
+}
 .ef-row h3 {
   margin: 0;
-  font-size: 15px;
-  font-weight: 650;
-  line-height: 1.7;
+  font-size: var(--pf-fs-title);
+  font-weight: 600;
+  line-height: var(--pf-lh-snug);
   color: var(--pf-ink);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 .ef-row .ef-row-en {
-  margin: 5px 0 10px;
-  font-size: 12px;
+  margin: 4px 0 0;
+  font-size: var(--pf-fs-caption);
   color: var(--pf-secondary);
-  line-height: 1.6;
+  line-height: 1.5;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -660,10 +885,11 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   display: flex;
   justify-content: space-between;
   color: var(--pf-muted);
-  font-size: var(--pf-meta);
-  margin-top: 8px;
+  font-size: var(--pf-fs-caption);
+  margin-top: 10px;
   gap: 8px;
 }
+.ef-row-meta span:first-child { color: var(--pf-secondary); }
 /* 批量选择：列表头工具栏（全选 / 计数 / 删除 / 退出）与行首复选方块。
    is-batch 允许换行：窄屏导航列 272px 时四个控件一行放不下。 */
 .ef-list-head.is-batch { flex-wrap: wrap; gap: 6px 10px; }
@@ -678,7 +904,8 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   background: transparent;
   padding: 0;
   font: inherit;
-  color: var(--pf-muted);
+  font-weight: 600;
+  color: var(--pf-secondary);
   cursor: pointer;
 }
 .ef-batch-all:hover { color: var(--pf-ink); }
@@ -690,14 +917,14 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   justify-content: center;
   width: 15px;
   height: 15px;
-  border: 1px solid var(--pf-divider);
+  border: 1px solid var(--pf-control-border);
   border-radius: 2px;
-  background: #fff;
+  background: var(--pf-surface);
   color: transparent;
   transition: background-color var(--pf-motion), border-color var(--pf-motion), color var(--pf-motion);
 }
 .ef-row-check .ef-ico { width: 11px; height: 11px; }
-.ef-row-check.is-on { background: var(--pf-ink); border-color: var(--pf-ink); color: #fff; }
+.ef-row-check.is-on { background: var(--pf-ink); border-color: var(--pf-ink); color: var(--pf-signal); }
 .ef-row.is-checked {
   background: var(--pf-hover-flat);
   border-color: color-mix(in srgb, var(--pf-ink) 18%, var(--pf-divider));
@@ -705,63 +932,83 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 .filter-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
   align-items: center;
-  padding: 0 22px 8px;
+  padding: 14px 22px 0;
 }
+.filter-row .ef-btn { min-height: 28px; padding: 0 10px; font-size: var(--pf-fs-caption); }
 .filter-row .ef-btn.is-active {
   background: var(--pf-ink);
-  color: #fff;
+  color: var(--pf-on-dark);
   border-color: var(--pf-ink);
 }
-.ef-job-list { padding: 0 16px 10px; display: flex; flex-direction: column; gap: 8px; }
+.ef-job-list { padding: 14px 16px 0; display: flex; flex-direction: column; gap: 8px; }
+.ef-job-list .ef-nav-sum { margin: 0; }
 .ef-job-row {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 12px;
+  padding: 8px 10px 8px 12px;
   border: 1px solid var(--pf-divider);
-  background: #fff;
-  font-size: 13px;
+  border-left: var(--pf-marker) solid var(--pf-ink);
+  background: var(--pf-surface);
+  font-size: var(--pf-fs-caption);
   color: var(--pf-secondary);
 }
+.ef-nav-head .ef-job-row { margin-top: 14px; border-left-color: var(--pf-danger); }
 .ef-job-row .status-running { color: var(--pf-ink); font-weight: 600; }
-.ef-job-row .status-error { color: var(--pf-danger); }
+.ef-job-row .status-error { color: var(--pf-danger); font-weight: 600; }
 .ef-job-row .status-done { color: var(--pf-success); }
 
 .no-results {
+  margin: 0;
   padding: 20px 12px;
   color: var(--pf-muted);
-  font-size: 13px;
+  font-size: var(--pf-fs-caption);
   line-height: 1.8;
 }
 
+/* 空状态：一段墨黄警示斜纹做「等待中」的引子，标题走 h1 档。 */
 .empty {
-  padding: 48px 12px;
+  padding: 56px 12px;
   max-width: 36rem;
 }
+.empty::before {
+  content: "";
+  display: block;
+  width: 72px;
+  height: 8px;
+  margin-bottom: 24px;
+  background: var(--pf-hazard);
+}
 .empty h2 {
-  font-size: var(--pf-t2);
-  line-height: 1.3;
-  letter-spacing: -0.03em;
+  font-size: var(--pf-fs-h1);
+  line-height: var(--pf-lh-tight);
+  letter-spacing: -0.02em;
   margin: 0 0 12px;
   font-weight: 700;
 }
-.empty p { margin: 0; color: var(--pf-muted); line-height: 1.7; }
-.empty-action { margin-top: 16px; }
+.empty p { margin: 0; color: var(--pf-secondary); font-size: var(--pf-fs-ui); line-height: 1.7; }
+.empty-action { margin-top: 24px; }
 /* Entrance scoped to the shell umbrella on purpose: the fatal-storage-error
    .empty renders outside .ef-shell and stays motionless, and the
    prefers-reduced-motion fallback keeps covering every animated instance. */
 .ef-shell .empty {
   animation: pf-rise var(--pf-t-enter) both;
 }
+.ef-shell .empty::before {
+  transform-origin: left;
+  animation: pf-grow-x var(--pf-t-draw) var(--pf-t-late) backwards;
+}
 
-/* Reading workspace: toolbar on top, scrolling document in the centre,
-   context rail pinned to the right edge as its own column. */
+/* ---- Reading workspace ----
+   Toolbar on top, scrolling document in the centre, context rail pinned to
+   the right edge as its own column. */
 .ef-read {
   grid-area: read;
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
@@ -791,7 +1038,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
   padding: 0 28px;
   background: #f9faf6;
   border-bottom: 1px solid var(--pf-divider);
@@ -807,14 +1054,45 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   border-bottom-color: color-mix(in srgb, var(--pf-ink) 20%, var(--pf-divider));
   box-shadow: 0 1px 0 rgba(25, 25, 25, 0.06);
 }
+/* 工具条左侧两层滑轨：领域面包屑 ↔ 论文标题，由 data-scrolled 切换，
+   上一层上滑淡出、下一层自下滑入。 */
 .ef-toolbar-label {
-  display: flex;
-  gap: 9px;
+  display: grid;
   align-items: center;
+  height: 24px;
+  min-width: 0;
+  max-width: min(46%, 640px);
+  overflow: hidden;
   color: var(--pf-secondary);
-  font-size: 13px;
+  font-size: var(--pf-fs-ui);
 }
-.ef-toolbar-label .ef-ico { width: 16px; height: 16px; }
+.ef-toolbar-crumb,
+.ef-toolbar-title {
+  grid-area: 1 / 1;
+  min-width: 0;
+  transition: transform var(--pf-t-settle), opacity var(--pf-t-settle);
+}
+.ef-toolbar-crumb {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+.ef-toolbar-crumb .ef-ico { width: 16px; height: 16px; }
+.ef-toolbar-sep { color: var(--pf-line-strong); margin: 0 -2px; }
+.ef-toolbar-title {
+  padding-left: 12px;
+  border-left: var(--pf-marker) solid var(--pf-signal);
+  color: var(--pf-ink);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transform: translateY(110%);
+  opacity: 0;
+}
+.ef-read[data-scrolled] .ef-toolbar-crumb { transform: translateY(-110%); opacity: 0; }
+.ef-read[data-scrolled] .ef-toolbar-title { transform: none; opacity: 1; }
 .ef-toolbar-spacer { flex: 1; min-width: 8px; }
 .ef-toolbar .ef-btn,
 .ef-toolbar .ef-pdf-action {
@@ -822,43 +1100,62 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 }
 .ef-list-back, .ef-context-toggle { display: none; }
 .ef-menu-wrap { position: relative; }
+.ef-menu-wrap > .ef-btn .ef-ico { width: 16px; height: 16px; transition: transform var(--pf-direct); }
+.ef-menu-wrap > .ef-btn[aria-expanded="true"] .ef-ico { transform: rotate(180deg); }
 .ef-action-menu {
   position: absolute;
   right: 0;
   top: 47px;
-  width: 188px;
+  width: 196px;
   padding: 6px;
-  background: white;
-  border: 1px solid #b8c0ad;
+  background: var(--pf-surface);
+  border: 1px solid var(--pf-ink);
+  border-top-width: 3px;
   box-shadow: var(--pf-elev-1);
-  animation: pf-pop var(--pf-motion);
+  animation: pf-unfold var(--pf-t-unfold) backwards;
   z-index: 12;
 }
 .ef-action-menu[hidden] { display: none; }
 .ef-action-menu button {
+  position: relative;
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: 10px;
   border: 0;
   background: transparent;
-  min-height: 42px;
-  padding: 0 9px;
-  font-size: 13px;
+  min-height: 40px;
+  padding: 0 10px;
+  font-size: var(--pf-fs-ui);
   text-align: left;
   transition: background-color var(--pf-motion), transform var(--pf-t-press);
 }
-/* Menu item hover: quiet panel wash + a 1px press-ward nudge (fast lane). */
+.ef-action-menu button .ef-ico { width: 16px; height: 16px; }
+.ef-action-menu button::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: var(--pf-marker);
+  background: var(--pf-ink);
+  transform: scaleY(0);
+  transition: transform var(--pf-direct);
+}
+/* Menu item hover: quiet panel wash + ink bar + a 1px press-ward nudge. */
 .ef-action-menu button:hover {
   background: var(--pf-hover-quiet);
   transform: translateX(var(--pf-nudge));
 }
+.ef-action-menu button:hover::before { transform: none; }
 .ef-action-menu .danger {
   color: var(--pf-danger);
   border-top: 1px solid var(--pf-divider);
   margin-top: 4px;
 }
+.ef-action-menu .danger::before { background: var(--pf-danger); }
 
+/* 阅读画布：极淡点阵，纸面浮于网格之上。 */
 .ef-read-scroll {
   grid-area: scroll;
   overflow-y: auto;
@@ -866,6 +1163,9 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   min-height: 0;
   scrollbar-width: thin;
   scrollbar-color: #b1b5a9 transparent;
+  background-image: var(--pf-dot-grid);
+  background-size: 24px 24px;
+  background-attachment: local;
 }
 /* The stage: fills the centre column, capped only on very wide screens. */
 .ef-reading-grid {
@@ -879,6 +1179,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   min-width: 0;
   width: 100%;
   background: var(--pf-surface);
+  border: 1px solid var(--pf-divider);
   border-top: 3px solid var(--pf-ink);
   padding: var(--pf-document-pad) var(--pf-document-pad) calc(var(--pf-document-pad) + 8px);
   position: relative;
@@ -890,16 +1191,32 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 .ef-document::before {
   content: "";
   position: absolute;
-  left: 0;
+  left: -1px;
   top: -3px;
-  width: 48px;
+  width: 64px;
   height: 3px;
   background: var(--pf-signal);
 }
+/* 纸面裁切标：底边两角外侧各一枚 L 形发丝线（印刷对位标的意象）。 */
+.ef-document::after {
+  --c: var(--pf-line-strong);
+  content: "";
+  position: absolute;
+  left: -10px;
+  right: -10px;
+  bottom: -10px;
+  height: 18px;
+  pointer-events: none;
+  background:
+    linear-gradient(var(--c), var(--c)) left top / 1px 100% no-repeat,
+    linear-gradient(var(--c), var(--c)) left bottom / 18px 1px no-repeat,
+    linear-gradient(var(--c), var(--c)) right top / 1px 100% no-repeat,
+    linear-gradient(var(--c), var(--c)) right bottom / 18px 1px no-repeat;
+}
 /* 换文进场：纸面整体 rise 一次（opacity + 8px，:mount 播放、退场即时）。
-   Dossier 给 article 挂 key={paper.id}，换文即重放。纸面自身保持平面——
-   无投影无边框变化；正文（摘要/笔记/全文）零动效。选择器锁在 .ef-shell
-   伞内，prefers-reduced-motion 兜底继续全覆盖。 */
+   Dossier 给 article 挂 key={paper.id}，换文即重放；随后主标题色块揭幕、
+   区段引导线依次画出。正文（摘要/笔记/全文）文字本身零动效。选择器锁在
+   .ef-shell 伞内，prefers-reduced-motion 兜底继续全覆盖。 */
 .ef-shell .ef-reading-grid .ef-document {
   animation: pf-rise var(--pf-t-enter);
 }
@@ -907,62 +1224,141 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   display: flex;
   align-items: center;
   gap: 10px;
-  /* 区段标识档：为 T1 主标题让出对比度（内容含中文，不套 mono 栈）。 */
-  font-size: 11px;
+  font-size: var(--pf-fs-caption);
   font-weight: 500;
-  letter-spacing: 0.1em;
-  color: var(--pf-muted);
+  letter-spacing: var(--pf-tracking-tag);
+  color: var(--pf-secondary);
+  line-height: 1.4;
   margin-bottom: 18px;
 }
 .ef-category-rule {
-  width: 20px;
+  width: 24px;
   height: 1px;
   background: var(--pf-control-border);
 }
 .ef-document h1,
 .ef-read-title {
-  font-size: var(--pf-title-size);
-  line-height: 1.35;
-  letter-spacing: -0.025em;
+  position: relative;
+  width: fit-content;
+  max-width: 100%;
+  font-size: var(--pf-fs-display);
+  line-height: var(--pf-lh-tight);
+  letter-spacing: -0.02em;
   font-weight: 700;
   margin: 0 0 14px;
   color: var(--pf-ink);
+  overflow-wrap: anywhere;
+}
+.ef-read-title:focus { outline: none; }
+/* 主标题色块揭幕：信号黄块自左铺满标题，再向右收起，文字在色块下换出。 */
+.ef-shell .ef-read-title {
+  animation: pf-text-in var(--pf-t-reveal) both;
+}
+.ef-shell .ef-read-title::after {
+  content: "";
+  position: absolute;
+  inset: 4px -6px;
+  background: var(--pf-signal);
+  pointer-events: none;
+  animation: pf-block-reveal var(--pf-t-reveal) both;
 }
 .ef-paper-en {
-  font-size: calc(var(--pf-body-size) + 1px);
-  line-height: 1.6;
+  font-size: var(--pf-doc-h3);
+  line-height: 1.5;
   font-weight: 400;
   color: var(--pf-secondary);
-  margin: 0 0 21px;
+  margin: 0 0 12px;
 }
 .ef-paper-author-line {
-  font-size: 13px;
-  color: var(--pf-muted);
+  font-size: var(--pf-fs-ui);
+  color: var(--pf-secondary);
   line-height: 1.7;
-  margin: 0 0 22px;
+  margin: 0 0 24px;
 }
-.ef-abstract {
-  border-top: 1px solid var(--pf-divider);
-  padding: 21px 0 25px;
+/* 数据铭牌：墨色顶线 + 发丝线分格，标签 tag 档、数值 ui 档加粗。 */
+.ef-plate {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 0 0 36px;
+  border-top: 1px solid var(--pf-ink);
   border-bottom: 1px solid var(--pf-divider);
-  scroll-margin-top: 24px;
 }
+.ef-plate > div {
+  min-width: 0;
+  padding: 10px 14px 12px;
+}
+.ef-plate > div:first-child { padding-left: 0; }
+.ef-plate > div + div { border-left: 1px solid var(--pf-divider); }
+.ef-plate dt {
+  font-size: var(--pf-fs-tag);
+  letter-spacing: var(--pf-tracking-tag);
+  color: var(--pf-muted);
+  line-height: 1.4;
+}
+.ef-plate dd {
+  margin: 4px 0 0;
+  font-size: var(--pf-fs-ui);
+  font-weight: 600;
+  color: var(--pf-ink);
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ef-plate dd b { font-size: var(--pf-fs-title); }
+.ef-plate dd span { color: var(--pf-muted); font-weight: 500; }
+
+/* 区段标题（摘要 / 解析全文 / 阅读笔记）：阅读阶梯 h2，前置黄头墨身标记块，
+   后接引导线（尾端一枚墨色刻度），右侧小字只放真实状态。 */
 .ef-section-label {
   display: flex;
-  align-items: baseline;
-  gap: 10px;
-  margin: 0 0 10px;
-  font-size: 14px;
-  line-height: 1.6;
-  font-weight: 650;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 14px;
+  font-size: var(--pf-doc-h2);
+  line-height: 1.3;
+  font-weight: 700;
+  letter-spacing: -0.01em;
   color: var(--pf-ink);
 }
+.ef-section-label::before {
+  content: "";
+  flex: none;
+  width: 5px;
+  height: 0.9em;
+  background: var(--pf-heading-marker);
+}
 .ef-section-label small {
-  font-family: var(--pf-font-mono);
-  font-size: 10px;
-  letter-spacing: 0.1em;
+  flex: none;
+  font-size: var(--pf-fs-caption);
+  font-weight: 500;
+  letter-spacing: 0;
   color: var(--pf-muted);
-  font-weight: 400;
+}
+.ef-section-rule {
+  position: relative;
+  flex: 1;
+  min-width: 24px;
+  height: 1px;
+  background: var(--pf-divider);
+  transform-origin: left;
+}
+.ef-section-rule::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  top: -3px;
+  width: 1px;
+  height: 7px;
+  background: var(--pf-ink);
+}
+.ef-shell .ef-document .ef-section-rule {
+  animation: pf-grow-x var(--pf-t-draw) var(--pf-t-late) backwards;
+}
+/* 三个区段（摘要 / 解析全文 / 阅读笔记）之间统一 32px 节奏，由前一段的底部留白承担。 */
+.ef-abstract {
+  padding: 0 0 32px;
+  scroll-margin-top: 24px;
 }
 .ef-abstract p {
   font-size: var(--pf-body-size);
@@ -970,78 +1366,104 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   color: var(--pf-body);
   margin: 0;
 }
-.ef-notes-heading {
-  margin-top: 36px;
-  margin-bottom: 2px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 20px;
-}
-.ef-notes-heading h2 {
-  font-size: var(--pf-t3);
-  font-weight: 650;
-  line-height: 1.5;
-  margin: 0;
-  letter-spacing: -0.02em;
-  color: var(--pf-ink);
-}
+.ef-notes-heading { margin-top: 0; }
+.ef-notes-heading .ef-section-label { margin-bottom: 6px; }
 .ef-notes-caption {
-  font-size: var(--pf-meta);
-  margin: 7px 0 0;
+  font-size: var(--pf-fs-caption);
+  margin: 0 0 4px;
   color: var(--pf-muted);
   line-height: 1.6;
 }
 .ef-note {
+  position: relative;
   border-bottom: 1px solid var(--pf-divider);
-  padding: 25px 0 21px;
+  padding: 24px 0 22px;
   scroll-margin-top: 24px;
 }
 .ef-note:last-child { border-bottom: 0; padding-bottom: 0; }
+/* 编辑中的笔记：纸面左缘对齐一枚信号黄标记，长出一次。 */
+.ef-note.is-editing::before {
+  content: "";
+  position: absolute;
+  left: calc(var(--pf-document-pad) * -1);
+  top: 24px;
+  bottom: 22px;
+  width: 4px;
+  background: var(--pf-signal);
+  animation: pf-marker-in var(--pf-t-enter);
+}
 .ef-note-head {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   margin-bottom: 12px;
 }
+/* 笔记序号：墨框方格。已写 → 墨框墨字；未写 → 虚线灰框；编辑中 → 墨底黄字。 */
+.ef-note-number {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  min-width: 30px;
+  height: 22px;
+  padding: 0 4px;
+  border: 1px solid var(--pf-ink);
+  font-family: var(--pf-font-mono);
+  font-size: var(--pf-fs-tag);
+  font-weight: 700;
+  color: var(--pf-ink);
+  line-height: 1;
+  transition: background-color var(--pf-direct), color var(--pf-direct), border-color var(--pf-direct);
+}
+.ef-note.is-empty .ef-note-number {
+  border-style: dashed;
+  border-color: var(--pf-line-strong);
+  color: var(--pf-muted);
+}
+.ef-note.is-editing .ef-note-number {
+  background: var(--pf-ink);
+  border-style: solid;
+  border-color: var(--pf-ink);
+  color: var(--pf-signal);
+}
 .ef-note-head h3 {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  font-size: 17px;
-  font-weight: 650;
+  font-size: var(--pf-doc-h3);
+  line-height: 1.4;
+  font-weight: 700;
   margin: 0;
   color: var(--pf-ink);
 }
-.ef-note-number {
-  font-family: var(--pf-font-mono);
-  font-weight: 400;
-  font-size: 12px;
-  color: var(--pf-muted);
-}
 .ef-note-source {
-  font-size: 12px;
-  color: var(--pf-muted);
   margin-left: auto;
+  padding: 1px 7px;
+  border: 1px solid var(--pf-divider);
+  font-size: var(--pf-fs-tag);
+  font-weight: 500;
+  color: var(--pf-muted);
+  line-height: 1.6;
+  white-space: nowrap;
+}
+.ef-note-source.is-llm {
+  border-color: var(--pf-line-strong);
+  background: var(--pf-hover-quiet);
+  color: var(--pf-secondary);
 }
 .ef-note-edit {
-  margin-left: 6px;
   display: flex;
   align-items: center;
   gap: 5px;
-  min-height: 36px;
+  min-height: 30px;
   background: transparent;
   border: 1px solid transparent;
-  font-size: 13px;
+  font-size: var(--pf-fs-caption);
   color: var(--pf-secondary);
-  padding: 0 6px;
+  padding: 0 8px;
   border-radius: var(--pf-radius);
   transition: background-color var(--pf-motion), border-color var(--pf-motion), color var(--pf-motion), transform var(--pf-t-press);
 }
 .ef-note-edit .ef-ico { width: 14px; height: 14px; }
 .ef-note-edit:hover {
-  background: #f0f2eb;
-  border-color: #cdd1c4;
+  background: var(--pf-hover-flat);
+  border-color: var(--pf-line-strong);
   color: var(--pf-ink);
 }
 /* 按压入纸：press 快车道的 1px 下沉（transform，不改布局）。 */
@@ -1055,7 +1477,8 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 .ef-note-text p { margin: 0 0 12px; }
 .ef-note-text ul, .ef-note-text ol { margin: 0 0 12px; padding-left: 21px; }
 .ef-note-text li + li { margin-top: 5px; }
-.ef-empty-note { color: var(--pf-muted); font-size: 14px; }
+.ef-note-text li::marker { color: var(--pf-muted); }
+.ef-empty-note { margin: 0; color: var(--pf-muted); font-size: var(--pf-fs-ui); }
 .ef-note textarea {
   display: block;
   min-height: 160px;
@@ -1086,122 +1509,161 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   margin-top: 12px;
 }
 .ef-edit-hint {
-  font-size: var(--pf-meta);
+  font-size: var(--pf-fs-caption);
   color: var(--pf-muted);
   margin-right: auto;
   line-height: 1.5;
 }
 .ef-md p { margin: 0 0 12px; }
 .ef-md ul, .ef-md ol { margin: 0 0 12px; padding-left: 1.2rem; }
-.ef-md h1, .ef-md h2, .ef-md h3 { margin: 0 0 8px; line-height: 1.25; }
+.ef-md h1, .ef-md h2, .ef-md h3, .ef-md h4 {
+  margin: 1.2em 0 0.5em;
+  line-height: var(--pf-lh-snug);
+  font-weight: 700;
+  color: var(--pf-ink);
+}
+.ef-md > :first-child { margin-top: 0; }
+/* Markdown 内的标题始终低于所在区段标题（--pf-doc-h2）：h1 用笔记小标题档，其余与正文同号加粗。 */
+.ef-md h1 { font-size: var(--pf-doc-h3); }
+.ef-md h2, .ef-md h3, .ef-md h4 { font-size: var(--pf-body-size); }
 .ef-md code {
   font-family: var(--pf-font-mono);
-  font-size: 0.92em;
+  font-size: 0.88em;
   background: color-mix(in srgb, var(--pf-ink) 6%, transparent);
   padding: 0 4px;
 }
+.ef-md blockquote {
+  margin: 0 0 12px;
+  padding: 2px 0 2px 14px;
+  border-left: var(--pf-marker) solid var(--pf-line-strong);
+  color: var(--pf-secondary);
+}
 
-/* Context rail: a real right-hand column, flush with the window edge. */
+/* ---- Context rail ---- a real right-hand column, flush with the window edge. */
 .ef-context {
   grid-area: context;
   min-width: 0;
   min-height: 0;
   color: var(--pf-secondary);
-  background: #f7f8f4;
+  background: var(--pf-panel);
   border-left: 1px solid var(--pf-divider);
   overflow-y: auto;
   scrollbar-width: thin;
   scrollbar-color: #bcc1b3 transparent;
   padding: 24px 22px 48px;
+  font-size: var(--pf-fs-ui);
 }
 .ef-context-block {
-  border-top: 1px solid #c9cec0;
-  padding: 18px 0 21px;
+  border-top: 1px solid var(--pf-divider);
+  padding: 18px 0 20px;
 }
 .ef-context-block:first-child { border-top: 0; padding-top: 0; }
+/* 资料栏块标题：title 档 + 与正文区段同族的小号标记块。 */
 .ef-context-title {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  margin: 0 0 15px;
-  font-size: 13px;
+  gap: 8px;
+  margin: 0 0 14px;
+  font-size: var(--pf-fs-title);
+  line-height: 1.3;
   color: var(--pf-ink);
-  font-weight: 650;
+  font-weight: 700;
+}
+.ef-context-title::before {
+  content: "";
+  flex: none;
+  width: 4px;
+  height: 14px;
+  background: var(--pf-heading-marker);
 }
 .ef-status-select {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 8px;
 }
 .ef-status-select .ef-ico { width: 16px; height: 16px; color: var(--pf-ink); }
 .ef-status-select select,
 .ef-os-select select {
   border: 1px solid var(--pf-control-border);
   border-radius: var(--pf-radius);
-  background: transparent;
-  min-height: 38px;
+  background: var(--pf-surface);
+  min-height: 36px;
   padding: 0 10px;
   color: var(--pf-ink);
-  font-size: 13px;
+  font-size: var(--pf-fs-ui);
   flex: 1;
   cursor: pointer;
+  transition: border-color var(--pf-motion);
 }
+.ef-status-select select:hover,
+.ef-os-select select:hover { border-color: var(--pf-ink); }
 .ef-read-date {
-  font-size: var(--pf-meta);
+  font-size: var(--pf-fs-caption);
   color: var(--pf-muted);
-  margin: 10px 0 0;
+  margin: 8px 0 0;
 }
 .ef-resource-link {
   display: flex;
   align-items: center;
   gap: 10px;
-  min-height: 40px;
-  padding: 5px 0;
+  min-height: 36px;
+  padding: 4px 0;
   text-decoration: none;
-  font-size: 13px;
+  font-size: var(--pf-fs-ui);
   color: var(--pf-secondary);
+  transition: color var(--pf-motion);
 }
+.ef-resource-link .ef-ico { width: 16px; height: 16px; }
 .ef-resource-link .ef-ico:last-child {
   margin-left: auto;
   width: 13px;
   height: 13px;
+  transition: transform var(--pf-direct);
 }
 .ef-resource-link:hover {
   color: var(--pf-ink);
   text-decoration: underline;
   text-underline-offset: 3px;
 }
+.ef-resource-link:hover .ef-ico:last-child { transform: translate(2px, -2px); }
 .ef-missing {
   display: flex;
   align-items: center;
-  min-height: 36px;
-  font-size: 13px;
+  min-height: 32px;
+  margin: 0;
+  font-size: var(--pf-fs-ui);
   color: var(--pf-muted);
 }
+.ef-missing.is-error { color: var(--pf-danger); min-height: 0; margin: 6px 0; line-height: var(--pf-lh-ui); }
 .ef-identifier {
-  font-size: var(--pf-meta);
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
   line-height: 1.65;
   overflow-wrap: anywhere;
-  margin-top: 12px;
+  margin-top: 10px;
 }
 .ef-identifier .mono {
-  display: block;
-  color: var(--pf-secondary);
-  font-size: 11px;
-  margin-top: 2px;
+  color: var(--pf-ink);
+  font-size: var(--pf-fs-caption);
+  font-weight: 600;
 }
-.ef-metadata-details { margin-top: 9px; }
+.ef-metadata-details { margin-top: 8px; }
 .ef-metadata-details summary {
   min-height: 34px;
   display: flex;
   align-items: center;
   gap: 6px;
   cursor: pointer;
-  font-size: var(--pf-meta);
+  font-size: var(--pf-fs-ui);
   color: var(--pf-secondary);
   list-style: none;
-  transition: transform var(--pf-t-press);
+  transition: transform var(--pf-t-press), color var(--pf-motion);
 }
+.ef-metadata-details summary:hover { color: var(--pf-ink); }
 /* 按压下沉挂在 summary 行上：图标自身的 90° 旋转（--pf-direct）不受组合干扰。 */
 .ef-metadata-details summary:active { transform: translateY(var(--pf-nudge)); }
 .ef-metadata-details summary .ef-ico {
@@ -1212,89 +1674,151 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 .ef-metadata-details[open] summary .ef-ico { transform: rotate(90deg); }
 .ef-metadata-details summary::-webkit-details-marker { display: none; }
 .ef-author-details {
-  padding: 8px 0 0;
-  font-size: var(--pf-meta);
+  padding: 8px 0 0 18px;
+  font-size: var(--pf-fs-caption);
   line-height: 1.75;
+  animation: pf-fade var(--pf-motion);
 }
-.ef-author-details p { margin: 0 0 12px; }
+.ef-author-details p { margin: 0 0 10px; }
+.ef-author-details strong { color: var(--pf-ink); font-weight: 600; }
 .ef-os-select {
   display: flex;
   flex-direction: column;
   gap: 6px;
   margin-top: 12px;
-  font-size: 12px;
+  font-size: var(--pf-fs-caption);
   color: var(--pf-muted);
 }
 .ef-toc { display: flex; flex-direction: column; gap: 1px; }
 .ef-toc a {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 11px;
-  min-height: 35px;
-  padding: 0 11px;
-  border-left: 2px solid transparent;
+  gap: 10px;
+  min-height: 34px;
+  padding: 0 10px;
   text-decoration: none;
-  font-size: 13px;
+  font-size: var(--pf-fs-ui);
   color: var(--pf-secondary);
-  transition: background-color var(--pf-motion), color var(--pf-motion), border-color var(--pf-motion);
+  transition: background-color var(--pf-motion), color var(--pf-motion);
 }
-.ef-toc a .mono { font-size: 11px; color: var(--pf-muted); }
+.ef-toc a::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  background: var(--pf-ink);
+  transform: scaleY(0);
+  transition: transform var(--pf-direct);
+}
+.ef-toc a .mono { width: 18px; font-size: var(--pf-fs-tag); color: var(--pf-muted); }
 .ef-toc a:hover { background: var(--pf-hover-quiet); color: var(--pf-ink); }
 .ef-toc a.is-active {
-  border-left-color: var(--pf-ink);
   color: var(--pf-ink);
   background: #e7eadf;
   font-weight: 600;
 }
+.ef-toc a.is-active::before { transform: none; }
 .ef-toc a.is-active .mono { color: var(--pf-ink); }
+/* AI 助手：资料栏唯一的墨色操作面板，与浅色资料块形成明确分区。 */
 .ef-ai-context {
-  background: #eaeee4;
-  padding: 15px;
+  position: relative;
+  background: var(--pf-ink);
+  color: var(--pf-on-dark-2);
+  padding: 18px 16px 16px;
   margin-top: 4px;
-  border: 1px solid #d2d8c8;
 }
-.ef-ai-context .ef-context-title { margin-bottom: 8px; }
+.ef-ai-context::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 10px;
+  height: 10px;
+  background: linear-gradient(225deg, var(--pf-signal) 0 7px, transparent 7px);
+}
+.ef-ai-context .ef-context-title { margin-bottom: 8px; color: var(--pf-on-dark); }
+.ef-ai-context .ef-context-title::before { display: none; }
+.ef-ai-context .ef-context-title .ef-ico { width: 16px; height: 16px; color: var(--pf-signal); }
 .ef-ai-context p {
-  margin: 0 0 13px;
-  color: var(--pf-secondary);
-  font-size: var(--pf-meta);
+  margin: 0 0 14px;
+  color: var(--pf-on-dark-2);
+  font-size: var(--pf-fs-caption);
   line-height: 1.8;
 }
-.ef-ai-buttons { display: grid; grid-template-columns: 1fr; gap: 7px; }
-.ef-ai-buttons .ef-btn {
+.ef-ai-buttons { display: grid; grid-template-columns: 1fr; gap: 6px; }
+.ef-ai-context .ef-btn {
   justify-content: flex-start;
-  min-height: 36px;
-  padding: 0 10px;
-  font-size: 12px;
+  background: transparent;
+  color: var(--pf-on-dark);
+  border-color: #5c5f57;
+}
+.ef-ai-context .ef-btn::after { background: var(--pf-notch-signal); }
+.ef-ai-context .ef-btn .ef-ico { width: 16px; height: 16px; color: var(--pf-signal); }
+.ef-ai-context .ef-btn:hover:not(:disabled) { background: var(--pf-ink-3); border-color: var(--pf-on-dark); }
+.ef-ai-context .ef-btn:disabled {
+  color: var(--pf-on-dark-3);
+  border-color: var(--pf-ink-3);
+  background: transparent;
+}
+.ef-ai-context .ef-btn:disabled .ef-ico { color: var(--pf-on-dark-3); }
+.ef-ai-context .ef-btn-link { color: var(--pf-on-dark-2); margin-top: 8px; }
+.ef-ai-context .ef-btn-link:hover:not(:disabled) { color: var(--pf-on-dark); background: transparent; }
+.ef-ai-context .ef-job-row {
+  margin-top: 8px;
+  background: var(--pf-ink-2);
+  border-color: var(--pf-ink-3);
+  border-left-color: var(--pf-signal);
+  color: var(--pf-on-dark-2);
 }
 
-/* System */
+/* ---- System ---- */
 .ef-system {
   height: 100%;
   overflow: auto;
-  padding: 32px clamp(32px, 3vw, 64px) 72px;
+  padding: 40px clamp(32px, 3vw, 64px) 72px;
+  background-image: var(--pf-dot-grid);
+  background-size: 24px 24px;
+  background-attachment: local;
+  scrollbar-width: thin;
+  scrollbar-color: #b1b5a9 transparent;
 }
 .ef-system-inner { max-width: 1100px; }
-.ef-system-head { margin: 0 0 22px; }
+.ef-system-head { margin: 0 0 28px; max-width: 1040px; }
 .ef-system h1 {
-  font-size: var(--pf-t2);
-  line-height: 1.3;
-  margin: 0 0 8px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-size: var(--pf-fs-h1);
+  line-height: var(--pf-lh-tight);
+  letter-spacing: -0.02em;
+  margin: 0 0 10px;
   font-weight: 700;
+}
+.ef-system h1::before {
+  content: "";
+  flex: none;
+  width: 6px;
+  height: 0.9em;
+  background: var(--pf-heading-marker);
 }
 .ef-system .lede {
   margin: 0;
+  padding-left: 20px;
   color: var(--pf-secondary);
-  font-size: 15px;
+  font-size: var(--pf-fs-ui);
   line-height: 1.7;
   max-width: 760px;
 }
 .ef-system-blocks {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 18px;
+  gap: 20px;
   align-items: start;
   max-width: 1040px;
+  counter-reset: pf-block;
 }
 .ef-llm-grid {
   display: grid;
@@ -1304,8 +1828,50 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 @media (max-width: 860px) {
   .ef-llm-grid { grid-template-columns: 1fr; }
 }
-.ef-block-head { margin: 0 0 14px; }
-.ef-block-head h3 { margin: 0 0 6px; font-size: var(--pf-t3); font-weight: 650; }
+/* 设置区块：墨色顶线 + 左端信号黄短梁；标题前是等宽序号（真实顺序）。 */
+.page-block {
+  position: relative;
+  background: var(--pf-surface);
+  border: 1px solid var(--pf-divider);
+  border-top: 2px solid var(--pf-ink);
+  padding: 22px 24px 24px;
+  min-width: 0;
+  counter-increment: pf-block;
+}
+.page-block::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: -2px;
+  width: 48px;
+  height: 2px;
+  background: var(--pf-signal);
+}
+.ef-block-head {
+  margin: 0 0 18px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--pf-divider);
+}
+.page-block h3,
+.ef-block-head h3 {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 0 0 6px;
+  font-size: var(--pf-fs-h2);
+  line-height: 1.3;
+  font-weight: 700;
+  color: var(--pf-ink);
+}
+.ef-block-head h3::before {
+  content: counter(pf-block, decimal-leading-zero);
+  font-family: var(--pf-font-mono);
+  font-size: var(--pf-fs-caption);
+  font-weight: 600;
+  color: var(--pf-muted);
+}
+.ef-block-head p,
+.page-block p { margin: 0 0 14px; color: var(--pf-secondary); font-size: var(--pf-fs-ui); line-height: 1.7; }
 .ef-block-head p { margin: 0; }
 .ef-kbd-list {
   list-style: none;
@@ -1313,31 +1879,41 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   padding: 0;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 9px 32px;
-  font-size: 13px;
+  gap: 0 32px;
+  font-size: var(--pf-fs-ui);
   color: var(--pf-secondary);
 }
 @media (max-width: 560px) {
   .ef-kbd-list { grid-template-columns: 1fr; }
 }
-.ef-kbd-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.ef-kbd-note { margin: 12px 0 0; font-size: var(--pf-meta); color: var(--pf-muted); }
-.page-block {
-  background: var(--pf-surface);
-  border: 1px solid var(--pf-divider);
-  padding: 22px 24px;
-  min-width: 0;
+.ef-kbd-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 40px;
+  border-bottom: 1px dashed var(--pf-divider);
 }
-.page-block h3 {
-  margin: 0 0 10px;
-  font-size: var(--pf-t3);
-  font-weight: 650;
+.ef-kbd-list li > span:last-child { display: inline-flex; gap: 4px; }
+.page-block .ef-kbd-note { margin: 14px 0 0; font-size: var(--pf-fs-caption); color: var(--pf-muted); }
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  min-width: 24px;
+  height: 22px;
+  justify-content: center;
+  font-family: var(--pf-font-mono);
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-ink);
+  background: var(--pf-panel);
+  border: 1px solid var(--pf-line-strong);
+  border-bottom-width: 2px;
+  padding: 0 6px;
 }
-.page-block p { margin: 0 0 14px; color: var(--pf-secondary); line-height: 1.7; }
 
 .ef-chip {
-  font-size: 11px;
-  padding: 4px 8px;
+  font-size: var(--pf-fs-tag);
+  padding: 3px 8px;
   border: 1px solid var(--pf-divider);
   color: var(--pf-muted);
 }
@@ -1353,10 +1929,10 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   align-items: center;
   gap: 10px;
   border: 1px solid var(--pf-divider);
-  background: var(--pf-surface);
-  padding: 9px 14px;
-  margin: 0 0 12px;
-  font-size: 13px;
+  background: var(--pf-panel);
+  padding: 8px 8px 8px 14px;
+  margin: 0 0 14px;
+  font-size: var(--pf-fs-ui);
   color: var(--pf-secondary);
 }
 .ef-statusbar-dot {
@@ -1366,11 +1942,15 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   background: var(--pf-muted);
   transition: background-color var(--pf-motion);
 }
+.ef-statusbar.is-ok { border-left: var(--pf-marker) solid var(--pf-success); }
+.ef-statusbar.is-error { border-left: var(--pf-marker) solid var(--pf-danger); }
 .ef-statusbar.is-ok .ef-statusbar-dot { background: var(--pf-success); }
 .ef-statusbar.is-error .ef-statusbar-dot { background: var(--pf-danger); }
 /* 探测中：呼吸点（loop 令牌与 breathe 写法归控件层，本区只引用）。 */
 .ef-statusbar.is-busy .ef-statusbar-dot {
-  background: var(--pf-control-border);
+  background: var(--pf-signal);
+  outline: 1px solid var(--pf-ink);
+  outline-offset: -1px;
   animation: breathe var(--pf-t-loop) infinite;
 }
 .ef-statusbar-text { min-width: 0; }
@@ -1382,33 +1962,34 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  margin: 0 0 12px;
+  margin: 0 0 14px;
 }
-.ef-order-label { font-size: 12px; font-weight: 600; color: var(--pf-ink); margin-right: 4px; }
+.ef-order-label { font-size: var(--pf-fs-caption); font-weight: 600; color: var(--pf-ink); margin-right: 4px; }
 .ef-order-flow { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px; counter-reset: pf-order; }
 .ef-order-item { display: inline-flex; align-items: center; gap: 6px; }
 .ef-order-item::before {
   counter-increment: pf-order;
   content: counter(pf-order);
   font-family: var(--pf-font-mono);
-  font-size: 11px;
+  font-size: var(--pf-fs-tag);
   color: var(--pf-muted);
 }
-.ef-order-sep { color: var(--pf-muted); font-size: 11px; }
+.ef-order-sep { color: var(--pf-muted); font-size: var(--pf-fs-tag); }
 .ef-order-chip {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   border: 1px solid var(--pf-divider);
-  background: #fff;
+  background: var(--pf-surface);
   padding: 3px 4px 3px 8px;
-  font-size: var(--pf-meta);
+  font-size: var(--pf-fs-caption);
   color: var(--pf-secondary);
 }
 .ef-order-chip.is-effective {
   /* 当前生效来源：小面积信号黄描边（仅选中提示，遵守设计契约） */
   outline: 2px solid var(--pf-signal);
   outline-offset: -2px;
+  border-color: var(--pf-ink);
   color: var(--pf-ink);
   font-weight: 600;
 }
@@ -1416,9 +1997,9 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   width: 22px;
   height: 22px;
   border: 1px solid var(--pf-divider);
-  background: var(--pf-canvas, #f2f2f0);
+  background: var(--pf-canvas);
   color: var(--pf-secondary);
-  font-size: 11px;
+  font-size: var(--pf-fs-tag);
   line-height: 1;
   cursor: pointer;
   /* 按压微位移走 press 档；边框/颜色 hover 走 direct 档。 */
@@ -1439,13 +2020,14 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   /* 信号条 ::before 的定位锚；卡片本体保持平面（1px 边框 + 明度差，不悬停浮起）。 */
   position: relative;
   border: 1px solid var(--pf-divider);
-  background: #fff;
-  padding: 14px 16px 12px;
+  background: var(--pf-surface);
+  padding: 14px 18px 12px;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  transition: border-color var(--pf-direct), box-shadow var(--pf-direct);
+  transition: border-color var(--pf-direct), background-color var(--pf-direct);
 }
+.ef-provider-card:hover { border-color: var(--pf-line-strong); }
 .ef-provider-card header {
   display: flex;
   align-items: center;
@@ -1472,30 +2054,33 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   .ef-field-grid,
   .ef-ssh-card .ef-field-grid { grid-template-columns: 1fr; }
 }
-.ef-provider-card .ef-provider-name { font-size: 15px; font-weight: 650; color: var(--pf-ink); }
+.ef-provider-card .ef-provider-name { font-size: var(--pf-fs-title); font-weight: 600; color: var(--pf-ink); }
 .ef-provider-toggle {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  font-size: 15px;
+  font-size: var(--pf-fs-title);
   color: var(--pf-ink);
   cursor: pointer;
 }
-.ef-provider-toggle input { width: 15px; height: 15px; accent-color: var(--pf-ink); }
-.ef-provider-toggle strong { font-weight: 650; }
+.ef-provider-toggle input { width: 15px; height: 15px; margin: 0; accent-color: var(--pf-ink); }
+.ef-provider-toggle strong { font-weight: 600; }
 .ef-provider-desc {
-  font-size: var(--pf-meta);
+  font-size: var(--pf-fs-caption);
   color: var(--pf-muted);
-  line-height: 1.6;
+  line-height: 1.7;
   margin: 0 0 12px;
 }
+.page-block .ef-provider-desc { color: var(--pf-muted); font-size: var(--pf-fs-caption); margin: 0 0 12px; }
 .ef-active-badge {
-  font-size: 11px;
+  font-size: var(--pf-fs-tag);
+  font-weight: 600;
   background: var(--pf-ink);
-  color: var(--pf-surface);
+  color: var(--pf-signal);
   border: 1px solid var(--pf-ink);
-  padding: 2px 6px;
+  padding: 2px 7px;
   white-space: nowrap;
+  animation: pf-pop var(--pf-motion);
 }
 .ef-provider-card .ef-field { margin-bottom: 12px; }
 .ef-provider-card .ef-import-actions { margin: 4px 0 8px; }
@@ -1509,10 +2094,10 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 .ef-provider-card.is-active::before {
   content: "";
   position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: var(--pf-marker);
+  left: -1px;
+  top: -1px;
+  bottom: -1px;
+  width: 4px;
   background: var(--pf-signal);
   animation: pf-marker-in var(--pf-t-enter);
 }
@@ -1523,14 +2108,14 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   flex-wrap: wrap;
   gap: 10px 20px;
   align-items: flex-start;
-  border: 1px solid var(--pf-divider);
-  background: var(--pf-canvas);
+  border: 1px dashed var(--pf-line-strong);
+  background: var(--pf-panel);
   padding: 12px 14px;
   margin: 0 0 14px;
 }
 .ef-params-label {
   flex: 0 0 100%;
-  font-size: 12px;
+  font-size: var(--pf-fs-caption);
   font-weight: 600;
   color: var(--pf-ink);
 }
@@ -1541,62 +2126,97 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   gap: 14px;
   flex-wrap: wrap;
   border-top: 1px solid var(--pf-divider);
-  padding-top: 14px;
+  padding-top: 16px;
 }
 /* aria-live 结果文本：仅淡入（mount 时一次），不改文本时序。 */
-.ef-foot-msg { font-size: 13px; margin: 0; animation: pf-fade var(--pf-motion); }
+.ef-foot-msg { font-size: var(--pf-fs-ui); margin: 0; animation: pf-fade var(--pf-motion); }
+.ef-foot-msg.is-ok { color: var(--pf-success); }
+.ef-foot-msg.is-error { color: var(--pf-danger); }
+.page-block p.ef-foot-msg { margin: 12px 0 0; }
+.page-block p.ef-foot-msg.is-ok { color: var(--pf-success); }
+.page-block p.ef-foot-msg.is-error { color: var(--pf-danger); }
 .ef-probe-line {
-  font-size: var(--pf-meta);
+  font-size: var(--pf-fs-caption);
   margin: 6px 0 0;
   color: var(--pf-muted);
   line-height: 1.6;
   overflow-wrap: anywhere;
 }
+.page-block .ef-probe-line { font-size: var(--pf-fs-caption); margin: 6px 0 0; color: var(--pf-muted); line-height: 1.6; }
 /* ok↔error 切换同名动画不重放，探测轮询期间不闪烁。 */
+.page-block .ef-probe-line.is-ok,
 .ef-probe-line.is-ok { color: var(--pf-success); animation: pf-fade var(--pf-motion); }
+.page-block .ef-probe-line.is-error,
 .ef-probe-line.is-error { color: var(--pf-danger); animation: pf-fade var(--pf-motion); }
+.page-block .ef-probe-summary { margin: -4px 0 12px; }
 .ef-probe-ms {
-  font-family: SFMono-Regular, Consolas, monospace;
-  font-size: 11px;
+  font-family: var(--pf-font-mono);
+  font-size: var(--pf-fs-tag);
   color: var(--pf-muted);
-  margin-left: 4px;
+  margin-left: 6px;
 }
 .ef-manual-paper {
   border: 1px solid var(--pf-divider);
+  border-left: var(--pf-marker) solid var(--pf-ink);
   padding: 14px 16px 4px;
   margin: 4px 0 12px;
-  background: #fff;
+  background: var(--pf-surface);
 }
 
-/* Status */
+/* ---- Status strip ----
+   底栏与顶栏同为墨色，把工作台上下框住；条目以竖向发丝线分隔。 */
 .ef-status {
   grid-area: status;
-  background: #e8ebe1;
-  border-top: 1px solid #cfd4c7;
+  background: var(--pf-ink);
+  border-top: 1px solid #34362f;
   display: flex;
   align-items: center;
-  gap: 14px;
-  padding: 0 18px;
-  color: #555b4e;
-  font-size: 12px;
+  gap: 0;
+  padding: 0 18px 0 0;
+  color: var(--pf-on-dark-2);
+  font-size: var(--pf-fs-caption);
+  white-space: nowrap;
   overflow: hidden;
 }
-.ef-status b { color: var(--pf-ink); font-weight: 600; }
-.ef-status .ok { color: var(--pf-success); }
-.ef-status .busy { color: var(--pf-ink); }
-.ef-status .right { margin-left: auto; }
+.ef-status > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 14px;
+  height: 14px;
+}
+.ef-status > span:first-child {
+  height: 100%;
+  padding-left: 18px;
+  box-shadow: inset var(--pf-marker) 0 0 var(--pf-signal);
+}
+.ef-status > span + span { border-left: 1px solid var(--pf-ink-3); }
+.ef-status b { color: var(--pf-on-dark); font-weight: 600; font-family: var(--pf-font-mono); }
+.ef-status .ok { color: var(--pf-tint-success); }
+.ef-status .ok b { color: var(--pf-tint-success); }
+.ef-status .busy { color: var(--pf-signal); }
+.ef-status .busy .ef-pulse { outline-color: var(--pf-signal); }
+.ef-status .right { margin-left: auto; border-left: 0; padding-right: 0; }
+.ef-status .right .mono {
+  color: var(--pf-on-dark);
+  border: 1px solid var(--pf-ink-3);
+  padding: 0 4px;
+  margin-right: 2px;
+}
 
-/* Dialog */
+/* ---- Dialog ---- */
 .ef-backdrop {
   position: fixed;
   inset: 0;
   z-index: 30;
-  background: rgba(25, 25, 25, 0.32);
+  background: rgba(25, 25, 25, 0.38);
   display: grid;
   place-items: center;
   padding: 24px;
   animation: pf-fade var(--pf-t-enter);
 }
+/* 对话框展开：自上而下硬边展开（clip-path，fill 只 backwards，结束后投影不受裁剪），
+   标题栏的信号黄短梁随后从左长出。 */
 .ef-dialog {
   width: min(500px, 100%);
   max-height: min(85vh, 760px);
@@ -1606,49 +2226,86 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   border: 1px solid var(--pf-ink);
   /* Dialogs sit at the top of the elevation ladder: elev-2, 1px ink edge kept. */
   box-shadow: var(--pf-elev-2);
-  animation: pf-rise var(--pf-t-enter);
+  animation: pf-unfold var(--pf-t-unfold) backwards;
 }
 .ef-dialog.is-wide { width: min(640px, 100%); }
 .ef-dialog-head {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 20px 24px 17px;
+  gap: 12px;
+  padding: 18px 16px 16px 24px;
   border-bottom: 1px solid var(--pf-divider);
-  border-top: 3px solid var(--pf-ink);
+  border-top: 4px solid var(--pf-ink);
+}
+.ef-dialog-head::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: -4px;
+  width: 64px;
+  height: 4px;
+  background: var(--pf-signal);
+  transform-origin: left;
+  animation: pf-grow-x var(--pf-t-draw) var(--pf-t-late) backwards;
 }
 .ef-dialog.is-danger .ef-dialog-head { border-top-color: var(--pf-danger); }
-.ef-dialog-head h2 { font-size: var(--pf-t3); margin: 0; font-weight: 650; }
-.ef-dialog-body { padding: 20px 24px; }
+.ef-dialog.is-danger .ef-dialog-head::before { background: var(--pf-ink); }
+.ef-dialog-head h2 {
+  font-size: var(--pf-fs-h2);
+  line-height: 1.3;
+  margin: 0;
+  font-weight: 700;
+}
+.ef-dialog-body { padding: 20px 24px; font-size: var(--pf-fs-ui); }
 .ef-dialog-body p {
   margin: 0 0 12px;
   color: var(--pf-secondary);
   line-height: 1.7;
-  font-size: 14px;
+  font-size: var(--pf-fs-ui);
+}
+.ef-dialog-body p.ef-error { color: var(--pf-danger); }
+.ef-dialog-section {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 12px;
+  font-size: var(--pf-fs-title);
+  font-weight: 700;
+  color: var(--pf-ink);
+}
+.ef-dialog-section::before {
+  content: "";
+  width: 4px;
+  height: 14px;
+  background: var(--pf-heading-marker);
 }
 /* Import-progress sweep bar: decorative 3px track, always alongside the
    aria-live text status, never replacing it. */
 .ef-dialog-body .pf-sweep { margin: 6px 0 8px; }
 .ef-import-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin: 4px 0 12px;
 }
+.ef-import-actions.is-inline { margin: 0; }
 .ef-import-list {
   list-style: none;
   margin: 0;
   padding: 0;
   max-height: 220px;
   overflow: auto;
-  border: 1px solid var(--pf-rule, #ddd);
+  border: 1px solid var(--pf-divider);
 }
 .ef-import-list li {
   display: flex;
   justify-content: space-between;
   gap: 12px;
   padding: 8px 10px;
-  border-bottom: 1px solid var(--pf-rule, #eee);
-  font-size: 13px;
+  border-bottom: 1px solid var(--pf-divider);
+  font-size: var(--pf-fs-caption);
 }
 .ef-import-list li:last-child { border-bottom: 0; }
 .ef-import-list em { color: var(--pf-secondary); font-style: normal; }
@@ -1657,7 +2314,8 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   gap: 10px;
   justify-content: flex-end;
   border-top: 1px solid var(--pf-divider);
-  padding: 16px 24px;
+  background: var(--pf-panel);
+  padding: 14px 24px;
 }
 .ef-dialog.context-drawer {
   width: min(420px, 100%);
@@ -1678,26 +2336,33 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 .ef-field {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   margin-bottom: 16px;
 }
-.ef-field span {
-  font-size: 13px;
+.ef-field > span {
+  font-size: var(--pf-fs-caption);
   font-weight: 600;
   color: var(--pf-ink);
+  letter-spacing: 0.02em;
 }
 .ef-field input,
 .ef-field textarea,
 .ef-field select {
-  background: #fff;
+  background: var(--pf-surface);
   border: 1px solid var(--pf-control-border);
   color: var(--pf-ink);
-  min-height: 42px;
-  padding: 9px 11px;
+  min-height: var(--pf-control-height);
+  padding: 8px 11px;
   border-radius: var(--pf-radius);
   width: 100%;
+  font-size: var(--pf-fs-ui);
   transition: border-color var(--pf-motion), box-shadow var(--pf-motion);
 }
+.ef-field input:hover,
+.ef-field textarea:hover,
+.ef-field select:hover { border-color: var(--pf-ink); }
+.ef-field input::placeholder,
+.ef-field textarea::placeholder { color: #9a9d94; }
 /* Writing-surface focus: double ink edge (1px border + 1px flush ring) plus
    a soft signal halo outside it — typing surfaces stay legible while the
    active field is unmistakable. (.ef-note textarea belongs to the reading
@@ -1711,49 +2376,66 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
     0 0 0 1px var(--pf-ink),
     0 0 0 4px color-mix(in srgb, var(--pf-signal) 32%, transparent);
 }
-.ef-field textarea { min-height: 96px; resize: vertical; }
+.ef-field [aria-invalid="true"] { border-color: var(--pf-danger); }
+.ef-field textarea { min-height: 96px; resize: vertical; line-height: var(--pf-lh-ui); }
 .ef-domain-option {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   width: 100%;
   min-height: 64px;
-  background: white;
+  background: var(--pf-surface);
   border: 1px solid var(--pf-divider);
-  padding: 12px;
+  padding: 12px 14px 12px 16px;
   margin: 8px 0;
   cursor: pointer;
   text-align: left;
   position: relative;
-  transition: background var(--pf-motion), border-color var(--pf-motion), box-shadow var(--pf-motion);
+  transition: background-color var(--pf-motion), border-color var(--pf-motion), transform var(--pf-t-press);
 }
-.ef-domain-option strong { font-size: 15px; display: block; }
-.ef-domain-option .mono { font-size: 12px; color: var(--pf-muted); }
+.ef-domain-option strong { font-size: var(--pf-fs-title); font-weight: 600; display: block; color: var(--pf-ink); }
+.ef-domain-option-sum {
+  display: block;
+  margin-top: 4px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
+  line-height: 1.6;
+}
+.ef-domain-option .mono {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
+}
+.ef-domain-option .mono .ef-ico { width: 14px; height: 14px; transition: transform var(--pf-direct); }
 .ef-domain-option:hover { border-color: var(--pf-ink); background: var(--pf-hover-flat); }
+.ef-domain-option:hover .mono .ef-ico { transform: translateX(3px); }
+.ef-domain-option:active { transform: translateY(var(--pf-nudge)); }
 /* Current option: the 3px signal bar lives on a ::before so pf-marker-in can
-   grow it once from the top; the box-shadow transition smooths the focus ring
-   and border emphasis. */
-.ef-domain-option.is-current { border-color: var(--pf-ink); }
+   grow it once from the top; the corner notch marks it as the active field. */
+.ef-domain-option.is-current {
+  border-color: var(--pf-ink);
+  background: var(--pf-notch) no-repeat top right, var(--pf-surface);
+  background-size: 9px 9px, auto;
+}
+.ef-domain-option.is-current .mono { color: var(--pf-ink); font-weight: 600; }
 .ef-domain-option.is-current::before {
   content: "";
   position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: var(--pf-marker);
+  left: -1px;
+  top: -1px;
+  bottom: -1px;
+  width: 4px;
   background: var(--pf-signal);
   animation: pf-marker-in var(--pf-t-enter);
 }
-.ef-btn-danger-solid {
-  background: var(--pf-danger) !important;
-  color: white !important;
-  border-color: var(--pf-danger) !important;
-  box-shadow: none !important;
-}
 .ef-crew { display: flex; flex-direction: column; gap: 10px; }
 .ef-crew article { border-top: 1px solid var(--pf-divider); padding-top: 8px; }
-.ef-crew strong { display: block; font-size: 13px; }
-.ef-crew small { display: block; color: var(--pf-muted); font-size: 12px; margin-top: 2px; }
+.ef-crew strong { display: block; font-size: var(--pf-fs-ui); }
+.ef-crew small { display: block; color: var(--pf-muted); font-size: var(--pf-fs-caption); margin-top: 2px; }
 .ef-crew-edit {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1761,17 +2443,11 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   margin-bottom: 10px;
 }
 .job-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.kbd {
-  font-family: var(--pf-font-mono);
-  font-size: 12px;
-  border: 1px solid var(--pf-divider);
-  padding: 2px 6px;
-}
 
 /* 通知弹窗：右上角悬浮堆叠（多条各自独立计时、悬停/聚焦暂停），叠加在对话框
    backdrop（z 30）、dock（z 30）与 skip-link（z 100）之上，层叠值收口在
-   --pf-z-toast；墨底白字，左缘色条区分 tone，入场右向滑入（pf-slide），
-   可手动关闭。 */
+   --pf-z-toast；墨底白字，左缘色条区分 tone，入场自右硬边刷入，
+   底部倒计时条与自动消退同步，可手动关闭。 */
 .ef-toast-stack {
   position: fixed;
   z-index: var(--pf-z-toast);
@@ -1783,38 +2459,55 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   max-width: min(400px, calc(100vw - 32px));
 }
 .ef-toast {
+  --tone: var(--pf-signal);
+  position: relative;
+  overflow: hidden;
   background: var(--pf-ink);
-  color: #fff;
-  padding: 12px 14px;
-  font-size: 13px;
-  line-height: 1.5;
-  border-left: 4px solid var(--pf-signal);
+  color: var(--pf-on-dark);
+  padding: 12px 12px 14px 14px;
+  font-size: var(--pf-fs-ui);
+  line-height: 1.55;
+  border-left: 4px solid var(--tone);
   border-radius: var(--pf-radius);
   box-shadow: var(--pf-elev-2);
   display: flex;
   align-items: flex-start;
   gap: 12px;
-  animation: pf-slide var(--pf-t-enter);
+  animation: pf-toast-in var(--pf-t-unfold) backwards;
 }
-.ef-toast.error { border-color: var(--pf-danger); }
-.ef-toast.ok { border-color: var(--pf-success); }
+.ef-toast.error { --tone: var(--pf-tint-danger); border-color: var(--pf-danger); }
+.ef-toast.ok { --tone: var(--pf-tint-success); border-color: var(--pf-success); }
 .ef-toast-close {
   flex: none;
   width: 22px;
   height: 22px;
+  margin-left: auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   background: transparent;
-  color: #fff;
+  color: var(--pf-on-dark);
   border: 0;
   padding: 0;
   cursor: pointer;
-  font-size: 16px;
+  font-size: var(--pf-fs-title);
   line-height: 1;
   opacity: 0.65;
+  transition: opacity var(--pf-motion), transform var(--pf-direct);
 }
-.ef-toast-close:hover { opacity: 1; }
+.ef-toast-close:hover { opacity: 1; transform: rotate(90deg); }
+.ef-toast-life {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--tone);
+  transform-origin: left;
+  animation: pf-life var(--pf-toast-life, 4200ms) linear forwards;
+}
+.ef-toast:hover .ef-toast-life,
+.ef-toast:focus-within .ef-toast-life { animation-play-state: paused; }
 
 /* ---- 运行日志面板（设置页）：只读列表 + 级别过滤 ----
    级别色全复用既有变量：error → danger、info/debug → muted、warn 行左缘
@@ -1827,28 +2520,33 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   flex-wrap: wrap;
   margin-bottom: 10px;
 }
-.ef-log-chips { display: flex; gap: 6px; }
+.ef-log-chips { display: flex; gap: 0; }
 .ef-log-chip {
   border: 1px solid var(--pf-control-border);
   background: var(--pf-surface);
   color: var(--pf-secondary);
-  font-size: var(--pf-label-size);
-  padding: 3px 10px;
+  font-size: var(--pf-fs-caption);
+  min-height: 28px;
+  padding: 0 12px;
   cursor: pointer;
+  transition: background-color var(--pf-motion), color var(--pf-motion);
 }
+.ef-log-chip + .ef-log-chip { margin-left: -1px; }
+.ef-log-chip:hover { background: var(--pf-hover-flat); color: var(--pf-ink); }
 .ef-log-chip.is-on {
+  position: relative;
   background: var(--pf-ink);
   border-color: var(--pf-ink);
-  color: #fff;
+  color: var(--pf-on-dark);
 }
 .ef-log-actions { display: inline-flex; gap: 8px; }
 .ef-log-list {
   max-height: 260px;
   overflow: auto;
   border: 1px solid var(--pf-divider);
-  background: var(--pf-surface);
+  background: var(--pf-panel);
   font-family: var(--pf-font-mono);
-  font-size: 12px;
+  font-size: var(--pf-fs-caption);
   line-height: 1.7;
 }
 .ef-log-row {
@@ -1856,11 +2554,14 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   gap: 10px;
   padding: 4px 10px;
   border-bottom: 1px solid var(--pf-divider);
+  border-left: 2px solid transparent;
 }
+.ef-log-row:hover { background: var(--pf-surface); }
 .ef-log-row:last-child { border-bottom: 0; }
+.ef-log-row.is-error { border-left-color: var(--pf-danger); }
 .ef-log-row.is-error .ef-log-level { color: var(--pf-danger); font-weight: 700; }
 .ef-log-row.is-warn {
-  border-left: 2px solid var(--pf-signal);
+  border-left-color: var(--pf-signal);
   font-weight: 600;
 }
 .ef-log-row.is-info .ef-log-level { color: var(--pf-muted); }
@@ -1869,8 +2570,9 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 .ef-log-level { flex: none; min-width: 42px; }
 .ef-log-scope { flex: none; color: var(--pf-secondary); }
 .ef-log-msg { min-width: 0; overflow-wrap: anywhere; }
-.ef-log-empty { padding: 14px 10px; color: var(--pf-muted); margin: 0; }
+.page-block .ef-log-empty { padding: 14px 10px; color: var(--pf-muted); margin: 0; font-size: var(--pf-fs-caption); }
 
+/* ---- Keyframes ---- */
 /* Entrance keyframes: opacity + ≤8px shift only, mount-played, exit is instant. */
 @keyframes pf-fade {
   from { opacity: 0; }
@@ -1888,11 +2590,10 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   from { opacity: 0; transform: translateY(-4px); }
   to { opacity: 1; transform: translateY(0); }
 }
-/* State-indicator keyframes (selection bars/ticks): exempt from the ≤8px
-   entrance rule above, but restricted to a single scale property, ≤200ms,
-   played once when the state first appears — and still disabled by the
-   prefers-reduced-motion fallback. Origins are locked here so consumers
-   cannot drift. */
+/* State-indicator keyframes (selection bars/ticks): a single scale
+   property, ≤200ms, played once when the state first appears — and still
+   disabled by the prefers-reduced-motion fallback. Origins are locked here
+   so consumers cannot drift. */
 @keyframes pf-marker-in {
   from { transform: scaleY(0); transform-origin: top; }
   to { transform: scaleY(1); transform-origin: top; }
@@ -1905,6 +2606,55 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 @keyframes pf-drawer-left {
   from { opacity: 0; transform: translateX(-8px); }
   to { opacity: 1; transform: translateX(0); }
+}
+/* 引导线 / 进度填充 / 黄短梁：从左画出（消费方自锁 transform-origin: left）。 */
+@keyframes pf-grow-x {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+/* 硬边刷入（模式轨当前项）：从左往右涂满。fill 只 backwards，结束后无残留裁剪。 */
+@keyframes pf-fill-in {
+  from { clip-path: inset(0 100% 0 0); }
+  to { clip-path: inset(0); }
+}
+/* 硬边展开（对话框 / 菜单 / 下拉）：自上而下展开 + 6px 回落。fill 只 backwards。 */
+@keyframes pf-unfold {
+  from { clip-path: inset(0 0 100% 0); transform: translateY(-6px); }
+  to { clip-path: inset(0); transform: none; }
+}
+/* 列表 / 区块入场：自左硬边刷入 + 8px 回位，逐条错峰。fill 只 backwards。 */
+@keyframes pf-row-in {
+  from { clip-path: inset(0 100% 0 0); transform: translateX(-8px); }
+  to { clip-path: inset(0); transform: none; }
+}
+/* 通知入场：自右硬边刷入 + 12px 回位。 */
+@keyframes pf-toast-in {
+  from { clip-path: inset(0 0 0 100%); transform: translateX(12px); }
+  to { clip-path: inset(0); transform: none; }
+}
+/* 通知停留倒计时：满格到空，线性。 */
+@keyframes pf-life {
+  from { transform: scaleX(1); }
+  to { transform: scaleX(0); }
+}
+/* 主标题色块揭幕：色块自左铺满（0→45%），停半拍，再向右收起（55%→100%）；
+   文字在色块铺满的那一帧换出（pf-text-in 的 50% 断点）。 */
+@keyframes pf-block-reveal {
+  0% { transform: scaleX(0); transform-origin: left; }
+  45% { transform: scaleX(1); transform-origin: left; }
+  55% { transform: scaleX(1); transform-origin: right; }
+  100% { transform: scaleX(0); transform-origin: right; }
+}
+@keyframes pf-text-in {
+  0%, 49% { color: transparent; }
+  50%, 100% { color: var(--pf-ink); }
+}
+/* 舞台扫描线：与 pf-wipe 同令牌同缓动，整幅覆盖层右缘带一条 2px 信号黄
+   与一段淡黄拖尾，随刷出边缘同步推进，结束时淡出。 */
+@keyframes pf-scan {
+  0% { transform: translateX(-100%); opacity: 1; }
+  80% { opacity: 1; }
+  100% { transform: none; opacity: 0; }
 }
 /* 舞台刷出：模式/领域切换与启动揭幕时，舞台三面（.ef-nav / .ef-read / .ef-system）
    在 App 以 mode+domain 为 key 重挂后各自播放一次。fill 只用 backwards —— 起播前
@@ -1919,6 +2669,24 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 .ef-shell .ef-read,
 .ef-shell .ef-system {
   animation: pf-wipe var(--pf-t-wipe) backwards;
+}
+/* 扫描线挂在 .ef-nav / .ef-read 的 ::after 上：整幅覆盖层被宿主自身的 clip-path
+   裁在已刷出区域内，右缘信号黄线因此永远贴着刷出边缘；pointer-events 关闭，
+   结束后 opacity 0 停留（fill both），不拦截任何交互。 */
+.ef-shell .ef-nav::after,
+.ef-shell .ef-read::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    transparent calc(100% - 96px),
+    color-mix(in srgb, var(--pf-signal) 18%, transparent) calc(100% - 2px),
+    var(--pf-signal) calc(100% - 2px)
+  );
+  animation: pf-scan var(--pf-t-wipe) both;
 }
 
 /* ---- Reusable motion utilities (foundation-owned) ----
@@ -1939,15 +2707,14 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 }
 .ef-shell .pf-stagger,
 .ef-backdrop .pf-stagger {
-  animation: pf-rise var(--pf-t-enter) both;
+  animation: pf-row-in var(--pf-t-row) backwards;
   /* --pf-i is injected inline per item (index from the map); capped at 12 so
-     a full-column remount stays ≤ ~420ms in total. */
+     a full-column remount stays ≤ ~720ms in total. */
   animation-delay: calc(min(var(--pf-i, 0), 12) * var(--pf-stagger));
 }
 /* Sweep loading indicator: 3px track, ≤40% signal-yellow block, the single
-   rhythm of .loading-cal's calSweep. The only new yellow surface in the
-   system — do not raise its height or make it steady. Decorative only: it
-   accompanies a text status, never replaces one. */
+   rhythm of .loading-cal's calSweep. Decorative only: it accompanies a text
+   status, never replaces one. */
 .ef-shell .pf-sweep,
 .ef-backdrop .pf-sweep {
   height: 3px;
@@ -1965,15 +2732,29 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   animation: calSweep var(--pf-t-sweep) infinite;
 }
 
+/* 启动画面：品牌字标 + 墨轨黄块扫动。 */
 .loading-cal {
   height: 100%;
   display: grid;
-  place-items: center;
+  place-content: center;
+  justify-items: center;
+  gap: 18px;
   background: var(--pf-canvas);
+  background-image: var(--pf-dot-grid);
+  background-size: 24px 24px;
+}
+.loading-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: var(--pf-fs-h2);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--pf-ink);
 }
 .loading-cal .bar {
-  width: 180px;
-  height: 8px;
+  width: 200px;
+  height: 4px;
   background: var(--pf-ink);
   overflow: hidden;
 }
@@ -1993,13 +2774,12 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   .ef-toolbar { padding: 0 32px; }
   .ef-context { padding: 28px 26px 56px; }
   .ef-nav-head, .ef-list-head, .ef-nav-foot { padding-left: 26px; padding-right: 26px; }
-  .ef-paper-list { padding: 0 14px; }
+  .ef-paper-list { padding: 0 14px 12px; }
   .filter-row { padding-left: 26px; padding-right: 26px; }
 }
 
-/* System page: two columns once there is room, AI settings taking the wider one. */
 @media (min-width: 1280px) {
-  .page-block { padding: 26px 28px; }
+  .page-block { padding: 26px 28px 28px; }
 }
 
 @media (max-width: 1399px) {
@@ -2030,8 +2810,8 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
     display: none;
     position: fixed;
     left: var(--pf-rail-width);
-    top: 68px;
-    bottom: 28px;
+    top: var(--pf-dock-height);
+    bottom: var(--pf-status-height);
     z-index: 25;
     width: 292px;
     box-shadow: var(--pf-elev-2);
@@ -2048,6 +2828,8 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   .ef-toolbar-label { display: none; }
   .ef-toolbar { gap: 7px; }
   .ef-reading-grid { padding: 28px; --pf-document-max-width: 100%; }
+  .ef-status > span:nth-child(4),
+  .ef-status > span:nth-child(5) { display: none; }
 }
 
 @media (max-width: 700px) {
@@ -2064,12 +2846,13 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   }
   .ef-status { display: none; }
   .ef-dock { padding: 0 16px; gap: 12px; }
+  .ef-dock::after { display: none; }
   .ef-brand { min-width: auto; }
-  .ef-brand strong { font-size: 17px; }
+  .ef-brand strong { font-size: var(--pf-fs-title); }
   .ef-mark { height: 22px; width: 21px; }
   .ef-brand small { display: none; }
   .ef-search { display: none; }
-  .ef-dock .ef-btn { padding: 0 10px; font-size: 12px; min-height: 36px; }
+  .ef-dock .ef-btn { padding: 0 10px; font-size: var(--pf-fs-caption); min-height: 36px; }
   .ef-rail {
     flex-direction: row;
     justify-content: space-around;
@@ -2079,7 +2862,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
     z-index: 20;
     gap: 8px;
   }
-  .ef-mode { width: auto; flex: 1; min-height: 52px; gap: 3px; font-size: 11px; }
+  .ef-mode { width: auto; flex: 1; min-height: 52px; gap: 3px; font-size: var(--pf-fs-tag); }
   .ef-mode .ef-ico { width: 19px; height: 19px; }
   .ef-mode[aria-current="page"]::before {
     width: 24px;
@@ -2109,8 +2892,13 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
     padding: 18px 12px 35px;
   }
   .ef-document { padding: 22px 19px 30px; }
-  .ef-document h1, .ef-read-title { font-size: 28px; }
-  .ef-paper-en { font-size: 16px; }
+  .ef-document::after { display: none; }
+  .ef-document h1, .ef-read-title { font-size: var(--pf-fs-h1); }
+  .ef-paper-en { font-size: var(--pf-fs-title); }
+  .ef-plate { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ef-plate > div:nth-child(3) { padding-left: 0; border-left: 0; }
+  .ef-plate > div:nth-child(n + 3) { border-top: 1px solid var(--pf-divider); }
+  .ef-note.is-editing::before { left: -19px; }
   .ef-nav {
     left: 0;
     top: 60px;
@@ -2125,7 +2913,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
     flex-direction: column-reverse;
   }
   .ef-crew-edit { grid-template-columns: 1fr; }
-  .ef-btn-primary { box-shadow: var(--pf-edge-hard-hover); }
+  .ef-btn-primary { box-shadow: var(--pf-edge-hard); }
   .ef-system { padding: 20px 16px 88px; }
 }
 
@@ -2147,10 +2935,13 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
     transition: none !important;
     scroll-behavior: auto !important;
   }
+  /* 纯动效覆盖层（扫描线、标题色块）在无动画时没有落点，直接移除。 */
+  .ef-shell .ef-nav::after,
+  .ef-shell .ef-read::after,
+  .ef-shell .ef-read-title::after { display: none; }
 }
 
 /* ---- Cross-domain search dropdown (Dock) ---- */
-.ef-dock { position: relative; z-index: 30; }
 .ef-search-wrap {
   position: relative;
   flex: 1;
@@ -2166,8 +2957,9 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   right: 0;
   background: var(--pf-surface);
   border: 1px solid var(--pf-ink);
-  box-shadow: var(--pf-elev-1);
-  animation: pf-pop var(--pf-motion);
+  border-top: 3px solid var(--pf-signal);
+  box-shadow: var(--pf-elev-2);
+  animation: pf-unfold var(--pf-t-unfold) backwards;
   color: var(--pf-ink);
   max-height: min(420px, 60vh);
   overflow: auto;
@@ -2177,43 +2969,58 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 9px 14px;
+  padding: 8px 14px;
   border-bottom: 1px solid var(--pf-divider);
-  font-size: 12px;
+  background: var(--pf-panel);
+  font-size: var(--pf-fs-caption);
   color: var(--pf-muted);
 }
 .ef-search-scope-head button {
   border: 0;
   background: transparent;
   color: var(--pf-secondary);
-  font-size: 12px;
+  font-size: var(--pf-fs-caption);
   cursor: pointer;
   padding: 2px 4px;
 }
 .ef-search-scope-head button:hover { color: var(--pf-ink); text-decoration: underline; }
 .ef-search-scope-item {
+  position: relative;
   display: block;
   width: 100%;
   text-align: left;
   background: transparent;
   border: 0;
   border-bottom: 1px solid var(--pf-divider);
-  padding: 10px 14px;
+  padding: 10px 14px 10px 16px;
   cursor: pointer;
+  transition: background-color var(--pf-motion);
+}
+.ef-search-scope-item::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 10px;
+  bottom: 10px;
+  width: var(--pf-marker);
+  background: var(--pf-ink);
+  transform: scaleY(0);
+  transition: transform var(--pf-direct);
 }
 .ef-search-scope-item:last-child { border-bottom: 0; }
 .ef-search-scope-item:hover { background: var(--pf-hover-quiet); }
+.ef-search-scope-item:hover::before { transform: none; }
 .ef-search-scope-title {
   display: block;
-  font-size: 13px;
+  font-size: var(--pf-fs-ui);
   font-weight: 600;
   line-height: 1.5;
   color: var(--pf-ink);
 }
 .ef-search-scope-meta {
   display: block;
-  margin-top: 3px;
-  font-size: 12px;
+  margin-top: 2px;
+  font-size: var(--pf-fs-caption);
   color: var(--pf-muted);
 }
 /* Cross-domain search tips (searching / no hits). The searching variant
@@ -2223,38 +3030,40 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   align-items: center;
   margin: 0;
   padding: 14px;
-  font-size: 13px;
+  font-size: var(--pf-fs-ui);
   line-height: 1.6;
   color: var(--pf-secondary);
 }
 .ef-search-scope-tip .ef-pulse { flex: none; }
 
-/* ---- Parsed full text (MinerU) collapsible block in the reading stage ---- */
+/* ---- Parsed full text (MinerU) collapsible block in the reading stage ----
+   摘要之后的第二个区段：summary 沿用 .ef-section-label 的标题写法，
+   尾部 V 形箭头展开时旋转 90°。 */
 .ef-fulltext {
   margin: 0;
-  padding: 14px 0 18px;
-  border-bottom: 1px solid var(--pf-divider);
+  padding: 0 0 32px;
   scroll-margin-top: 24px;
 }
 .ef-fulltext summary {
-  min-height: 40px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
   cursor: pointer;
-  font-size: 14px;
-  font-weight: 650;
-  color: var(--pf-ink);
   list-style: none;
+  margin: 0;
+  min-height: 40px;
   transition: transform var(--pf-t-press);
 }
+.ef-fulltext summary::-webkit-details-marker { display: none; }
 /* 同 .ef-metadata-details：:active 下沉在行上，图标 90° 旋转独立过渡。 */
 .ef-fulltext summary:active { transform: translateY(var(--pf-nudge)); }
 .ef-fulltext summary .ef-ico {
-  width: 14px;
-  height: 14px;
-  transition: transform var(--pf-direct);
+  width: 22px;
+  height: 22px;
+  padding: 3px;
+  border: 1px solid var(--pf-control-border);
+  color: var(--pf-secondary);
+  transition: transform var(--pf-direct), background-color var(--pf-motion), color var(--pf-motion), border-color var(--pf-motion);
 }
+.ef-fulltext summary:hover .ef-ico { background: var(--pf-ink); border-color: var(--pf-ink); color: var(--pf-signal); }
+.ef-fulltext summary:hover .ef-section-rule { background: var(--pf-line-strong); }
 .ef-fulltext[open] summary .ef-ico { transform: rotate(90deg); }
-.ef-fulltext .ef-note-text { margin-top: 12px; }
-.ef-fulltext .ef-empty-note { margin: 10px 0 0; }
+.ef-fulltext .ef-note-text { margin-top: 6px; animation: pf-fade var(--pf-t-enter); }
+.ef-fulltext .ef-empty-note { margin: 6px 0 0; }

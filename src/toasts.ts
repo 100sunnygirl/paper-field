@@ -21,6 +21,8 @@ export interface ToastItem {
   durationMs?: number;
   /** 来源标记（如 "mineru"），桥接 setFlash 不填、新调用方可填。 */
   scope?: string;
+  /** 停留计时的重置次数：去重刷新时 +1，UI 据此重播倒计时条。 */
+  rev?: number;
 }
 
 /** 各级别默认停留时长（毫秒）：错误类更久，与原 flash 自动消失节奏一致。 */
@@ -160,6 +162,8 @@ export function notify(tone: ToastTone, text: string, options?: NotifyOptions): 
   const existing = items.find((item) => item.tone === tone && item.text === text);
   if (existing) {
     armTimer(existing.id, options?.durationMs ?? existing.durationMs ?? TOAST_DURATION[tone]);
+    items = items.map((item) => (item.id === existing.id ? { ...item, rev: (item.rev ?? 0) + 1 } : item));
+    bump();
     sinkEvent("refresh", { ...existing, scope: options?.scope ?? existing.scope });
     return;
   }

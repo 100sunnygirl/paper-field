@@ -142,11 +142,18 @@ export default function App() {
   // 舞台刷出（pf-wipe，源设计 ef-reveal）：舞台三面以 mode+domain 为 key，
   // 模式/领域切换与启动时重挂、各播一次「左→右硬边刷出 + 10px 回位」。
   // 外壳（rail/dock/status）不挂动画 —— 只有内容「换纸」，chrome 保持常驻。
+  // 三面各带前缀派生自己的 key：PaperNav 与 ReadingStage 是同一 Fragment 内的
+  // 兄弟节点，共用同一个 key 会让 React 在切换时残留旧节点（旧 .ef-nav 叠层堆积、
+  // 遮挡点击）。
   const stageKey = `${mode}:${selectedDomainId ?? "none"}`;
 
   if (!ready) {
     return (
       <div className="loading-cal" role="status">
+        <div className="loading-brand" aria-hidden="true">
+          <span className="ef-mark" />
+          <strong>PAPER FIELD</strong>
+        </div>
         <div className="bar" aria-label="正在打开阅读工作台">
           <i />
         </div>
@@ -180,12 +187,12 @@ export default function App() {
       <Rail mode={mode} />
       <Dock domain={domain} search={search} />
       {mode === "system" ? (
-        <SystemView key={stageKey} />
+        <SystemView key={`system:${stageKey}`} />
       ) : (
         <>
-          <PaperNav key={stageKey} onPaperChosen={() => setListOpen(false)} />
+          <PaperNav key={`nav:${stageKey}`} onPaperChosen={() => setListOpen(false)} />
           <ReadingStage
-            key={stageKey}
+            key={`read:${stageKey}`}
             focus={focus}
             onToggleFocus={() => setFocus((value) => !value)}
             listOpen={listOpen}

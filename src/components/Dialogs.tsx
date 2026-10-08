@@ -162,7 +162,7 @@ export function PaperDialog() {
           ))}
         </ul>
       ) : null}
-      {error ? <p style={{ color: "var(--pf-danger)" }}>{error}</p> : null}
+      {error ? <p className="ef-error">{error}</p> : null}
     </Dialog>
   );
 }
@@ -211,7 +211,7 @@ function ManualPaperForm({ onCreated }: { onCreated: () => void }) {
       </Field>
       {isTauri() ? (
         <Field label="本地 PDF（可选）">
-          <div className="ef-import-actions" style={{ margin: 0 }}>
+          <div className="ef-import-actions is-inline">
             <Button type="button" size="sm" onClick={() => void pickPdf()} disabled={busy}>
               <Icon name="file" />
               {pdfPath ? pdfPath.split(/[/\\]/).pop() : "选择 PDF"}
@@ -252,7 +252,7 @@ function ManualPaperForm({ onCreated }: { onCreated: () => void }) {
           {busy ? "创建中…" : "创建论文"}
         </Button>
       </div>
-      {error ? <p style={{ color: "var(--pf-danger)" }}>{error}</p> : null}
+      {error ? <p className="ef-error">{error}</p> : null}
     </div>
   );
 }
@@ -353,7 +353,7 @@ export function DomainDialog() {
           </Field>
         </>
       )}
-      {error ? <p style={{ color: "var(--pf-danger)" }}>{error}</p> : null}
+      {error ? <p className="ef-error">{error}</p> : null}
     </Dialog>
   );
 }
@@ -406,7 +406,7 @@ export function DomainPickerDialog() {
           <span>
             <strong>{domain.name}</strong>
             {domain.summary ? (
-              <small style={{ display: "block", color: "var(--pf-muted)", marginTop: 4 }}>
+              <small className="ef-domain-option-sum">
                 {domain.summary}
               </small>
             ) : null}
@@ -601,7 +601,7 @@ export function EditPaperDialog() {
             onDirtyChange={setMetaDirty}
             onSave={(patch) => void savePaperPatch(patch)}
           />
-          <h3 style={{ fontSize: 16, margin: "8px 0 12px" }}>作者</h3>
+          <h3 className="ef-dialog-section">作者</h3>
           <CrewEditor authors={paper.authors} onDirtyChange={setCrewDirty} onSave={(next) => void saveAuthors(next)} />
         </>
       ) : null}
@@ -684,7 +684,7 @@ function MetaEditor({
         />
       </Field>
       {yearInvalid ? (
-        <p style={{ color: "var(--pf-danger)", margin: "-10px 0 12px", fontSize: 13 }}>
+        <p className="ef-error ef-field-error">
           年份需为数字，例如 2024。当前输入不会被保存。
         </p>
       ) : null}
