@@ -194,6 +194,91 @@ describe("PaperDialog · 文件夹批量导入", () => {
   });
 });
 
+describe("PaperDialog · 扫描结果挑选排除", () => {
+  beforeEach(() => asTauri());
+
+  function setupScan(paths: string[]) {
+    vi.mocked(openDialog).mockResolvedValue("/papers/folder");
+    vi.mocked(listPdfs).mockResolvedValue(paths);
+  }
+
+  it("扫描结果默认全部勾选，审阅条显示统计", async () => {
+    setupScan(["/papers/folder/x.pdf", "/papers/folder/y.pdf"]);
+    render(<PaperDialog />);
+    fireEvent.click(screen.getByRole("button", { name: /选择文件夹/ }));
+    await waitFor(() => expect(screen.getByText("x.pdf")).toBeInTheDocument());
+    expect(screen.getByLabelText("x.pdf")).toBeChecked();
+    expect(screen.getByLabelText("y.pdf")).toBeChecked();
+    expect(screen.getByText(/共 2 个待选，已勾选 2 个/)).toBeInTheDocument();
+  });
+
+  it("取消勾选后不计入导入数，导入只包含仍勾选的文件", async () => {
+    setupScan(["/papers/folder/paper-a.pdf", "/papers/folder/manual.pdf", "/papers/folder/paper-b.pdf"]);
+    const importPdfs = vi.fn(async (_paths: string[]) => undefined);
+    useField.setState({ importPdfs });
+    render(<PaperDialog />);
+    fireEvent.click(screen.getByRole("button", { name: /选择文件夹/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "导入 3" })).toBeEnabled());
+
+    fireEvent.click(screen.getByLabelText("manual.pdf"));
+    expect(screen.getByLabelText("manual.pdf")).not.toBeChecked();
+    expect(screen.getByText(/已勾选 2 个/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "导入 2" })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "导入 2" }));
+    await waitFor(() => expect(importPdfs).toHaveBeenCalledTimes(1));
+    expect(importPdfs.mock.calls[0][0]).toEqual([
+      "/papers/folder/paper-a.pdf",
+      "/papers/folder/paper-b.pdf",
+    ]);
+  });
+
+  it("被排除的行显示删除线；重复项复选框禁用且不可勾选", async () => {
+    vi.mocked(repo.pdfPaths).mockResolvedValue(["/papers/folder/known.pdf"]);
+    setupScan(["/papers/folder/known.pdf", "/papers/folder/new.pdf"]);
+    render(<PaperDialog />);
+    fireEvent.click(screen.getByRole("button", { name: /选择文件夹/ }));
+    await waitFor(() => expect(screen.getByText("new.pdf")).toBeInTheDocument());
+    expect(screen.getByLabelText("known.pdf")).toBeDisabled();
+    expect(screen.getByText(/共 1 个待选，已勾选 1 个/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText("new.pdf"));
+    expect(screen.getByText("new.pdf").closest("li")).toHaveClass("is-excluded");
+  });
+
+  it("「全不选」清空勾选并禁用导入；「全选」恢复", async () => {
+    setupScan(["/papers/folder/a.pdf", "/papers/folder/b.pdf"]);
+    render(<PaperDialog />);
+    fireEvent.click(screen.getByRole("button", { name: /选择文件夹/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "导入 2" })).toBeEnabled());
+
+    fireEvent.click(screen.getByRole("button", { name: "全不选" }));
+    expect(screen.getByLabelText("a.pdf")).not.toBeChecked();
+    expect(screen.getByLabelText("b.pdf")).not.toBeChecked();
+    expect(screen.getByText(/已勾选 0 个/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^导入/ })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "全选" }));
+    expect(screen.getByLabelText("a.pdf")).toBeChecked();
+    expect(screen.getByRole("button", { name: "导入 2" })).toBeEnabled();
+  });
+
+  it("重新扫描同一目录保留已排除的选择", async () => {
+    setupScan(["/papers/folder/a.pdf", "/papers/folder/b.pdf"]);
+    render(<PaperDialog />);
+    fireEvent.click(screen.getByRole("button", { name: /选择文件夹/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "导入 2" })).toBeEnabled());
+    fireEvent.click(screen.getByLabelText("b.pdf"));
+
+    // 用户再次点击「选择文件夹」重扫
+    fireEvent.click(screen.getByRole("button", { name: /选择文件夹/ }));
+    await waitFor(() => expect(listPdfs).toHaveBeenCalledTimes(2));
+    expect(screen.getByLabelText("a.pdf")).toBeChecked();
+    expect(screen.getByLabelText("b.pdf")).not.toBeChecked();
+    expect(screen.getByRole("button", { name: "导入 1" })).toBeEnabled();
+  });
+});
+
 describe("PaperDialog · 导入执行与进度", () => {
   beforeEach(() => asTauri());
 
