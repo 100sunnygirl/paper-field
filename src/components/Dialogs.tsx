@@ -10,7 +10,7 @@ export function PaperDialog() {
   const dialog = useField((s) => s.dialog);
   const closeDialog = useField((s) => s.closeDialog);
   const importPdfs = useField((s) => s.importPdfs);
-  const [items, setItems] = useState<Array<{ path: string; name: string; duplicate: boolean }>>([]);
+  const [items, setItems] = useState<Array<{ path: string; name: string; duplicate: boolean; excluded: boolean }>>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<{ done: number; total: number; current: string } | null>(null);
@@ -32,7 +32,9 @@ export function PaperDialog() {
       const next = new Map(current.map((item) => [item.path, item]));
       for (const path of paths) {
         const name = path.split(/[/\\]/).pop() ?? path;
-        next.set(path, { path, name, duplicate: known.has(path) });
+        // 重新扫描同一目录时保留用户已排除的选择，不悄悄改回勾选。
+        const excluded = current.find((item) => item.path === path)?.excluded ?? false;
+        next.set(path, { path, name, duplicate: known.has(path), excluded });
       }
       return [...next.values()];
     });
@@ -68,7 +70,17 @@ export function PaperDialog() {
     }
   }
 
-  const fresh = items.filter((item) => !item.duplicate);
+  const fresh = items.filter((item) => !item.duplicate && !item.excluded);
+  const checkable = items.filter((item) => !item.duplicate);
+  const checkedCount = checkable.filter((item) => !item.excluded).length;
+
+  function toggleExcluded(path: string, excluded: boolean) {
+    setItems((current) => current.map((item) => (item.path === path ? { ...item, excluded } : item)));
+  }
+
+  function setAllExcluded(excluded: boolean) {
+    setItems((current) => current.map((item) => (item.duplicate ? item : { ...item, excluded })));
+  }
 
   return (
     <Dialog
@@ -106,8 +118,8 @@ export function PaperDialog() {
       }
     >
       <p>
-        选择本机 PDF，或一个目录中的全部 PDF（只读所选目录本身，不进入子目录）。文件名会先当作标题，导入后立即交给
-        MinerU 解析。没有 PDF 时也可手动添加论文。
+        选择本机 PDF，或一个目录中的全部 PDF（只读所选目录本身，不进入子目录）。加入后先在下方清单里勾选，排除不是论文的
+        PDF，再完成导入。文件名会先当作标题，导入后立即交给 MinerU 解析。没有 PDF 时也可手动添加论文。
       </p>
       {isTauri() ? (
         <div className="ef-import-actions">
@@ -149,18 +161,53 @@ export function PaperDialog() {
         </>
       ) : null}
       {items.length ? (
-        <ul className="ef-import-list">
-          {items.map((item, index) => (
-            <li
-              key={item.path}
-              className="pf-stagger"
-              style={{ "--pf-i": index } as CSSProperties}
-            >
-              <span>{item.name}</span>
-              {item.duplicate ? <em>已在库中</em> : null}
-            </li>
-          ))}
-        </ul>
+        <>
+          <div className="ef-import-review-bar">
+            <span>
+              共 {checkable.length} 个待选，已勾选 {checkedCount} 个；取消勾选可在导入前排除非论文 PDF。
+            </span>
+            <span className="ef-import-review-actions">
+              <Button
+                type="button"
+                size="sm"
+                variant="text"
+                disabled={busy || checkedCount === checkable.length}
+                onClick={() => setAllExcluded(false)}
+              >
+                全选
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="text"
+                disabled={busy || checkedCount === 0}
+                onClick={() => setAllExcluded(true)}
+              >
+                全不选
+              </Button>
+            </span>
+          </div>
+          <ul className="ef-import-list">
+            {items.map((item, index) => (
+              <li
+                key={item.path}
+                className={`pf-stagger${item.excluded && !item.duplicate ? " is-excluded" : ""}`}
+                style={{ "--pf-i": index } as CSSProperties}
+              >
+                <label className="ef-import-check">
+                  <input
+                    type="checkbox"
+                    checked={!item.duplicate && !item.excluded}
+                    disabled={busy || item.duplicate}
+                    onChange={(e) => toggleExcluded(item.path, !e.target.checked)}
+                  />
+                  <span>{item.name}</span>
+                </label>
+                {item.duplicate ? <em>已在库中</em> : null}
+              </li>
+            ))}
+          </ul>
+        </>
       ) : null}
       {error ? <p className="ef-error">{error}</p> : null}
     </Dialog>

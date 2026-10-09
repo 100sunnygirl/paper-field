@@ -2403,6 +2403,18 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   margin: 4px 0 12px;
 }
 .ef-import-actions.is-inline { margin: 0; }
+/* 扫描结果审阅条：统计文案 + 全选/全不选，出现在清单上方。 */
+.ef-import-review-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin: 4px 0 8px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+}
+.ef-import-review-actions { display: inline-flex; gap: 4px; }
 .ef-import-list {
   list-style: none;
   margin: 0;
@@ -2413,6 +2425,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 }
 .ef-import-list li {
   display: flex;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
   padding: 8px 10px;
@@ -2421,6 +2434,24 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 }
 .ef-import-list li:last-child { border-bottom: 0; }
 .ef-import-list em { color: var(--pf-secondary); font-style: normal; }
+/* 勾选行：文件名超长时省略号截断，点击整行标签即可切换勾选。 */
+.ef-import-check {
+  flex: 1;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+.ef-import-check span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ef-import-list li.is-excluded .ef-import-check span {
+  color: var(--pf-secondary);
+  text-decoration: line-through;
+}
 .ef-dialog-foot {
   display: flex;
   gap: 10px;
