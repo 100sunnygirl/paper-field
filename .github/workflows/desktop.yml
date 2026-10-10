@@ -1,4 +1,4 @@
-name: Windows
+name: Desktop
 
 on:
   push:
@@ -10,11 +10,34 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
+    name: Build ${{ matrix.name }}
     permissions:
       contents: read
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            os: windows-latest
+            toolchain-targets: x86_64-pc-windows-msvc
+            tauri-target: x86_64-pc-windows-msvc
+            artifact-name: paper-field-windows-x64
+            bundle-path: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe
+
+          - name: macOS universal
+            os: macos-15
+            toolchain-targets: aarch64-apple-darwin,x86_64-apple-darwin
+            tauri-target: universal-apple-darwin
+            artifact-name: paper-field-macos-universal
+            bundle-path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -25,7 +48,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-pc-windows-msvc
+          targets: ${{ matrix.toolchain-targets }}
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -43,44 +66,66 @@ jobs:
       - name: Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
-      - name: Build Windows installer
-        run: npm run tauri build -- --target x86_64-pc-windows-msvc
-
-      - name: Create checksum
-        shell: pwsh
-        run: |
-          $artifact = Get-ChildItem "src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis" -Filter "*-setup.exe" | Select-Object -First 1
-          if (-not $artifact) { throw "NSIS installer was not found" }
-          $hash = Get-FileHash $artifact.FullName -Algorithm SHA256
-          "$($hash.Hash.ToLower())  $($artifact.Name)" | Out-File -Encoding ascii "src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/SHA256SUMS.txt"
+      - name: Build ${{ matrix.name }} installer
+        run: npm run tauri build -- --target ${{ matrix.tauri-target }}
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
-          name: paper-field-windows-x64
-          path: |
-            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe
-            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/SHA256SUMS.txt
+          name: ${{ matrix.artifact-name }}
+          path: ${{ matrix.bundle-path }}
           if-no-files-found: error
 
   release:
     if: startsWith(github.ref, 'refs/tags/')
     needs: build
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: paper-field-windows-x64
-          path: release
+          path: artifacts
 
-      - name: Attach release assets
-        shell: pwsh
+      - name: Collect installers and checksum
+        shell: bash
+        run: |
+          mkdir release-assets
+          find artifacts -type f \( -name '*-setup.exe' -o -name '*.dmg' \) -exec cp '{}' release-assets/ \;
+
+          windows_installers=($(find release-assets -type f -name '*-setup.exe'))
+          macos_installers=($(find release-assets -type f -name '*.dmg'))
+          test "${#windows_installers[@]}" -eq 1
+          test "${#macos_installers[@]}" -eq 1
+
+          cd release-assets
+          sha256sum * > SHA256SUMS.txt
+
+      - name: Publish GitHub Release
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $artifact = Get-ChildItem "release" -Filter "*-setup.exe" | Select-Object -First 1
-          if (-not $artifact) { throw "NSIS installer was not found" }
-          $notes = "Windows installer is unsigned. If SmartScreen appears, choose More info and then Run anyway. Verify SHA256SUMS.txt before redistribution."
-          gh release create $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY --title $env:GITHUB_REF_NAME --notes $notes --verify-tag $artifact.FullName "release/SHA256SUMS.txt"
+          notes=$(cat <<'EOF'
+          Paper Field desktop installers.
+
+          - Windows: run the `-setup.exe` installer. It is unsigned; if SmartScreen appears, choose **More info → Run anyway**.
+          - macOS: open the `.dmg` and drag Paper Field to Applications. The app is not notarized; if Gatekeeper blocks it, right-click the app and choose **Open**, or run `xattr -dr com.apple.quarantine "/Applications/Paper Field.app"`.
+          - Verify downloads with `SHA256SUMS.txt`.
+          EOF
+          )
+
+          if ! gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY"; then
+            gh release create \
+              "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$GITHUB_REF_NAME" \
+              --notes "$notes" \
+              --verify-tag
+          fi
+
+          gh release upload \
+            "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            release-assets/* \
+            --clobber
