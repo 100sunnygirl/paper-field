@@ -93,13 +93,18 @@ jobs:
           mkdir release-assets
           find artifacts -type f \( -name '*-setup.exe' -o -name '*.dmg' \) -exec cp '{}' release-assets/ \;
 
-          windows_installers=($(find release-assets -type f -name '*-setup.exe'))
-          macos_installers=($(find release-assets -type f -name '*.dmg'))
-          test "${#windows_installers[@]}" -eq 1
-          test "${#macos_installers[@]}" -eq 1
+          # Installer names contain spaces; command substitution would split them.
+          mapfile -d '' windows_installers < <(find release-assets -type f -name '*-setup.exe' -print0)
+          mapfile -d '' macos_installers < <(find release-assets -type f -name '*.dmg' -print0)
+          if (( ${#windows_installers[@]} != 1 || ${#macos_installers[@]} != 1 )); then
+            printf 'Expected one Windows installer and one macOS installer; found %s and %s.\n' \
+              "${#windows_installers[@]}" "${#macos_installers[@]}"
+            find release-assets -type f -print
+            exit 1
+          fi
 
           cd release-assets
-          sha256sum * > SHA256SUMS.txt
+          sha256sum -- *-setup.exe *.dmg > SHA256SUMS.txt
 
       - name: Publish GitHub Release
         shell: bash
