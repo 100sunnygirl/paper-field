@@ -17,7 +17,8 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const appSource = readFileSync(resolve(__dirname, "../App.tsx"), "utf8");
-const css = readFileSync(resolve(__dirname, "../styles/workstation.css"), "utf8");
+// Git may check CSS out with CRLF on Windows; normalize source before regex contracts.
+const css = readFileSync(resolve(__dirname, "../styles/workstation.css"), "utf8").replace(/\r\n/g, "\n");
 
 describe("舞台刷出：App 接线（源码口径）", () => {
   it("stageKey 由 mode + selectedDomainId 组成，三面舞台各挂一个由它派生、互不相同的 key", () => {

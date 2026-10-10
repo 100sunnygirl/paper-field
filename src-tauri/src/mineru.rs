@@ -6,9 +6,8 @@
 //! - 跨源切换的唯一入口是 `mineru_submit(provider=None)`：按 order 逐源探测并提交，
 //!   失败自动试下一源，全部失败返回聚合中文错误。
 
-use std::collections::HashMap;
-use std::future::Future;
 use std::fs;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -16,12 +15,11 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::AppHandle;
-use tokio::io::AsyncWriteExt;
-use tokio::process::Command;
-use std::process::Stdio;
 
 use crate::app_config_dir;
 use crate::mineru_api::ApiClient;
+use crate::platform;
+use crate::transport::{DoclibTransport, SshResolved};
 
 /// 超时常量（with_timeout 的生产值；测试可注入短值）。
 pub(crate) const PROBE_TIMEOUT: Duration = Duration::from_secs(20);
@@ -374,8 +372,8 @@ fn parse_settings(raw: &str) -> Result<(MineruFileV2, bool), String> {
         serde_json::from_str(raw).map_err(|e| format!("MinerU 设置无法解析：{e}"))?;
     match value.get("version").and_then(Value::as_u64) {
         Some(2) => {
-            let file: MineruFileV2 = serde_json::from_value(value)
-                .map_err(|e| format!("MinerU 设置无法解析：{e}"))?;
+            let file: MineruFileV2 =
+                serde_json::from_value(value).map_err(|e| format!("MinerU 设置无法解析：{e}"))?;
             Ok((file, false))
         }
         _ => Ok((migrate_v1(&value)?, true)),
@@ -387,8 +385,8 @@ fn parse_settings(raw: &str) -> Result<(MineruFileV2, bool), String> {
 /// - v1 的 socket_path 同时写入 local 与 ssh（旧版两种模式共用该字段）；
 /// - order 初始为 [启用的源, 其余按 local→ssh→api]。
 fn migrate_v1(value: &Value) -> Result<MineruFileV2, String> {
-    let v1: MineruFileV1 =
-        serde_json::from_value(value.clone()).map_err(|e| format!("旧版 MinerU 设置无法迁移：{e}"))?;
+    let v1: MineruFileV1 = serde_json::from_value(value.clone())
+        .map_err(|e| format!("旧版 MinerU 设置无法迁移：{e}"))?;
     let socket = fallback(v1.socket_path.trim(), &default_socket());
     let local_enabled = v1.mode.trim() == "local";
     let ssh_enabled = v1.mode.trim() == "ssh";
@@ -489,7 +487,11 @@ fn normalize_input(input: &MineruInputV2, existing: &MineruFileV2) -> MineruFile
     let ssh = SshCfg {
         enabled: input.ssh.enabled,
         host: input.ssh.host.trim().to_string(),
-        port: if input.ssh.port == 0 { 22 } else { input.ssh.port },
+        port: if input.ssh.port == 0 {
+            22
+        } else {
+            input.ssh.port
+        },
         user: input.ssh.user.trim().to_string(),
         identity_file: input.ssh.identity_file.trim().to_string(),
         socket_path: fallback(input.ssh.socket_path.trim(), &default_socket()),
@@ -588,7 +590,7 @@ fn to_public(file: &MineruFileV2) -> MineruPublic {
 }
 
 /// 保存前校验：ssh 启用时 host/user/私钥必须可用。
-fn validate_config(file: &MineruFileV2) -> Result<(), String> {
+fn validate_config(file: &MineruFileV2, home: &Path) -> Result<(), String> {
     if file.ssh.enabled {
         if !valid_host(&file.ssh.host) {
             return Err("SSH 主机无效".into());
@@ -597,9 +599,9 @@ fn validate_config(file: &MineruFileV2) -> Result<(), String> {
             return Err("SSH 用户无效".into());
         }
         if !file.ssh.identity_file.is_empty() {
-            let path = expand_local(&file.ssh.identity_file);
-            if !Path::new(&path).is_file() {
-                return Err(format!("私钥不存在：{path}"));
+            let path = expand_local_path(&file.ssh.identity_file, home);
+            if !path.is_file() {
+                return Err(format!("私钥不存在：{}", path.display()));
             }
         }
     }
@@ -645,40 +647,27 @@ fn valid_doc_ref(value: &str) -> bool {
 }
 
 fn valid_paper_id(value: &str) -> bool {
-    value.len() == 36
-        && value
-            .chars()
-            .all(|c| c.is_ascii_hexdigit() || c == '-')
+    value.len() == 36 && value.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
 }
 
 /// doclib 数字解析 id 的字符串形式（防路径注入：只允许纯数字）。
 fn valid_parse_ids(ids: &[String]) -> bool {
-    ids.iter().all(|id| {
-        !id.is_empty() && id.len() <= 20 && id.chars().all(|c| c.is_ascii_digit())
-    })
+    ids.iter()
+        .all(|id| !id.is_empty() && id.len() <= 20 && id.chars().all(|c| c.is_ascii_digit()))
 }
 
-fn expand_local(path: &str) -> String {
-    let home = std::env::var("HOME").unwrap_or_default();
-    expand_tilde(path, &home)
-}
-
-fn expand_tilde(path: &str, home: &str) -> String {
+fn expand_local_path(path: &str, home: &Path) -> PathBuf {
     if path == "~" {
-        home.to_string()
+        home.to_path_buf()
     } else if let Some(rest) = path.strip_prefix("~/") {
-        format!("{home}/{rest}")
+        let mut expanded = home.to_path_buf();
+        for component in rest.split('/') {
+            expanded.push(component);
+        }
+        expanded
     } else {
-        path.to_string()
+        PathBuf::from(path)
     }
-}
-
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', r"'\''"))
-}
-
-fn clip(value: &str) -> String {
-    value.chars().take(280).collect()
 }
 
 pub fn provider_label(name: &str) -> &'static str {
@@ -692,22 +681,16 @@ pub fn provider_label(name: &str) -> &'static str {
 
 // ---------- Provider 抽象 ----------
 
-#[derive(Debug, Clone)]
-pub struct SshResolved {
-    pub host: String,
-    pub port: u16,
-    pub user: String,
-    pub identity: Option<String>,
-    pub socket_path: String,
-    pub inbox_dir: String,
-}
-
 impl SshResolved {
-    fn from_cfg(cfg: &SshCfg) -> Self {
+    fn from_cfg(cfg: &SshCfg, home: &Path) -> Self {
         let identity = if cfg.identity_file.is_empty() {
             None
         } else {
-            Some(expand_local(&cfg.identity_file))
+            Some(
+                expand_local_path(&cfg.identity_file, home)
+                    .to_string_lossy()
+                    .to_string(),
+            )
         };
         Self {
             host: cfg.host.clone(),
@@ -731,28 +714,29 @@ impl SshResolved {
 }
 
 pub enum Provider {
-    Local { socket_path: String },
+    Local { socket_path: PathBuf },
     Ssh(SshResolved),
     Api(ApiClient),
 }
 
 impl Provider {
-    fn build_ssh(ssh: &SshCfg) -> Result<Provider, String> {
-        Ok(Provider::Ssh(SshResolved::from_cfg(ssh)))
+    fn build_ssh(ssh: &SshCfg, home: &Path) -> Result<Provider, String> {
+        Ok(Provider::Ssh(SshResolved::from_cfg(ssh, home)))
     }
 
-    fn doclib_target(&self) -> Result<DoclibTarget, String> {
+    fn doclib_target(&self) -> Result<DoclibTransport, String> {
         match self {
             Provider::Local { socket_path } => {
-                let socket = expand_local(socket_path);
-                if !Path::new(&socket).exists() {
-                    return Err(format!("找不到 MinerU socket：{socket}"));
+                if !socket_path.exists() {
+                    return Err(format!("找不到 MinerU socket：{}", socket_path.display()));
                 }
-                Ok(DoclibTarget::Local(socket))
+                Ok(DoclibTransport::Local(
+                    socket_path.to_string_lossy().to_string(),
+                ))
             }
             Provider::Ssh(ssh) => {
                 ssh.ensure()?;
-                Ok(DoclibTarget::Ssh(ssh.clone()))
+                Ok(DoclibTransport::Ssh(ssh.clone()))
             }
             Provider::Api(_) => Err("官方 API 来源不走 doclib 接口".into()),
         }
@@ -766,15 +750,15 @@ impl Provider {
                 let via_ssh = matches!(self, Provider::Ssh(_));
                 let target = self.doclib_target()?;
                 with_timeout(PROBE_TIMEOUT, async move {
-                    let body = doclib_request(
-                        &target,
-                        "GET",
-                        "/api/v1/server/status",
-                        None,
-                        CURL_PROBE,
-                        SSH_CONNECT_PROBE,
-                    )
-                    .await?;
+                    let body = target
+                        .request(
+                            "GET",
+                            "/api/v1/server/status",
+                            None,
+                            CURL_PROBE,
+                            SSH_CONNECT_PROBE,
+                        )
+                        .await?;
                     doclib_status_message(&body, via_ssh)
                 })
                 .await
@@ -799,50 +783,33 @@ impl Provider {
                 let target = self.doclib_target()?;
                 let local_path = pdf.to_string_lossy().to_string();
                 with_timeout(SUBMIT_TIMEOUT, async move {
-                    let body = doclib_request(
-                        &target,
-                        "POST",
-                        "/api/v1/parses",
-                        Some(&doclib_payload(&local_path, tier, page_range, force)),
-                        CURL_SUBMIT,
-                        SSH_CONNECT_NORMAL,
-                    )
-                    .await?;
+                    let body = target
+                        .request(
+                            "POST",
+                            "/api/v1/parses",
+                            Some(&doclib_payload(&local_path, tier, page_range, force)),
+                            CURL_SUBMIT,
+                            SSH_CONNECT_NORMAL,
+                        )
+                        .await?;
                     parse_submit_body(&body, "local", &local_path, tier)
                 })
                 .await
             }
             Provider::Ssh(ssh) => {
                 ssh.ensure()?;
+                let target = self.doclib_target()?;
                 with_timeout(SUBMIT_TIMEOUT, async move {
-                    let home = remote_home(ssh, SSH_CONNECT_NORMAL).await?;
-                    remote_socket(&ssh.socket_path, &home)?;
-                    let inbox = expand_tilde(&ssh.inbox_dir, &home);
-                    if inbox.contains(['\n', '\r', '\0', ' ', '"', '\'']) {
-                        return Err("远程暂存目录不能包含空格或引号".into());
-                    }
-                    ssh_exec(
-                        ssh,
-                        &format!("mkdir -p {}", shell_quote(&inbox)),
-                        None,
-                        SSH_CONNECT_NORMAL,
-                    )
-                    .await?;
-                    let remote_file = format!("{inbox}/{paper_id}.pdf");
-                    let mut cmd = Command::new("scp");
-                    push_ssh_opts(&mut cmd, "-P", ssh, SSH_CONNECT_NORMAL);
-                    cmd.arg(pdf).arg(format!("{}:{remote_file}", ssh_target(ssh)));
-                    let output = run_command(cmd, None).await?;
-                    command_text(&output).map_err(|e| hint_local_read_timeout(&e))?;
-                    let body = remote_request(
-                        ssh,
-                        "POST",
-                        "/api/v1/parses",
-                        Some(&doclib_payload(&remote_file, tier, page_range, force)),
-                        CURL_SUBMIT,
-                        SSH_CONNECT_NORMAL,
-                    )
-                    .await?;
+                    let remote_file = target.upload_pdf(pdf, paper_id, SSH_CONNECT_NORMAL).await?;
+                    let body = target
+                        .request(
+                            "POST",
+                            "/api/v1/parses",
+                            Some(&doclib_payload(&remote_file, tier, page_range, force)),
+                            CURL_SUBMIT,
+                            SSH_CONNECT_NORMAL,
+                        )
+                        .await?;
                     parse_submit_body(&body, "ssh", &remote_file, tier)
                 })
                 .await
@@ -862,9 +829,15 @@ impl Provider {
     }
 
     /// 轮询（同源必填，不回退）：doclib 按 parse_ids；api 按 batch_id。
-    pub async fn statuses(&self, doc_ref: &str, parse_ids: &[String]) -> Result<Vec<ParsePoll>, String> {
+    pub async fn statuses(
+        &self,
+        doc_ref: &str,
+        parse_ids: &[String],
+    ) -> Result<Vec<ParsePoll>, String> {
         match self {
-            Provider::Api(api) => with_timeout(POLL_TIMEOUT, api.statuses(doc_ref, parse_ids)).await,
+            Provider::Api(api) => {
+                with_timeout(POLL_TIMEOUT, api.statuses(doc_ref, parse_ids)).await
+            }
             Provider::Local { .. } | Provider::Ssh(_) => {
                 if parse_ids.is_empty() {
                     return Ok(Vec::new());
@@ -881,7 +854,9 @@ impl Provider {
                     .map(|id| format!("/api/v1/parses/{id}"))
                     .collect();
                 with_timeout(POLL_TIMEOUT, async move {
-                    let bodies = doclib_get_many(&target, &paths).await?;
+                    let bodies = target
+                        .get_many(&paths, CURL_POLL, SSH_CONNECT_NORMAL)
+                        .await?;
                     let mut polls = Vec::with_capacity(bodies.len());
                     for (index, body) in bodies.iter().enumerate() {
                         let parsed: Value = serde_json::from_str(body)
@@ -901,7 +876,12 @@ impl Provider {
     }
 
     /// 取 markdown（同源必填，不回退）：doclib 分页拉取；api 下载 full.zip 解出 full.md。
-    pub async fn markdown(&self, doc_ref: &str, tier: &str, page_range: &str) -> Result<String, String> {
+    pub async fn markdown(
+        &self,
+        doc_ref: &str,
+        tier: &str,
+        page_range: &str,
+    ) -> Result<String, String> {
         if !valid_doc_ref(doc_ref) {
             return Err("文档编号无效".into());
         }
@@ -927,12 +907,12 @@ impl Provider {
     }
 }
 
-fn build_provider(file: &MineruFileV2, name: &str) -> Result<Provider, String> {
+fn build_provider(file: &MineruFileV2, name: &str, home: &Path) -> Result<Provider, String> {
     match name {
         "local" => Ok(Provider::Local {
-            socket_path: file.local.socket_path.clone(),
+            socket_path: expand_local_path(&file.local.socket_path, home),
         }),
-        "ssh" => Provider::build_ssh(&file.ssh),
+        "ssh" => Provider::build_ssh(&file.ssh, home),
         "api" => Ok(Provider::Api(ApiClient::new(&file.api))),
         other => Err(format!("未知 MinerU 来源：{other}")),
     }
@@ -978,19 +958,22 @@ fn aggregate_failures(failures: &[(String, String)]) -> String {
 /// 探测超时就把论文判死会把「服务忙」误报成「源不可用」，曾造成整批导入失败。
 async fn submit_with_fallback(
     file: &MineruFileV2,
+    home: &Path,
     paper_id: &str,
     pdf: &Path,
     force: bool,
 ) -> Result<SubmitResult, String> {
     let order = enabled_order(file);
     if order.is_empty() {
-        return Err("没有启用任何 MinerU 来源，请先在系统页配置本地 CLI、SSH 远程或官方 API".into());
+        return Err(
+            "没有启用任何 MinerU 来源，请先在系统页配置本地 CLI、SSH 远程或官方 API".into(),
+        );
     }
-    let probes = probe_providers(file, &order).await;
+    let probes = probe_providers(file, home, &order).await;
     let candidates = order_candidates(&order, &probes);
     let mut failures: Vec<(String, String)> = Vec::new();
     for name in &candidates {
-        let provider = build_provider(file, name)?;
+        let provider = build_provider(file, name, home)?;
         match provider
             .submit(paper_id, pdf, force, &file.tier, &file.page_range)
             .await
@@ -1049,7 +1032,7 @@ fn probe_cache_key(file: &MineruFileV2, order: &[String]) -> String {
     parts.join("|")
 }
 
-async fn probe_providers(file: &MineruFileV2, order: &[String]) -> Vec<HealthProbe> {
+async fn probe_providers(file: &MineruFileV2, home: &Path, order: &[String]) -> Vec<HealthProbe> {
     // 只有一个启用源时无需排序，直接提交：省一次往返，也避免忙时探测误判。
     if order.len() == 1 {
         return Vec::new();
@@ -1065,7 +1048,7 @@ async fn probe_providers(file: &MineruFileV2, order: &[String]) -> Vec<HealthPro
     }
     let mut probes = Vec::with_capacity(order.len());
     for name in order {
-        let (ok, message) = match build_provider(file, name) {
+        let (ok, message) = match build_provider(file, name, home) {
             Err(message) => (false, message),
             Ok(provider) => match provider.health().await {
                 Ok(message) => (true, message),
@@ -1086,287 +1069,6 @@ async fn probe_providers(file: &MineruFileV2, order: &[String]) -> Vec<HealthPro
         });
     }
     probes
-}
-
-// ---------- 进程执行（async，显式 stdin EOF，超时由 with_timeout + kill_on_drop 兜底） ----------
-
-async fn run_command(
-    mut cmd: Command,
-    stdin_data: Option<&[u8]>,
-) -> Result<std::process::Output, String> {
-    if stdin_data.is_some() {
-        cmd.stdin(Stdio::piped());
-    }
-    cmd.stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    let mut child = cmd.spawn().map_err(|err| {
-        if err.kind() == std::io::ErrorKind::NotFound {
-            "找不到 ssh、scp 或 curl 命令".to_string()
-        } else {
-            err.to_string()
-        }
-    })?;
-    if let Some(data) = stdin_data {
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(data).await.map_err(|e| e.to_string())?;
-            // curl --data-binary @- 与远端 ssh stdin 都依赖 EOF 判断请求体结束，
-            // 写完必须立即显式 drop 句柄发送 EOF。
-            drop(stdin);
-        }
-    }
-    let output = child.wait_with_output().await.map_err(|e| e.to_string())?;
-    Ok(output)
-}
-
-/// scp 读本地文件超时通常不是 SSH 问题：iCloud/云盘「优化储存」会把文件清成占位，
-/// 读取时才开始下载，超时即报 `read local "...": Operation timed out`。附上可操作提示。
-fn hint_local_read_timeout(message: &str) -> String {
-    if message.contains("read local") && message.contains("Operation timed out") {
-        format!(
-            "{message}（本地文件读取超时：该 PDF 可能在 iCloud/云盘中尚未下载到本机，\
-             请先双击打开该文件完成下载，再重新解析）"
-        )
-    } else {
-        message.to_string()
-    }
-}
-
-fn command_text(output: &std::process::Output) -> Result<String, String> {    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    if output.status.success() {
-        return Ok(stdout);
-    }
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let detail = if stderr.trim().is_empty() {
-        clip(stdout.trim())
-    } else {
-        clip(stderr.trim())
-    };
-    if detail.contains("Permission denied") {
-        return Err("SSH 登录被拒绝，请检查用户和私钥".into());
-    }
-    Err(if detail.is_empty() {
-        "SSH 命令失败".into()
-    } else {
-        detail
-    })
-}
-
-fn push_ssh_opts(cmd: &mut Command, port_flag: &str, settings: &SshResolved, connect_timeout: u64) {
-    cmd.arg("-o").arg("BatchMode=yes");
-    cmd.arg("-o").arg("StrictHostKeyChecking=accept-new");
-    cmd.arg("-o").arg(format!("ConnectTimeout={connect_timeout}"));
-    cmd.arg("-o").arg("ServerAliveInterval=5");
-    cmd.arg("-o").arg("ServerAliveCountMax=3");
-    cmd.arg(port_flag).arg(settings.port.to_string());
-    if let Some(key) = &settings.identity {
-        cmd.arg("-o").arg("IdentitiesOnly=yes");
-        cmd.arg("-i").arg(key);
-    }
-}
-
-fn ssh_target(settings: &SshResolved) -> String {
-    format!("{}@{}", settings.user, settings.host)
-}
-
-async fn ssh_exec(
-    settings: &SshResolved,
-    remote: &str,
-    stdin_data: Option<&[u8]>,
-    connect_timeout: u64,
-) -> Result<String, String> {
-    let mut cmd = Command::new("ssh");
-    push_ssh_opts(&mut cmd, "-p", settings, connect_timeout);
-    cmd.arg(ssh_target(settings));
-    cmd.arg(remote);
-    let output = run_command(cmd, stdin_data).await?;
-    command_text(&output)
-}
-
-// HOME_CACHE：async 多线程下 thread_local 缓存基本失效，改为全局 OnceLock。
-static HOME_CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
-
-async fn remote_home(settings: &SshResolved, connect_timeout: u64) -> Result<String, String> {
-    let key = format!(
-        "{}@{}:{}",
-        settings.user, settings.host, settings.port
-    );
-    let cache = HOME_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Ok(map) = cache.lock() {
-        if let Some(home) = map.get(&key) {
-            return Ok(home.clone());
-        }
-    }
-    let home = with_timeout(POLL_TIMEOUT, ssh_exec(settings, r#"printf %s "$HOME""#, None, connect_timeout)).await?;
-    let home = home.trim().to_string();
-    if home.is_empty() || home.contains(['\n', '\r', ' ']) {
-        return Err("无法读取远端主目录".into());
-    }
-    if let Ok(mut map) = cache.lock() {
-        map.insert(key, home.clone());
-    }
-    Ok(home)
-}
-
-fn split_http(raw: &str) -> Result<String, String> {
-    const MARK: &str = "\n__PF_HTTP__";
-    let Some(idx) = raw.rfind(MARK) else {
-        return Err(format!("MinerU 没有返回状态码：{}", clip(raw)));
-    };
-    let body = raw[..idx].trim().to_string();
-    let code: u16 = raw[idx + MARK.len()..].trim().parse().unwrap_or(0);
-    if !(200..300).contains(&code) {
-        let message = serde_json::from_str::<Value>(&body)
-            .ok()
-            .and_then(|value| value["error"]["message"].as_str().map(str::to_string))
-            .unwrap_or_else(|| clip(&body));
-        return Err(format!("MinerU HTTP {code}：{message}"));
-    }
-    Ok(body)
-}
-
-fn curl_write_flag() -> &'static str {
-    "\n__PF_HTTP__%{http_code}"
-}
-
-fn remote_socket(socket_path: &str, home: &str) -> Result<String, String> {
-    let socket = expand_tilde(socket_path, home);
-    if socket.contains(['\n', '\r', '\0']) {
-        return Err("socket 路径无效".into());
-    }
-    Ok(socket)
-}
-
-/// doclib 请求目标：本地 socket 或 SSH 远程。
-enum DoclibTarget {
-    Local(String),
-    Ssh(SshResolved),
-}
-
-async fn local_request(
-    socket: &str,
-    method: &str,
-    path: &str,
-    body: Option<&str>,
-    max_time: u64,
-) -> Result<String, String> {
-    let url = format!("http://mineru{path}");
-    let mut cmd = Command::new("curl");
-    cmd.args([
-        "-sS",
-        "--max-time",
-        &max_time.to_string(),
-        "--unix-socket",
-        socket,
-        "-H",
-        "Content-Type: application/json",
-        "-X",
-        method,
-        "-w",
-        curl_write_flag(),
-        &url,
-    ]);
-    if body.is_some() {
-        cmd.arg("--data-binary").arg("@-");
-    }
-    let output = run_command(cmd, body.map(str::as_bytes)).await?;
-    let stdout = command_text(&output)?;
-    split_http(&stdout)
-}
-
-async fn remote_request(
-    settings: &SshResolved,
-    method: &str,
-    path: &str,
-    body: Option<&str>,
-    max_time: u64,
-    connect_timeout: u64,
-) -> Result<String, String> {
-    let home = remote_home(settings, connect_timeout).await?;
-    let socket = remote_socket(&settings.socket_path, &home)?;
-    let data = if body.is_some() { " --data-binary @-" } else { "" };
-    let url = format!("http://mineru{path}");
-    let remote = format!(
-        "curl -sS --max-time {max_time} --unix-socket {} -H {} -X {} {} -w {}{data}",
-        shell_quote(&socket),
-        shell_quote("Content-Type: application/json"),
-        method,
-        shell_quote(&url),
-        shell_quote(curl_write_flag()),
-    );
-    let stdout = ssh_exec(settings, &remote, body.map(str::as_bytes), connect_timeout).await?;
-    split_http(&stdout)
-}
-
-async fn doclib_request(
-    target: &DoclibTarget,
-    method: &str,
-    path: &str,
-    body: Option<&str>,
-    max_time: u64,
-    connect_timeout: u64,
-) -> Result<String, String> {
-    match target {
-        DoclibTarget::Local(socket) => local_request(socket, method, path, body, max_time).await,
-        DoclibTarget::Ssh(ssh) => {
-            remote_request(ssh, method, path, body, max_time, connect_timeout).await
-        }
-    }
-}
-
-async fn remote_get_many(
-    settings: &SshResolved,
-    paths: &[String],
-    max_time: u64,
-    connect_timeout: u64,
-) -> Result<Vec<String>, String> {
-    let home = remote_home(settings, connect_timeout).await?;
-    let socket = remote_socket(&settings.socket_path, &home)?;
-    let mut script = String::new();
-    for (index, path) in paths.iter().enumerate() {
-        let url = format!("http://mineru{path}");
-        script.push_str(&format!("printf '%s\\n' __PF_ITEM_{index}\n"));
-        script.push_str(&format!(
-            "curl -sS --max-time {max_time} --unix-socket {} {} -w {}\n",
-            shell_quote(&socket),
-            shell_quote(&url),
-            shell_quote(curl_write_flag())
-        ));
-    }
-    let raw = ssh_exec(settings, &script, None, connect_timeout).await?;
-    let mut bodies = Vec::with_capacity(paths.len());
-    for index in 0..paths.len() {
-        let marker = format!("__PF_ITEM_{index}\n");
-        let start = raw
-            .find(&marker)
-            .ok_or_else(|| "MinerU 批量状态返回不完整".to_string())?
-            + marker.len();
-        let end = if index + 1 < paths.len() {
-            raw[start..]
-                .find(&format!("__PF_ITEM_{}\n", index + 1))
-                .map(|offset| start + offset)
-                .unwrap_or(raw.len())
-        } else {
-            raw.len()
-        };
-        bodies.push(split_http(&raw[start..end])?);
-    }
-    Ok(bodies)
-}
-
-async fn doclib_get_many(target: &DoclibTarget, paths: &[String]) -> Result<Vec<String>, String> {
-    match target {
-        DoclibTarget::Local(socket) => {
-            let mut bodies = Vec::with_capacity(paths.len());
-            for path in paths {
-                bodies.push(local_request(socket, "GET", path, None, CURL_POLL).await?);
-            }
-            Ok(bodies)
-        }
-        DoclibTarget::Ssh(ssh) => {
-            remote_get_many(ssh, paths, CURL_POLL, SSH_CONNECT_NORMAL).await
-        }
-    }
 }
 
 fn doclib_payload(path: &str, tier: &str, page_range: &str, force: bool) -> String {
@@ -1402,8 +1104,8 @@ fn parse_submit_body(
     remote_path: &str,
     tier_fallback: &str,
 ) -> Result<SubmitResult, String> {
-    let json: Value = serde_json::from_str(body)
-        .map_err(|e| format!("MinerU 返回无法解析：{e}"))?;
+    let json: Value =
+        serde_json::from_str(body).map_err(|e| format!("MinerU 返回无法解析：{e}"))?;
     let short_id = json["short_id"].as_str().unwrap_or("").to_string();
     if !valid_doc_ref(&short_id) {
         return Err("MinerU 没有返回文档编号".into());
@@ -1419,8 +1121,8 @@ fn parse_submit_body(
 }
 
 fn doclib_status_message(body: &str, via_ssh: bool) -> Result<String, String> {
-    let json: Value = serde_json::from_str(body)
-        .map_err(|e| format!("MinerU 状态返回无法解析：{e}"))?;
+    let json: Value =
+        serde_json::from_str(body).map_err(|e| format!("MinerU 状态返回无法解析：{e}"))?;
     if json["running"].as_bool() != Some(true) {
         return Err("MinerU 文档库没有在运行".into());
     }
@@ -1433,7 +1135,7 @@ fn doclib_status_message(body: &str, via_ssh: bool) -> Result<String, String> {
 }
 
 async fn doclib_markdown(
-    target: &DoclibTarget,
+    target: &DoclibTransport,
     doc_ref: &str,
     tier: &str,
     page_range: &str,
@@ -1450,7 +1152,9 @@ async fn doclib_markdown(
             path.push_str("&after=");
             path.push_str(&encode_query(cursor));
         }
-        let body = doclib_request(target, "GET", &path, None, CURL_FETCH, SSH_CONNECT_NORMAL).await?;
+        let body = target
+            .request("GET", &path, None, CURL_FETCH, SSH_CONNECT_NORMAL)
+            .await?;
         let json: Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
         let content = json["content"].as_str().unwrap_or("").to_string();
         total += content.len();
@@ -1490,7 +1194,7 @@ fn canonical_pdf(path: &str) -> Result<PathBuf, String> {
     if !file.is_file() {
         return Err("PDF 不存在".into());
     }
-    let canon = file.canonicalize().map_err(|e| e.to_string())?;
+    let canon = dunce::canonicalize(&file).map_err(|e| e.to_string())?;
     let is_pdf = canon
         .extension()
         .and_then(|ext| ext.to_str())
@@ -1515,8 +1219,9 @@ pub async fn save_mineru_settings(
     settings: MineruInputV2,
 ) -> Result<MineruPublic, String> {
     let existing = read_file(&app)?;
+    let home = platform::home_dir(&app)?;
     let file = normalize_input(&settings, &existing);
-    validate_config(&file)?;
+    validate_config(&file, &home)?;
     let path = settings_file(&app)?;
     write_file_at(&path, &file)?;
     Ok(to_public(&file))
@@ -1529,7 +1234,8 @@ pub async fn mineru_test(app: AppHandle, provider: String) -> Result<String, Str
         return Err(format!("未知 MinerU 来源：{provider}"));
     }
     let file = read_file(&app)?;
-    let target = build_provider(&file, &provider)?;
+    let home = platform::home_dir(&app)?;
+    let target = build_provider(&file, &provider, &home)?;
     target.health().await
 }
 
@@ -1537,16 +1243,20 @@ pub async fn mineru_test(app: AppHandle, provider: String) -> Result<String, Str
 #[tauri::command]
 pub async fn mineru_probe(app: AppHandle) -> Result<Vec<ProviderHealth>, String> {
     let file = read_file(&app)?;
+    let home = platform::home_dir(&app)?;
     let order = enabled_order(&file);
     let mut spawned = Vec::with_capacity(order.len());
     for name in &order {
-        let provider = build_provider(&file, name)?;
+        let provider = build_provider(&file, name, &home)?;
         let label = name.clone();
-        spawned.push((label, tokio::spawn(async move {
-            let started = Instant::now();
-            let result = provider.health().await;
-            (started.elapsed().as_millis() as u64, result)
-        })));
+        spawned.push((
+            label,
+            tokio::spawn(async move {
+                let started = Instant::now();
+                let result = provider.health().await;
+                (started.elapsed().as_millis() as u64, result)
+            }),
+        ));
     }
     let mut healths = Vec::with_capacity(spawned.len());
     for (name, handle) in spawned {
@@ -1578,6 +1288,7 @@ pub async fn mineru_submit(
     provider: Option<String>,
 ) -> Result<SubmitResult, String> {
     let file = read_file(&app)?;
+    let home = platform::home_dir(&app)?;
     let pdf = canonical_pdf(&local_path)?;
     if !valid_paper_id(&paper_id) {
         return Err("论文编号无效".into());
@@ -1587,12 +1298,12 @@ pub async fn mineru_submit(
             if !matches!(name.as_str(), "local" | "ssh" | "api") {
                 return Err(format!("未知 MinerU 来源：{name}"));
             }
-            let target = build_provider(&file, &name)?;
+            let target = build_provider(&file, &name, &home)?;
             target
                 .submit(&paper_id, &pdf, force, &file.tier, &file.page_range)
                 .await
         }
-        None => submit_with_fallback(&file, &paper_id, &pdf, force).await,
+        None => submit_with_fallback(&file, &home, &paper_id, &pdf, force).await,
     }
 }
 
@@ -1608,7 +1319,8 @@ pub async fn mineru_parse_statuses(
         return Err("文档编号无效".into());
     }
     let file = read_file(&app)?;
-    let target = build_provider(&file, &provider)?;
+    let home = platform::home_dir(&app)?;
+    let target = build_provider(&file, &provider, &home)?;
     target.statuses(&doc_ref, &parse_ids).await
 }
 
@@ -1625,7 +1337,8 @@ pub async fn mineru_markdown(
         return Err("文档编号无效".into());
     }
     let file = read_file(&app)?;
-    let target = build_provider(&file, &provider)?;
+    let home = platform::home_dir(&app)?;
+    let target = build_provider(&file, &provider, &home)?;
     target.markdown(&doc_ref, &tier, &page_range).await
 }
 
@@ -1672,20 +1385,15 @@ pub async fn normalize_pdf(path: String) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub async fn open_pdf(path: String) -> Result<(), String> {
+pub async fn open_pdf(app: AppHandle, path: String) -> Result<(), String> {
     let canon = canonical_pdf(&path)?;
-    let mut cmd = Command::new("open");
-    cmd.arg(&canon);
-    let output = run_command(cmd, None).await?;
-    command_text(&output)?;
-    Ok(())
+    platform::open_pdf(&app, &canon)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
-    use std::os::unix::fs::PermissionsExt;
 
     fn v1_file(mode: &str) -> Value {
         json!({
@@ -1699,6 +1407,33 @@ mod tests {
             "tier": "flash",
             "pageRange": "1-5"
         })
+    }
+
+    #[test]
+    fn injected_home_expands_without_environment_access() {
+        let home = PathBuf::from("/tmp/paper-field-home");
+        assert_eq!(expand_local_path("~", &home), home);
+        assert_eq!(
+            expand_local_path("~/.mineru/doclib.sock", &home),
+            home.join(".mineru").join("doclib.sock")
+        );
+        assert_eq!(
+            expand_local_path("/opt/absolute/doclib.sock", &home),
+            PathBuf::from("/opt/absolute/doclib.sock")
+        );
+    }
+
+    #[test]
+    fn canonical_pdf_returns_shell_friendly_absolute_path() {
+        let dir = std::env::temp_dir().join(format!("pf-canonical-pdf-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("sample.pdf");
+        fs::write(&file, b"pdf").unwrap();
+        let canonical = canonical_pdf(&file.to_string_lossy()).unwrap();
+        assert!(canonical.is_absolute());
+        #[cfg(windows)]
+        assert!(!canonical.to_string_lossy().starts_with(r"\\?\"));
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -1828,9 +1563,21 @@ mod tests {
     fn pick_provider_takes_first_healthy_in_order() {
         let order: Vec<String> = vec!["local".into(), "ssh".into(), "api".into()];
         let probes = vec![
-            HealthProbe { provider: "local".into(), ok: false, message: "找不到 socket".into() },
-            HealthProbe { provider: "ssh".into(), ok: true, message: "已连接".into() },
-            HealthProbe { provider: "api".into(), ok: true, message: "已连接".into() },
+            HealthProbe {
+                provider: "local".into(),
+                ok: false,
+                message: "找不到 socket".into(),
+            },
+            HealthProbe {
+                provider: "ssh".into(),
+                ok: true,
+                message: "已连接".into(),
+            },
+            HealthProbe {
+                provider: "api".into(),
+                ok: true,
+                message: "已连接".into(),
+            },
         ];
         assert_eq!(pick_provider(&order, &probes).unwrap(), "ssh");
 
@@ -1843,9 +1590,21 @@ mod tests {
         let order: Vec<String> = vec!["local".into(), "ssh".into(), "api".into()];
         // ssh 探测失败（如远端忙导致 /status 超时）时仍要排在候选里，靠真实提交定成败。
         let probes = vec![
-            HealthProbe { provider: "local".into(), ok: true, message: "已连接".into() },
-            HealthProbe { provider: "ssh".into(), ok: false, message: "curl: (28) timed out".into() },
-            HealthProbe { provider: "api".into(), ok: true, message: "已连接".into() },
+            HealthProbe {
+                provider: "local".into(),
+                ok: true,
+                message: "已连接".into(),
+            },
+            HealthProbe {
+                provider: "ssh".into(),
+                ok: false,
+                message: "curl: (28) timed out".into(),
+            },
+            HealthProbe {
+                provider: "api".into(),
+                ok: true,
+                message: "已连接".into(),
+            },
         ];
         let candidates = order_candidates(&order, &probes);
         assert_eq!(
@@ -1860,7 +1619,10 @@ mod tests {
         let order: Vec<String> = vec!["ssh".into()];
         assert_eq!(order_candidates(&order, &[]), vec!["ssh".to_string()]);
         let multi: Vec<String> = vec!["ssh".into(), "api".into()];
-        assert_eq!(order_candidates(&multi, &[]), vec!["ssh".to_string(), "api".to_string()]);
+        assert_eq!(
+            order_candidates(&multi, &[]),
+            vec!["ssh".to_string(), "api".to_string()]
+        );
     }
 
     #[test]
@@ -1877,23 +1639,24 @@ mod tests {
     }
 
     #[test]
-    fn hint_local_read_timeout_maps_icloud_placeholder_error() {
-        let raw = r#"scp: read local "/Users/x/Desktop/a.pdf": Operation timed out"#;
-        let hinted = hint_local_read_timeout(raw);
-        assert!(hinted.contains(raw), "保留原始错误：{hinted}");
-        assert!(hinted.contains("尚未下载到本机"), "应附中文提示：{hinted}");
-        // 其他 scp 错误原样返回
-        let other = r#"scp: Connection closed by remote host"#;
-        assert_eq!(hint_local_read_timeout(other), other);
-    }
-
-    #[test]
     fn pick_provider_aggregates_failures_in_chinese() {
         let order: Vec<String> = vec!["local".into(), "ssh".into(), "api".into()];
         let probes = vec![
-            HealthProbe { provider: "local".into(), ok: false, message: "找不到 MinerU socket".into() },
-            HealthProbe { provider: "ssh".into(), ok: false, message: "连接超时".into() },
-            HealthProbe { provider: "api".into(), ok: false, message: "当日额度已用尽".into() },
+            HealthProbe {
+                provider: "local".into(),
+                ok: false,
+                message: "找不到 MinerU socket".into(),
+            },
+            HealthProbe {
+                provider: "ssh".into(),
+                ok: false,
+                message: "连接超时".into(),
+            },
+            HealthProbe {
+                provider: "api".into(),
+                ok: false,
+                message: "当日额度已用尽".into(),
+            },
         ];
         let err = pick_provider(&order, &probes).unwrap_err();
         assert!(err.contains("本地 CLI：找不到 MinerU socket"), "{err}");
@@ -1931,7 +1694,8 @@ mod tests {
 
     #[test]
     fn parse_submit_body_maps_doclib_response() {
-        let body = r#"{"short_id":"doc-42","status":"pending","tier":"flash","created_parse_ids":[7,3]}"#;
+        let body =
+            r#"{"short_id":"doc-42","status":"pending","tier":"flash","created_parse_ids":[7,3]}"#;
         let result = parse_submit_body(body, "local", "/tmp/a.pdf", "standard").unwrap();
         assert_eq!(result.provider, "local");
         assert_eq!(result.remote_path, "/tmp/a.pdf");
@@ -1940,46 +1704,6 @@ mod tests {
         assert_eq!(result.tier, "flash");
 
         assert!(parse_submit_body("{}", "local", "/tmp/a.pdf", "standard").is_err());
-    }
-
-    #[tokio::test]
-    async fn with_timeout_aborts_long_child_process() {
-        let started = Instant::now();
-        let mut cmd = Command::new("sleep");
-        cmd.arg("5");
-        let err = with_timeout(Duration::from_secs(1), run_command(cmd, None))
-            .await
-            .unwrap_err();
-        assert!(err.contains("超时"), "{err}");
-        // 约 1s 被中断（kill_on_drop 杀掉 sleep），远早于 5s
-        assert!(started.elapsed() < Duration::from_secs(3));
-    }
-
-    #[tokio::test]
-    async fn run_command_sends_stdin_eof_immediately() {
-        // 伪 curl：读 stdin 到 EOF 再退出。若 stdin 句柄未及时关闭，
-        // 该进程会一直等 EOF 直到外层超时——这就是 B4 要防的回归。
-        let dir = std::env::temp_dir().join(format!("paper-field-eof-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let script = dir.join("fake-curl.sh");
-        fs::write(&script, "#!/bin/sh\nexec cat\n").unwrap();
-        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
-
-        let started = Instant::now();
-        let output = with_timeout(
-            Duration::from_secs(3),
-            run_command(Command::new(&script), Some(b"hello-body")),
-        )
-        .await
-        .unwrap();
-        let stdout = command_text(&output).unwrap();
-        assert_eq!(stdout, "hello-body");
-        assert!(
-            started.elapsed() < Duration::from_secs(2),
-            "stdin EOF 未及时发送：{:?}",
-            started.elapsed()
-        );
-        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -1993,14 +1717,17 @@ mod tests {
             socket_path: "~/.mineru/doclib.sock".into(),
             inbox_dir: String::new(),
         };
-        let ssh = SshResolved::from_cfg(&cfg);
+        let ssh = SshResolved::from_cfg(&cfg, Path::new("/tmp/paper-field-home"));
         assert_eq!(ssh.host, "imac.local");
         assert_eq!(ssh.port, 0);
         assert!(ssh.identity.is_none());
         assert!(ssh.ensure().is_ok());
 
         let ok = json!({"running": true, "version": "4.5.1"}).to_string();
-        assert_eq!(doclib_status_message(&ok, false).unwrap(), "已连接 MinerU 4.5.1");
+        assert_eq!(
+            doclib_status_message(&ok, false).unwrap(),
+            "已连接 MinerU 4.5.1"
+        );
         assert_eq!(
             doclib_status_message(&ok, true).unwrap(),
             "已连接 MinerU 4.5.1（SSH 远程）"
@@ -2041,11 +1768,15 @@ mod tests {
             file
         }
 
+        fn platform_home() -> PathBuf {
+            PathBuf::from("/tmp/paper-field-home")
+        }
+
         #[tokio::test]
         #[ignore = "需要真实 iMac SSH 环境与 doclib 服务"]
         async fn e2e_ssh_health() {
             let file = real_file();
-            let provider = build_provider(&file, "ssh").unwrap();
+            let provider = build_provider(&file, "ssh", &platform_home()).unwrap();
             let message = provider.health().await.expect("SSH 健康检查应成功");
             assert!(
                 message.contains("已连接 MinerU"),
@@ -2061,7 +1792,7 @@ mod tests {
             assert_eq!(order, vec!["local".to_string(), "ssh".to_string()]);
             let mut probes = Vec::new();
             for name in &order {
-                let provider = build_provider(&file, name).unwrap();
+                let provider = build_provider(&file, name, &platform_home()).unwrap();
                 let result = provider.health().await;
                 let ok = result.is_ok();
                 let message = result.unwrap_or_else(|err| err);
@@ -2087,7 +1818,7 @@ mod tests {
             let pdf = fixture_pdf();
             let paper_id = "e2e00000-0000-4000-8000-000000000001";
             // 与前端 mineruSubmit 不带 provider 的路径一致：逐源探测 → 回退 → 提交
-            let submitted = submit_with_fallback(&file, paper_id, &pdf, false)
+            let submitted = submit_with_fallback(&file, &platform_home(), paper_id, &pdf, false)
                 .await
                 .expect("自动回退提交应成功");
             assert_eq!(submitted.provider, "ssh", "应回退到 SSH 源");
@@ -2096,13 +1827,10 @@ mod tests {
                 "short_id 无效：{}",
                 submitted.short_id
             );
-            assert!(
-                !submitted.parse_ids.is_empty(),
-                "提交响应缺少解析任务编号"
-            );
+            assert!(!submitted.parse_ids.is_empty(), "提交响应缺少解析任务编号");
 
             // 恢复语义：轮询与取结果固定使用提交时的 provider
-            let provider = build_provider(&file, "ssh").unwrap();
+            let provider = build_provider(&file, "ssh", &platform_home()).unwrap();
             let mut settled = false;
             for _ in 0..90 {
                 let polls = provider

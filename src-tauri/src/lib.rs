@@ -1,6 +1,8 @@
 mod llm;
 mod mineru;
 mod mineru_api;
+mod platform;
+mod transport;
 
 use std::fs;
 use std::path::PathBuf;
