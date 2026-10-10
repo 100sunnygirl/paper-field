@@ -1,6 +1,6 @@
 # Paper Field / 论文现场
 
-Local-first research-paper notes for macOS. Organize papers by research domain, let an optional LLM fill structured metadata, then write notes in your own voice and mark read yourself.
+Local-first research-paper notes for macOS and Windows. Organize papers by research domain, let an optional LLM fill structured metadata, then write notes in your own voice and mark read yourself.
 
 按研究领域组织的论文笔记台：入库时可用 LLM 预填基础信息，阅读后由你补全洞察并**手动**标记已读。LLM 永远不会把论文标成已读。
 
@@ -25,14 +25,14 @@ The product chrome is a **reading workstation**: charcoal top bar, pale mode rai
 - Keyboard: ↑↓ list, ⌘N 添加论文, ⌘R 标记已读, ⌘K 搜索
 - Move paper across domains via 更多 → 移动到其他领域; delete requires a confirm dialog
 
-## Run on macOS
+## Run from source
 
 Prerequisites:
 
-1. **macOS 15+**
-2. **Xcode Command Line Tools**: `xcode-select --install`
-3. **Rust 1.85+** via [rustup](https://rustup.rs) (`rustup default stable`)
-4. **Node.js 20+** (npm)
+1. **Node.js 20+** (npm)
+2. **Rust stable** via [rustup](https://rustup.rs)
+3. macOS 15+: Xcode Command Line Tools (`xcode-select --install`)
+4. Windows 10+ x64: Visual Studio Build Tools with **Desktop development with C++**, and Microsoft Edge WebView2 Runtime
 
 ```bash
 git clone <this-repo>
@@ -41,17 +41,25 @@ npm install
 npm run tauri dev
 ```
 
-The desktop window is the real app (`npm run tauri dev`). SQLite lives in the app data directory; the API key is stored only in the app config directory (`llm-settings.json`) and is never echoed back to the UI after save. Plaintext keys mirrored into `tauri-plugin-store` by older versions are deleted automatically on every save.
+The desktop window is the real app (`npm run tauri dev`). SQLite lives in the platform app data directory; the API key is stored only in the app config directory (`llm-settings.json`) and is never echoed back to the UI after save. Plaintext keys mirrored into `tauri-plugin-store` by older versions are deleted automatically on every save.
 
-To ship a `.app` / `.dmg`:
+To ship a `.app` / `.dmg` on macOS:
 
 ```bash
 npm run tauri build
 ```
 
+To ship the Windows NSIS installer:
+
+```powershell
+npm run tauri build -- --target x86_64-pc-windows-msvc
+```
+
+The installer is emitted under `src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis\`.
+
 ### UI-only preview (browser)
 
-`npm run dev` serves the React shell at `http://127.0.0.1:43173` with a sql.js + IndexedDB fallback. Use this when you are not on macOS or do not have the Tauri webview stack. Browser LLM calls may fail CORS; the desktop app proxies completions in Rust.
+`npm run dev` serves the React shell at `http://127.0.0.1:43173` with a sql.js + IndexedDB fallback. Use this when you do not want to launch the Tauri webview stack. Browser LLM calls may fail CORS; the desktop app proxies completions in Rust.
 
 ```bash
 npm install
@@ -80,6 +88,8 @@ Without a key, add papers and edit every field by hand. Sample domains (多模�
 | 本地 CLI | MinerU 文档库与本应用在同一台电脑 | Socket 路径（默认 `~/.mineru/doclib.sock`） |
 | SSH 远程 | MinerU 部署在另一台电脑（如 iMac）——**即原有 doclib.sock 方案，字段原样保留，旧部署无需改动** | 主机 / 端口 / 用户 / 私钥 / 远程 Socket 路径 / 远程暂存目录 |
 | 官方 API | mineru.net 云端解析，无需本机部署 | Token（在 mineru.net 获取）、模型版本（pipeline / vlm）、语言（中 / 英） |
+
+Windows notes: local doclib access requires a curl build with `--unix-socket` support (Windows System32 curl provides it); SSH remote requires the optional OpenSSH Client feature. The installer is currently unsigned, so Windows SmartScreen may show a warning before you choose **More info → Run anyway**.
 
 - **回退顺序**：卡片上方的顺序 chips 可 ↑↓ 调整，保存/导入按该顺序取第一个探测通过的源；「当前生效」一行始终显示实际使用的来源，全部失败时逐条列出失败原因。
 - **自动补全**：解析完成后若已配置 AI Key，会自动补全元数据；AI 只填空白字段，从不覆盖你手动改过的内容（`overwrite=false` 语义）。
@@ -122,9 +132,9 @@ Without a key, add papers and edit every field by hand. Sample domains (多模�
 
 数据来源：作业状态以 `llm_jobs` 表为准；阶段、批次与页进度是运行时实况（`src/lib/activity.ts`，只存内存，重启即清空——与启动时把残留作业清扫为「应用上次退出」的语义一致）。
 
-## 从源码安装（macOS）/ Install from source
+## 从源码安装 / Install from source
 
-前置：macOS 15+、Xcode CLT（`xcode-select --install`）、Rust（[rustup](https://rustup.rs)，1.85+）、Node.js 20+。
+前置：macOS 15+、Xcode CLT（`xcode-select --install`）或 Windows 10+ x64、Visual Studio Build Tools（Desktop development with C++）、Rust（[rustup](https://rustup.rs)，stable MSVC）、Node.js 20+。
 
 ```bash
 git clone https://github.com/100sunnygirl/paper-field.git
@@ -134,8 +144,11 @@ npm install
 # 开发运行（桌面窗口）
 npm run tauri dev
 
-# 打可双击的 .app / .dmg
+# macOS：打可双击的 .app / .dmg
 npm run tauri build
+
+# Windows：打 NSIS 安装包
+npm run tauri build -- --target x86_64-pc-windows-msvc
 ```
 
 安装到「应用程序」：
@@ -148,13 +161,16 @@ xattr -dr com.apple.quarantine "/Applications/Paper Field.app"
 open "/Applications/Paper Field.app"
 ```
 
+Windows 直接运行 `src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis\Paper Field_0.2.14_x64-setup.exe`。默认按当前用户安装，不需要管理员权限；安装器会在缺少 WebView2 Runtime 时在线引导安装。
+
 首次 release 编译会较久；之后增量会快很多。
 
 ## 更新代码后如何更新软件 / Update after pulling
 
 本地笔记数据在应用数据目录，**不在** `.app` 包内，替换应用一般不会丢数据：
 
-- SQLite：`~/Library/Application Support/com.paperfield.app/paper-field.db`
+- macOS SQLite：`~/Library/Application Support/com.paperfield.app/paper-field.db`
+- Windows SQLite：`%APPDATA%\com.paperfield.app\paper-field.db`
 - API Key 等：同目录下的 `llm-settings.json`（MinerU Token 在 `mineru-settings.json`，均不回显）
 
 更新步骤：
@@ -204,6 +220,14 @@ default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src
 npm test                                                   # 前端 vitest（24 文件 / 378 测试）
 npm run build                                              # tsc && vite build
 PATH="$HOME/.cargo/bin:$PATH" cargo test --manifest-path src-tauri/Cargo.toml   # Rust 单测（lib 25 个）
+```
+
+Windows PowerShell equivalent:
+
+```powershell
+npm test
+npm run build
+cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
 ## Data

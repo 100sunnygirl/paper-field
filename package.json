@@ -1,7 +1,7 @@
 {
   "name": "paper-field",
   "private": true,
-  "version": "0.2.13",
+  "version": "0.2.14",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,7 +9,7 @@
     "preview": "vite preview --host 127.0.0.1 --port 43173",
     "tauri": "tauri",
     "test": "vitest run",
-    "postinstall": "mkdir -p public/vendor && cp node_modules/sql.js/dist/sql-wasm.js public/vendor/sql-wasm.js && cp node_modules/sql.js/dist/sql-wasm.wasm public/vendor/sql-wasm.wasm"
+    "postinstall": "node scripts/copy-sql-wasm.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

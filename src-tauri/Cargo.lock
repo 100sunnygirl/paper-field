@@ -2766,8 +2766,9 @@ dependencies = [
 
 [[package]]
 name = "paper-field"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
+ "dunce",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
