@@ -413,6 +413,7 @@ mod tests {
             )
             .await
             .unwrap();
+            let output = output.unwrap();
             assert_eq!(command_text(&output).unwrap(), "hello-body");
             assert!(started.elapsed() < Duration::from_secs(2));
             fs::remove_dir_all(&dir).ok();

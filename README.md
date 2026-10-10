@@ -57,6 +57,8 @@ npm run tauri build -- --target x86_64-pc-windows-msvc
 
 The installer is emitted under `src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis\`.
 
+After merging, pushing a `v*` tag triggers the Desktop workflow. GitHub builds the Windows installer and a universal macOS `.dmg` in the cloud, then attaches both plus `SHA256SUMS.txt` to the same GitHub Release.
+
 ### UI-only preview (browser)
 
 `npm run dev` serves the React shell at `http://127.0.0.1:43173` with a sql.js + IndexedDB fallback. Use this when you do not want to launch the Tauri webview stack. Browser LLM calls may fail CORS; the desktop app proxies completions in Rust.
