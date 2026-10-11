@@ -1,7 +1,11 @@
+mod backup;
+mod io_util;
 mod llm;
+mod lookup;
 mod mineru;
 mod mineru_api;
 mod platform;
+mod secrets;
 mod transport;
 
 use std::fs;
@@ -26,6 +30,49 @@ pub(crate) fn app_config_dir(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|e| e.to_string())?;
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir)
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ImportedPdf {
+    library_path: String,
+    original_path: String,
+}
+
+#[tauri::command]
+fn import_pdf_to_library(app: tauri::AppHandle, source: String) -> Result<ImportedPdf, String> {
+    let src = PathBuf::from(&source);
+    if !src.is_file() {
+        return Err("PDF 不存在".into());
+    }
+    let canon = dunce::canonicalize(&src).map_err(|err| err.to_string())?;
+    let is_pdf = canon
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.eq_ignore_ascii_case("pdf"))
+        .unwrap_or(false);
+    if !is_pdf {
+        return Err("请选择 PDF 文件".into());
+    }
+    let library = app_config_dir(&app)?.join("library");
+    fs::create_dir_all(&library).map_err(|err| err.to_string())?;
+    let stem = canon
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("paper")
+        .chars()
+        .map(|ch| if ch.is_alphanumeric() || ch == '-' || ch == '_' { ch } else { '-' })
+        .collect::<String>();
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    let dest = library.join(format!("{millis}-{stem}.pdf"));
+    fs::copy(&canon, &dest).map_err(|err| format!("复制 PDF 到文库失败：{err}"))?;
+    Ok(ImportedPdf {
+        library_path: dest.to_string_lossy().to_string(),
+        original_path: canon.to_string_lossy().to_string(),
+    })
 }
 
 #[tauri::command]
@@ -124,7 +171,13 @@ pub fn run() {
             mineru::open_pdf,
             mineru::mineru_submit,
             mineru::mineru_parse_statuses,
-            mineru::mineru_markdown
+            mineru::mineru_markdown,
+            lookup::lookup_paper,
+            lookup::verify_url,
+            backup::backup_database_file,
+            backup::create_library_backup,
+            backup::restore_library_backup,
+            import_pdf_to_library
         ])
         .run(tauri::generate_context!())
         .expect("error while running Paper Field");

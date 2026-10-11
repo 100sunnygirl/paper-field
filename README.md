@@ -41,7 +41,7 @@ npm install
 npm run tauri dev
 ```
 
-The desktop window is the real app (`npm run tauri dev`). SQLite lives in the platform app data directory; the API key is stored only in the app config directory (`llm-settings.json`) and is never echoed back to the UI after save. Plaintext keys mirrored into `tauri-plugin-store` by older versions are deleted automatically on every save.
+The desktop window is the real app (`npm run tauri dev`). SQLite lives in the platform app data directory. LLM API keys and the MinerU token are stored in the macOS Keychain (Windows Credential Manager on Windows). The settings files keep provider URLs and models only; keys are not written back into `llm-settings.json` or `mineru-settings.json`. On Linux, where this repo's dev VM has no Keychain, the same values go to a mode-0600 `secrets.json` beside the settings files. Browser preview still keeps keys in `localStorage`. Plaintext keys mirrored into `tauri-plugin-store` by older versions are deleted automatically on every save.
 
 To ship a `.app` / `.dmg` on macOS:
 
@@ -79,7 +79,11 @@ npm run dev
 
 Without a key, add papers and edit every field by hand. Sample domains (多模态 / 指令对齐) and three papers load automatically on first launch.
 
-**清除已保存的 Key**：系统页 AI 服务设置卡在已保存 Key 时显示「清除已保存的 Key…」，二段确认后本机 `llm-settings.json` 中的 Key 即被删除（`tauri-plugin-store` 里的历史镜像也会一并清掉），状态条回到「未配置 AI」。
+**清除已保存的 Key**：系统页 AI 服务设置卡在已保存 Key 时显示「清除已保存的 Key…」，二段确认后 Keychain（或 Linux 上的 `secrets.json`）中的 Key 即被删除（`tauri-plugin-store` 里的历史镜像也会一并清掉），状态条回到「未配置 AI」。
+
+**文献库著录**：补全论文信息时先查文献库，再让模型只填仍然空白的字段（中文标题、标签、实验室、代码链接猜测）。arXiv id 走 export.arxiv.org，DOI 走 Crossref，只有标题时走 OpenAlex，不够像再问 Semantic Scholar（标题 Jaccard 低于 0.82 则丢弃）。手动添加时只要填了 arXiv 或 DOI，即使没有 PDF 也会查一次。查不到或离线时保留已有著录。代码链接和项目页写入前做 HTTP HEAD/GET，打不开就丢掉。档案侧栏的「刷新链接」只做这次查询，不调用模型。
+
+**备份与恢复**：系统页「数据导出」旁有「备份」和「恢复」。备份是一个 zip：`paper-field.db`、文库里的 PDF、以及不含密钥的设置 JSON。恢复前会先把当前数据库复制为 `paper-field.db.pre-restore-<时间>`，确认后才替换。导入 PDF 时桌面版把文件复制进应用支持目录的 `library/`，原路径留在 `pdf_original_path`。
 
 ## MinerU 解析源 / MinerU providers
 
@@ -173,7 +177,9 @@ Windows 直接运行 `src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsi
 
 - macOS SQLite：`~/Library/Application Support/com.paperfield.app/paper-field.db`
 - Windows SQLite：`%APPDATA%\com.paperfield.app\paper-field.db`
-- API Key 等：同目录下的 `llm-settings.json`（MinerU Token 在 `mineru-settings.json`，均不回显）
+- 文库 PDF：同目录下的 `library/`
+- 设置（不含密钥）：同目录下的 `llm-settings.json`、`mineru-settings.json`（界面不回显 Key）
+- 密钥：macOS Keychain / Windows Credential Manager，服务名 `paper-field`。Linux 为同目录 `secrets.json`（权限 0600）。浏览器预览仍用 `localStorage`。
 
 更新步骤：
 
@@ -212,16 +218,16 @@ xattr -dr com.apple.quarantine "/Applications/Paper Field.app"
 default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ipc: http://ipc.localhost ws://127.0.0.1:43173
 ```
 
-敏感信息存储：LLM API Key 仅存于 `llm-settings.json`、MinerU Token 仅存于 `mineru-settings.json`（均在应用配置目录），两者界面均不回显，且各自提供「清除已保存的…」入口；旧版本镜像进 `tauri-plugin-store` 的明文 Key 会在下次保存时被自动删除。
+敏感信息存储：LLM API Key 与 MinerU Token 在 macOS 写入 Keychain、在 Windows 写入 Credential Manager（Linux 开发环境写入权限 0600 的 `secrets.json`）。`llm-settings.json` / `mineru-settings.json` 只留非密钥配置；首次启动会把旧文件里的明文 Key 迁出，并清掉文件本身和 `.v1.bak` 里的 `sk-` / Bearer 片段。界面不回显，且各自提供「清除已保存的…」入口。作业错误和运行日志会打掉 `sk-` 与 `Bearer` 片段。旧版本镜像进 `tauri-plugin-store` 的明文 Key 会在下次保存时被自动删除。外链只接受 `http`/`https`，由系统浏览器打开。
 
 ## Tests / 测试
 
 三项门禁与逐文件覆盖说明见 [docs/TEST_REPORT.md](docs/TEST_REPORT.md)：
 
 ```bash
-npm test                                                   # 前端 vitest（24 文件 / 378 测试）
+npm test                                                   # 前端 vitest
 npm run build                                              # tsc && vite build
-PATH="$HOME/.cargo/bin:$PATH" cargo test --manifest-path src-tauri/Cargo.toml   # Rust 单测（lib 25 个）
+PATH="$HOME/.cargo/bin:$PATH" cargo test --manifest-path src-tauri/Cargo.toml   # Rust 单测
 ```
 
 Windows PowerShell equivalent:
@@ -234,9 +240,9 @@ cargo test --manifest-path src-tauri/Cargo.toml
 
 ## Data
 
-SQLite schema: `domains`, `papers`, `authors`, `paper_authors`, `notes`, `llm_jobs`. `papers.mineru_provider` records which MinerU source parsed each paper (本地 CLI / SSH 远程 / 官方 API).
+SQLite schema: `domains`, `papers`, `authors`, `paper_authors`, `notes`, `llm_jobs`. `papers.mineru_provider` records which MinerU source parsed each paper (本地 CLI / SSH 远程 / 官方 API). `papers.field_sources` records per-field provenance (`api` 数据库 / `llm` 模型 / `user` 手动). `PRAGMA user_version` is the migration cursor (currently 3). On an existing library the app copies the database aside (`paper-field.db.premigrate-<时间>`, or IndexedDB `paper-field.db.premigrate` in the browser) before applying ordered migrations, then backfills non-empty fields so the first lookup does not clobber them. A corrupt settings file is left untouched; it is not treated as a v1 migration.
 
-`prepareMeta` writes structured JSON onto the paper and authors. It does **not** change `reading_status`. `draftNotes` will not silently overwrite notes you already edited, and `prepareMeta` asks before overwriting fields you edited by hand (「保留我的修改」only fills blanks).
+`prepareMeta` writes structured JSON onto the paper and authors. It does **not** change `reading_status`. Bibliographic lookup runs first and marks filled fields `api`. The model only fills fields still empty (`titleZh`, tags, labs, code-link guess) and those are marked `llm`. The default is fill-empty-only. 「用 AI 结果覆盖」 is the only path that passes `overwrite=true`, and a field edited while that request was in flight is still kept. `draftNotes` will not silently overwrite notes you already edited; an explicit overwrite marks the blocks `llm`.
 
 ## Phase-2 backlog
 

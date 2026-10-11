@@ -10,6 +10,23 @@ export type NoteKind = (typeof NOTE_KINDS)[number];
 export type ReadingStatus = "unread" | "reading" | "read";
 export type OpenSource = "unknown" | "open" | "closed" | "request";
 export type NoteSource = "manual" | "llm";
+export type FieldSource = "api" | "llm" | "user";
+export type MetaField =
+  | "title"
+  | "titleZh"
+  | "abstract"
+  | "year"
+  | "venue"
+  | "doi"
+  | "arxivId"
+  | "pdfUrl"
+  | "codeUrl"
+  | "codeOpenSource"
+  | "projectPage"
+  | "tags"
+  | "labs"
+  | "authors";
+export type FieldSources = Partial<Record<MetaField, FieldSource>>;
 export type JobType = "prepareMeta" | "draftNotes" | "refreshLinks" | "mineruParse";
 export type MineruProviderKind = "local" | "ssh" | "api";
 export type MineruStatus = "queued" | "submitted" | "parsing" | "done" | "error" | "cancelled";
@@ -81,6 +98,10 @@ export interface Paper {
   notesDraftedByLlm: boolean;
   userNotesTouched: boolean;
   userMetaTouched: boolean;
+  fieldSources?: FieldSources;
+  metaConfidence?: number | null;
+  metaRev?: number;
+  pdfOriginalPath?: string | null;
   mineruStatus: MineruStatus | null;
   mineruParseId: string | null;
   mineruDocRef: string | null;
@@ -224,6 +245,12 @@ export const READING_STATUS_LABELS: Record<ReadingStatus, string> = {
   unread: "未读",
   reading: "在读",
   read: "已读",
+};
+
+export const FIELD_SOURCE_LABELS: Record<FieldSource, string> = {
+  api: "数据库",
+  llm: "模型",
+  user: "手动",
 };
 
 export const OPEN_SOURCE_LABELS: Record<OpenSource, string> = {

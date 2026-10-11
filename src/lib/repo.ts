@@ -1,8 +1,11 @@
 import { getEngine, type SqlEngine } from "./engine";
+import { planPreparedMeta } from "./mergeMeta";
 import { seedIfEmpty } from "./seed";
 import type {
   Domain,
   DraftedNotes,
+  FieldSource,
+  FieldSources,
   FieldStats,
   JobStatus,
   JobType,
@@ -20,7 +23,8 @@ import type {
   ReadingStatus,
 } from "./types";
 import { NOTE_KINDS } from "./types";
-import { nowIso, parseJsonArray, uid } from "./util";
+import { safeHttpUrl } from "./urls";
+import { isTauri, nowIso, parseJsonArray, uid } from "./util";
 
 interface DomainRow {
   id: string;
@@ -60,6 +64,10 @@ interface PaperRow {
   mineru_provider?: string | null;
   tags: string;
   labs: string;
+  field_sources?: string | null;
+  meta_confidence?: number | null;
+  meta_rev?: number | null;
+  pdf_original_path?: string | null;
   created_at: string;
   updated_at: string;
   first_author?: string | null;
@@ -170,6 +178,10 @@ function mapPaper(row: PaperRow): Paper {
     notesDraftedByLlm: Boolean(row.notes_drafted_by_llm),
     userNotesTouched: Boolean(row.user_notes_touched),
     userMetaTouched: Boolean(row.user_meta_touched),
+    fieldSources: parseFieldSources(row.field_sources),
+    metaConfidence: row.meta_confidence == null ? null : Number(row.meta_confidence),
+    metaRev: Number(row.meta_rev ?? 0),
+    pdfOriginalPath: row.pdf_original_path ?? null,
     mineruStatus: asMineruStatus(row.mineru_status),
     mineruParseId: row.mineru_parse_id == null ? null : String(row.mineru_parse_id),
     mineruDocRef: row.mineru_doc_ref,
@@ -210,22 +222,38 @@ function asMineruStatus(value: string | null): MineruStatus | null {
   return null;
 }
 
-function textField(prev: string, next: string | null | undefined, locked: boolean): string {
-  const incoming = next?.trim() ? next.trim() : prev;
-  if (locked && prev.trim()) return prev;
-  return incoming;
+function parseFieldSources(raw: string | null | undefined): FieldSources {
+  if (!raw) return {};
+  try {
+    const value = JSON.parse(raw) as FieldSources;
+    return value && typeof value === "object" ? value : {};
+  } catch {
+    return {};
+  }
 }
 
-function nullableField(prev: string | null, next: string | null | undefined, locked: boolean): string | null {
-  const incoming = next?.trim() ? next.trim() : prev;
-  if (locked && prev?.trim()) return prev;
-  return incoming;
-}
+const META_PATCH_KEYS = [
+  "title",
+  "titleZh",
+  "abstract",
+  "year",
+  "venue",
+  "doi",
+  "arxivId",
+  "pdfUrl",
+  "codeUrl",
+  "codeOpenSource",
+  "projectPage",
+  "tags",
+  "labs",
+] as const;
 
-function yearField(prev: number | null, next: number | null | undefined, locked: boolean): number | null {
-  const incoming = typeof next === "number" && Number.isFinite(next) ? next : prev;
-  if (locked && prev != null) return prev;
-  return incoming;
+function withUserSources(prev: FieldSources, patch: Record<string, unknown>): FieldSources {
+  const next: FieldSources = { ...prev };
+  for (const key of META_PATCH_KEYS) {
+    if (patch[key] !== undefined) next[key] = "user";
+  }
+  return next;
 }
 
 function mapListItem(row: PaperRow): PaperListItem {
@@ -236,6 +264,12 @@ function mapListItem(row: PaperRow): PaperListItem {
     domainName: row.domain_name ?? "",
     domainCode: row.domain_code ?? "",
   };
+}
+
+async function adoptPdf(source: string): Promise<{ libraryPath: string; originalPath: string }> {
+  if (!isTauri()) return { libraryPath: source, originalPath: source };
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<{ libraryPath: string; originalPath: string }>("import_pdf_to_library", { source });
 }
 
 async function emptyNotes(engine: SqlEngine, paperId: string, at: string): Promise<void> {  for (const kind of NOTE_KINDS) {
@@ -470,10 +504,12 @@ export const repo = {
 
   async pdfPaths(): Promise<string[]> {
     const engine = await getEngine();
-    const rows = await engine.select<{ pdf_path: string }>(
-      "SELECT pdf_path FROM papers WHERE pdf_path IS NOT NULL AND pdf_path != ''",
+    const rows = await engine.select<{ path: string }>(
+      `SELECT pdf_path AS path FROM papers WHERE pdf_path IS NOT NULL AND pdf_path != ''
+       UNION
+       SELECT pdf_original_path AS path FROM papers WHERE pdf_original_path IS NOT NULL AND pdf_original_path != ''`,
     );
-    return rows.map((row) => row.pdf_path);
+    return rows.map((row) => row.path);
   },
 
   async importLocalPdfs(
@@ -484,22 +520,45 @@ export const repo = {
     const skipped: string[] = [];
     const known = new Set(await this.pdfPaths());
     for (const path of paths) {
-      if (known.has(path)) {
+      const adopted = await adoptPdf(path);
+      if (known.has(path) || known.has(adopted.libraryPath) || known.has(adopted.originalPath)) {
         skipped.push(path);
         continue;
       }
-      const paper = await this.createPaper({ domainId, pdfPath: path });
-      known.add(path);
+      const paper = await this.createPaper({
+        domainId,
+        pdfPath: adopted.libraryPath,
+        pdfOriginalPath: adopted.originalPath,
+      });
+      known.add(adopted.libraryPath);
+      known.add(adopted.originalPath);
       created.push(paper);
     }
     return { created, skipped };
   },
 
-  async createPaper(input: { domainId: string; pdfPath?: string; title?: string }): Promise<Paper> {
+  async createPaper(input: {
+    domainId: string;
+    pdfPath?: string;
+    pdfOriginalPath?: string;
+    title?: string;
+    arxivId?: string;
+    doi?: string;
+    /** Manual intake: title / arXiv / DOI the user typed are user-owned. */
+    userOwned?: boolean;
+  }): Promise<Paper> {
     const engine = await getEngine();
     const at = nowIso();
     const pdfPath = input.pdfPath?.trim() || null;
-    const title = input.title?.trim() || (pdfPath ? titleFromPdf(pdfPath) : "") || "未命名论文";
+    const explicitTitle = input.title?.trim() || "";
+    const title = explicitTitle || (pdfPath ? titleFromPdf(pdfPath) : "") || "未命名论文";
+    const arxivId = input.arxivId?.trim() || null;
+    const doi = input.doi?.trim() || null;
+    const sources: FieldSources = {};
+    if (explicitTitle || input.userOwned) sources.title = "user";
+    if (arxivId) sources.arxivId = "user";
+    if (doi) sources.doi = "user";
+    const userMetaTouched = Object.keys(sources).length > 0;
     const paper: Paper = {
       id: uid(),
       domainId: input.domainId,
@@ -508,10 +567,11 @@ export const repo = {
       abstract: "",
       year: null,
       venue: null,
-      doi: null,
-      arxivId: null,
+      doi,
+      arxivId,
       pdfUrl: null,
       pdfPath,
+      pdfOriginalPath: input.pdfOriginalPath?.trim() || null,
       codeUrl: null,
       codeOpenSource: "unknown",
       projectPage: null,
@@ -520,7 +580,10 @@ export const repo = {
       llmPreparedAt: null,
       notesDraftedByLlm: false,
       userNotesTouched: false,
-      userMetaTouched: false,
+      userMetaTouched,
+      fieldSources: sources,
+      metaConfidence: null,
+      metaRev: userMetaTouched ? 1 : 0,
       mineruStatus: null,
       mineruParseId: null,
       mineruDocRef: null,
@@ -536,9 +599,23 @@ export const repo = {
       `INSERT INTO papers (
         id, domain_id, title, title_zh, abstract, year, venue, doi, arxiv_id, pdf_url, pdf_path,
         code_url, code_open_source, project_page, reading_status, read_at, llm_prepared_at,
-        notes_drafted_by_llm, user_notes_touched, user_meta_touched, mineru_parse_ids, tags, labs, created_at, updated_at
-      ) VALUES (?, ?, ?, NULL, '', NULL, NULL, NULL, NULL, NULL, ?, NULL, 'unknown', NULL, 'unread', NULL, NULL, 0, 0, 0, '[]', '[]', '[]', ?, ?)`,
-      [paper.id, paper.domainId, paper.title, paper.pdfPath, at, at],
+        notes_drafted_by_llm, user_notes_touched, user_meta_touched, mineru_parse_ids, tags, labs,
+        field_sources, meta_rev, pdf_original_path, created_at, updated_at
+      ) VALUES (?, ?, ?, NULL, '', NULL, NULL, ?, ?, NULL, ?, NULL, 'unknown', NULL, 'unread', NULL, NULL, 0, 0, ?, '[]', '[]', '[]', ?, ?, ?, ?, ?)`,
+      [
+        paper.id,
+        paper.domainId,
+        paper.title,
+        paper.doi,
+        paper.arxivId,
+        paper.pdfPath,
+        userMetaTouched ? 1 : 0,
+        JSON.stringify(sources),
+        paper.metaRev,
+        paper.pdfOriginalPath,
+        at,
+        at,
+      ],
     );
     await emptyNotes(engine, paper.id, at);
     return paper;
@@ -568,17 +645,24 @@ export const repo = {
     const current = await engine.select<PaperRow>("SELECT * FROM papers WHERE id = ?", [id]);
     if (!current[0]) throw new Error("论文不存在");
     const next = mapPaper(current[0]);
+    const sanitized = { ...patch };
+    if (sanitized.pdfUrl !== undefined) sanitized.pdfUrl = safeHttpUrl(sanitized.pdfUrl);
+    if (sanitized.codeUrl !== undefined) sanitized.codeUrl = safeHttpUrl(sanitized.codeUrl);
+    if (sanitized.projectPage !== undefined) sanitized.projectPage = safeHttpUrl(sanitized.projectPage);
+    const sources = touchMeta ? withUserSources(next.fieldSources ?? {}, sanitized) : (next.fieldSources ?? {});
     const merged = {
       ...next,
-      ...patch,
+      ...sanitized,
       updatedAt: nowIso(),
       userMetaTouched: touchMeta ? true : next.userMetaTouched,
+      fieldSources: sources,
+      metaRev: touchMeta ? (next.metaRev ?? 0) + 1 : (next.metaRev ?? 0),
     };
     await engine.execute(
       `UPDATE papers SET
         domain_id = ?, title = ?, title_zh = ?, abstract = ?, year = ?, venue = ?, doi = ?,
         arxiv_id = ?, pdf_url = ?, code_url = ?, code_open_source = ?, project_page = ?,
-        tags = ?, labs = ?, user_meta_touched = ?, updated_at = ?
+        tags = ?, labs = ?, user_meta_touched = ?, field_sources = ?, meta_rev = ?, updated_at = ?
        WHERE id = ?`,
       [
         merged.domainId,
@@ -596,6 +680,8 @@ export const repo = {
         JSON.stringify(merged.tags),
         JSON.stringify(merged.labs),
         merged.userMetaTouched ? 1 : 0,
+        JSON.stringify(merged.fieldSources),
+        merged.metaRev,
         merged.updatedAt,
         id,
       ],
@@ -650,42 +736,27 @@ export const repo = {
     touchMeta = false,
   ): Promise<void> {
     const engine = await getEngine();
-    await engine.execute("DELETE FROM paper_authors WHERE paper_id = ?", [paperId]);
-    let order = 0;
-    for (const author of authors) {
-      const name = author.name.trim();
-      if (!name) continue;
-      const incomingAffiliation = author.affiliation?.trim() || null;
-      const incomingLab = author.lab?.trim() || null;
-      // 只复用「名字 + 机构 + 实验室」完全一致（或双方均为空）的既有行；
-      // 不一致时新插一行，绝不 UPDATE 全局 authors 行——
-      // 否则改 A 论文作者机构会改写 B 论文的同名作者。
-      const found = await engine.select<{ id: string }>(
-        `SELECT id FROM authors
-          WHERE lower(name) = lower(?)
-            AND IFNULL(TRIM(affiliation), '') = ?
-            AND IFNULL(TRIM(lab), '') = ?
-          LIMIT 1`,
-        [name, incomingAffiliation ?? "", incomingLab ?? ""],
-      );
-      const authorId = found[0]?.id ?? uid();
-      if (!found[0]) {
-        await engine.execute(
-          `INSERT INTO authors (id, name, name_zh, affiliation, lab, homepage, orcid)
-           VALUES (?, ?, NULL, ?, ?, NULL, NULL)`,
-          [authorId, name, incomingAffiliation, incomingLab],
-        );
-      }
-      await engine.execute(
-        `INSERT OR REPLACE INTO paper_authors (paper_id, author_id, sort_order, is_corresponding)
-         VALUES (?, ?, ?, ?)`,
-        [paperId, authorId, order, author.isCorresponding ? 1 : 0],
-      );
-      order += 1;
-    }
+    const payload = JSON.stringify(
+      authors
+        .filter((author) => author.name?.trim())
+        .map((author) => ({
+          name: author.name.trim(),
+          affiliation: author.affiliation?.trim() || "",
+          lab: author.lab?.trim() || "",
+          corresponding: author.isCorresponding ? 1 : 0,
+        })),
+    );
+    // pf_author_replace runs inside this UPDATE, so the link delete and the
+    // author inserts commit or roll back with it.
     await engine.execute(
-      "UPDATE papers SET updated_at = ?, user_meta_touched = CASE WHEN ? = 1 THEN 1 ELSE user_meta_touched END WHERE id = ?",
-      [nowIso(), touchMeta ? 1 : 0, paperId],
+      `UPDATE papers SET author_replace = ?, updated_at = ?,
+         user_meta_touched = CASE WHEN ? = 1 THEN 1 ELSE user_meta_touched END,
+         meta_rev = meta_rev + CASE WHEN ? = 1 THEN 1 ELSE 0 END,
+         field_sources = CASE WHEN ? = 1
+           THEN json_set(COALESCE(field_sources, '{}'), '$.authors', 'user')
+           ELSE field_sources END
+       WHERE id = ?`,
+      [payload, nowIso(), touchMeta ? 1 : 0, touchMeta ? 1 : 0, touchMeta ? 1 : 0, paperId],
     );
   },
 
@@ -725,47 +796,78 @@ export const repo = {
     }
   },
 
-  async applyPreparedMeta(paperId: string, meta: PreparedMeta, overwrite = false): Promise<void> {
+  async applyPreparedMeta(
+    paperId: string,
+    meta: PreparedMeta,
+    overwrite = false,
+    ctx?: { startedRev?: number; source?: FieldSource; jobId?: string },
+  ): Promise<void> {
     const engine = await getEngine();
-    const current = await engine.select<PaperRow>("SELECT * FROM papers WHERE id = ?", [paperId]);
-    if (!current[0]) throw new Error("论文不存在");
-    const prev = mapPaper(current[0]);
-    const locked = prev.userMetaTouched && !overwrite;
-    const open: OpenSource = ["unknown", "open", "closed", "request"].includes(meta.codeOpenSource)
-      ? meta.codeOpenSource
-      : "unknown";
-    const authorCount = await engine.select<{ cnt: number }>(
-      "SELECT COUNT(*) AS cnt FROM paper_authors WHERE paper_id = ?",
-      [paperId],
-    );
-    await engine.execute(
-      `UPDATE papers SET
-        title = ?, title_zh = ?, abstract = ?, year = ?, venue = ?, doi = ?, arxiv_id = ?,
-        pdf_url = ?, code_url = ?, code_open_source = ?, project_page = ?, tags = ?, labs = ?,
-        llm_prepared_at = ?, updated_at = ?
-       WHERE id = ?`,
-      [
-        textField(prev.title, meta.title, locked),
-        nullableField(prev.titleZh, meta.titleZh, locked),
-        textField(prev.abstract, meta.abstract, locked),
-        yearField(prev.year, meta.year, locked),
-        nullableField(prev.venue, meta.venue, locked),
-        nullableField(prev.doi, meta.doi, locked),
-        nullableField(prev.arxivId, meta.arxivId, locked),
-        nullableField(prev.pdfUrl, meta.pdfURL, locked),
-        nullableField(prev.codeUrl, meta.codeURL, locked),
-        locked && prev.codeOpenSource !== "unknown" ? prev.codeOpenSource : open,
-        nullableField(prev.projectPage, meta.projectPage, locked),
-        JSON.stringify(locked && prev.tags.length ? prev.tags : (meta.tags ?? prev.tags)),
-        JSON.stringify(locked && prev.labs.length ? prev.labs : (meta.labs ?? prev.labs)),
-        nowIso(),
-        nowIso(),
-        paperId,
-      ],
-    );
-    const authors = Number(authorCount[0]?.cnt ?? 0);
-    if (meta.authors?.length && (!locked || authors === 0)) {
-      await this.replaceAuthors(paperId, meta.authors, false);
+    const source = ctx?.source ?? "llm";
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      if (ctx?.jobId && (await this.jobStatus(ctx.jobId)) !== "running") return;
+      const current = await engine.select<PaperRow>("SELECT * FROM papers WHERE id = ?", [paperId]);
+      if (!current[0]) throw new Error("论文不存在");
+      const prev = mapPaper(current[0]);
+      const authorCount = await engine.select<{ cnt: number }>(
+        "SELECT COUNT(*) AS cnt FROM paper_authors WHERE paper_id = ?",
+        [paperId],
+      );
+      const plan = planPreparedMeta(
+        {
+          ...prev,
+          fieldSources: prev.fieldSources ?? {},
+          metaRev: prev.metaRev ?? 0,
+          authorCount: Number(authorCount[0]?.cnt ?? 0),
+        },
+        meta,
+        overwrite,
+        source,
+        ctx?.startedRev,
+      );
+      const at = nowIso();
+      const changed = await engine.execute(
+        `UPDATE papers SET
+          title = ?, title_zh = ?, abstract = ?, year = ?, venue = ?, doi = ?, arxiv_id = ?,
+          pdf_url = ?, code_url = ?, code_open_source = ?, project_page = ?, tags = ?, labs = ?,
+          field_sources = ?, meta_confidence = COALESCE(?, meta_confidence),
+          llm_prepared_at = CASE WHEN ? = 'llm' THEN ? ELSE llm_prepared_at END,
+          updated_at = ?
+         WHERE id = ? AND meta_rev = ?
+           AND (? = '' OR EXISTS (SELECT 1 FROM llm_jobs WHERE id = ? AND status = 'running'))`,
+        [
+          plan.title,
+          plan.titleZh,
+          plan.abstract,
+          plan.year,
+          plan.venue,
+          plan.doi,
+          plan.arxivId,
+          plan.pdfUrl,
+          plan.codeUrl,
+          plan.codeOpenSource,
+          plan.projectPage,
+          JSON.stringify(plan.tags),
+          JSON.stringify(plan.labs),
+          JSON.stringify(plan.fieldSources),
+          plan.confidence,
+          source,
+          at,
+          at,
+          paperId,
+          prev.metaRev ?? 0,
+          ctx?.jobId ?? "",
+          ctx?.jobId ?? "",
+        ],
+      );
+      if (!changed) {
+        if (ctx?.jobId && (await this.jobStatus(ctx.jobId)) !== "running") return;
+        continue;
+      }
+      const after = await engine.select<{ meta_rev: number }>("SELECT meta_rev FROM papers WHERE id = ?", [paperId]);
+      if (Number(after[0]?.meta_rev ?? 0) !== (prev.metaRev ?? 0)) continue;
+      if (plan.replaceAuthors) await this.replaceAuthors(paperId, meta.authors, false);
+      return;
     }
   },
 
@@ -776,8 +878,23 @@ export const repo = {
     if (paper[0].user_notes_touched && !overwrite) {
       throw new Error("NOTES_TOUCHED");
     }
+    const blocks = await engine.select<NoteRow>("SELECT * FROM notes WHERE paper_id = ?", [paperId]);
     for (const kind of NOTE_KINDS) {
-      await this.updateNote(paperId, kind, notes[kind] ?? "", "llm", false);
+      const block = blocks.find((row) => row.kind === kind);
+      if (block?.user_edited && !overwrite) continue;
+      const at = nowIso();
+      if (block) {
+        await engine.execute(
+          `UPDATE notes SET content = ?, source = 'llm', user_edited = 0, revised_at = ? WHERE id = ?`,
+          [notes[kind] ?? "", at, block.id],
+        );
+      } else {
+        await engine.execute(
+          `INSERT INTO notes (id, paper_id, kind, content, source, user_edited, revised_at)
+           VALUES (?, ?, ?, ?, 'llm', 0, ?)`,
+          [uid(), paperId, kind, notes[kind] ?? "", at],
+        );
+      }
     }
     await engine.execute(
       "UPDATE papers SET notes_drafted_by_llm = 1, updated_at = ? WHERE id = ?",
@@ -807,24 +924,38 @@ export const repo = {
     return job;
   },
 
+  async jobStatus(id: string): Promise<JobStatus | null> {
+    const engine = await getEngine();
+    const rows = await engine.select<{ status: JobStatus }>("SELECT status FROM llm_jobs WHERE id = ?", [id]);
+    return rows[0]?.status ?? null;
+  },
+
+  /**
+   * Conditional write: only queued/running rows move. Returns false when the job
+   * was already cancelled (or otherwise terminal), so a late apply cannot resurrect it.
+   */
   async updateJob(
     id: string,
     patch: Partial<Pick<LlmJob, "status" | "resultJson" | "error" | "startedAt" | "finishedAt">>,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const engine = await getEngine();
     const rows = await engine.select<JobRow>("SELECT * FROM llm_jobs WHERE id = ?", [id]);
-    if (!rows[0]) return;
-    const next = { ...rows[0], ...{
-      status: patch.status ?? rows[0].status,
-      result_json: patch.resultJson ?? rows[0].result_json,
-      error: patch.error ?? rows[0].error,
-      started_at: patch.startedAt ?? rows[0].started_at,
-      finished_at: patch.finishedAt ?? rows[0].finished_at,
-    }};
-    await engine.execute(
-      `UPDATE llm_jobs SET status = ?, result_json = ?, error = ?, started_at = ?, finished_at = ? WHERE id = ?`,
-      [next.status, next.result_json, next.error, next.started_at, next.finished_at, id],
+    if (!rows[0]) return false;
+    if (!patch.status) return false;
+    const changed = await engine.execute(
+      `UPDATE llm_jobs SET status = ?, result_json = COALESCE(?, result_json), error = COALESCE(?, error),
+              started_at = COALESCE(?, started_at), finished_at = COALESCE(?, finished_at)
+        WHERE id = ? AND status IN ('queued', 'running')`,
+      [
+        patch.status,
+        patch.resultJson ?? null,
+        patch.error ?? null,
+        patch.startedAt ?? null,
+        patch.finishedAt ?? null,
+        id,
+      ],
     );
+    return changed > 0;
   },
 
   async listJobs(limit = 40): Promise<LlmJob[]> {

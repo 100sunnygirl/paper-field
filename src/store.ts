@@ -20,7 +20,10 @@ import {
 } from "./lib/mineruRun";
 import { endBatchItem, endJob, getActivity, trackJob, type JobOutcome } from "./lib/activity";
 import { pickProviderFromHealths, providerLabel, summarizeHealths } from "./lib/mineruPlan";
+import { backupLibrary, restoreLibrary } from "./lib/backup";
+import { filledFrom, lookupPaper, verifyReachable } from "./lib/lookup";
 import { DRAFT_NOTES_SYSTEM, PREPARE_META_SYSTEM, draftNotesUserPrompt, normalizeMeta, normalizeNotes, prepareMetaUserPrompt } from "./lib/prompts";
+import { redactSecrets } from "./lib/redact";
 import { repo } from "./lib/repo";
 import { cancelChat, completeChat, hasUsableProvider, loadSettings, saveSettings, type LlmSaveInput } from "./lib/settings";
 import { log } from "./lib/logger";
@@ -137,12 +140,15 @@ interface FieldState {
   /** 作业面板「停止批次」：取消正在解析的一篇，并把本批其余排队论文移出队列。 */
   stopMineruBatch: (batchId: number) => Promise<void>;
   runPrepareMeta: (paperId?: string, overwrite?: boolean, quiet?: boolean) => Promise<void>;
+  runRefreshLinks: (paperId?: string) => Promise<void>;
   runDraftNotes: (paperId?: string, overwrite?: boolean) => Promise<void>;
   cancelJob: (jobId: string) => Promise<void>;
   saveLlmSettings: (input: LlmSaveInput) => Promise<void>;
   saveMineruSettings: (input: MineruSaveInput) => Promise<void>;
   probeMineru: () => Promise<ProviderHealth[]>;
   exportCurrentDomain: () => Promise<void>;
+  backupLibrary: () => Promise<void>;
+  restoreLibrary: () => Promise<void>;
   navigatePapers: (delta: number) => Promise<void>;
   setFlash: (flash: Flash | null) => void;
 }
@@ -428,17 +434,22 @@ export const useField = create<FieldState>((set, get) => ({
     const title = input.title.trim();
     if (!title) throw new Error("标题必填");
     try {
-      const paper = await repo.createPaper({ domainId, title, pdfPath: input.pdfPath });
-      const patch: { arxivId?: string; doi?: string } = {};
-      if (input.arxivId?.trim()) patch.arxivId = input.arxivId.trim();
-      if (input.doi?.trim()) patch.doi = input.doi.trim();
-      if (Object.keys(patch).length) await repo.updatePaper(paper.id, patch);
+      const paper = await repo.createPaper({
+        domainId,
+        title,
+        pdfPath: input.pdfPath,
+        arxivId: input.arxivId,
+        doi: input.doi,
+        userOwned: true,
+      });
       set({ dialog: null, selectedPaperId: paper.id, mode: "field" });
       await get().refresh();
       get().setFlash({
         tone: "ok",
-        text: paper.pdfPath ? `已创建「${title}」，正在安排解析。` : `已创建「${title}」。`,
+        text: paper.pdfPath ? `已创建「${title}」，正在查询文献库并安排解析。` : `已创建「${title}」，正在查询文献库。`,
       });
+      // arXiv / DOI / title lookup runs even when there is no PDF and no API key.
+      void get().runPrepareMeta(paper.id, false, true);
       if (paper.pdfPath) enqueueMineruBatch(mineruHost(), [paper.id], false);
     } catch (err) {
       get().setFlash({ tone: "error", text: `创建论文失败：${errText(err)}，数据未改动。` });
@@ -666,24 +677,77 @@ export const useField = create<FieldState>((set, get) => ({
     }
   },
 
-  runPrepareMeta: async (paperId, overwrite = true, quiet = false) => {
+  runPrepareMeta: async (paperId, overwrite = false, quiet = false) => {
     const id = paperId ?? get().selectedPaperId;
     if (!id) return;
-    if (!hasUsableProvider(get().settings)) {
-      if (!quiet) {
-        get().setFlash({ tone: "warn", text: "尚未配置可用的 AI 服务。可到设置页添加提供商，或继续手动录入。" });
+    try {
+      const paper = await repo.getPaper(id);
+      if (!paper) return;
+      const startedRev = paper.metaRev ?? 0;
+      const hit = await lookupPaper(paper);
+      if (hit) {
+        await repo.applyPreparedMeta(id, hit, overwrite, { startedRev, source: "api" });
       }
-      return;
+      if (!hasUsableProvider(get().settings)) {
+        await dropUnreachableLinks(id);
+        await get().refresh();
+        if (!quiet && !hit) {
+          get().setFlash({ tone: "warn", text: "尚未配置可用的 AI 服务。可到设置页添加提供商，或继续手动录入。" });
+        }
+        return;
+      }
+      const fresh = (await repo.getPaper(id)) ?? paper;
+      const prompt = prepareMetaUserPrompt({
+        ...fresh,
+        filledByApi: filledFrom(fresh.fieldSources, "api"),
+      });
+      const job = await repo.createJob(id, "prepareMeta", prompt);
+      await get().refresh();
+      await runJob(job.id, id, PREPARE_META_SYSTEM, prompt, async (raw) => {
+        const meta = normalizeMeta(extractJson(raw), fresh.title);
+        await repo.applyPreparedMeta(id, meta, overwrite, { startedRev, source: "llm", jobId: job.id });
+        await dropUnreachableLinks(id);
+      }, quiet);
+    } catch (err) {
+      const message = redactSecrets(errText(err));
+      log.error("llm", "补全论文信息失败", message);
+      if (!quiet) get().setFlash({ tone: "error", text: message });
     }
+  },
+
+  runRefreshLinks: async (paperId) => {
+    const id = paperId ?? get().selectedPaperId;
+    if (!id) return;
     const paper = await repo.getPaper(id);
     if (!paper) return;
-    const prompt = prepareMetaUserPrompt(paper);
-    const job = await repo.createJob(id, "prepareMeta", prompt);
+    const startedRev = paper.metaRev ?? 0;
+    const job = await repo.createJob(id, "refreshLinks", "bibliographic lookup");
     await get().refresh();
-    await runJob(job.id, id, PREPARE_META_SYSTEM, prompt, async (raw) => {
-      const meta = normalizeMeta(extractJson(raw), paper.title);
-      await repo.applyPreparedMeta(id, meta, overwrite);
-    }, quiet);
+    const started = await repo.updateJob(job.id, { status: "running", startedAt: nowIso() });
+    if (started === false) return;
+    trackJob(job.id, id, "request");
+    try {
+      if ((await jobStillRunning(job.id)) === false) return;
+      const hit = await lookupPaper(paper);
+      if ((await jobStillRunning(job.id)) === false) return;
+      if (hit) await repo.applyPreparedMeta(id, hit, false, { startedRev, source: "api", jobId: job.id });
+      await dropUnreachableLinks(id);
+      const finished = await repo.updateJob(job.id, {
+        status: "done",
+        resultJson: hit ? JSON.stringify({ source: "api", confidence: hit.confidence ?? null }) : null,
+        finishedAt: nowIso(),
+      });
+      if (finished === false) return;
+      endJob(job.id, "done");
+      get().setFlash({ tone: "ok", text: hit ? "已从文献库刷新著录。" : "文献库暂时不可用，已保留现有著录。" });
+    } catch (err) {
+      const message = redactSecrets(errText(err));
+      const marked = await repo.updateJob(job.id, { status: "error", error: message, finishedAt: nowIso() });
+      endJob(job.id, marked === false ? "cancelled" : "error");
+      if (marked !== false) get().setFlash({ tone: "error", text: message });
+    } finally {
+      await get().refresh();
+    }
   },
 
   runDraftNotes: async (paperId, overwrite = false) => {
@@ -779,6 +843,34 @@ export const useField = create<FieldState>((set, get) => ({
     return healths;
   },
 
+  backupLibrary: async () => {
+    try {
+      const where = await backupLibrary();
+      if (!where) return;
+      get().setFlash({ tone: "ok", text: `已备份到 ${where}` });
+    } catch (err) {
+      if (String(err).includes("DESKTOP_ONLY")) {
+        get().setFlash({ tone: "warn", text: "备份与恢复仅在桌面版可用。" });
+        return;
+      }
+      get().setFlash({ tone: "error", text: `备份失败：${errText(err)}` });
+    }
+  },
+
+  restoreLibrary: async () => {
+    try {
+      const restored = await restoreLibrary();
+      if (!restored) return;
+      get().setFlash({ tone: "ok", text: "已恢复文库，正在重新载入。" });
+    } catch (err) {
+      if (String(err).includes("DESKTOP_ONLY")) {
+        get().setFlash({ tone: "warn", text: "备份与恢复仅在桌面版可用。" });
+        return;
+      }
+      get().setFlash({ tone: "error", text: `恢复失败：${errText(err)}` });
+    }
+  },
+
   exportCurrentDomain: async () => {
     const domainId = get().selectedDomainId;
     if (!domainId) return;
@@ -830,7 +922,25 @@ function guardUnsaved(get: () => FieldState): boolean {
 }
 
 function errText(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+  return redactSecrets(err instanceof Error ? err.message : String(err));
+}
+
+async function jobStillRunning(jobId: string): Promise<boolean> {
+  if (typeof repo.jobStatus !== "function") return true;
+  return (await repo.jobStatus(jobId)) === "running";
+}
+
+async function dropUnreachableLinks(paperId: string): Promise<void> {
+  const paper = await repo.getPaper(paperId);
+  if (!paper) return;
+  const patch: { codeUrl?: string | null; projectPage?: string | null } = {};
+  if (paper.codeUrl && paper.fieldSources?.codeUrl !== "user" && !(await verifyReachable(paper.codeUrl))) {
+    patch.codeUrl = null;
+  }
+  if (paper.projectPage && paper.fieldSources?.projectPage !== "user" && !(await verifyReachable(paper.projectPage))) {
+    patch.projectPage = null;
+  }
+  if (Object.keys(patch).length) await repo.updatePaper(paperId, patch, false);
 }
 
 async function runJob(
@@ -847,7 +957,11 @@ async function runJob(
   // 作业实况：请求模型 → 写入结果；quiet 即解析后的自动补全，面板标注「自动」。
   trackJob(jobId, paperId, "request", { auto: quiet });
   let outcome: JobOutcome = "error";
-  await repo.updateJob(jobId, { status: "running", startedAt: nowIso() });
+  const started = await repo.updateJob(jobId, { status: "running", startedAt: nowIso() });
+  if (started === false) {
+    outcome = "cancelled";
+    return;
+  }
   await useField.getState().refresh();
   try {
     const raw = await completeChat({
@@ -856,35 +970,46 @@ async function runJob(
       user,
       signal: controller.signal,
     });
-    if (controller.signal.aborted) {
+    if (controller.signal.aborted || (await jobStillRunning(jobId)) === false) {
       outcome = "cancelled";
       return;
     }
     trackJob(jobId, paperId, "apply");
     await apply(raw);
-    await repo.updateJob(jobId, {
+    if (await jobStillRunning(jobId) === false) {
+      outcome = "cancelled";
+      return;
+    }
+    const finished = await repo.updateJob(jobId, {
       status: "done",
       resultJson: raw,
       finishedAt: nowIso(),
     });
+    if (finished === false) {
+      outcome = "cancelled";
+      return;
+    }
     outcome = "done";
     log.info("llm", `AI 作业完成（${jobId}）`);
     if (!quiet) {
       useField.getState().setFlash({ tone: "ok", text: "AI 作业完成。阅读状态未改动。" });
     }
   } catch (err) {
-    if (controller.signal.aborted) {
+    if (controller.signal.aborted || (await jobStillRunning(jobId)) === false) {
       outcome = "cancelled";
       return;
     }
-    const message = err instanceof Error ? err.message : String(err);
-    // flash 联动已记下用户可见文案；这里补一条作业维度的 error（带 jobId）。
+    const message = redactSecrets(err instanceof Error ? err.message : String(err));
     log.error("llm", `AI 作业失败（${jobId}）`, message);
-    await repo.updateJob(jobId, {
+    const marked = await repo.updateJob(jobId, {
       status: "error",
       error: message,
       finishedAt: nowIso(),
     });
+    if (marked === false) {
+      outcome = "cancelled";
+      return;
+    }
     useField.getState().setFlash({ tone: "error", text: message });
   } finally {
     endJob(jobId, outcome);

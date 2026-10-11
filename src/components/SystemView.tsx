@@ -60,6 +60,8 @@ export function SystemView() {
                 </Button>
               </article>
 
+              <BackupBlock />
+
               <article className="page-block pf-stagger" style={{ "--pf-i": 4 } as CSSProperties}>
                 <header className="ef-block-head">
                   <h3>快捷键</h3>
@@ -99,6 +101,46 @@ export function SystemView() {
         </div>
       </div>
     </section>
+  );
+}
+
+function BackupBlock() {
+  const backup = useField((s) => s.backupLibrary);
+  const restore = useField((s) => s.restoreLibrary);
+  const [confirming, setConfirming] = useState(false);
+  return (
+    <article className="page-block pf-stagger" style={{ "--pf-i": 4 } as CSSProperties}>
+      <header className="ef-block-head">
+        <h3>备份与恢复</h3>
+        <p>打包数据库、文库中的 PDF 和设置。API Key 与 MinerU Token 不写入压缩包。恢复前会先另存当前数据库。</p>
+      </header>
+      <div className="ef-ai-buttons">
+        <Button type="button" onClick={() => void backup()}>
+          备份
+        </Button>
+        <Button type="button" onClick={() => setConfirming(true)}>
+          恢复
+        </Button>
+      </div>
+      {confirming ? (
+        <div className="ef-ai-buttons">
+          <p>恢复会替换当前文库。当前数据库会先复制一份。</p>
+          <Button
+            type="button"
+            variant="primary"
+            onClick={() => {
+              setConfirming(false);
+              void restore();
+            }}
+          >
+            确认恢复
+          </Button>
+          <Button type="button" onClick={() => setConfirming(false)}>
+            取消
+          </Button>
+        </div>
+      ) : null}
+    </article>
   );
 }
 

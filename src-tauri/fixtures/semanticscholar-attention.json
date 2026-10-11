@@ -1,0 +1,13 @@
+{
+  "data": [
+    {
+      "title": "Attention Is All You Need",
+      "year": 2017,
+      "abstract": "The dominant sequence transduction models.",
+      "venue": "NIPS",
+      "externalIds": { "DOI": "10.48550/arXiv.1706.03762", "ArXiv": "1706.03762" },
+      "authors": [{ "name": "Ashish Vaswani", "affiliations": ["Google Brain"] }],
+      "openAccessPdf": { "url": "https://arxiv.org/pdf/1706.03762.pdf" }
+    }
+  ]
+}
