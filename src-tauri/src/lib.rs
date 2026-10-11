@@ -1,3 +1,4 @@
+mod appdir;
 mod llm;
 mod mineru;
 mod mineru_api;
@@ -93,7 +94,11 @@ fn build_menu(app: &tauri::App) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Copy com.paperfield.app → com.paperfield.notes before SQL preloads the database.
+        .plugin(appdir::migration_plugin())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_sql::Builder::default().build())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())

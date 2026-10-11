@@ -29,6 +29,7 @@ jobs:
             tauri-target: x86_64-pc-windows-msvc
             artifact-name: release-assets-Windows
             bundle-path: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*-setup.exe
+            updater-dir: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis
 
           - name: macOS universal
             os: macos-15
@@ -36,6 +37,7 @@ jobs:
             tauri-target: universal-apple-darwin
             artifact-name: release-assets-macOS
             bundle-path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            updater-dir: src-tauri/target/universal-apple-darwin/release/bundle/macos
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -67,13 +69,60 @@ jobs:
         run: cargo test --manifest-path src-tauri/Cargo.toml
 
       - name: Build ${{ matrix.name }} installer
-        run: npm run tauri build -- --target ${{ matrix.tauri-target }}
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          # Signing and notarization run only when the full Apple set is present.
+          # A partial set is cleared so an unsigned build still succeeds.
+          apple_signed=false
+          if [ -n "${APPLE_SIGNING_IDENTITY:-}" ] && [ -n "${APPLE_CERTIFICATE:-}" ] && [ -n "${APPLE_ID:-}" ] && [ -n "${APPLE_PASSWORD:-}" ] && [ -n "${APPLE_TEAM_ID:-}" ]; then
+            apple_signed=true
+          else
+            unset APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID || true
+          fi
+          # createUpdaterArtifacts is true in tauri.conf.json. Without the private
+          # key the bundler exits, so unsigned builds turn that flag off.
+          updater_signed=false
+          updater_flag=false
+          if [ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+            updater_signed=true
+            updater_flag=true
+          else
+            unset TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD || true
+          fi
+          npm run tauri build -- --target "${{ matrix.tauri-target }}" --config "{\"bundle\":{\"createUpdaterArtifacts\":${updater_flag}}}"
+
+          stage="bundle-upload"
+          rm -rf "$stage"
+          mkdir -p "$stage"
+          shopt -s nullglob
+          installers=(${{ matrix.bundle-path }})
+          if (( ${#installers[@]} == 0 )); then
+            echo "No installer matched ${{ matrix.bundle-path }}"
+            exit 1
+          fi
+          cp -a "${installers[@]}" "$stage"/
+          updaters=("${{ matrix.updater-dir }}"/*.sig "${{ matrix.updater-dir }}"/*.app.tar.gz "${{ matrix.updater-dir }}"/*.nsis.zip)
+          if (( ${#updaters[@]} )); then
+            cp -a "${updaters[@]}" "$stage"/
+          fi
+          slug=$(printf '%s' "${{ matrix.name }}" | tr '[:upper:]' '[:lower:]' | tr ' ' '-')
+          printf '{"appleSigned":%s,"updaterSigned":%s}\n' "$apple_signed" "$updater_signed" > "$stage/meta-${slug}.json"
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact-name }}
-          path: ${{ matrix.bundle-path }}
+          path: bundle-upload/*
           if-no-files-found: error
 
   release:
@@ -98,8 +147,11 @@ jobs:
           set -euo pipefail
           ls -la release-assets
 
-      - name: Validate installers and generate checksum
+      - name: Validate installers, updater manifest, and checksum
         shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -114,8 +166,90 @@ jobs:
             exit 1
           fi
 
+          python3 - << 'PY'
+          import datetime, json, os, pathlib, urllib.parse
+          root = pathlib.Path("release-assets")
+          tag = os.environ["RELEASE_TAG"]
+          version = tag[1:] if tag.startswith("v") else tag
+          repo = os.environ["RELEASE_REPO"]
+          platforms = {}
+
+          def add(platform, archive, signature_path):
+              signature = signature_path.read_text(encoding="utf-8").strip()
+              url = (
+                  f"https://github.com/{repo}/releases/download/"
+                  f"{urllib.parse.quote(tag)}/{urllib.parse.quote(archive.name)}"
+              )
+              platforms[platform] = {"signature": signature, "url": url}
+
+          for archive in root.glob("*.app.tar.gz"):
+              sig = pathlib.Path(str(archive) + ".sig")
+              if sig.is_file():
+                  for platform in ("darwin-aarch64", "darwin-x86_64"):
+                      add(platform, archive, sig)
+          for archive in root.glob("*.nsis.zip"):
+              sig = pathlib.Path(str(archive) + ".sig")
+              if sig.is_file():
+                  add("windows-x86_64", archive, sig)
+          if platforms:
+              latest = {
+                  "version": version,
+                  "notes": f"Paper Field {tag}",
+                  "pub_date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                  "platforms": platforms,
+              }
+              (root / "latest.json").write_text(json.dumps(latest, indent=2) + "\n", encoding="utf-8")
+
+          apple = False
+          updater = bool(platforms)
+          for meta in root.glob("meta-*.json"):
+              data = json.loads(meta.read_text(encoding="utf-8"))
+              apple = apple or bool(data.get("appleSigned"))
+              updater = updater or bool(data.get("updaterSigned"))
+              meta.unlink()
+
+          if apple:
+              mac = (
+                  "- macOS: open the `.dmg` and drag Paper Field to Applications. "
+                  "This build was signed with the Apple Developer certificate and submitted for notarization."
+              )
+          else:
+              mac = (
+                  "- macOS: open the `.dmg` and drag Paper Field to Applications. "
+                  "The app is not notarized; if Gatekeeper blocks it, right-click the app and choose **Open**, "
+                  'or run `xattr -dr com.apple.quarantine "/Applications/Paper Field.app"`.'
+              )
+          if updater and (root / "latest.json").is_file():
+              updates = (
+                  "- Updates: `latest.json` is attached. In the app, open 设置 and choose **检查更新**. "
+                  "The installed app must have been built with the matching updater public key."
+              )
+          else:
+              updates = (
+                  "- Updates: this release has no updater signature (`TAURI_SIGNING_PRIVATE_KEY` was not set). "
+                  "设置里的「检查更新」stays unavailable until a signed release is published and the placeholder public key is replaced."
+              )
+          body = "\n".join([
+              "Paper Field desktop installers.",
+              "",
+              "- Windows: run the `-setup.exe` installer. It is unsigned; if SmartScreen appears, choose **More info → Run anyway**.",
+              mac,
+              updates,
+              "- Verify downloads with `SHA256SUMS.txt`.",
+              "",
+              "macOS and Windows installers are built from the same tagged commit.",
+              "",
+          ])
+          pathlib.Path("release-body.md").write_text(body, encoding="utf-8")
+          PY
+
           cd release-assets
-          sha256sum -- *-setup.exe *.dmg > SHA256SUMS.txt
+          # nullglob drops updater artifacts when this release was built unsigned.
+          hash_files=( *-setup.exe *.dmg *.app.tar.gz *.nsis.zip *.sig )
+          if [ -f latest.json ]; then
+            hash_files+=( latest.json )
+          fi
+          sha256sum -- "${hash_files[@]}" > SHA256SUMS.txt
 
       - name: Upload Release Assets
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
@@ -124,13 +258,6 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           name: Paper Field ${{ github.ref_name }}
-          body: |
-            Paper Field desktop installers.
-
-            - Windows: run the `-setup.exe` installer. It is unsigned; if SmartScreen appears, choose **More info → Run anyway**.
-            - macOS: open the `.dmg` and drag Paper Field to Applications. The app is not notarized; if Gatekeeper blocks it, right-click the app and choose **Open**, or run `xattr -dr com.apple.quarantine "/Applications/Paper Field.app"`.
-            - Verify downloads with `SHA256SUMS.txt`.
-
-            macOS and Windows installers are built from the same tagged commit.
+          body_path: release-body.md
           files: release-assets/*
           overwrite_files: true

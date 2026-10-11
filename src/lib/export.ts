@@ -98,6 +98,12 @@ ${papers
   return files;
 }
 
+/** Browser download name. Shown in the success toast instead of the word "download". */
+export function browserExportFilename(domain: Pick<Domain, "code" | "name">): string {
+  const base = slug(domain.code || domain.name).toLowerCase();
+  return `${base}-export.md`;
+}
+
 export async function exportDomain(domain: Domain, papers: PaperDetail[]): Promise<string> {
   const files = buildDomainExport(domain, papers);
   if (isTauri()) {
@@ -117,11 +123,12 @@ export async function exportDomain(domain: Domain, papers: PaperDetail[]): Promi
     ],
     { type: "text/markdown;charset=utf-8" },
   );
+  const filename = browserExportFilename(domain);
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `${slug(domain.code)}-export.md`;
+  a.download = filename;
   a.click();
   URL.revokeObjectURL(url);
-  return "download";
+  return filename;
 }

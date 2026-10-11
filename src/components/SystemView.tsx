@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import {
   testMineru,
   type MineruLanguage,
@@ -17,10 +17,11 @@ import {
   type LlmSaveInput,
 } from "../lib/settings";
 import type { LlmProviderView } from "../lib/types";
+import { checkForAppUpdate } from "../lib/updater";
 import { formatDate, pad2, shortcut, uid } from "../lib/util";
 import { useField } from "../store";
 import { LogPanel } from "./LogPanel";
-import { Button, Field } from "./ui";
+import { Button, Field, Icon } from "./ui";
 
 function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -45,10 +46,6 @@ export function SystemView() {
 
           <div className="ef-system-blocks">
             <LlmSettingsBlock />
-
-              <MineruSettings />
-
-              <LogPanel />
 
               <article className="page-block pf-stagger" style={{ "--pf-i": 3 } as CSSProperties}>
                 <header className="ef-block-head">
@@ -95,6 +92,12 @@ export function SystemView() {
                 </ul>
                 <p className="ef-kbd-note">在设置页按 {shortcut("K")} 会先切回阅读模式，再聚焦搜索框。</p>
               </article>
+
+              <UpdateBlock />
+
+              <MineruSettings />
+
+              <LogPanel />
           </div>
         </div>
       </div>
@@ -578,6 +581,24 @@ function LlmSettingsBlock() {
   );
 }
 
+function AdvancedFields({ children }: { children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className={`ef-advanced${open ? " is-open" : ""}`}>
+      <button
+        type="button"
+        className="ef-advanced-toggle"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <Icon name="right" />
+        高级
+      </button>
+      {open ? <div className="ef-advanced-body">{children}</div> : null}
+    </div>
+  );
+}
+
 function MineruSettings() {
   const saved = useField((s) => s.mineru);
   const healths = useField((s) => s.mineruHealth);
@@ -846,13 +867,15 @@ function MineruSettings() {
           <p className="ef-provider-desc">
             MinerU 文档库与本应用在同一台电脑时使用。未部署时保持关闭即可——导入会按回退顺序自动落到下一个解析源。
           </p>
-          <Field label="Socket 路径">
-            <input
-              value={localSocket}
-              onChange={(e) => setLocalSocket(e.target.value)}
-              placeholder="~/.mineru/doclib.sock"
-            />
-          </Field>
+          <AdvancedFields>
+            <Field label="Socket 路径">
+              <input
+                value={localSocket}
+                onChange={(e) => setLocalSocket(e.target.value)}
+                placeholder="~/.mineru/doclib.sock"
+              />
+            </Field>
+          </AdvancedFields>
           <div className="ef-import-actions">
             <Button
               type="button"
@@ -890,42 +913,44 @@ function MineruSettings() {
           <p className="ef-provider-desc">
             连接另一台电脑上已部署的 MinerU，PDF 会先复制到远程暂存目录再提交解析；私钥留空则使用本机 SSH 默认配置。
           </p>
-          <div className="ef-field-grid">
-            <Field label="主机">
-              <input value={sshHost} onChange={(e) => setSshHost(e.target.value)} placeholder="imac" />
-            </Field>
-            <Field label="端口">
-              <input value={sshPort} onChange={(e) => setSshPort(e.target.value)} inputMode="numeric" />
-            </Field>
-          </div>
-          <div className="ef-field-grid">
-            <Field label="用户">
-              <input value={sshUser} onChange={(e) => setSshUser(e.target.value)} placeholder="user" />
-            </Field>
-            <Field label="私钥路径">
-              <input
-                value={sshKey}
-                onChange={(e) => setSshKey(e.target.value)}
-                placeholder="~/.ssh/id_ed25519"
-              />
-            </Field>
-          </div>
-          <div className="ef-field-grid">
-            <Field label="远程 Socket 路径">
-              <input
-                value={sshSocket}
-                onChange={(e) => setSshSocket(e.target.value)}
-                placeholder="~/.mineru/doclib.sock"
-              />
-            </Field>
-            <Field label="远程暂存目录">
-              <input
-                value={sshInbox}
-                onChange={(e) => setSshInbox(e.target.value)}
-                placeholder="~/.mineru/paper-field-inbox"
-              />
-            </Field>
-          </div>
+          <AdvancedFields>
+            <div className="ef-field-grid">
+              <Field label="主机">
+                <input value={sshHost} onChange={(e) => setSshHost(e.target.value)} placeholder="imac" />
+              </Field>
+              <Field label="端口">
+                <input value={sshPort} onChange={(e) => setSshPort(e.target.value)} inputMode="numeric" />
+              </Field>
+            </div>
+            <div className="ef-field-grid">
+              <Field label="用户">
+                <input value={sshUser} onChange={(e) => setSshUser(e.target.value)} placeholder="user" />
+              </Field>
+              <Field label="私钥路径">
+                <input
+                  value={sshKey}
+                  onChange={(e) => setSshKey(e.target.value)}
+                  placeholder="~/.ssh/id_ed25519"
+                />
+              </Field>
+            </div>
+            <div className="ef-field-grid">
+              <Field label="远程 Socket 路径">
+                <input
+                  value={sshSocket}
+                  onChange={(e) => setSshSocket(e.target.value)}
+                  placeholder="~/.mineru/doclib.sock"
+                />
+              </Field>
+              <Field label="远程暂存目录">
+                <input
+                  value={sshInbox}
+                  onChange={(e) => setSshInbox(e.target.value)}
+                  placeholder="~/.mineru/paper-field-inbox"
+                />
+              </Field>
+            </div>
+          </AdvancedFields>
           <div className="ef-import-actions">
             <Button
               type="button"
@@ -956,29 +981,42 @@ function MineruSettings() {
           <p className="ef-provider-desc">
             mineru.net 云端解析，填入 Token 即启用（限额：单文件 200MB / 200 页，批量 50 篇，每日 1000 页）。
           </p>
-          <div className="ef-field-grid">
-            <Field label={`Token ${saved.api.hasToken ? "（已保存 · 留空保持不变）" : "（在 mineru.net 获取）"}`}>
-              <input
-                type="password"
-                value={apiToken}
-                onChange={(e) => setApiToken(e.target.value)}
-                placeholder={saved.api.hasToken ? "••••••••" : "eyJhbGci…"}
-                autoComplete="off"
-              />
-            </Field>
-            <Field label="模型版本 / 语言">
-              <div className="ef-pair-select">
-                <select value={modelVersion} onChange={(e) => setModelVersion(e.target.value as MineruModelVersion)}>
-                  <option value="pipeline">pipeline</option>
-                  <option value="vlm">vlm</option>
-                </select>
-                <select value={language} onChange={(e) => setLanguage(e.target.value as MineruLanguage)}>
+          <AdvancedFields>
+            <div className="ef-field-grid">
+              <Field label={`Token ${saved.api.hasToken ? "（已保存 · 留空保持不变）" : "（在 mineru.net 获取）"}`}>
+                <input
+                  type="password"
+                  value={apiToken}
+                  onChange={(e) => setApiToken(e.target.value)}
+                  placeholder={saved.api.hasToken ? "••••••••" : "eyJhbGci…"}
+                  autoComplete="off"
+                />
+              </Field>
+              <Field label="语言">
+                <select
+                  aria-label="解析语言"
+                  value={language}
+                  onChange={(e) => setLanguage(e.target.value as MineruLanguage)}
+                >
                   <option value="ch">中文</option>
-                  <option value="en">English</option>
+                  <option value="en">英文</option>
                 </select>
-              </div>
+              </Field>
+            </div>
+            <Field label="模型版本">
+              <select
+                aria-label="模型版本"
+                value={modelVersion}
+                onChange={(e) => setModelVersion(e.target.value as MineruModelVersion)}
+              >
+                <option value="pipeline">流水线（通用解析，较快）</option>
+                <option value="vlm">视觉语言模型（复杂版面更准，较慢）</option>
+              </select>
             </Field>
-          </div>
+            <p className="ef-advanced-hint">
+              pipeline 走通用解析流水线，速度较快；vlm 使用视觉语言模型，版面复杂时更准确，耗时也更长。
+            </p>
+          </AdvancedFields>
           <div className="ef-import-actions">
             <Button
               type="button"
@@ -1012,6 +1050,7 @@ function MineruSettings() {
 
       {localEnabled || sshEnabled ? (
         <div className="ef-params">
+          <AdvancedFields>
           <span className="ef-params-label">解析参数（本地 / SSH）</span>
           <Field label="解析档位">
             <select value={tier} onChange={(e) => setTier(e.target.value as MineruTier)} aria-label="解析档位">
@@ -1024,6 +1063,7 @@ function MineruSettings() {
           <Field label="页码范围（默认 all；官方 API 非 all 时按页码提交）">
             <input value={pageRange} onChange={(e) => setPageRange(e.target.value)} placeholder="all" />
           </Field>
+          </AdvancedFields>
         </div>
       ) : null}
 
@@ -1048,6 +1088,36 @@ function MineruSettings() {
           </span>
         ) : null}
       </footer>
+    </article>
+  );
+}
+
+function UpdateBlock() {
+  const [message, setMessage] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  return (
+    <article className="page-block pf-stagger" style={{ "--pf-i": 5 } as CSSProperties}>
+      <header className="ef-block-head">
+        <h3>软件更新</h3>
+        <p>从 GitHub Releases 检查新版本。未配置签名公钥时不会联网。</p>
+      </header>
+      <div className="ef-block-foot">
+        <Button
+          type="button"
+          disabled={busy}
+          onClick={() => {
+            setBusy(true);
+            setMessage(null);
+            void checkForAppUpdate()
+              .then((text) => setMessage(text))
+              .finally(() => setBusy(false));
+          }}
+        >
+          {busy ? "正在检查…" : "检查更新"}
+        </Button>
+        {message ? <span className="ef-foot-msg">{message}</span> : null}
+      </div>
     </article>
   );
 }

@@ -65,17 +65,17 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
             <span>研究领域</span>
             {domain?.code ? <span className="ef-code">{domain.code}</span> : null}
           </div>
-          <div className="ef-domain-picker">
+          <button
+            type="button"
+            className="ef-domain-picker"
+            aria-label={domain?.name ? `切换研究领域：${domain.name}` : "切换研究领域"}
+            onClick={() => openDialog("pick-domain")}
+          >
             <h2>{domain?.name ?? "未选择领域"}</h2>
-            <button
-              type="button"
-              className="ef-domain-select"
-              aria-label="切换研究领域"
-              onClick={() => openDialog("pick-domain")}
-            >
+            <span className="ef-domain-select" aria-hidden="true">
               <Icon name="down" />
-            </button>
-          </div>
+            </span>
+          </button>
           <p className="ef-nav-sum">{domain?.summary ?? "选择或创建领域，开始组织论文。"}</p>
           <div className="ef-progress-label">
             <span>阅读进度</span>
@@ -219,6 +219,7 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
                   onClick={() => setBatchMode(true)}
                 >
                   <Icon name="batch" />
+                  批量
                 </Button>
               ) : null}
             </span>

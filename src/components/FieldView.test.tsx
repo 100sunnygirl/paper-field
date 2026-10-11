@@ -190,3 +190,42 @@ describe("PaperNav · 批量选择与批量删除", () => {
     expect(useField.getState().dialog).toBe("delete-checked");
   });
 });
+
+describe("PaperNav · 领域标题与批量入口", () => {
+  beforeEach(() => {
+    useField.setState(useField.getInitialState(), true);
+  });
+
+  it("领域标题整行是切换按钮，chevron 只是图标", () => {
+    useField.setState({
+      mode: "field",
+      selectedDomainId: "d-1",
+      domains: [
+        {
+          id: "d-1",
+          name: "多模态",
+          code: "MM-01",
+          summary: "视觉",
+          sortOrder: 1,
+          createdAt: "2024-01-01T00:00:00.000Z",
+        },
+      ],
+      papers: [intakeItem("a", null)],
+    });
+    render(<PaperNav />);
+    const picker = screen.getByRole("button", { name: "切换研究领域：多模态" });
+    expect(picker).toHaveClass("ef-domain-picker");
+    expect(picker.querySelector("h2")).toHaveTextContent("多模态");
+    expect(picker.querySelector(".ef-domain-select")).toBeTruthy();
+    expect(picker.querySelector("button")).toBeNull();
+    fireEvent.click(picker);
+    expect(useField.getState().dialog).toBe("pick-domain");
+  });
+
+  it("批量入口在图标旁显示「批量」", () => {
+    useField.setState({ mode: "field", papers: [intakeItem("a", null)] });
+    render(<PaperNav />);
+    const toggle = screen.getByRole("button", { name: "批量选择论文" });
+    expect(toggle).toHaveTextContent("批量");
+  });
+});
