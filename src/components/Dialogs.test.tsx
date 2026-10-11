@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { listPdfs, normalizePdf } from "../lib/mineru";
 import { repo } from "../lib/repo";
 import { useField } from "../store";
-import { DeleteCheckedPapersDialog, PaperDialog } from "./Dialogs";
+import { DeleteCheckedPapersDialog, DomainDialog, PaperDialog } from "./Dialogs";
 import type { Paper } from "../lib/types";
 
 vi.mock("../lib/mineru", async (importOriginal) => {
@@ -115,8 +115,12 @@ describe("PaperDialog · 来源选择", () => {
     render(<PaperDialog />);
     expect(screen.queryByRole("button", { name: /选择 PDF/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /选择文件夹/ })).toBeNull();
-    expect(screen.getByText(/浏览器预览不能读取本机 PDF/)).toBeInTheDocument();
-    expect(screen.getByLabelText("标题（必填）")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "添加论文" })).toBeInTheDocument();
+    const browserNote = screen.getByText(/浏览器预览不能读取本机 PDF/);
+    const title = screen.getByLabelText("标题（必填）");
+    expect(browserNote.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^导入/ })).toBeNull();
+    expect(screen.getByRole("button", { name: "创建论文" })).toHaveClass("ef-btn-primary");
   });
 
   it("桌面模式：显示 选择 PDF / 选择文件夹 / 手动添加 三个入口", () => {
@@ -156,14 +160,14 @@ describe("PaperDialog · 单篇导入", () => {
     expect(screen.getByRole("button", { name: "导入 1" })).toBeEnabled();
   });
 
-  it("全部重复时导入按钮禁用", async () => {
+  it("全部重复时不显示导入按钮", async () => {
     vi.mocked(repo.pdfPaths).mockResolvedValue(["/papers/a.pdf"]);
     vi.mocked(openDialog).mockResolvedValue("/papers/a.pdf");
     vi.mocked(normalizePdf).mockImplementation(async (path: string) => path);
     render(<PaperDialog />);
     fireEvent.click(screen.getByRole("button", { name: /选择 PDF/ }));
     await waitFor(() => expect(screen.getByText("a.pdf")).toBeInTheDocument());
-    expect(screen.getByRole("button", { name: /^导入/ })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /^导入/ })).toBeNull();
   });
 });
 
@@ -256,7 +260,7 @@ describe("PaperDialog · 扫描结果挑选排除", () => {
     expect(screen.getByLabelText("a.pdf")).not.toBeChecked();
     expect(screen.getByLabelText("b.pdf")).not.toBeChecked();
     expect(screen.getByText(/已勾选 0 个/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^导入/ })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /^导入/ })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "全选" }));
     expect(screen.getByLabelText("a.pdf")).toBeChecked();
@@ -388,5 +392,40 @@ describe("PaperDialog · 手动添加表单校验", () => {
       pdfPath: undefined,
     });
     expect(screen.queryByText(/标题必填/)).toBeNull();
+  });
+});
+
+describe("DomainDialog · 删除确认", () => {
+  it("确认步只显示取消和确认删除领域", () => {
+    const deleteDomain = vi.fn(async () => undefined);
+    const updateDomain = vi.fn(async () => undefined);
+    useField.setState({
+      dialog: "edit-domain",
+      selectedDomainId: "d-1",
+      domains: [
+        {
+          id: "d-1",
+          name: "待删领域",
+          code: "D-09",
+          summary: null,
+          sortOrder: 1,
+          createdAt: "2024-01-01T00:00:00.000Z",
+        },
+      ],
+      deleteDomain,
+      updateDomain,
+    });
+    render(<DomainDialog />);
+    expect(screen.getByRole("button", { name: "保存修改" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "删除领域…" }));
+    const footer = document.querySelector(".ef-dialog-foot");
+    expect(footer).not.toBeNull();
+    expect(within(footer as HTMLElement).getAllByRole("button").map((button) => button.textContent)).toEqual([
+      "取消",
+      "确认删除领域",
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: "确认删除领域" }));
+    expect(deleteDomain).toHaveBeenCalledTimes(1);
+    expect(updateDomain).not.toHaveBeenCalled();
   });
 });

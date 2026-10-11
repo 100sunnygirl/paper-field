@@ -118,6 +118,39 @@ describe("PaperNav · INTAKE 任务列表只显示进行中的作业", () => {
   });
 });
 
+describe("PaperNav · 领域计数不随搜索改写", () => {
+  it("搜索过滤列表，阅读进度和本领域论文仍按未过滤领域计算", () => {
+    const read = { ...intakeItem("a", null), readingStatus: "read" as const };
+    const unread = intakeItem("b", null);
+    useField.setState({
+      mode: "field",
+      selectedDomainId: "d-1",
+      papers: [read, unread],
+      search: "",
+    });
+    const { rerender } = render(<PaperNav />);
+    expect(document.querySelector(".ef-progress-value")?.textContent?.replace(/\s+/g, " ")).toBe("已读 1 / 2");
+    expect(document.querySelector(".ef-count")?.textContent).toBe("02");
+
+    useField.setState({ papers: [], search: "没有这篇文章xyz" });
+    rerender(<PaperNav />);
+    expect(screen.getByText("没有符合条件的论文。可以调整搜索词或切换领域。")).toBeInTheDocument();
+    expect(document.querySelector(".ef-progress-value")?.textContent?.replace(/\s+/g, " ")).toBe("已读 1 / 2");
+    expect(document.querySelector(".ef-count")?.textContent).toBe("02");
+
+    useField.setState({ papers: [read], search: "视觉指令" });
+    rerender(<PaperNav />);
+    expect(document.querySelector(".ef-progress-value")?.textContent?.replace(/\s+/g, " ")).toBe("已读 1 / 2");
+    expect(document.querySelector(".ef-count")?.textContent).toBe("02");
+  });
+
+  it("空领域提示此领域还没有论文", () => {
+    useField.setState({ mode: "field", papers: [], search: "" });
+    render(<PaperNav />);
+    expect(screen.getByText("此领域还没有论文。")).toBeInTheDocument();
+  });
+});
+
 describe("PaperNav · 批量选择与批量删除", () => {
   it("列表非空时显示批量选择入口，空列表不显示", () => {
     useField.setState({ mode: "field", papers: [intakeItem("a", null)] });
