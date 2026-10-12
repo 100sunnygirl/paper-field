@@ -8,15 +8,17 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 
 use crate::lookup::{
-    normalize_arxiv_id, normalize_doi, parse_arxiv_atom, parse_crossref, parse_crossref_query, parse_openalex,
-    parse_openalex_single, parse_s2_paper, urlencoding_min, LookupHit,
+    arxiv_id_from_doi, normalize_arxiv_id, normalize_doi, parse_arxiv_atom, parse_crossref,
+    parse_crossref_query, parse_openalex, parse_openalex_single, parse_s2_match, parse_s2_paper,
+    urlencoding_min, LookupHit, TitleQuery,
 };
 
 pub const ARXIV_GAP: Duration = Duration::from_secs(3);
 pub const S2_CONFIGURED_GAP: Duration = Duration::from_secs(1);
 const BACKOFF: Duration = Duration::from_secs(1);
 const CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
-const S2_FIELDS: &str = "title,year,abstract,venue,externalIds,authors,authors.affiliations,openAccessPdf";
+const S2_FIELDS: &str =
+    "title,year,abstract,venue,externalIds,authors,authors.affiliations,openAccessPdf";
 
 #[derive(Clone, Debug, Default)]
 pub struct BiblioAuth {
@@ -57,7 +59,10 @@ pub struct HttpResponse {
 }
 
 pub trait Fetcher {
-    fn get(&self, request: &HttpRequest) -> impl std::future::Future<Output = Result<HttpResponse, String>> + Send;
+    fn get(
+        &self,
+        request: &HttpRequest,
+    ) -> impl std::future::Future<Output = Result<HttpResponse, String>> + Send;
 }
 
 pub trait Sleeper {
@@ -115,7 +120,10 @@ pub struct LookupCache {
 
 impl LookupCache {
     pub fn new(ttl: Duration) -> Self {
-        Self { entries: HashMap::new(), ttl }
+        Self {
+            entries: HashMap::new(),
+            ttl,
+        }
     }
 
     pub fn get(&self, key: &str, now: Instant) -> Option<LookupHit> {
@@ -143,7 +151,9 @@ pub fn user_agent(include_mailto: bool, email: Option<&str>) -> String {
 }
 
 pub fn usable_email(email: Option<&str>) -> Option<&str> {
-    email.map(str::trim).filter(|value| value.contains('@') && !value.contains(char::is_whitespace))
+    email
+        .map(str::trim)
+        .filter(|value| value.contains('@') && !value.contains(char::is_whitespace))
 }
 
 pub fn redact_url(url: &str) -> String {
@@ -152,7 +162,13 @@ pub fn redact_url(url: &str) -> String {
     };
     let kept: Vec<&str> = query
         .split('&')
-        .filter(|pair| !pair.split('=').next().unwrap_or("").eq_ignore_ascii_case("api_key"))
+        .filter(|pair| {
+            !pair
+                .split('=')
+                .next()
+                .unwrap_or("")
+                .eq_ignore_ascii_case("api_key")
+        })
         .collect();
     if kept.is_empty() {
         path.to_string()
@@ -191,29 +207,44 @@ pub fn gap_from_per_second(limit: f64) -> Option<Duration> {
 }
 
 fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
-    headers.iter().find(|(key, _)| key.eq_ignore_ascii_case(name)).map(|(_, value)| value.as_str())
+    headers
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case(name))
+        .map(|(_, value)| value.as_str())
 }
 
 fn cache_key(arxiv_id: Option<&str>, doi: Option<&str>, title: Option<&str>) -> Option<String> {
-    if let Some(id) = arxiv_id.and_then(normalize_arxiv_id) {
+    let from_doi = doi.and_then(arxiv_id_from_doi);
+    if let Some(id) = arxiv_id.and_then(normalize_arxiv_id).or(from_doi) {
         return Some(format!("arxiv:{}", id.to_ascii_lowercase()));
     }
     if let Some(doi) = doi.and_then(normalize_doi) {
         return Some(format!("doi:{}", doi.to_ascii_lowercase()));
     }
     let title = title.map(str::trim).filter(|value| !value.is_empty())?;
-    Some(format!("title:{}", title.split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_lowercase()))
+    Some(format!(
+        "title:{}",
+        title
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_ascii_lowercase()
+    ))
 }
 
 pub fn accepts_ids(hit: &LookupHit, arxiv_id: Option<&str>, doi: Option<&str>) -> bool {
     if let Some(want) = arxiv_id.and_then(normalize_arxiv_id) {
-        let Some(got) = hit.arxiv_id.as_deref().and_then(normalize_arxiv_id) else { return false };
+        let Some(got) = hit.arxiv_id.as_deref().and_then(normalize_arxiv_id) else {
+            return false;
+        };
         if !got.eq_ignore_ascii_case(&want) {
             return false;
         }
     }
     if let Some(want) = doi.and_then(normalize_doi) {
-        let Some(got) = hit.doi.as_deref().and_then(normalize_doi) else { return false };
+        let Some(got) = hit.doi.as_deref().and_then(normalize_doi) else {
+            return false;
+        };
         if !got.eq_ignore_ascii_case(&want) {
             return false;
         }
@@ -228,7 +259,10 @@ fn s2_query(title: &str) -> String {
 pub fn arxiv_request(id: &str) -> HttpRequest {
     HttpRequest {
         source: "arxiv",
-        url: format!("https://export.arxiv.org/api/query?id_list={}", urlencoding_min(id)),
+        url: format!(
+            "https://export.arxiv.org/api/query?id_list={}",
+            urlencoding_min(id)
+        ),
         headers: vec![("user-agent".into(), user_agent(false, None))],
     }
 }
@@ -265,7 +299,10 @@ pub fn crossref_query_request(title: &str, email: Option<&str>) -> HttpRequest {
 pub fn openalex_doi_request(doi: &str, key: Option<&str>) -> HttpRequest {
     HttpRequest {
         source: "openalex",
-        url: format!("https://api.openalex.org/works/doi:{}", urlencoding_min(doi)),
+        url: format!(
+            "https://api.openalex.org/works/doi:{}",
+            urlencoding_min(doi)
+        ),
         headers: openalex_headers(key),
     }
 }
@@ -273,7 +310,10 @@ pub fn openalex_doi_request(doi: &str, key: Option<&str>) -> HttpRequest {
 pub fn openalex_search_request(title: &str, key: Option<&str>) -> HttpRequest {
     HttpRequest {
         source: "openalex",
-        url: format!("https://api.openalex.org/works?search={}&per-page=5", urlencoding_min(title)),
+        url: format!(
+            "https://api.openalex.org/works?search={}&per-page=5",
+            urlencoding_min(title)
+        ),
         headers: openalex_headers(key),
     }
 }
@@ -317,7 +357,10 @@ fn s2_headers(key: Option<&str>) -> Vec<(String, String)> {
 }
 
 fn note(notices: &mut Vec<LookupNotice>, source: &str, code: &str, message: &str) {
-    if notices.iter().any(|item| item.source == source && item.code == code) {
+    if notices
+        .iter()
+        .any(|item| item.source == source && item.code == code)
+    {
         return;
     }
     notices.push(LookupNotice {
@@ -328,18 +371,26 @@ fn note(notices: &mut Vec<LookupNotice>, source: &str, code: &str, message: &str
 }
 
 fn absorb_budget(budget: &mut OpenAlexBudget, headers: &[(String, String)]) {
-    if let Some(value) = header(headers, "x-ratelimit-remaining-usd").and_then(|text| text.parse::<f64>().ok()) {
+    if let Some(value) =
+        header(headers, "x-ratelimit-remaining-usd").and_then(|text| text.parse::<f64>().ok())
+    {
         budget.remaining_usd = Some(value);
     } else if header(headers, "x-ratelimit-remaining").is_some_and(|text| text.trim() == "0") {
         budget.remaining_usd = Some(0.0);
     }
-    if let Some(value) = header(headers, "x-ratelimit-limit-usd").and_then(|text| text.parse::<f64>().ok()) {
+    if let Some(value) =
+        header(headers, "x-ratelimit-limit-usd").and_then(|text| text.parse::<f64>().ok())
+    {
         budget.limit_usd = Some(value);
     }
 }
 
 fn absorb_crossref_limit(limiter: &mut Limiter, bucket: &str, headers: &[(String, String)]) {
-    let Some(limit) = header(headers, "x-rate-limit-limit").and_then(|text| text.parse::<f64>().ok()) else { return };
+    let Some(limit) =
+        header(headers, "x-rate-limit-limit").and_then(|text| text.parse::<f64>().ok())
+    else {
+        return;
+    };
     if let Some(gap) = gap_from_per_second(limit) {
         limiter.set_gap(bucket, gap);
     }
@@ -358,15 +409,30 @@ impl Fetcher for LiveFetch {
         for (key, value) in &request.headers {
             builder = builder.header(key.as_str(), value.as_str());
         }
-        let response = builder.send().await.map_err(|_| format!("{} 不可达", describe_request(request)))?;
+        let response = builder
+            .send()
+            .await
+            .map_err(|_| format!("{} 不可达", describe_request(request)))?;
         let status = response.status().as_u16();
         let headers = response
             .headers()
             .iter()
-            .map(|(key, value)| (key.as_str().to_string(), value.to_str().unwrap_or("").to_string()))
+            .map(|(key, value)| {
+                (
+                    key.as_str().to_string(),
+                    value.to_str().unwrap_or("").to_string(),
+                )
+            })
             .collect();
-        let body = response.text().await.map_err(|_| format!("{} 响应无法读取", describe_request(request)))?;
-        Ok(HttpResponse { status, body, headers })
+        let body = response
+            .text()
+            .await
+            .map_err(|_| format!("{} 响应无法读取", describe_request(request)))?;
+        Ok(HttpResponse {
+            status,
+            body,
+            headers,
+        })
     }
 }
 
@@ -387,19 +453,37 @@ fn gate() -> &'static tokio::sync::Mutex<Gate> {
     })
 }
 
-static BUDGET: Mutex<OpenAlexBudget> = Mutex::new(OpenAlexBudget { remaining_usd: None, limit_usd: None });
+static BUDGET: Mutex<OpenAlexBudget> = Mutex::new(OpenAlexBudget {
+    remaining_usd: None,
+    limit_usd: None,
+});
 
 pub fn budget_snapshot() -> OpenAlexBudget {
     BUDGET.lock().unwrap_or_else(|err| err.into_inner()).clone()
 }
 
-pub async fn lookup_live(auth: &BiblioAuth, arxiv_id: Option<&str>, doi: Option<&str>, title: Option<&str>) -> LookupOutcome {
+pub async fn lookup_live(
+    auth: &BiblioAuth,
+    arxiv_id: Option<&str>,
+    doi: Option<&str>,
+    title: Option<&str>,
+    year: Option<i32>,
+    authors: &[String],
+) -> LookupOutcome {
     let mut gate = gate().lock().await;
     let mut now = Instant::now();
     let mut sleep = RealSleep;
     let outcome = {
-        let Gate { limiter, cache, budget } = &mut *gate;
-        execute_lookup(auth, arxiv_id, doi, title, &LiveFetch, limiter, cache, budget, &mut now, &mut sleep).await
+        let Gate {
+            limiter,
+            cache,
+            budget,
+        } = &mut *gate;
+        execute_lookup(
+            auth, arxiv_id, doi, title, year, authors, &LiveFetch, limiter, cache, budget,
+            &mut now, &mut sleep,
+        )
+        .await
     };
     *BUDGET.lock().unwrap_or_else(|err| err.into_inner()) = gate.budget.clone();
     outcome
@@ -441,7 +525,11 @@ async fn fetch_paced<F: Fetcher, S: Sleeper>(
                 return Err(FetchFail::Status(403));
             }
             if response.status == 404 {
-                return Ok(HttpResponse { status: 404, body: String::new(), headers: response.headers });
+                return Ok(HttpResponse {
+                    status: 404,
+                    body: String::new(),
+                    headers: response.headers,
+                });
             }
             if !(200..300).contains(&response.status) {
                 return Err(FetchFail::Status(response.status));
@@ -453,7 +541,12 @@ async fn fetch_paced<F: Fetcher, S: Sleeper>(
 }
 
 fn fill_missing(base: &mut LookupHit, extra: LookupHit) {
-    if base.venue.as_ref().map(|venue| venue.trim().is_empty()).unwrap_or(true) {
+    if base
+        .venue
+        .as_ref()
+        .map(|venue| venue.trim().is_empty())
+        .unwrap_or(true)
+    {
         if let Some(venue) = extra.venue.filter(|venue| !venue.trim().is_empty()) {
             base.venue = Some(venue);
             if let Some(provider) = extra.providers.get("venue") {
@@ -471,11 +564,156 @@ fn fill_missing(base: &mut LookupHit, extra: LookupHit) {
     }
 }
 
+fn openalex_budget_message(keyed: bool) -> &'static str {
+    if keyed {
+        "OpenAlex 今日额度已用完，已改用其他文献库"
+    } else {
+        "OpenAlex 今日免费搜索次数已用完，填写 Key 可提高额度"
+    }
+}
+
+async fn search_openalex<F: Fetcher, S: Sleeper>(
+    fetch: &F,
+    sleeper: &mut S,
+    limiter: &mut Limiter,
+    budget: &mut OpenAlexBudget,
+    now: &mut Instant,
+    notices: &mut Vec<LookupNotice>,
+    query: &TitleQuery,
+    openalex_key: Option<&str>,
+) -> Option<LookupHit> {
+    if budget.search_blocked() {
+        note(
+            notices,
+            "openalex",
+            "budget",
+            openalex_budget_message(openalex_key.is_some()),
+        );
+        return None;
+    }
+    let request = openalex_search_request(&query.title, openalex_key);
+    match fetch_paced(
+        fetch,
+        sleeper,
+        limiter,
+        budget,
+        now,
+        "openalex",
+        Duration::ZERO,
+        &request,
+        false,
+    )
+    .await
+    {
+        Ok(response) if !response.body.is_empty() => {
+            parse_openalex(&response.body, query).ok().flatten()
+        }
+        Ok(_) => None,
+        Err(FetchFail::Status(429)) => {
+            budget.remaining_usd = Some(0.0);
+            note(
+                notices,
+                "openalex",
+                "budget",
+                openalex_budget_message(openalex_key.is_some()),
+            );
+            None
+        }
+        Err(_) => None,
+    }
+}
+
+async fn search_s2<F: Fetcher, S: Sleeper>(
+    fetch: &F,
+    sleeper: &mut S,
+    limiter: &mut Limiter,
+    budget: &mut OpenAlexBudget,
+    now: &mut Instant,
+    notices: &mut Vec<LookupNotice>,
+    query: &TitleQuery,
+    s2_key: Option<&str>,
+) -> Option<LookupHit> {
+    let request = s2_match_request(&query.title, s2_key);
+    let gap = if s2_key.is_some() {
+        S2_CONFIGURED_GAP
+    } else {
+        Duration::ZERO
+    };
+    match fetch_paced(
+        fetch, sleeper, limiter, budget, now, "s2", gap, &request, false,
+    )
+    .await
+    {
+        Ok(response) if !response.body.is_empty() => {
+            parse_s2_match(&response.body, query).ok().flatten()
+        }
+        Ok(_) => None,
+        Err(FetchFail::Status(429)) if s2_key.is_none() => {
+            note(
+                notices,
+                "semanticscholar",
+                "busy",
+                "Semantic Scholar 公共通道繁忙，可申请个人 Key",
+            );
+            None
+        }
+        Err(_) => None,
+    }
+}
+
+async fn search_crossref_title<F: Fetcher, S: Sleeper>(
+    fetch: &F,
+    sleeper: &mut S,
+    limiter: &mut Limiter,
+    budget: &mut OpenAlexBudget,
+    now: &mut Instant,
+    notices: &mut Vec<LookupNotice>,
+    query: &TitleQuery,
+    email: Option<&str>,
+    polite: bool,
+) -> Option<LookupHit> {
+    let request = crossref_query_request(&query.title, email);
+    match fetch_paced(
+        fetch,
+        sleeper,
+        limiter,
+        budget,
+        now,
+        "crossref-query",
+        crossref_gap(polite, true),
+        &request,
+        true,
+    )
+    .await
+    {
+        Ok(response) if !response.body.is_empty() => {
+            parse_crossref_query(&response.body, query).ok().flatten()
+        }
+        Ok(_) => None,
+        Err(FetchFail::Status(429)) if !polite => {
+            note(
+                notices,
+                "crossref",
+                "slow",
+                "Crossref 请求过快，已自动降速；填写邮箱可提速",
+            );
+            None
+        }
+        Err(FetchFail::Status(403)) => {
+            note(notices, "crossref", "blocked", "Crossref 可能已限制访问");
+            None
+        }
+        Err(_) => None,
+    }
+}
+
 pub async fn execute_lookup<F: Fetcher, S: Sleeper>(
     auth: &BiblioAuth,
     arxiv_id: Option<&str>,
     doi: Option<&str>,
     title: Option<&str>,
+    year: Option<i32>,
+    authors: &[String],
     fetch: &F,
     limiter: &mut Limiter,
     cache: &mut LookupCache,
@@ -496,18 +734,35 @@ pub async fn execute_lookup<F: Fetcher, S: Sleeper>(
         }
     }
 
-    let want_arxiv = arxiv_id.and_then(normalize_arxiv_id);
     let want_doi = doi.and_then(normalize_doi);
-    let want_title = title.map(str::trim).filter(|value| !value.is_empty()).map(str::to_string);
+    let arxiv_from_doi = want_doi.as_deref().and_then(arxiv_id_from_doi);
+    let want_arxiv = arxiv_id
+        .and_then(normalize_arxiv_id)
+        .or_else(|| arxiv_from_doi.clone());
+    let doi_is_arxiv = arxiv_from_doi.is_some();
+    let want_title = title
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
     let email = auth.email.as_deref();
     let polite = usable_email(email).is_some();
-    let openalex_key = auth.openalex_key.as_deref().filter(|value| !value.trim().is_empty());
-    let s2_key = auth.s2_key.as_deref().filter(|value| !value.trim().is_empty());
+    let openalex_key = auth
+        .openalex_key
+        .as_deref()
+        .filter(|value| !value.trim().is_empty());
+    let s2_key = auth
+        .s2_key
+        .as_deref()
+        .filter(|value| !value.trim().is_empty());
     let mut hit: Option<LookupHit> = None;
 
     if let Some(id) = want_arxiv.clone() {
         let request = arxiv_request(&id);
-        match fetch_paced(fetch, sleeper, limiter, budget, now, "arxiv", ARXIV_GAP, &request, false).await {
+        match fetch_paced(
+            fetch, sleeper, limiter, budget, now, "arxiv", ARXIV_GAP, &request, false,
+        )
+        .await
+        {
             Ok(response) if !response.body.is_empty() => {
                 if let Some(mut parsed) = parse_arxiv_atom(&response.body) {
                     parsed.arxiv_id = Some(id.clone());
@@ -523,8 +778,16 @@ pub async fn execute_lookup<F: Fetcher, S: Sleeper>(
             Err(FetchFail::Network) | Err(FetchFail::Status(_)) => {}
         }
         let request = s2_arxiv_request(&id, s2_key);
-        let gap = if s2_key.is_some() { S2_CONFIGURED_GAP } else { Duration::ZERO };
-        match fetch_paced(fetch, sleeper, limiter, budget, now, "s2", gap, &request, false).await {
+        let gap = if s2_key.is_some() {
+            S2_CONFIGURED_GAP
+        } else {
+            Duration::ZERO
+        };
+        match fetch_paced(
+            fetch, sleeper, limiter, budget, now, "s2", gap, &request, false,
+        )
+        .await
+        {
             Ok(response) if !response.body.is_empty() => {
                 if let Ok(Some(parsed)) = parse_s2_paper(&response.body) {
                     if accepts_ids(&parsed, Some(&id), None) {
@@ -538,7 +801,12 @@ pub async fn execute_lookup<F: Fetcher, S: Sleeper>(
             }
             Ok(_) => {}
             Err(FetchFail::Status(429)) if s2_key.is_none() => {
-                note(&mut notices, "semanticscholar", "busy", "Semantic Scholar 公共通道繁忙，可申请个人 Key");
+                note(
+                    &mut notices,
+                    "semanticscholar",
+                    "busy",
+                    "Semantic Scholar 公共通道繁忙，可申请个人 Key",
+                );
             }
             Err(_) => {}
         }
@@ -546,27 +814,63 @@ pub async fn execute_lookup<F: Fetcher, S: Sleeper>(
 
     if hit.is_none() {
         if let Some(doi) = want_doi.clone() {
-            let request = crossref_work_request(&doi, email);
-            match fetch_paced(fetch, sleeper, limiter, budget, now, "crossref-single", crossref_gap(polite, false), &request, true).await {
-                Ok(response) if !response.body.is_empty() => {
-                    if let Ok(Some(parsed)) = parse_crossref(&response.body) {
-                        if accepts_ids(&parsed, None, Some(&doi)) {
-                            hit = Some(parsed);
+            if !doi_is_arxiv {
+                let request = crossref_work_request(&doi, email);
+                match fetch_paced(
+                    fetch,
+                    sleeper,
+                    limiter,
+                    budget,
+                    now,
+                    "crossref-single",
+                    crossref_gap(polite, false),
+                    &request,
+                    true,
+                )
+                .await
+                {
+                    Ok(response) if !response.body.is_empty() => {
+                        if let Ok(Some(parsed)) = parse_crossref(&response.body) {
+                            if accepts_ids(&parsed, None, Some(&doi)) {
+                                hit = Some(parsed);
+                            }
                         }
                     }
+                    Ok(_) => {}
+                    Err(FetchFail::Status(429)) if !polite => {
+                        note(
+                            &mut notices,
+                            "crossref",
+                            "slow",
+                            "Crossref 请求过快，已自动降速；填写邮箱可提速",
+                        );
+                    }
+                    Err(FetchFail::Status(403)) => {
+                        note(
+                            &mut notices,
+                            "crossref",
+                            "blocked",
+                            "Crossref 可能已限制访问",
+                        );
+                    }
+                    Err(_) => {}
                 }
-                Ok(_) => {}
-                Err(FetchFail::Status(429)) if !polite => {
-                    note(&mut notices, "crossref", "slow", "Crossref 请求过快，已自动降速；填写邮箱可提速");
-                }
-                Err(FetchFail::Status(403)) => {
-                    note(&mut notices, "crossref", "blocked", "Crossref 可能已限制访问");
-                }
-                Err(_) => {}
             }
             if hit.is_none() {
                 let request = openalex_doi_request(&doi, openalex_key);
-                match fetch_paced(fetch, sleeper, limiter, budget, now, "openalex", Duration::ZERO, &request, false).await {
+                match fetch_paced(
+                    fetch,
+                    sleeper,
+                    limiter,
+                    budget,
+                    now,
+                    "openalex",
+                    Duration::ZERO,
+                    &request,
+                    false,
+                )
+                .await
+                {
                     Ok(response) if !response.body.is_empty() => {
                         if let Ok(Some(parsed)) = parse_openalex_single(&response.body) {
                             if accepts_ids(&parsed, None, Some(&doi)) {
@@ -582,93 +886,66 @@ pub async fn execute_lookup<F: Fetcher, S: Sleeper>(
 
     if hit.is_none() {
         if let Some(title) = want_title.clone() {
-            if budget.search_blocked() {
-                note(
-                    &mut notices,
-                    "openalex",
-                    "budget",
-                    if openalex_key.is_some() {
-                        "OpenAlex 今日额度已用完，已改用其他文献库"
-                    } else {
-                        "OpenAlex 今日免费搜索次数已用完，填写 Key 可提高额度"
-                    },
-                );
-            } else {
-                let request = openalex_search_request(&title, openalex_key);
-                match fetch_paced(fetch, sleeper, limiter, budget, now, "openalex", Duration::ZERO, &request, false).await {
-                    Ok(response) if !response.body.is_empty() => {
-                        if let Ok(Some(parsed)) = parse_openalex(&response.body, &title) {
-                            if accepts_ids(&parsed, want_arxiv.as_deref(), want_doi.as_deref()) {
-                                hit = Some(parsed);
-                            }
-                        }
-                    }
-                    Ok(_) => {}
-                    Err(FetchFail::Status(429)) => {
-                        budget.remaining_usd = Some(0.0);
-                        note(
-                            &mut notices,
-                            "openalex",
-                            "budget",
-                            if openalex_key.is_some() {
-                                "OpenAlex 今日额度已用完，已改用其他文献库"
-                            } else {
-                                "OpenAlex 今日免费搜索次数已用完，填写 Key 可提高额度"
-                            },
-                        );
-                    }
-                    Err(_) => {}
-                }
-            }
-            if hit.is_none() {
-                let request = s2_match_request(&title, s2_key);
-                let gap = if s2_key.is_some() { S2_CONFIGURED_GAP } else { Duration::ZERO };
-                match fetch_paced(fetch, sleeper, limiter, budget, now, "s2", gap, &request, false).await {
-                    Ok(response) if !response.body.is_empty() => {
-                        if let Ok(Some(parsed)) = parse_s2_paper(&response.body) {
-                            if accepts_ids(&parsed, want_arxiv.as_deref(), want_doi.as_deref()) {
-                                hit = Some(parsed);
-                            }
-                        }
-                    }
-                    Ok(_) => {}
-                    Err(FetchFail::Status(429)) if s2_key.is_none() => {
-                        note(&mut notices, "semanticscholar", "busy", "Semantic Scholar 公共通道繁忙，可申请个人 Key");
-                    }
-                    Err(_) => {}
-                }
-            }
-            if hit.is_none() {
-                let request = crossref_query_request(&title, email);
-                match fetch_paced(
+            let query = TitleQuery {
+                title: title.clone(),
+                year,
+                authors: authors.to_vec(),
+                doi: want_doi.clone(),
+                arxiv_id: want_arxiv.clone(),
+            };
+            let prefer_s2 = s2_key.is_some();
+            if prefer_s2 {
+                hit = search_s2(
                     fetch,
                     sleeper,
                     limiter,
                     budget,
                     now,
-                    "crossref-query",
-                    crossref_gap(polite, true),
-                    &request,
-                    true,
+                    &mut notices,
+                    &query,
+                    s2_key,
                 )
-                .await
-                {
-                    Ok(response) if !response.body.is_empty() => {
-                        if let Ok(Some(parsed)) = parse_crossref_query(&response.body, &title) {
-                            if accepts_ids(&parsed, want_arxiv.as_deref(), want_doi.as_deref()) {
-                                hit = Some(parsed);
-                            }
-                        }
-                    }
-                    Ok(_) => {}
-                    Err(FetchFail::Status(429)) if !polite => {
-                        note(&mut notices, "crossref", "slow", "Crossref 请求过快，已自动降速；填写邮箱可提速");
-                    }
-                    Err(FetchFail::Status(403)) => {
-                        note(&mut notices, "crossref", "blocked", "Crossref 可能已限制访问");
-                    }
-                    Err(_) => {}
-                }
+                .await;
+            }
+            if hit.is_none() {
+                hit = search_openalex(
+                    fetch,
+                    sleeper,
+                    limiter,
+                    budget,
+                    now,
+                    &mut notices,
+                    &query,
+                    openalex_key,
+                )
+                .await;
+            }
+            if hit.is_none() && !prefer_s2 {
+                hit = search_s2(
+                    fetch,
+                    sleeper,
+                    limiter,
+                    budget,
+                    now,
+                    &mut notices,
+                    &query,
+                    s2_key,
+                )
+                .await;
+            }
+            if hit.is_none() {
+                hit = search_crossref_title(
+                    fetch,
+                    sleeper,
+                    limiter,
+                    budget,
+                    now,
+                    &mut notices,
+                    &query,
+                    email,
+                    polite,
+                )
+                .await;
             }
         }
     }
@@ -713,11 +990,19 @@ mod tests {
     }
 
     fn ok(body: &str) -> Result<HttpResponse, String> {
-        Ok(HttpResponse { status: 200, body: body.to_string(), headers: vec![] })
+        Ok(HttpResponse {
+            status: 200,
+            body: body.to_string(),
+            headers: vec![],
+        })
     }
 
     fn status(code: u16) -> Result<HttpResponse, String> {
-        Ok(HttpResponse { status: code, body: String::new(), headers: vec![] })
+        Ok(HttpResponse {
+            status: code,
+            body: String::new(),
+            headers: vec![],
+        })
     }
 
     fn harness() -> (Limiter, LookupCache, OpenAlexBudget, Instant, RecordSleep) {
@@ -738,7 +1023,10 @@ mod tests {
         let polite = user_agent(true, Some("reader@example.com"));
         assert!(polite.contains("mailto:reader@example.com"));
         assert!(polite.starts_with("PaperField/"));
-        assert_eq!(user_agent(false, Some("reader@example.com")), user_agent(false, None));
+        assert_eq!(
+            user_agent(false, Some("reader@example.com")),
+            user_agent(false, None)
+        );
 
         let openalex = openalex_search_request("Attention", None);
         assert!(!openalex.url.contains("mailto"));
@@ -753,19 +1041,38 @@ mod tests {
 
         let crossref = crossref_work_request("10.1000/xyz", None);
         assert!(!crossref.url.contains("mailto"));
-        assert!(!crossref.headers.iter().any(|(_, value)| value.contains("mailto")));
+        assert!(!crossref
+            .headers
+            .iter()
+            .any(|(_, value)| value.contains("mailto")));
         let polite_crossref = crossref_work_request("10.1000/xyz", Some("reader@example.com"));
         assert!(polite_crossref.url.contains("mailto=reader%40example.com"));
-        assert!(polite_crossref.headers.iter().any(|(_, value)| value.contains("mailto:reader@example.com")));
+        assert!(polite_crossref
+            .headers
+            .iter()
+            .any(|(_, value)| value.contains("mailto:reader@example.com")));
 
         let s2 = s2_match_request("Attention-Is", None);
-        assert!(s2.url.contains("Attention%20Is") || s2.url.contains("Attention+Is") || s2.url.contains("Attention%20Is"));
+        assert!(
+            s2.url.contains("Attention%20Is")
+                || s2.url.contains("Attention+Is")
+                || s2.url.contains("Attention%20Is")
+        );
         assert!(!s2.url.to_ascii_lowercase().contains("attention-is"));
-        assert!(!s2.headers.iter().any(|(key, _)| key.eq_ignore_ascii_case("x-api-key")));
+        assert!(!s2
+            .headers
+            .iter()
+            .any(|(key, _)| key.eq_ignore_ascii_case("x-api-key")));
         let s2_keyed = s2_arxiv_request("1706.03762", Some("s2-secret-key"));
         assert!(!describe_request(&s2_keyed).contains("s2-secret-key"));
-        assert!(redact_url("https://api.openalex.org/works?search=a&api_key=oa-secret-key-xyz").contains("search=a"));
-        assert!(!redact_url("https://api.openalex.org/works?search=a&api_key=oa-secret-key-xyz").contains("oa-secret"));
+        assert!(
+            redact_url("https://api.openalex.org/works?search=a&api_key=oa-secret-key-xyz")
+                .contains("search=a")
+        );
+        assert!(
+            !redact_url("https://api.openalex.org/works?search=a&api_key=oa-secret-key-xyz")
+                .contains("oa-secret")
+        );
     }
 
     #[test]
@@ -792,26 +1099,13 @@ mod tests {
             ]),
         };
         let mut sleeper = sleeper;
-        execute_lookup(&BiblioAuth::default(), Some("1706.03762"), None, None, &script, &mut limiter, &mut cache, &mut budget, &mut now, &mut sleeper).await;
-        cache.entries.clear();
-        execute_lookup(&BiblioAuth::default(), Some("1706.03762"), None, None, &script, &mut limiter, &mut cache, &mut budget, &mut now, &mut sleeper).await;
-        assert!(sleeper.waits.iter().any(|wait| *wait >= ARXIV_GAP), "{:?}", sleeper.waits);
-    }
-
-    #[tokio::test]
-    async fn doi_mismatch_falls_through_and_429_does_not_abort() {
-        let (mut limiter, mut cache, mut budget, mut now, mut sleeper) = harness();
-        let wrong = r#"{"display_name":"Other Paper","publication_year":2025,"doi":"https://doi.org/10.65215/2q58a426"}"#;
-        let search = r#"{"results":[{"display_name":"Attention Is All You Need","publication_year":2017,"doi":"https://doi.org/10.48550/arXiv.1706.03762"}]}"#;
-        let script = Script {
-            requests: Mutex::new(vec![]),
-            responses: Mutex::new(vec![status(429), ok(wrong), ok(search)]),
-        };
-        let outcome = execute_lookup(
+        execute_lookup(
             &BiblioAuth::default(),
+            Some("1706.03762"),
             None,
-            Some("10.48550/arXiv.1706.03762"),
-            Some("Attention Is All You Need"),
+            None,
+            None,
+            &[],
             &script,
             &mut limiter,
             &mut cache,
@@ -820,30 +1114,88 @@ mod tests {
             &mut sleeper,
         )
         .await;
-        let urls: Vec<String> = script.requests.lock().unwrap().iter().map(|request| request.url.clone()).collect();
+        cache.entries.clear();
+        execute_lookup(
+            &BiblioAuth::default(),
+            Some("1706.03762"),
+            None,
+            None,
+            None,
+            &[],
+            &script,
+            &mut limiter,
+            &mut cache,
+            &mut budget,
+            &mut now,
+            &mut sleeper,
+        )
+        .await;
+        assert!(
+            sleeper.waits.iter().any(|wait| *wait >= ARXIV_GAP),
+            "{:?}",
+            sleeper.waits
+        );
+    }
+
+    #[tokio::test]
+    async fn doi_mismatch_falls_through_and_429_does_not_abort() {
+        let (mut limiter, mut cache, mut budget, mut now, mut sleeper) = harness();
+        let wrong = r#"{"display_name":"Other Paper","publication_year":2025,"doi":"https://doi.org/10.65215/2q58a426"}"#;
+        let search = r#"{"results":[{"display_name":"Attention Is All You Need","publication_year":2017,"doi":"https://doi.org/10.5555/3295222.3295349"}]}"#;
+        let script = Script {
+            requests: Mutex::new(vec![]),
+            responses: Mutex::new(vec![status(429), ok(wrong), ok(search)]),
+        };
+        let outcome = execute_lookup(
+            &BiblioAuth::default(),
+            None,
+            Some("10.5555/3295222.3295349"),
+            Some("Attention Is All You Need"),
+            None,
+            &[],
+            &script,
+            &mut limiter,
+            &mut cache,
+            &mut budget,
+            &mut now,
+            &mut sleeper,
+        )
+        .await;
+        let urls: Vec<String> = script
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|request| request.url.clone())
+            .collect();
         assert!(urls[0].contains("api.crossref.org/works/"));
         assert!(!urls[0].contains("mailto"));
         assert!(urls[1].contains("api.openalex.org/works/doi:"));
         assert!(urls[2].contains("api.openalex.org/works?search="));
         let hit = outcome.hit.unwrap();
         assert_eq!(hit.source_name, "openalex");
-        assert_eq!(hit.doi.as_deref(), Some("10.48550/arXiv.1706.03762"));
+        assert_eq!(hit.doi.as_deref(), Some("10.5555/3295222.3295349"));
         assert!(outcome.notices.iter().any(|notice| notice.code == "slow"));
     }
 
     #[tokio::test]
     async fn network_error_continues_to_the_next_source() {
         let (mut limiter, mut cache, mut budget, mut now, mut sleeper) = harness();
-        let right = r#"{"display_name":"Attention Is All You Need","publication_year":2017,"doi":"https://doi.org/10.48550/arXiv.1706.03762"}"#;
+        let right = r#"{"display_name":"Attention Is All You Need","publication_year":2017,"doi":"https://doi.org/10.5555/3295222.3295349"}"#;
         let script = Script {
             requests: Mutex::new(vec![]),
             responses: Mutex::new(vec![Err("offline".into()), ok(right)]),
         };
         let outcome = execute_lookup(
-            &BiblioAuth { email: Some("reader@example.com".into()), ..BiblioAuth::default() },
+            &BiblioAuth {
+                email: Some("reader@example.com".into()),
+                ..BiblioAuth::default()
+            },
             None,
-            Some("10.48550/arXiv.1706.03762"),
+            Some("10.5555/3295222.3295349"),
             None,
+            None,
+            &[],
             &script,
             &mut limiter,
             &mut cache,
@@ -853,7 +1205,9 @@ mod tests {
         )
         .await;
         assert_eq!(script.requests.lock().unwrap().len(), 2);
-        assert!(script.requests.lock().unwrap()[0].url.contains("mailto=reader%40example.com"));
+        assert!(script.requests.lock().unwrap()[0]
+            .url
+            .contains("mailto=reader%40example.com"));
         assert!(!script.requests.lock().unwrap()[1].url.contains("mailto"));
         assert_eq!(outcome.hit.unwrap().source_name, "openalex");
         assert!(outcome.notices.is_empty());
@@ -863,17 +1217,19 @@ mod tests {
     async fn exhausted_openalex_budget_skips_search_and_uses_semantic_scholar() {
         let (mut limiter, mut cache, mut budget, mut now, mut sleeper) = harness();
         budget.remaining_usd = Some(0.0);
-        let value: serde_json::Value = serde_json::from_str(include_str!("../fixtures/semanticscholar-attention.json")).unwrap();
-        let paper = value["data"][0].to_string();
         let script = Script {
             requests: Mutex::new(vec![]),
-            responses: Mutex::new(vec![ok(&paper)]),
+            responses: Mutex::new(vec![ok(include_str!(
+                "../fixtures/semanticscholar-attention.json"
+            ))]),
         };
         let outcome = execute_lookup(
             &BiblioAuth::default(),
             None,
             None,
             Some("Attention Is All You Need"),
+            None,
+            &[],
             &script,
             &mut limiter,
             &mut cache,
@@ -882,10 +1238,22 @@ mod tests {
             &mut sleeper,
         )
         .await;
-        let urls: Vec<String> = script.requests.lock().unwrap().iter().map(|request| request.url.clone()).collect();
-        assert!(urls.iter().all(|url| !url.contains("api.openalex.org")), "{urls:?}");
+        let urls: Vec<String> = script
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|request| request.url.clone())
+            .collect();
+        assert!(
+            urls.iter().all(|url| !url.contains("api.openalex.org")),
+            "{urls:?}"
+        );
         assert!(urls[0].contains("search/match"));
-        assert!(outcome.notices.iter().any(|notice| notice.message.contains("填写 Key")));
+        assert!(outcome
+            .notices
+            .iter()
+            .any(|notice| notice.message.contains("填写 Key")));
         assert_eq!(outcome.hit.unwrap().source_name, "semanticscholar");
     }
 
@@ -894,20 +1262,54 @@ mod tests {
         let (mut limiter, mut cache, mut budget, mut now, mut sleeper) = harness();
         let script = Script {
             requests: Mutex::new(vec![]),
-            responses: Mutex::new(vec![ok(include_str!("../fixtures/arxiv-attention.xml")), status(404)]),
+            responses: Mutex::new(vec![
+                ok(include_str!("../fixtures/arxiv-attention.xml")),
+                status(404),
+            ]),
         };
         let auth = BiblioAuth::default();
-        let first = execute_lookup(&auth, Some("1706.03762"), None, None, &script, &mut limiter, &mut cache, &mut budget, &mut now, &mut sleeper).await;
+        let first = execute_lookup(
+            &auth,
+            Some("1706.03762"),
+            None,
+            None,
+            None,
+            &[],
+            &script,
+            &mut limiter,
+            &mut cache,
+            &mut budget,
+            &mut now,
+            &mut sleeper,
+        )
+        .await;
         assert!(first.hit.is_some());
         let calls = script.requests.lock().unwrap().len();
-        let second = execute_lookup(&auth, Some("1706.03762"), None, None, &script, &mut limiter, &mut cache, &mut budget, &mut now, &mut sleeper).await;
+        let second = execute_lookup(
+            &auth,
+            Some("1706.03762"),
+            None,
+            None,
+            None,
+            &[],
+            &script,
+            &mut limiter,
+            &mut cache,
+            &mut budget,
+            &mut now,
+            &mut sleeper,
+        )
+        .await;
         assert_eq!(script.requests.lock().unwrap().len(), calls);
         assert_eq!(second.hit.unwrap().title, "Attention Is All You Need");
     }
 
     #[test]
     fn old_style_arxiv_id_is_normalized() {
-        assert_eq!(normalize_arxiv_id("hep-th/9901001v2").as_deref(), Some("hep-th/9901001"));
+        assert_eq!(
+            normalize_arxiv_id("hep-th/9901001v2").as_deref(),
+            Some("hep-th/9901001")
+        );
         let request = arxiv_request("hep-th/9901001");
         assert!(request.url.contains("hep-th"));
         assert!(request.url.contains("%2F"));
@@ -927,6 +1329,8 @@ mod tests {
             Some("hep-th/9901001v2"),
             None,
             None,
+            None,
+            &[],
             &script,
             &mut limiter,
             &mut cache,
@@ -946,15 +1350,22 @@ mod tests {
     #[tokio::test]
     async fn configured_crossref_uses_the_recorded_work_and_mailto() {
         let (mut limiter, mut cache, mut budget, mut now, mut sleeper) = harness();
+        let body = include_str!("../fixtures/crossref-attention.json")
+            .replace("10.48550/arXiv.1706.03762", "10.5555/3295222.3295349");
         let script = Script {
             requests: Mutex::new(vec![]),
-            responses: Mutex::new(vec![ok(include_str!("../fixtures/crossref-attention.json"))]),
+            responses: Mutex::new(vec![ok(&body)]),
         };
         let outcome = execute_lookup(
-            &BiblioAuth { email: Some("reader@example.com".into()), ..BiblioAuth::default() },
+            &BiblioAuth {
+                email: Some("reader@example.com".into()),
+                ..BiblioAuth::default()
+            },
             None,
-            Some("10.48550/arXiv.1706.03762"),
+            Some("10.5555/3295222.3295349"),
             Some("Attention Is All You Need"),
+            None,
+            &[],
             &script,
             &mut limiter,
             &mut cache,
@@ -973,7 +1384,7 @@ mod tests {
     #[tokio::test]
     async fn crossref_forbidden_is_recorded_and_lookup_continues() {
         let (mut limiter, mut cache, mut budget, mut now, mut sleeper) = harness();
-        let right = r#"{"display_name":"Attention Is All You Need","publication_year":2017,"doi":"https://doi.org/10.48550/arXiv.1706.03762"}"#;
+        let right = r#"{"display_name":"Attention Is All You Need","publication_year":2017,"doi":"https://doi.org/10.5555/3295222.3295349"}"#;
         let script = Script {
             requests: Mutex::new(vec![]),
             responses: Mutex::new(vec![status(403), ok(right)]),
@@ -981,8 +1392,10 @@ mod tests {
         let outcome = execute_lookup(
             &BiblioAuth::default(),
             None,
-            Some("10.48550/arXiv.1706.03762"),
+            Some("10.5555/3295222.3295349"),
             None,
+            None,
+            &[],
             &script,
             &mut limiter,
             &mut cache,
@@ -992,7 +1405,10 @@ mod tests {
         )
         .await;
         assert_eq!(outcome.hit.unwrap().source_name, "openalex");
-        assert!(outcome.notices.iter().any(|notice| notice.message.contains("限制访问")));
+        assert!(outcome
+            .notices
+            .iter()
+            .any(|notice| notice.message.contains("限制访问")));
     }
 
     #[tokio::test]
@@ -1007,6 +1423,8 @@ mod tests {
             None,
             None,
             Some("Attention-Is All You Need"),
+            None,
+            &[],
             &script,
             &mut limiter,
             &mut cache,
@@ -1022,24 +1440,41 @@ mod tests {
         assert!(!requests[0].url.contains("api_key"));
         assert!(requests[1].url.contains("search/match"));
         assert!(requests[1].url.contains("Attention%20Is"));
-        assert!(!requests[1].url.to_ascii_lowercase().contains("attention-is"));
-        assert!(!requests[1].headers.iter().any(|(key, _)| key.eq_ignore_ascii_case("x-api-key")));
+        assert!(!requests[1]
+            .url
+            .to_ascii_lowercase()
+            .contains("attention-is"));
+        assert!(!requests[1]
+            .headers
+            .iter()
+            .any(|(key, _)| key.eq_ignore_ascii_case("x-api-key")));
         assert!(requests[2].url.contains("query.bibliographic"));
         assert!(!requests[2].url.contains("mailto"));
         assert!(outcome.hit.is_none());
-        assert!(outcome.notices.iter().any(|notice| notice.message.contains("填写 Key")));
-        assert!(outcome.notices.iter().any(|notice| notice.message.contains("个人 Key")));
-        assert!(outcome.notices.iter().any(|notice| notice.message.contains("填写邮箱")));
+        assert!(outcome
+            .notices
+            .iter()
+            .any(|notice| notice.message.contains("填写 Key")));
+        assert!(outcome
+            .notices
+            .iter()
+            .any(|notice| notice.message.contains("个人 Key")));
+        assert!(outcome
+            .notices
+            .iter()
+            .any(|notice| notice.message.contains("填写邮箱")));
     }
 
     #[tokio::test]
     async fn configured_title_search_sends_keys_without_logging_them() {
         let (mut limiter, mut cache, mut budget, mut now, mut sleeper) = harness();
-        let fixture: serde_json::Value = serde_json::from_str(include_str!("../fixtures/crossref-attention.json")).unwrap();
-        let query = serde_json::json!({ "message": { "items": [fixture["message"].clone()] } }).to_string();
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../fixtures/crossref-attention.json")).unwrap();
+        let query =
+            serde_json::json!({ "message": { "items": [fixture["message"].clone()] } }).to_string();
         let script = Script {
             requests: Mutex::new(vec![]),
-            responses: Mutex::new(vec![ok(r#"{"results":[]}"#), status(404), ok(&query)]),
+            responses: Mutex::new(vec![status(404), ok(r#"{"results":[]}"#), ok(&query)]),
         };
         let auth = BiblioAuth {
             email: Some("reader@example.com".into()),
@@ -1051,6 +1486,8 @@ mod tests {
             None,
             None,
             Some("Attention-Is All You Need"),
+            None,
+            &[],
             &script,
             &mut limiter,
             &mut cache,
@@ -1060,13 +1497,24 @@ mod tests {
         )
         .await;
         let requests = script.requests.lock().unwrap().clone();
-        assert!(requests[0].headers.iter().any(|(key, value)| key.eq_ignore_ascii_case("authorization") && value == "Bearer oa-secret-key-xyz"));
-        assert!(!describe_request(&requests[0]).contains("oa-secret-key-xyz"));
-        assert!(!requests[0].url.contains("mailto"));
-        assert!(requests[1].headers.iter().any(|(key, value)| key.eq_ignore_ascii_case("x-api-key") && value == "s2-secret-key"));
-        assert!(!describe_request(&requests[1]).contains("s2-secret-key"));
+        assert!(requests[0].url.contains("search/match"));
+        assert!(requests[0]
+            .headers
+            .iter()
+            .any(|(key, value)| key.eq_ignore_ascii_case("x-api-key") && value == "s2-secret-key"));
+        assert!(!describe_request(&requests[0]).contains("s2-secret-key"));
+        assert!(requests[1]
+            .headers
+            .iter()
+            .any(|(key, value)| key.eq_ignore_ascii_case("authorization")
+                && value == "Bearer oa-secret-key-xyz"));
+        assert!(!describe_request(&requests[1]).contains("oa-secret-key-xyz"));
+        assert!(!requests[1].url.contains("mailto"));
         assert!(requests[2].url.contains("mailto=reader%40example.com"));
-        assert!(!outcome.notices.iter().any(|notice| notice.message.contains("个人 Key")));
+        assert!(!outcome
+            .notices
+            .iter()
+            .any(|notice| notice.message.contains("个人 Key")));
         assert_eq!(outcome.hit.unwrap().source_name, "crossref");
     }
 
@@ -1075,7 +1523,8 @@ mod tests {
         let (mut limiter, mut cache, mut budget, mut now, sleeper) = harness();
         let limited = HttpResponse {
             status: 200,
-            body: include_str!("../fixtures/crossref-attention.json").to_string(),
+            body: include_str!("../fixtures/crossref-attention.json")
+                .replace("10.48550/arXiv.1706.03762", "10.5555/3295222.3295349"),
             headers: vec![("x-rate-limit-limit".into(), "2".into())],
         };
         let script = Script {
@@ -1084,31 +1533,198 @@ mod tests {
         };
         let mut sleeper = sleeper;
         let auth = BiblioAuth::default();
-        execute_lookup(&auth, None, Some("10.48550/arXiv.1706.03762"), None, &script, &mut limiter, &mut cache, &mut budget, &mut now, &mut sleeper).await;
+        execute_lookup(
+            &auth,
+            None,
+            Some("10.5555/3295222.3295349"),
+            None,
+            None,
+            &[],
+            &script,
+            &mut limiter,
+            &mut cache,
+            &mut budget,
+            &mut now,
+            &mut sleeper,
+        )
+        .await;
         cache.entries.clear();
-        execute_lookup(&auth, None, Some("10.48550/arXiv.1706.03762"), None, &script, &mut limiter, &mut cache, &mut budget, &mut now, &mut sleeper).await;
-        assert!(sleeper.waits.iter().any(|wait| *wait >= Duration::from_millis(500)), "{:?}", sleeper.waits);
+        execute_lookup(
+            &auth,
+            None,
+            Some("10.5555/3295222.3295349"),
+            None,
+            None,
+            &[],
+            &script,
+            &mut limiter,
+            &mut cache,
+            &mut budget,
+            &mut now,
+            &mut sleeper,
+        )
+        .await;
+        assert!(
+            sleeper
+                .waits
+                .iter()
+                .any(|wait| *wait >= Duration::from_millis(500)),
+            "{:?}",
+            sleeper.waits
+        );
     }
 
     #[tokio::test]
     async fn configured_semantic_scholar_requests_are_spaced_by_one_second() {
         let (mut limiter, mut cache, mut budget, mut now, sleeper) = harness();
         budget.remaining_usd = Some(0.0);
-        let value: serde_json::Value = serde_json::from_str(include_str!("../fixtures/semanticscholar-attention.json")).unwrap();
-        let paper = value["data"][0].to_string();
         let script = Script {
             requests: Mutex::new(vec![]),
-            responses: Mutex::new(vec![status(404), status(404), ok(&paper)]),
+            responses: Mutex::new(vec![
+                status(404),
+                status(404),
+                ok(include_str!("../fixtures/semanticscholar-attention.json")),
+            ]),
         };
-        let auth = BiblioAuth { s2_key: Some("s2-secret-key".into()), ..BiblioAuth::default() };
+        let auth = BiblioAuth {
+            s2_key: Some("s2-secret-key".into()),
+            ..BiblioAuth::default()
+        };
         let mut sleeper = sleeper;
-        execute_lookup(&auth, None, None, Some("Attention Is All You Need"), &script, &mut limiter, &mut cache, &mut budget, &mut now, &mut sleeper).await;
-        execute_lookup(&auth, None, None, Some("Attention Is All You Need"), &script, &mut limiter, &mut cache, &mut budget, &mut now, &mut sleeper).await;
-        assert!(sleeper.waits.iter().any(|wait| *wait >= S2_CONFIGURED_GAP), "{:?}", sleeper.waits);
+        execute_lookup(
+            &auth,
+            None,
+            None,
+            Some("Attention Is All You Need"),
+            None,
+            &[],
+            &script,
+            &mut limiter,
+            &mut cache,
+            &mut budget,
+            &mut now,
+            &mut sleeper,
+        )
+        .await;
+        execute_lookup(
+            &auth,
+            None,
+            None,
+            Some("Attention Is All You Need"),
+            None,
+            &[],
+            &script,
+            &mut limiter,
+            &mut cache,
+            &mut budget,
+            &mut now,
+            &mut sleeper,
+        )
+        .await;
+        assert!(
+            sleeper.waits.iter().any(|wait| *wait >= S2_CONFIGURED_GAP),
+            "{:?}",
+            sleeper.waits
+        );
         let requests = script.requests.lock().unwrap().clone();
-        let s2: Vec<_> = requests.iter().filter(|request| request.source == "semanticscholar").collect();
+        let s2: Vec<_> = requests
+            .iter()
+            .filter(|request| request.source == "semanticscholar")
+            .collect();
         assert_eq!(s2.len(), 2);
-        assert!(s2.iter().all(|request| request.url.contains("search/match")));
-        assert!(s2.iter().all(|request| !describe_request(request).contains("s2-secret-key")));
+        assert!(s2
+            .iter()
+            .all(|request| request.url.contains("search/match")));
+        assert!(s2
+            .iter()
+            .all(|request| !describe_request(request).contains("s2-secret-key")));
+    }
+
+    #[tokio::test]
+    async fn arxiv_doi_is_fetched_from_arxiv_not_crossref() {
+        let (mut limiter, mut cache, mut budget, mut now, mut sleeper) = harness();
+        let script = Script {
+            requests: Mutex::new(vec![]),
+            responses: Mutex::new(vec![
+                ok(include_str!("../fixtures/arxiv-attention.xml")),
+                status(404),
+            ]),
+        };
+        let outcome = execute_lookup(
+            &BiblioAuth::default(),
+            None,
+            Some("https://doi.org/10.48550/arXiv.1706.03762"),
+            Some("Attention Is All You Need"),
+            None,
+            &[],
+            &script,
+            &mut limiter,
+            &mut cache,
+            &mut budget,
+            &mut now,
+            &mut sleeper,
+        )
+        .await;
+        let urls: Vec<String> = script
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|request| request.url.clone())
+            .collect();
+        assert!(urls[0].contains("export.arxiv.org/api/query"), "{urls:?}");
+        assert!(urls[1].contains("ARXIV:1706.03762"), "{urls:?}");
+        assert!(
+            urls.iter().all(|url| !url.contains("api.crossref.org")),
+            "{urls:?}"
+        );
+        assert_eq!(outcome.hit.unwrap().source_name, "arxiv");
+    }
+
+    #[tokio::test]
+    async fn configured_s2_match_is_preferred_and_a_doi_conflict_falls_through() {
+        let (mut limiter, mut cache, mut budget, mut now, mut sleeper) = harness();
+        let impostor = r#"{"data":[{"title":"Attention Is All You Need","year":2024,"externalIds":{"DOI":"10.9999/impostor","ArXiv":"2401.00001"},"authors":[{"name":"Jane Doe"}]}]}"#;
+        let openalex = r#"{"results":[{"display_name":"Attention Is All You Need","publication_year":2017,"doi":"https://doi.org/10.5555/3295222.3295349","authorships":[{"author":{"display_name":"Ashish Vaswani"}}]}]}"#;
+        let script = Script {
+            requests: Mutex::new(vec![]),
+            responses: Mutex::new(vec![status(404), status(404), ok(impostor), ok(openalex)]),
+        };
+        let authors = vec!["Ashish Vaswani".to_string()];
+        let outcome = execute_lookup(
+            &BiblioAuth {
+                s2_key: Some("s2-secret-key".into()),
+                ..BiblioAuth::default()
+            },
+            None,
+            Some("10.5555/3295222.3295349"),
+            Some("Attention Is All You Need"),
+            Some(2017),
+            &authors,
+            &script,
+            &mut limiter,
+            &mut cache,
+            &mut budget,
+            &mut now,
+            &mut sleeper,
+        )
+        .await;
+        let urls: Vec<String> = script
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|request| request.url.clone())
+            .collect();
+        assert!(urls[0].contains("api.crossref.org/works/"), "{urls:?}");
+        assert!(urls[1].contains("api.openalex.org/works/doi:"), "{urls:?}");
+        assert!(urls[2].contains("search/match"), "{urls:?}");
+        assert!(
+            urls[3].contains("api.openalex.org/works?search="),
+            "{urls:?}"
+        );
+        let hit = outcome.hit.unwrap();
+        assert_eq!(hit.source_name, "openalex");
+        assert_eq!(hit.doi.as_deref(), Some("10.5555/3295222.3295349"));
     }
 }

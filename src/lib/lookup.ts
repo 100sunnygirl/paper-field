@@ -51,7 +51,9 @@ function asNotices(value: unknown): LookupNotice[] {
   });
 }
 
-export async function lookupPaper(paper: Pick<PaperDetail, "title" | "arxivId" | "doi">): Promise<LookupResult> {
+export async function lookupPaper(
+  paper: Pick<PaperDetail, "title" | "arxivId" | "doi" | "year" | "authors">,
+): Promise<LookupResult> {
   if (!isTauri()) return EMPTY_LOOKUP;
   try {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -64,6 +66,8 @@ export async function lookupPaper(paper: Pick<PaperDetail, "title" | "arxivId" |
       arxivId: paper.arxivId,
       doi: paper.doi,
       title: paper.title,
+      year: paper.year,
+      authors: paper.authors.map((author) => author.name).filter((name) => name.trim()),
     });
     const hit = outcome?.hit;
     const meta = hit?.title?.trim()
