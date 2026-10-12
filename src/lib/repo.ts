@@ -4,6 +4,7 @@ import { seedIfEmpty } from "./seed";
 import type {
   Domain,
   DraftedNotes,
+  FieldProviders,
   FieldSource,
   FieldSources,
   FieldStats,
@@ -65,6 +66,7 @@ interface PaperRow {
   tags: string;
   labs: string;
   field_sources?: string | null;
+  field_providers?: string | null;
   meta_confidence?: number | null;
   meta_rev?: number | null;
   pdf_original_path?: string | null;
@@ -179,6 +181,7 @@ function mapPaper(row: PaperRow): Paper {
     userNotesTouched: Boolean(row.user_notes_touched),
     userMetaTouched: Boolean(row.user_meta_touched),
     fieldSources: parseFieldSources(row.field_sources),
+    fieldProviders: parseFieldProviders(row.field_providers),
     metaConfidence: row.meta_confidence == null ? null : Number(row.meta_confidence),
     metaRev: Number(row.meta_rev ?? 0),
     pdfOriginalPath: row.pdf_original_path ?? null,
@@ -226,6 +229,16 @@ function parseFieldSources(raw: string | null | undefined): FieldSources {
   if (!raw) return {};
   try {
     const value = JSON.parse(raw) as FieldSources;
+    return value && typeof value === "object" ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+function parseFieldProviders(raw: string | null | undefined): FieldProviders {
+  if (!raw) return {};
+  try {
+    const value = JSON.parse(raw) as FieldProviders;
     return value && typeof value === "object" ? value : {};
   } catch {
     return {};
@@ -650,19 +663,26 @@ export const repo = {
     if (sanitized.codeUrl !== undefined) sanitized.codeUrl = safeHttpUrl(sanitized.codeUrl);
     if (sanitized.projectPage !== undefined) sanitized.projectPage = safeHttpUrl(sanitized.projectPage);
     const sources = touchMeta ? withUserSources(next.fieldSources ?? {}, sanitized) : (next.fieldSources ?? {});
+    const providers: FieldProviders = { ...(next.fieldProviders ?? {}) };
+    if (touchMeta) {
+      for (const key of META_PATCH_KEYS) {
+        if (sanitized[key as (typeof META_PATCH_KEYS)[number]] !== undefined) delete providers[key];
+      }
+    }
     const merged = {
       ...next,
       ...sanitized,
       updatedAt: nowIso(),
       userMetaTouched: touchMeta ? true : next.userMetaTouched,
       fieldSources: sources,
+      fieldProviders: providers,
       metaRev: touchMeta ? (next.metaRev ?? 0) + 1 : (next.metaRev ?? 0),
     };
     await engine.execute(
       `UPDATE papers SET
         domain_id = ?, title = ?, title_zh = ?, abstract = ?, year = ?, venue = ?, doi = ?,
         arxiv_id = ?, pdf_url = ?, code_url = ?, code_open_source = ?, project_page = ?,
-        tags = ?, labs = ?, user_meta_touched = ?, field_sources = ?, meta_rev = ?, updated_at = ?
+        tags = ?, labs = ?, user_meta_touched = ?, field_sources = ?, field_providers = ?, meta_rev = ?, updated_at = ?
        WHERE id = ?`,
       [
         merged.domainId,
@@ -681,6 +701,7 @@ export const repo = {
         JSON.stringify(merged.labs),
         merged.userMetaTouched ? 1 : 0,
         JSON.stringify(merged.fieldSources),
+        JSON.stringify(merged.fieldProviders ?? {}),
         merged.metaRev,
         merged.updatedAt,
         id,
@@ -800,7 +821,7 @@ export const repo = {
     paperId: string,
     meta: PreparedMeta,
     overwrite = false,
-    ctx?: { startedRev?: number; source?: FieldSource; jobId?: string },
+    ctx?: { startedRev?: number; source?: FieldSource; jobId?: string; replaceApi?: boolean },
   ): Promise<void> {
     const engine = await getEngine();
     const source = ctx?.source ?? "llm";
@@ -817,6 +838,7 @@ export const repo = {
         {
           ...prev,
           fieldSources: prev.fieldSources ?? {},
+          fieldProviders: prev.fieldProviders ?? {},
           metaRev: prev.metaRev ?? 0,
           authorCount: Number(authorCount[0]?.cnt ?? 0),
         },
@@ -824,13 +846,14 @@ export const repo = {
         overwrite,
         source,
         ctx?.startedRev,
+        ctx?.replaceApi ?? false,
       );
       const at = nowIso();
       const changed = await engine.execute(
         `UPDATE papers SET
           title = ?, title_zh = ?, abstract = ?, year = ?, venue = ?, doi = ?, arxiv_id = ?,
           pdf_url = ?, code_url = ?, code_open_source = ?, project_page = ?, tags = ?, labs = ?,
-          field_sources = ?, meta_confidence = COALESCE(?, meta_confidence),
+          field_sources = ?, field_providers = ?, meta_confidence = COALESCE(?, meta_confidence),
           llm_prepared_at = CASE WHEN ? = 'llm' THEN ? ELSE llm_prepared_at END,
           updated_at = ?
          WHERE id = ? AND meta_rev = ?
@@ -850,6 +873,7 @@ export const repo = {
           JSON.stringify(plan.tags),
           JSON.stringify(plan.labs),
           JSON.stringify(plan.fieldSources),
+          JSON.stringify(plan.fieldProviders),
           plan.confidence,
           source,
           at,

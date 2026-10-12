@@ -1334,6 +1334,23 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   line-height: 1.6;
   vertical-align: 1px;
 }
+.ef-lookup-hint {
+  margin: 8px 0 0;
+  color: var(--pf-muted);
+  font-size: var(--pf-fs-caption);
+  line-height: 1.5;
+}
+.ef-lookup-hint p { margin: 0 0 4px; }
+.ef-lookup-hint button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
 
 /* 区段标题（摘要 / 解析全文 / 阅读笔记）：阅读阶梯 h2，前置黄头墨身标记块，
    后接引导线（尾端一枚墨色刻度），右侧小字只放真实状态。 */

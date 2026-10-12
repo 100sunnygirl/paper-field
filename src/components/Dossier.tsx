@@ -149,6 +149,7 @@ function ContextPanel({
   const cancelJob = useField((s) => s.cancelJob);
   const savePaperPatch = useField((s) => s.savePaperPatch);
   const setMode = useField((s) => s.setMode);
+  const lookupHint = useField((s) => s.lookupHint);
   const openDialog = useField((s) => s.openDialog);
   const active = jobs.filter(
     (job) => job.paperId === paper.id && (job.status === "running" || job.status === "queued"),
@@ -184,7 +185,7 @@ function ContextPanel({
         {paper.codeUrl && safeHttpUrl(paper.codeUrl) ? (
           <ExternalResource href={paper.codeUrl} icon="code">
             代码仓库
-            <SourceBadge source={paper.fieldSources?.codeUrl} />
+            <SourceBadge source={paper.fieldSources?.codeUrl} provider={paper.fieldProviders?.codeUrl} />
           </ExternalResource>
         ) : (
           <p className="ef-missing">未提供代码仓库</p>
@@ -192,14 +193,14 @@ function ContextPanel({
         {paper.projectPage && safeHttpUrl(paper.projectPage) ? (
           <ExternalResource href={paper.projectPage} icon="link">
             项目主页
-            <SourceBadge source={paper.fieldSources?.projectPage} />
+            <SourceBadge source={paper.fieldSources?.projectPage} provider={paper.fieldProviders?.projectPage} />
           </ExternalResource>
         ) : (
           <p className="ef-missing">未提供项目主页</p>
         )}
         <div className="ef-identifier">
           arXiv
-          <SourceBadge source={paper.fieldSources?.arxivId} />
+          <SourceBadge source={paper.fieldSources?.arxivId} provider={paper.fieldProviders?.arxivId} />
           {arxivAbsUrl(paper.arxivId) ? (
             <button type="button" className="mono ef-id-link" onClick={() => void openExternal(arxivAbsUrl(paper.arxivId))}>
               {paper.arxivId}
@@ -241,10 +242,10 @@ function ContextPanel({
             ) : (
               <p>作者信息待补充</p>
             )}
-            <SourceBadge source={paper.fieldSources?.authors} />
+            <SourceBadge source={paper.fieldSources?.authors} provider={paper.fieldProviders?.authors} />
             <p>
               DOI
-              <SourceBadge source={paper.fieldSources?.doi} />
+              <SourceBadge source={paper.fieldSources?.doi} provider={paper.fieldProviders?.doi} />
               <br />
               {doiUrl(paper.doi) ? (
                 <button type="button" className="mono ef-id-link" onClick={() => void openExternal(doiUrl(paper.doi))}>
@@ -354,6 +355,16 @@ function ContextPanel({
             <Icon name="link" />
             刷新链接
           </Button>
+          {lookupHint?.paperId === paper.id && lookupHint.notices.length ? (
+            <div className="ef-lookup-hint">
+              {lookupHint.notices.map((notice) => (
+                <p key={`${notice.source}-${notice.code}`}>{notice.message}</p>
+              ))}
+              <button type="button" onClick={() => void setMode("system")}>
+                设置 → 文献库
+              </button>
+            </div>
+          ) : null}
           <Button
             type="button"
             disabled={!hasUsableProvider(settings) || Boolean(active.length)}
@@ -703,14 +714,14 @@ export function ReadingStage({
               <div>
                 <dt>
                   来源
-                  <SourceBadge source={paper.fieldSources?.venue} />
+                  <SourceBadge source={paper.fieldSources?.venue} provider={paper.fieldProviders?.venue} />
                 </dt>
                 <dd>{venueLine || "待补充"}</dd>
               </div>
               <div>
                 <dt>
                   arXiv
-                  <SourceBadge source={paper.fieldSources?.arxivId} />
+                  <SourceBadge source={paper.fieldSources?.arxivId} provider={paper.fieldProviders?.arxivId} />
                 </dt>
                 <dd className="mono">
                   {arxivAbsUrl(paper.arxivId) ? (
@@ -738,7 +749,7 @@ export function ReadingStage({
               <h2 className="ef-section-label">
                 <span>
                   摘要
-                  <SourceBadge source={paper.fieldSources?.abstract} />
+                  <SourceBadge source={paper.fieldSources?.abstract} provider={paper.fieldProviders?.abstract} />
                 </span>
                 <i className="ef-section-rule" aria-hidden="true" />
               </h2>

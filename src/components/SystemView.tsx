@@ -17,6 +17,8 @@ import {
   type LlmSaveInput,
 } from "../lib/settings";
 import type { LlmProviderView } from "../lib/types";
+import { biblioEmailConfigured, type BiblioSaveInput } from "../lib/biblio";
+import { openExternal } from "../lib/urls";
 import { formatDate, pad2, shortcut, uid } from "../lib/util";
 import { useField } from "../store";
 import { LogPanel } from "./LogPanel";
@@ -47,6 +49,8 @@ export function SystemView() {
             <LlmSettingsBlock />
 
               <MineruSettings />
+
+              <BiblioSettings />
 
               <LogPanel />
 
@@ -615,6 +619,134 @@ function LlmSettingsBlock() {
             {message.text}
           </span>
         ) : null}
+      </footer>
+    </article>
+  );
+}
+
+function BiblioSettings() {
+  const saved = useField((s) => s.biblio);
+  const saveBiblio = useField((s) => s.saveBiblioSettings);
+  const [email, setEmail] = useState(saved.email);
+  const [openalexKey, setOpenalexKey] = useState("");
+  const [s2Key, setS2Key] = useState("");
+  const [clearOpenalex, setClearOpenalex] = useState(false);
+  const [clearS2, setClearS2] = useState(false);
+  const [message, setMessage] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
+
+  useEffect(() => {
+    setEmail(saved.email);
+    setOpenalexKey("");
+    setS2Key("");
+    setClearOpenalex(false);
+    setClearS2(false);
+  }, [saved]);
+
+  const crossrefConfigured = biblioEmailConfigured(saved.email);
+  const remaining = saved.openalexRemainingUsd;
+
+  return (
+    <article className="page-block pf-stagger" style={{ "--pf-i": 2 } as CSSProperties}>
+      <header className="ef-block-head">
+        <h3>文献库</h3>
+        <p>不填写也能查询。邮箱和 Key 只改变请求走哪条通道、多快、每天能查多少，不改变查哪些库、按什么顺序查。</p>
+      </header>
+      <ul className="ef-kbd-list">
+        <li>
+          <span>arXiv</span>
+          <span>匿名</span>
+        </li>
+        <li>
+          <span>Crossref</span>
+          <span>{crossrefConfigured ? "已配置" : "匿名"}</span>
+        </li>
+        <li>
+          <span>OpenAlex</span>
+          <span>{saved.hasOpenalexKey ? "已配置" : "匿名"}</span>
+        </li>
+        <li>
+          <span>Semantic Scholar</span>
+          <span>{saved.hasS2Key ? "已配置" : "匿名"}</span>
+        </li>
+      </ul>
+      {remaining != null ? (
+        <p>
+          OpenAlex 今日剩余 {remaining.toFixed(3)} USD
+          {saved.openalexLimitUsd != null ? `（上限 ${saved.openalexLimitUsd.toFixed(2)} USD）` : ""}
+        </p>
+      ) : null}
+      <div className="ef-field-grid">
+        <Field label="联系邮箱">
+          <input
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="name@example.com"
+            autoComplete="off"
+          />
+        </Field>
+        <Field label="OpenAlex API Key">
+          <input
+            type="password"
+            value={openalexKey}
+            onChange={(e) => setOpenalexKey(e.target.value)}
+            placeholder={saved.hasOpenalexKey ? "••••••••" : ""}
+            autoComplete="off"
+          />
+        </Field>
+        <Field label="Semantic Scholar API Key">
+          <input
+            type="password"
+            value={s2Key}
+            onChange={(e) => setS2Key(e.target.value)}
+            placeholder={saved.hasS2Key ? "••••••••" : ""}
+            autoComplete="off"
+          />
+        </Field>
+      </div>
+      <p>联系邮箱只发给 Crossref（mailto 和 User-Agent），不会发给 OpenAlex。OpenAlex Key 同时是 openalex.org 的登录密码，只保存在本机。</p>
+      <p>论文标题和 DOI 会发送到这些服务。OpenAlex 会把请求日志保留 90 天。</p>
+      <p>
+        <button type="button" className="ef-id-link" onClick={() => void openExternal("https://openalex.org/settings/api")}>
+          openalex.org/settings/api
+        </button>
+        {" · "}
+        <button
+          type="button"
+          className="ef-id-link"
+          onClick={() => void openExternal("https://www.semanticscholar.org/product/api")}
+        >
+          semanticscholar.org/product/api
+        </button>
+      </p>
+      {saved.hasOpenalexKey ? (
+        <label>
+          <input type="checkbox" checked={clearOpenalex} onChange={(e) => setClearOpenalex(e.target.checked)} />
+          清除已保存的 OpenAlex Key
+        </label>
+      ) : null}
+      {saved.hasS2Key ? (
+        <label>
+          <input type="checkbox" checked={clearS2} onChange={(e) => setClearS2(e.target.checked)} />
+          清除已保存的 Semantic Scholar Key
+        </label>
+      ) : null}
+      <footer className="ef-block-foot">
+        <Button
+          type="button"
+          onClick={() => {
+            const input: BiblioSaveInput = {
+              email: email.trim(),
+              openalexKey: clearOpenalex ? "" : openalexKey.trim() ? openalexKey.trim() : null,
+              s2Key: clearS2 ? "" : s2Key.trim() ? s2Key.trim() : null,
+            };
+            void saveBiblio(input)
+              .then(() => setMessage({ tone: "ok", text: "文献库设置已保存。" }))
+              .catch((err: unknown) => setMessage({ tone: "error", text: `保存文献库设置失败：${errText(err)}。` }));
+          }}
+        >
+          保存文献库设置
+        </Button>
+        {message ? <span className={`ef-foot-msg is-${message.tone}`}>{message.text}</span> : null}
       </footer>
     </article>
   );

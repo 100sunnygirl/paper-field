@@ -1,5 +1,5 @@
 import { log } from "./logger";
-import type { FieldSource, FieldSources, PaperDetail, PreparedMeta } from "./types";
+import type { FieldProviders, FieldSource, FieldSources, PaperDetail, PreparedMeta } from "./types";
 import { isTauri } from "./util";
 import { safeHttpUrl } from "./urls";
 
@@ -18,38 +18,83 @@ interface LookupHit {
   pdfUrl?: string | null;
   authors?: LookupAuthor[];
   confidence?: number | null;
+  providers?: FieldProviders;
 }
 
-export async function lookupPaper(paper: Pick<PaperDetail, "title" | "arxivId" | "doi">): Promise<PreparedMeta | null> {
-  if (!isTauri()) return null;
+export interface LookupNotice {
+  source: string;
+  code: string;
+  message: string;
+}
+
+export interface LookupResult {
+  meta: PreparedMeta | null;
+  notices: LookupNotice[];
+  openalexRemainingUsd: number | null;
+  openalexLimitUsd: number | null;
+}
+
+const EMPTY_LOOKUP: LookupResult = {
+  meta: null,
+  notices: [],
+  openalexRemainingUsd: null,
+  openalexLimitUsd: null,
+};
+
+function asNotices(value: unknown): LookupNotice[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const notice = item as Partial<LookupNotice>;
+    if (!notice.message) return [];
+    return [{ source: notice.source ?? "", code: notice.code ?? "", message: notice.message }];
+  });
+}
+
+export async function lookupPaper(paper: Pick<PaperDetail, "title" | "arxivId" | "doi">): Promise<LookupResult> {
+  if (!isTauri()) return EMPTY_LOOKUP;
   try {
     const { invoke } = await import("@tauri-apps/api/core");
-    const hit = await invoke<LookupHit | null>("lookup_paper", {
+    const outcome = await invoke<{
+      hit?: LookupHit | null;
+      notices?: LookupNotice[];
+      openalexRemainingUsd?: number | null;
+      openalexLimitUsd?: number | null;
+    }>("lookup_paper", {
       arxivId: paper.arxivId,
       doi: paper.doi,
       title: paper.title,
     });
-    if (!hit?.title?.trim()) return null;
+    const hit = outcome?.hit;
+    const meta = hit?.title?.trim()
+      ? {
+          title: hit.title.trim(),
+          titleZh: null,
+          abstract: hit.abstract?.trim() ?? "",
+          year: typeof hit.year === "number" ? hit.year : null,
+          venue: hit.venue?.trim() || null,
+          doi: hit.doi?.trim() || null,
+          arxivId: hit.arxivId?.trim() || null,
+          authors: Array.isArray(hit.authors) ? hit.authors.filter((author) => author?.name?.trim()) : [],
+          labs: [],
+          codeOpenSource: "unknown" as const,
+          codeURL: null,
+          projectPage: null,
+          pdfURL: safeHttpUrl(hit.pdfUrl),
+          tags: [],
+          confidence: typeof hit.confidence === "number" ? hit.confidence : undefined,
+          fieldProviders: hit.providers ?? {},
+        }
+      : null;
     return {
-      title: hit.title.trim(),
-      titleZh: null,
-      abstract: hit.abstract?.trim() ?? "",
-      year: typeof hit.year === "number" ? hit.year : null,
-      venue: hit.venue?.trim() || null,
-      doi: hit.doi?.trim() || null,
-      arxivId: hit.arxivId?.trim() || null,
-      authors: Array.isArray(hit.authors) ? hit.authors.filter((author) => author?.name?.trim()) : [],
-      labs: [],
-      codeOpenSource: "unknown",
-      codeURL: null,
-      projectPage: null,
-      pdfURL: safeHttpUrl(hit.pdfUrl),
-      tags: [],
-      confidence: typeof hit.confidence === "number" ? hit.confidence : undefined,
+      meta,
+      notices: asNotices(outcome?.notices),
+      openalexRemainingUsd: typeof outcome?.openalexRemainingUsd === "number" ? outcome.openalexRemainingUsd : null,
+      openalexLimitUsd: typeof outcome?.openalexLimitUsd === "number" ? outcome.openalexLimitUsd : null,
     };
   } catch (err) {
     log.warn("llm", "文献库查询失败，已跳过", err instanceof Error ? err.message : String(err));
-    return null;
+    return EMPTY_LOOKUP;
   }
 }
 

@@ -21,7 +21,8 @@ import {
 import { endBatchItem, endJob, getActivity, trackJob, type JobOutcome } from "./lib/activity";
 import { pickProviderFromHealths, providerLabel, summarizeHealths } from "./lib/mineruPlan";
 import { backupLibrary, restoreLibrary } from "./lib/backup";
-import { filledFrom, lookupPaper, verifyReachable } from "./lib/lookup";
+import { DEFAULT_BIBLIO, loadBiblioSettings, saveBiblioSettings, type BiblioSaveInput, type BiblioStatus } from "./lib/biblio";
+import { filledFrom, lookupPaper, type LookupResult, verifyReachable } from "./lib/lookup";
 import { DRAFT_NOTES_SYSTEM, PREPARE_META_SYSTEM, draftNotesUserPrompt, normalizeMeta, normalizeNotes, prepareMetaUserPrompt } from "./lib/prompts";
 import { redactSecrets } from "./lib/redact";
 import { repo } from "./lib/repo";
@@ -75,6 +76,9 @@ interface FieldState {
   archiveFilter: OpenSource | "all";
   settings: LlmSettings;
   mineru: MineruSettingsV2;
+  biblio: BiblioStatus;
+  /** Quiet lookup hints for one paper. The dossier shows them only when that paper is open. */
+  lookupHint: { paperId: string; notices: LookupResult["notices"] } | null;
   mineruHealth: ProviderHealth[];
   effectiveProvider: MineruProviderKind | null;
   dialog:
@@ -145,6 +149,7 @@ interface FieldState {
   cancelJob: (jobId: string) => Promise<void>;
   saveLlmSettings: (input: LlmSaveInput) => Promise<void>;
   saveMineruSettings: (input: MineruSaveInput) => Promise<void>;
+  saveBiblioSettings: (input: BiblioSaveInput) => Promise<void>;
   probeMineru: () => Promise<ProviderHealth[]>;
   exportCurrentDomain: () => Promise<void>;
   backupLibrary: () => Promise<void>;
@@ -179,6 +184,8 @@ export const useField = create<FieldState>((set, get) => ({
   archiveFilter: "all",
   settings: { version: 2, providers: [], usage: {} },
   mineru: DEFAULT_MINERU,
+  biblio: DEFAULT_BIBLIO,
+  lookupHint: null,
   mineruHealth: [],
   effectiveProvider: null,
   dialog: null,
@@ -237,13 +244,14 @@ export const useField = create<FieldState>((set, get) => ({
   init: async () => {
     try {
       await repo.init();
-      const [domains, settings, mineru] = await Promise.all([
+      const [domains, settings, mineru, biblio] = await Promise.all([
         repo.listDomains(),
         loadSettings(),
         loadMineruSettings().catch(() => DEFAULT_MINERU),
+        loadBiblioSettings().catch(() => DEFAULT_BIBLIO),
       ]);
       const selectedDomainId = domains[0]?.id ?? null;
-      set({ domains, selectedDomainId, settings, mineru, ready: true, error: null });
+      set({ domains, selectedDomainId, settings, mineru, biblio, ready: true, error: null });
       await get().refresh();
       // 探测不阻断 ready：浏览器预览直接返回 []，桌面端最多 20s，完成后异步更新状态条。
       void get().probeMineru();
@@ -684,14 +692,15 @@ export const useField = create<FieldState>((set, get) => ({
       const paper = await repo.getPaper(id);
       if (!paper) return;
       const startedRev = paper.metaRev ?? 0;
-      const hit = await lookupPaper(paper);
-      if (hit) {
-        await repo.applyPreparedMeta(id, hit, overwrite, { startedRev, source: "api" });
+      const found = await lookupPaper(paper);
+      rememberLookup(set, get, id, found);
+      if (found.meta) {
+        await repo.applyPreparedMeta(id, found.meta, overwrite, { startedRev, source: "api" });
       }
       if (!hasUsableProvider(get().settings)) {
         await dropUnreachableLinks(id);
         await get().refresh();
-        if (!quiet && !hit) {
+        if (!quiet && !found.meta) {
           get().setFlash({ tone: "warn", text: "尚未配置可用的 AI 服务。可到设置页添加提供商，或继续手动录入。" });
         }
         return;
@@ -728,18 +737,26 @@ export const useField = create<FieldState>((set, get) => ({
     trackJob(job.id, id, "request");
     try {
       if ((await jobStillRunning(job.id)) === false) return;
-      const hit = await lookupPaper(paper);
+      const found = await lookupPaper(paper);
+      rememberLookup(set, get, id, found);
       if ((await jobStillRunning(job.id)) === false) return;
-      if (hit) await repo.applyPreparedMeta(id, hit, false, { startedRev, source: "api", jobId: job.id });
+      if (found.meta) {
+        await repo.applyPreparedMeta(id, found.meta, false, {
+          startedRev,
+          source: "api",
+          jobId: job.id,
+          replaceApi: true,
+        });
+      }
       await dropUnreachableLinks(id);
       const finished = await repo.updateJob(job.id, {
         status: "done",
-        resultJson: hit ? JSON.stringify({ source: "api", confidence: hit.confidence ?? null }) : null,
+        resultJson: found.meta ? JSON.stringify({ source: "api", confidence: found.meta.confidence ?? null }) : null,
         finishedAt: nowIso(),
       });
       if (finished === false) return;
       endJob(job.id, "done");
-      get().setFlash({ tone: "ok", text: hit ? "已从文献库刷新著录。" : "文献库暂时不可用，已保留现有著录。" });
+      get().setFlash({ tone: "ok", text: found.meta ? "已从文献库刷新著录。" : "文献库暂时不可用，已保留现有著录。" });
     } catch (err) {
       const message = redactSecrets(errText(err));
       const marked = await repo.updateJob(job.id, { status: "error", error: message, finishedAt: nowIso() });
@@ -812,6 +829,24 @@ export const useField = create<FieldState>((set, get) => ({
       if (usable) enqueueMineru(() => backfillMeta(mineruHost()));
     } catch (err) {
       get().setFlash({ tone: "error", text: `保存 AI 服务设置失败：${errText(err)}，数据未改动。` });
+      throw err;
+    }
+  },
+
+  saveBiblioSettings: async (input) => {
+    try {
+      const saved = await saveBiblioSettings(input);
+      const current = get().biblio;
+      set({
+        biblio: {
+          ...saved,
+          openalexRemainingUsd: saved.openalexRemainingUsd ?? current.openalexRemainingUsd,
+          openalexLimitUsd: saved.openalexLimitUsd ?? current.openalexLimitUsd,
+        },
+      });
+      get().setFlash({ tone: "ok", text: "文献库设置已保存。没有填写邮箱或 Key 时仍会查询，只是走公共额度。" });
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `保存文献库设置失败：${errText(err)}，数据未改动。` });
       throw err;
     }
   },
@@ -902,6 +937,30 @@ export const useField = create<FieldState>((set, get) => ({
     if (next) await get().selectPaper(next.id);
   },
 }));
+
+function rememberLookup(
+  set: (partial: Partial<FieldState>) => void,
+  get: () => FieldState,
+  paperId: string,
+  result: LookupResult,
+) {
+  const hint = result.notices.length ? { paperId, notices: result.notices } : null;
+  const current = get().lookupHint;
+  const biblio = get().biblio;
+  const budgetKnown = result.openalexRemainingUsd != null || result.openalexLimitUsd != null;
+  set({
+    lookupHint: hint ?? (current?.paperId === paperId ? null : current),
+    ...(budgetKnown
+      ? {
+          biblio: {
+            ...biblio,
+            openalexRemainingUsd: result.openalexRemainingUsd,
+            openalexLimitUsd: result.openalexLimitUsd,
+          },
+        }
+      : {}),
+  });
+}
 
 function mineruHost() {
   return {

@@ -1,7 +1,9 @@
 mod backup;
+mod biblio;
 mod io_util;
 mod llm;
 mod lookup;
+mod lookup_run;
 mod mineru;
 mod mineru_api;
 mod platform;
@@ -174,6 +176,8 @@ pub fn run() {
             mineru::mineru_markdown,
             lookup::lookup_paper,
             lookup::verify_url,
+            biblio::biblio_settings,
+            biblio::save_biblio_settings,
             backup::backup_database_file,
             backup::create_library_backup,
             backup::restore_library_backup,

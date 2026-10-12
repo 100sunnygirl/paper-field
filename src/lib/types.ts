@@ -27,6 +27,20 @@ export type MetaField =
   | "labs"
   | "authors";
 export type FieldSources = Partial<Record<MetaField, FieldSource>>;
+/** Which bibliographic service wrote an api-sourced field. */
+export type FieldProviders = Partial<Record<MetaField, string>>;
+
+export const BIBLIO_PROVIDER_LABELS: Record<string, string> = {
+  arxiv: "arXiv",
+  crossref: "Crossref",
+  openalex: "OpenAlex",
+  semanticscholar: "Semantic Scholar",
+};
+
+export function biblioProviderLabel(id: string | null | undefined): string | null {
+  if (!id) return null;
+  return BIBLIO_PROVIDER_LABELS[id] ?? id;
+}
 export type JobType = "prepareMeta" | "draftNotes" | "refreshLinks" | "mineruParse";
 export type MineruProviderKind = "local" | "ssh" | "api";
 export type MineruStatus = "queued" | "submitted" | "parsing" | "done" | "error" | "cancelled";
@@ -99,6 +113,7 @@ export interface Paper {
   userNotesTouched: boolean;
   userMetaTouched: boolean;
   fieldSources?: FieldSources;
+  fieldProviders?: FieldProviders;
   metaConfidence?: number | null;
   metaRev?: number;
   pdfOriginalPath?: string | null;
@@ -216,6 +231,8 @@ export interface PreparedMeta {
   pdfURL: string | null;
   tags: string[];
   confidence?: number;
+  /** Per-field bibliographic service when this payload came from lookup. */
+  fieldProviders?: FieldProviders;
 }
 
 export interface DraftedNotes {

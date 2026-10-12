@@ -102,6 +102,7 @@ pub fn create_library_backup(app: AppHandle, dest: String) -> Result<(), String>
     }
     add_scrubbed_settings(&mut zip, options, "settings/llm-settings.json", &dir.join("llm-settings.json"))?;
     add_scrubbed_settings(&mut zip, options, "settings/mineru-settings.json", &dir.join("mineru-settings.json"))?;
+    add_file(&mut zip, options, "settings/biblio-settings.json", &dir.join("biblio-settings.json"))?;
     zip.finish().map_err(|err| format!("完成备份失败：{err}"))?;
     Ok(())
 }
@@ -149,6 +150,8 @@ pub fn restore_library_backup(app: AppHandle, src: String) -> Result<String, Str
             dir.join("llm-settings.json")
         } else if name_str == "settings/mineru-settings.json" {
             dir.join("mineru-settings.json")
+        } else if name_str == "settings/biblio-settings.json" {
+            dir.join("biblio-settings.json")
         } else {
             continue;
         };

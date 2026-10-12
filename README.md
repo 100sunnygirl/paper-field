@@ -81,7 +81,13 @@ Without a key, add papers and edit every field by hand. Sample domains (多模�
 
 **清除已保存的 Key**：系统页 AI 服务设置卡在已保存 Key 时显示「清除已保存的 Key…」，二段确认后 Keychain（或 Linux 上的 `secrets.json`）中的 Key 即被删除（`tauri-plugin-store` 里的历史镜像也会一并清掉），状态条回到「未配置 AI」。
 
-**文献库著录**：补全论文信息时先查文献库，再让模型只填仍然空白的字段（中文标题、标签、实验室、代码链接猜测）。arXiv id 走 export.arxiv.org，DOI 走 Crossref，只有标题时走 OpenAlex，不够像再问 Semantic Scholar（标题 Jaccard 低于 0.82 则丢弃）。手动添加时只要填了 arXiv 或 DOI，即使没有 PDF 也会查一次。查不到或离线时保留已有著录。代码链接和项目页写入前做 HTTP HEAD/GET，打不开就丢掉。档案侧栏的「刷新链接」只做这次查询，不调用模型。
+**文献库著录**：不配置也能查。系统页「文献库」里的联系邮箱、OpenAlex Key、Semantic Scholar Key 都是可选项，只改变请求走公共池还是礼貌池 / 个人额度，不改变查哪些库、按什么顺序查。联系邮箱只发给 Crossref（`mailto` 和 User-Agent），不会发给 OpenAlex。两个 Key 进系统钥匙串（Linux 上是 `secrets.json`），不会写进设置 JSON。
+
+查询顺序固定：有 arXiv id 时先问 arXiv，再用 Semantic Scholar 补 DOI 和期刊；有 DOI 时先问 Crossref，再问 OpenAlex 的单条 DOI（这条不占搜索额度）；只有标题时先问 OpenAlex 搜索，再问 Semantic Scholar 的标题匹配，最后问 Crossref。标题 Jaccard 低于 0.82 就丢掉。返回的 DOI 或 arXiv id 必须和请求的一致，对不上就记一笔原因并继续下一个来源，不会因为 429、403 或断网停掉整次查询。全部落空之后才把仍然空白的字段交给模型。来源徽章会写成「数据库 · Crossref」这样的具体库名。某个库因为没配置而失败时，结果旁边有一行说明，并链到设置里的文献库。
+
+文献库查到的值会替换此前由模型填上的字段（包括旧库里迁移时标成「模型」的字段）。你手改过的字段仍然保留，除非在确认对话框里选择覆盖。同一次查询不会用一个文献库的值换掉另一个文献库已经写下的值；「刷新链接」会重新查询并允许文献库之间更新。标题对不上时仍由模型按原来的「模型」徽章补全，不另加待核实标记。
+
+手动添加时只要填了 arXiv 或 DOI，即使没有 PDF 也会查一次。同一篇论文的查询结果会在本地缓存约一天。代码链接和项目页写入前做 HTTP HEAD/GET，打不开就丢掉。档案侧栏的「刷新链接」只做这次查询，不调用模型。
 
 **备份与恢复**：系统页「数据导出」旁有「备份」和「恢复」。备份是一个 zip：`paper-field.db`、文库里的 PDF、以及不含密钥的设置 JSON。恢复前会先把当前数据库复制为 `paper-field.db.pre-restore-<时间>`，确认后才替换。导入 PDF 时桌面版把文件复制进应用支持目录的 `library/`，原路径留在 `pdf_original_path`。
 

@@ -1,7 +1,7 @@
-//! Bibliographic lookup. Parsing is pure and tested against recorded fixtures.
-//! Network calls fail soft: the command returns an error string and the UI keeps the paper.
+//! Bibliographic lookup parsers. Network order, rate limits, and credentials live in lookup_run.
+//! A miss, 429, or mismatch is not fatal: the command still returns whatever later sources found.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use reqwest::Client;
@@ -30,6 +30,9 @@ pub struct LookupHit {
     pub authors: Vec<LookupAuthor>,
     pub confidence: f64,
     pub source_name: String,
+    /// Meta field name → bibliographic service id (arxiv, crossref, openalex, semanticscholar).
+    #[serde(default)]
+    pub providers: HashMap<String, String>,
 }
 
 pub fn title_score(query: &str, candidate: &str) -> f64 {
@@ -52,19 +55,50 @@ fn tokens(value: &str) -> HashSet<String> {
 }
 
 pub fn normalize_arxiv_id(value: &str) -> Option<String> {
-    let mut id = value.trim().trim_start_matches("arXiv:").trim_start_matches("arxiv:");
-    id = id.trim();
-    if let Some(rest) = id.split("arxiv.org/abs/").nth(1) {
-        id = rest;
-    } else if let Some(rest) = id.split("arxiv.org/pdf/").nth(1) {
-        id = rest;
+    let mut id = value.trim();
+    if id.len() > 6 && id[..6].eq_ignore_ascii_case("arxiv:") {
+        id = id[6..].trim();
+    }
+    let lower = id.to_ascii_lowercase();
+    if let Some(index) = lower.find("arxiv.org/abs/") {
+        id = id[index + "arxiv.org/abs/".len()..].trim();
+    } else if let Some(index) = lower.find("arxiv.org/pdf/") {
+        id = id[index + "arxiv.org/pdf/".len()..].trim();
     }
     id = id.trim_end_matches(".pdf");
-    let versionless = id.split('v').next().unwrap_or(id);
-    let ok = versionless.len() >= 9
-        && versionless.as_bytes().get(4) == Some(&b'.')
-        && versionless.chars().all(|ch| ch.is_ascii_digit() || ch == '.');
-    if ok { Some(versionless.to_string()) } else { None }
+    let versionless = strip_arxiv_version(id);
+    if is_new_arxiv(versionless) || is_old_arxiv(versionless) {
+        Some(versionless.to_string())
+    } else {
+        None
+    }
+}
+
+fn strip_arxiv_version(id: &str) -> &str {
+    let Some(index) = id.rfind(['v', 'V']) else { return id };
+    if index == 0 || !id[index + 1..].chars().all(|ch| ch.is_ascii_digit()) || id[index + 1..].is_empty() {
+        return id;
+    }
+    &id[..index]
+}
+
+fn is_new_arxiv(id: &str) -> bool {
+    let mut parts = id.split('.');
+    let year = parts.next().unwrap_or("");
+    let number = parts.next().unwrap_or("");
+    parts.next().is_none()
+        && year.len() == 4
+        && year.chars().all(|ch| ch.is_ascii_digit())
+        && (4..=5).contains(&number.len())
+        && number.chars().all(|ch| ch.is_ascii_digit())
+}
+
+fn is_old_arxiv(id: &str) -> bool {
+    let Some((archive, number)) = id.split_once('/') else { return false };
+    !archive.is_empty()
+        && archive.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '.')
+        && number.len() >= 7
+        && number.chars().all(|ch| ch.is_ascii_digit())
 }
 
 pub fn normalize_doi(value: &str) -> Option<String> {
@@ -90,6 +124,16 @@ fn clean_text(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+fn decode_entities(value: &str) -> String {
+    value
+        .replace("&amp;", "&")
+        .replace("&lt;", "")
+        .replace("&gt;", "")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+}
+
 fn strip_tags(value: &str) -> String {
     let mut out = String::new();
     let mut in_tag = false;
@@ -102,7 +146,38 @@ fn strip_tags(value: &str) -> String {
             out.push(ch);
         }
     }
-    clean_text(&out)
+    clean_text(&decode_entities(&out).replace(['<', '>'], ""))
+}
+
+fn finish(mut hit: LookupHit) -> LookupHit {
+    let source = hit.source_name.clone();
+    let mut providers = HashMap::new();
+    if !hit.title.trim().is_empty() {
+        providers.insert("title".into(), source.clone());
+    }
+    if !hit.r#abstract.trim().is_empty() {
+        providers.insert("abstract".into(), source.clone());
+    }
+    if hit.year.is_some() {
+        providers.insert("year".into(), source.clone());
+    }
+    if hit.venue.as_ref().is_some_and(|venue| !venue.trim().is_empty()) {
+        providers.insert("venue".into(), source.clone());
+    }
+    if hit.doi.is_some() {
+        providers.insert("doi".into(), source.clone());
+    }
+    if hit.arxiv_id.is_some() {
+        providers.insert("arxivId".into(), source.clone());
+    }
+    if hit.pdf_url.is_some() {
+        providers.insert("pdfUrl".into(), source.clone());
+    }
+    if !hit.authors.is_empty() {
+        providers.insert("authors".into(), source);
+    }
+    hit.providers = providers;
+    hit
 }
 
 fn xml_blocks(xml: &str, tag: &str) -> Vec<String> {
@@ -137,6 +212,11 @@ pub fn parse_arxiv_atom(xml: &str) -> Option<LookupHit> {
         .into_iter()
         .next()
         .and_then(|text| normalize_doi(&strip_tags(&text)));
+    let venue = xml_blocks(&entry, "arxiv:journal_ref")
+        .into_iter()
+        .next()
+        .map(|text| strip_tags(&text))
+        .filter(|text| !text.is_empty());
     let mut authors = Vec::new();
     for author in xml_blocks(&entry, "author") {
         let Some(name) = xml_text(&author, "name").filter(|name| !name.is_empty()) else {
@@ -156,18 +236,19 @@ pub fn parse_arxiv_atom(xml: &str) -> Option<LookupHit> {
         .find(|href| href.contains("/pdf/"))
         .map(|href| href.to_string())
         .filter(|href| is_http_url(href));
-    Some(LookupHit {
+    Some(finish(LookupHit {
         title,
         r#abstract: summary,
         year,
-        venue: Some("arXiv".into()),
+        venue,
         doi,
         arxiv_id,
         pdf_url,
         authors,
         confidence: 1.0,
         source_name: "arxiv".into(),
-    })
+        providers: HashMap::new(),
+    }))
 }
 
 pub fn parse_crossref(body: &str) -> Result<Option<LookupHit>, String> {
@@ -231,18 +312,35 @@ pub fn parse_crossref(body: &str) -> Result<Option<LookupHit>, String> {
             })
         })
         .filter(|url| is_http_url(url));
-    Ok(Some(LookupHit {
+    Ok(Some(finish(LookupHit {
         title,
         r#abstract: abstract_text,
         year,
-        venue,
+        venue: venue.map(|text| clean_text(&text)).filter(|text| !text.is_empty()),
         doi,
         arxiv_id: None,
         pdf_url,
         authors,
         confidence: 1.0,
         source_name: "crossref".into(),
-    }))
+        providers: HashMap::new(),
+    })))
+}
+
+pub fn parse_crossref_query(body: &str, query_title: &str) -> Result<Option<LookupHit>, String> {
+    let value: Value = serde_json::from_str(body).map_err(|err| format!("Crossref 响应无法解析：{err}"))?;
+    let Some(items) = value["message"]["items"].as_array() else { return Ok(None) };
+    let mut best: Option<LookupHit> = None;
+    for item in items {
+        let wrapped = serde_json::json!({ "message": item });
+        let Ok(Some(mut hit)) = parse_crossref(&wrapped.to_string()) else { continue };
+        let Some(score) = accept_title(query_title, &hit.title) else { continue };
+        hit.confidence = score;
+        if best.as_ref().map(|current| hit.confidence > current.confidence).unwrap_or(true) {
+            best = Some(hit);
+        }
+    }
+    Ok(best)
 }
 
 fn inverted_abstract(index: &Value) -> String {
@@ -297,25 +395,40 @@ pub fn parse_openalex(body: &str, query_title: &str) -> Result<Option<LookupHit>
             .or_else(|| result["open_access"]["oa_url"].as_str())
             .filter(|url| is_http_url(url))
             .map(|url| url.to_string());
-        let hit = LookupHit {
+        let hit = finish(LookupHit {
             title,
             r#abstract: inverted_abstract(&result["abstract_inverted_index"]),
             year: result["publication_year"].as_i64().map(|year| year as i32),
             venue: result["primary_location"]["source"]["display_name"]
                 .as_str()
-                .map(|text| text.to_string()),
+                .map(clean_text)
+                .filter(|text| !text.is_empty()),
             doi: result["doi"].as_str().and_then(normalize_doi),
             arxiv_id: None,
             pdf_url,
             authors,
             confidence: score,
             source_name: "openalex".into(),
-        };
+            providers: HashMap::new(),
+        });
         if best.as_ref().map(|current| hit.confidence > current.confidence).unwrap_or(true) {
             best = Some(hit);
         }
     }
     Ok(best)
+}
+
+pub fn parse_openalex_single(body: &str) -> Result<Option<LookupHit>, String> {
+    let value: Value = serde_json::from_str(body).map_err(|err| format!("OpenAlex 响应无法解析：{err}"))?;
+    if value["display_name"].as_str().is_none() {
+        return Ok(None);
+    }
+    let wrapped = serde_json::json!({ "results": [value] });
+    parse_openalex(&wrapped.to_string(), &value_title(&wrapped["results"][0]))
+}
+
+fn value_title(value: &Value) -> String {
+    value["display_name"].as_str().unwrap_or("").to_string()
 }
 
 pub fn parse_semantic_scholar(body: &str, query_title: &str) -> Result<Option<LookupHit>, String> {
@@ -340,11 +453,11 @@ pub fn parse_semantic_scholar(body: &str, query_title: &str) -> Result<Option<Lo
                 });
             }
         }
-        let hit = LookupHit {
+        let hit = finish(LookupHit {
             title,
-            r#abstract: result["abstract"].as_str().unwrap_or("").to_string(),
+            r#abstract: clean_text(result["abstract"].as_str().unwrap_or("")),
             year: result["year"].as_i64().map(|year| year as i32),
-            venue: result["venue"].as_str().filter(|text| !text.is_empty()).map(|text| text.to_string()),
+            venue: result["venue"].as_str().map(clean_text).filter(|text| !text.is_empty()),
             doi: result["externalIds"]["DOI"].as_str().and_then(normalize_doi),
             arxiv_id: result["externalIds"]["ArXiv"].as_str().and_then(normalize_arxiv_id),
             pdf_url: result["openAccessPdf"]["url"]
@@ -354,7 +467,8 @@ pub fn parse_semantic_scholar(body: &str, query_title: &str) -> Result<Option<Lo
             authors,
             confidence: score,
             source_name: "semanticscholar".into(),
-        };
+            providers: HashMap::new(),
+        });
         if best.as_ref().map(|current| hit.confidence > current.confidence).unwrap_or(true) {
             best = Some(hit);
         }
@@ -362,73 +476,24 @@ pub fn parse_semantic_scholar(body: &str, query_title: &str) -> Result<Option<Lo
     Ok(best)
 }
 
+pub fn parse_s2_paper(body: &str) -> Result<Option<LookupHit>, String> {
+    let value: Value = serde_json::from_str(body).map_err(|err| format!("Semantic Scholar 响应无法解析：{err}"))?;
+    let Some(title) = value["title"].as_str().map(clean_text).filter(|title| !title.is_empty()) else {
+        return Ok(None);
+    };
+    let wrapped = serde_json::json!({ "data": [value] });
+    parse_semantic_scholar(&wrapped.to_string(), &title)
+}
+
 fn http_client() -> Result<Client, String> {
     Client::builder()
         .connect_timeout(Duration::from_secs(8))
         .timeout(Duration::from_secs(12))
-        .user_agent("PaperField/0.2 (mailto:local@paperfield.app)")
         .build()
         .map_err(|err| format!("无法创建 HTTP 客户端：{err}"))
 }
 
-async fn get_text(client: &Client, url: &str) -> Result<String, String> {
-    let response = client.get(url).send().await.map_err(|err| format!("文献库不可达：{err}"))?;
-    let status = response.status();
-    if status.as_u16() == 404 {
-        return Ok(String::new());
-    }
-    if !status.is_success() {
-        return Err(format!("文献库返回 HTTP {}", status.as_u16()));
-    }
-    response.text().await.map_err(|err| format!("读取文献库响应失败：{err}"))
-}
-
-pub async fn lookup_record(
-    arxiv_id: Option<&str>,
-    doi: Option<&str>,
-    title: Option<&str>,
-) -> Result<Option<LookupHit>, String> {
-    let client = http_client()?;
-    if let Some(id) = arxiv_id.and_then(normalize_arxiv_id) {
-        let url = format!("https://export.arxiv.org/api/query?id_list={id}");
-        let body = get_text(&client, &url).await?;
-        if let Some(mut hit) = parse_arxiv_atom(&body) {
-            hit.arxiv_id = Some(id);
-            return Ok(Some(hit));
-        }
-    }
-    if let Some(doi) = doi.and_then(normalize_doi) {
-        let url = format!("https://api.crossref.org/works/{}", urlencoding_min(&doi));
-        let body = get_text(&client, &url).await?;
-        if !body.is_empty() {
-            if let Some(hit) = parse_crossref(&body)? {
-                return Ok(Some(hit));
-            }
-        }
-    }
-    let Some(title) = title.map(str::trim).filter(|title| !title.is_empty()) else {
-        return Ok(None);
-    };
-    let openalex = format!(
-        "https://api.openalex.org/works?search={}&per-page=5&mailto=local@paperfield.app",
-        urlencoding_min(title)
-    );
-    if let Ok(body) = get_text(&client, &openalex).await {
-        if let Some(hit) = parse_openalex(&body, title)? {
-            return Ok(Some(hit));
-        }
-    }
-    let scholar = format!(
-        "https://api.semanticscholar.org/graph/v1/paper/search?query={}&limit=5&fields=title,year,abstract,venue,externalIds,authors,authors.affiliations,openAccessPdf",
-        urlencoding_min(title)
-    );
-    match get_text(&client, &scholar).await {
-        Ok(body) => parse_semantic_scholar(&body, title),
-        Err(_) => Ok(None),
-    }
-}
-
-fn urlencoding_min(value: &str) -> String {
+pub(crate) fn urlencoding_min(value: &str) -> String {
     let mut out = String::new();
     for byte in value.bytes() {
         match byte {
@@ -462,11 +527,13 @@ pub async fn url_reachable(url: &str) -> bool {
 
 #[tauri::command]
 pub async fn lookup_paper(
+    app: tauri::AppHandle,
     arxiv_id: Option<String>,
     doi: Option<String>,
     title: Option<String>,
-) -> Result<Option<LookupHit>, String> {
-    lookup_record(arxiv_id.as_deref(), doi.as_deref(), title.as_deref()).await
+) -> Result<crate::lookup_run::LookupOutcome, String> {
+    let auth = crate::biblio::load_auth(&app)?;
+    Ok(crate::lookup_run::lookup_live(&auth, arxiv_id.as_deref(), doi.as_deref(), title.as_deref()).await)
 }
 
 #[tauri::command]
@@ -527,6 +594,17 @@ mod tests {
         assert_eq!(hit.arxiv_id.as_deref(), Some("1706.03762"));
         assert_eq!(hit.authors[0].affiliation.as_deref(), Some("Google Brain"));
         assert!(parse_semantic_scholar(body, "Unrelated protein folding").unwrap().is_none());
+    }
+
+    #[test]
+    fn journal_ref_is_the_venue_and_a_missing_one_is_not_labelled_arxiv() {
+        let plain = parse_arxiv_atom(include_str!("../fixtures/arxiv-attention.xml")).unwrap();
+        assert!(plain.venue.is_none());
+        let xml = r#"<entry><title>T</title><summary>S</summary><id>http://arxiv.org/abs/hep-th/9901001v2</id><arxiv:journal_ref>Phys. Rev. D 60</arxiv:journal_ref><arxiv:doi>10.1103/PhysRevD.60.1</arxiv:doi></entry>"#;
+        let hit = parse_arxiv_atom(xml).unwrap();
+        assert_eq!(hit.arxiv_id.as_deref(), Some("hep-th/9901001"));
+        assert_eq!(hit.venue.as_deref(), Some("Phys. Rev. D 60"));
+        assert_eq!(hit.providers.get("venue").map(String::as_str), Some("arxiv"));
     }
 
     #[test]

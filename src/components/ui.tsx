@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { FIELD_SOURCE_LABELS, OPEN_SOURCE_LABELS, type FieldSource, type OpenSource } from "../lib/types";
+import { biblioProviderLabel, FIELD_SOURCE_LABELS, OPEN_SOURCE_LABELS, type FieldSource, type OpenSource } from "../lib/types";
 import { openExternal, safeHttpUrl } from "../lib/urls";
 
 export type ButtonVariant = "primary" | "secondary" | "text" | "danger" | "link";
@@ -258,9 +258,11 @@ export function OpenChip({ value }: { value: string }) {
   return <span className={`ef-chip ${key}`}>{OPEN_SOURCE_LABELS[key]}</span>;
 }
 
-export function SourceBadge({ source }: { source?: FieldSource | null }) {
+export function SourceBadge({ source, provider }: { source?: FieldSource | null; provider?: string | null }) {
   if (!source) return null;
-  return <span className="ef-source-badge">{FIELD_SOURCE_LABELS[source]}</span>;
+  const database = source === "api" ? biblioProviderLabel(provider) : null;
+  const label = database ? `${FIELD_SOURCE_LABELS.api} · ${database}` : FIELD_SOURCE_LABELS[source];
+  return <span className="ef-source-badge">{label}</span>;
 }
 
 export function ExternalResource({

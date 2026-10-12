@@ -105,6 +105,63 @@ describe("著录合并：只补空白，飞行中的手改不被覆盖", () => {
     expect(detail.fieldSources?.venue).toBe("llm");
     expect(detail.llmPreparedAt).not.toBeNull();
   });
+
+  it("文献库结果替换模型回填，不替换手动字段，刷新链接才替换已有文献库字段", async () => {
+    const domain = await repo.createDomain({ name: "多模态", code: "MM-01" });
+    const paper = await repo.createPaper({ domainId: domain.id });
+    await repo.applyPreparedMeta(
+      paper.id,
+      meta({ title: "模型标题", venue: "模型期刊", abstract: "模型摘要" }),
+      false,
+      { source: "llm" },
+    );
+    await repo.updatePaper(paper.id, { venue: "手填期刊" }, true);
+
+    await repo.applyPreparedMeta(
+      paper.id,
+      meta({
+        title: "库标题",
+        venue: "库期刊",
+        abstract: "库摘要",
+        fieldProviders: { title: "crossref", venue: "crossref", abstract: "crossref" },
+      }),
+      false,
+      { source: "api" },
+    );
+
+    const replaced = (await repo.getPaper(paper.id))!;
+    expect(replaced.title).toBe("库标题");
+    expect(replaced.fieldSources?.title).toBe("api");
+    expect(replaced.fieldProviders?.title).toBe("crossref");
+    expect(replaced.abstract).toBe("库摘要");
+    expect(replaced.fieldSources?.abstract).toBe("api");
+    expect(replaced.venue).toBe("手填期刊");
+    expect(replaced.fieldSources?.venue).toBe("user");
+    expect(replaced.fieldProviders?.venue).toBeUndefined();
+
+    await repo.applyPreparedMeta(
+      paper.id,
+      meta({ title: "另一库标题", fieldProviders: { title: "openalex" } }),
+      false,
+      { source: "api" },
+    );
+    const kept = (await repo.getPaper(paper.id))!;
+    expect(kept.title).toBe("库标题");
+    expect(kept.fieldProviders?.title).toBe("crossref");
+
+    await repo.applyPreparedMeta(
+      paper.id,
+      meta({ title: "刷新标题", fieldProviders: { title: "openalex" } }),
+      false,
+      { source: "api", replaceApi: true },
+    );
+    const refreshed = (await repo.getPaper(paper.id))!;
+    expect(refreshed.title).toBe("刷新标题");
+    expect(refreshed.fieldSources?.title).toBe("api");
+    expect(refreshed.fieldProviders?.title).toBe("openalex");
+    expect(refreshed.venue).toBe("手填期刊");
+    expect(refreshed.fieldSources?.venue).toBe("user");
+  });
 });
 
 describe("链接只允许 http/https", () => {
@@ -291,7 +348,7 @@ describe("旧库迁移", () => {
     expect(await userVersion(engine)).toBe(SCHEMA_VERSION);
     const cols = await engine.select<{ name: string }>("PRAGMA table_info(papers)");
     const names = cols.map((col) => col.name);
-    for (const col of ["mineru_provider", "field_sources", "meta_confidence", "meta_rev", "pdf_original_path"]) {
+    for (const col of ["mineru_provider", "field_sources", "field_providers", "meta_confidence", "meta_rev", "pdf_original_path"]) {
       expect(names).toContain(col);
     }
     const pk = await engine.select<{ sql: string }>(
