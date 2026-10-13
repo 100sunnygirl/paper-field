@@ -78,8 +78,13 @@ export function RestoreNotice({ initial }: { initial?: RestoreStatus }) {
       actions = [<button key="ok" onClick={dismiss}>知道了</button>];
       break;
     case "restored":
-      text = "已从备份恢复文库。";
-      actions = [<button key="ok" onClick={dismiss}>知道了</button>];
+      text = status.summary
+        ? `已恢复 ${status.summary.papers} 篇、${status.summary.pdfs} 个 PDF，原数据保存在 ${status.pre}。`
+        : `已从备份恢复文库，原数据保存在 ${status.pre}。`;
+      actions = [
+        <button key="open" disabled={busy} onClick={run(() => revealPre(status.pre))}>打开文件夹</button>,
+        <button key="ok" onClick={dismiss}>知道了</button>,
+      ];
       break;
   }
 

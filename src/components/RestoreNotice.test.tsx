@@ -41,3 +41,16 @@ describe("RestoreNotice", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 });
+
+describe("RestoreNotice restored (P3)", () => {
+  it("shows counts and the pre folder when a summary exists", () => {
+    render(<RestoreNotice initial={{ kind: "restored", pre: "/d/pre-restore-1", summary: { papers: 7, pdfs: 2 } }} />);
+    expect(screen.getByText("已恢复 7 篇、2 个 PDF，原数据保存在 /d/pre-restore-1。")).toBeTruthy();
+    expect(screen.getByText("打开文件夹")).toBeTruthy();
+  });
+
+  it("falls back without a summary (old marker)", () => {
+    render(<RestoreNotice initial={{ kind: "restored", pre: "/d/pre-restore-1", summary: null }} />);
+    expect(screen.getByText("已从备份恢复文库，原数据保存在 /d/pre-restore-1。")).toBeTruthy();
+  });
+});

@@ -63,13 +63,16 @@ pub struct Marker {
     pub attempts: u32,
     pub pre: String,
     pub plan: Vec<PlanItem>,
+    /// Written at stage time; absent in markers from older versions.
+    #[serde(default)]
+    pub summary: Option<BackupSummary>,
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum RestoreStatus {
     None,
-    Restored,
+    Restored { pre: String, summary: Option<BackupSummary> },
     RolledBack { pre: String },
     PendingConfirm,
     /// Any stuck state blocks the normal UI, even when a database file exists:
@@ -78,6 +81,10 @@ pub enum RestoreStatus {
 }
 
 static STATUS: Mutex<Option<RestoreStatus>> = Mutex::new(None);
+
+/// Serializes every command that reads or writes the marker or pre-restore dirs,
+/// so a delete cannot pass its "no marker" check while a restore is being staged.
+static OP_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn now_ms() -> u128 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
@@ -151,7 +158,7 @@ fn unpack(src: &Path, staging: &Path) -> Result<Vec<String>, String> {
 }
 
 /// What a staged backup contains, returned to the UI before the user confirms.
-#[derive(Serialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct BackupSummary {
     pub papers: i64,
@@ -225,6 +232,7 @@ fn build_plan(dir: &Path, staged: &[String]) -> Vec<PlanItem> {
 }
 
 pub async fn stage_restore(dir: &Path, src: &Path) -> Result<BackupSummary, String> {
+    let _guard = OP_LOCK.lock().await;
     if dir.join(MARKER).exists() {
         return Err("上一次恢复还没处理完，请先重启应用".into());
     }
@@ -246,6 +254,7 @@ pub async fn stage_restore(dir: &Path, src: &Path) -> Result<BackupSummary, Stri
             attempts: 0,
             pre: format!("pre-restore-{}", now_ms()),
             plan: build_plan(dir, &staged),
+            summary: Some(summary.clone()),
         };
         write_marker(dir, &marker)?;
         Ok(summary)
@@ -417,7 +426,7 @@ pub fn apply_pending_restore_at(dir: &Path, now: u128) -> RestoreStatus {
         }
         if swap(dir, &marker).is_ok() {
             finish(dir);
-            return RestoreStatus::Restored;
+            return RestoreStatus::Restored { pre: abs(dir, &marker.pre), summary: marker.summary.clone() };
         }
     } else if write_marker(dir, &marker).is_err() {
         return stuck(&marker);
@@ -456,6 +465,7 @@ pub fn restore_confirm_pending(app: AppHandle) -> Result<(), String> {
 
 /// The user confirmed the preview: from now on the next launch swaps it in.
 pub fn commit_preview(dir: &Path) -> Result<(), String> {
+    let _guard = OP_LOCK.blocking_lock();
     let Some(Ok(mut marker)) = read_marker(dir) else { return Err("没有待确认的恢复".into()) };
     if marker.stage != Stage::Previewed {
         return Err("没有待确认的恢复".into());
@@ -470,10 +480,103 @@ pub fn restore_commit_preview(app: AppHandle) -> Result<(), String> {
     commit_preview(&app_config_dir(&app)?)
 }
 
+/// One `pre-restore-<ms>` copy of the library taken before a restore.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PreDir {
+    pub name: String,
+    pub path: String,
+    pub created_ms: u128,
+    pub bytes: u64,
+    pub has_db: bool,
+}
+
+const PRE_BUSY: &str = "恢复还没处理完，暂不能清理原数据副本";
+
+/// `pre-restore-<digits>` exactly; returns the timestamp.
+fn pre_name_ms(name: &str) -> Option<u128> {
+    let digits = name.strip_prefix("pre-restore-")?;
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+/// Size without following symlinks.
+fn tree_bytes(path: &Path) -> u64 {
+    let Ok(meta) = fs::symlink_metadata(path) else { return 0 };
+    if !meta.is_dir() {
+        return meta.len();
+    }
+    fs::read_dir(path)
+        .map(|rd| rd.flatten().map(|e| tree_bytes(&e.path())).sum())
+        .unwrap_or(0)
+}
+
+pub fn list_pre(dir: &Path) -> (Vec<PreDir>, bool) {
+    let busy = dir.join(MARKER).exists();
+    let mut out: Vec<PreDir> = fs::read_dir(dir)
+        .map(|rd| {
+            rd.flatten()
+                .filter_map(|e| {
+                    let name = e.file_name().to_string_lossy().into_owned();
+                    let created_ms = pre_name_ms(&name)?;
+                    let meta = fs::symlink_metadata(e.path()).ok()?;
+                    meta.is_dir().then(|| PreDir {
+                        path: abs(dir, &name),
+                        bytes: tree_bytes(&e.path()),
+                        has_db: e.path().join(DB).is_file(),
+                        name,
+                        created_ms,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    out.sort_by(|a, b| b.created_ms.cmp(&a.created_ms));
+    (out, busy)
+}
+
+pub fn delete_pre(dir: &Path, name: &str) -> Result<(), String> {
+    let _guard = OP_LOCK.blocking_lock();
+    if pre_name_ms(name).is_none() {
+        return Err("不是原数据副本目录".into());
+    }
+    // Any marker (even unreadable) means some pre dir may still be a rollback source.
+    if dir.join(MARKER).exists() {
+        return Err(PRE_BUSY.into());
+    }
+    let target = dir.join(name);
+    let meta = fs::symlink_metadata(&target).map_err(|_| "目录不存在".to_string())?;
+    if !meta.is_dir() || meta.file_type().is_symlink() {
+        return Err("不是原数据副本目录".into());
+    }
+    fs::remove_dir_all(&target).map_err(|e| format!("删除失败：{e}"))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreList {
+    pub dirs: Vec<PreDir>,
+    pub busy: bool,
+}
+
+#[tauri::command]
+pub fn restore_list_pre(app: AppHandle) -> Result<PreList, String> {
+    let (dirs, busy) = list_pre(&app_config_dir(&app)?);
+    Ok(PreList { dirs, busy })
+}
+
+#[tauri::command]
+pub fn restore_delete_pre(app: AppHandle, name: String) -> Result<(), String> {
+    delete_pre(&app_config_dir(&app)?, &name)
+}
+
 /// User gives up on the pending restore, whatever state it is in (staged,
 /// pending confirmation, stuck, or an unreadable marker). Puts old files back
 /// where they were moved, clears the marker, and allows a fresh restore.
 pub fn abandon_restore(dir: &Path) -> Result<(), String> {
+    let _guard = OP_LOCK.blocking_lock();
     match read_marker(dir) {
         None => {}
         Some(Ok(marker)) => {
@@ -588,7 +691,7 @@ mod tests {
     fn startup_swaps_in_backup() {
         let (live, zip) = setup("swap");
         stage(&live, &zip).unwrap();
-        assert_eq!(apply_pending_restore_at(&live, now_ms()), RestoreStatus::Restored);
+        assert!(matches!(apply_pending_restore_at(&live, now_ms()), RestoreStatus::Restored { .. }));
         assert_eq!(rows(&live.join(DB)), 7);
         assert_eq!(fs::read_to_string(live.join("library/shared.pdf")).unwrap(), "new");
         assert!(live.join("library/new.pdf").exists());
@@ -946,6 +1049,109 @@ mod tests {
         assert!(commit_preview(&live).is_err(), "no marker");
         stage(&live, &zip).unwrap();
         assert!(commit_preview(&live).is_err(), "already staged");
-        assert_eq!(apply_pending_restore_at(&live, now_ms()), RestoreStatus::Restored);
+        assert!(matches!(apply_pending_restore_at(&live, now_ms()), RestoreStatus::Restored { .. }));
+    }
+
+    #[test]
+    fn restored_status_carries_summary_and_pre() {
+        let (live, zip) = setup("p3-restored");
+        stage(&live, &zip).unwrap();
+        match apply_pending_restore_at(&live, now_ms()) {
+            RestoreStatus::Restored { pre, summary } => {
+                assert!(pre.contains("pre-restore-"));
+                let s = summary.expect("summary written at stage time");
+                assert_eq!((s.papers, s.pdfs), (7, 2));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn old_marker_without_summary_still_parses() {
+        let json = r#"{"stage":"staged","created_ms":1,"attempts":0,"pre":"pre-restore-1","plan":[]}"#;
+        let m: Marker = serde_json::from_str(json).unwrap();
+        assert!(m.summary.is_none());
+    }
+
+    fn restored_live(n: &str) -> PathBuf {
+        let (live, zip) = setup(n);
+        stage(&live, &zip).unwrap();
+        assert!(matches!(apply_pending_restore_at(&live, now_ms()), RestoreStatus::Restored { .. }));
+        live
+    }
+
+    #[test]
+    fn list_and_delete_pre_dirs() {
+        let live = restored_live("p3-list");
+        fs::create_dir(live.join("pre-restore-5")).unwrap();
+        let (dirs, busy) = list_pre(&live);
+        assert!(!busy);
+        assert_eq!(dirs.len(), 2);
+        assert!(dirs[0].has_db && dirs[0].bytes > 0, "newest first, holds the old db");
+        assert_eq!(dirs[1].name, "pre-restore-5");
+        delete_pre(&live, "pre-restore-5").unwrap();
+        assert!(!live.join("pre-restore-5").exists());
+        assert!(live.join(&dirs[0].name).exists(), "other dirs untouched");
+    }
+
+    #[test]
+    fn delete_pre_refused_while_any_marker_exists() {
+        let live = restored_live("p3-busy");
+        let name = list_pre(&live).0[0].name.clone();
+        fs::write(live.join(MARKER), "not json").unwrap();
+        assert!(list_pre(&live).1);
+        assert_eq!(delete_pre(&live, &name), Err(PRE_BUSY.into()));
+        assert!(live.join(&name).exists());
+    }
+
+    #[test]
+    fn delete_pre_rejects_bad_names_and_symlinks() {
+        let live = restored_live("p3-names");
+        for bad in ["../x", "pre-restore-1/..", "library", "pre-restore-", "pre-restore-1a", DB] {
+            assert!(delete_pre(&live, bad).is_err(), "{bad}");
+        }
+        assert!(live.join("library").exists() && live.join(DB).exists());
+        #[cfg(unix)]
+        {
+            let outside = live.parent().unwrap().join("outside");
+            fs::create_dir_all(&outside).unwrap();
+            fs::write(outside.join("keep"), "x").unwrap();
+            std::os::unix::fs::symlink(&outside, live.join("pre-restore-9")).unwrap();
+            assert!(delete_pre(&live, "pre-restore-9").is_err());
+            assert!(outside.join("keep").exists());
+        }
+    }
+
+    #[test]
+    fn delete_waits_for_lock_then_rechecks_marker() {
+        let live = restored_live("p3-lock");
+        let name = list_pre(&live).0[0].name.clone();
+        let guard = OP_LOCK.blocking_lock();
+        let (l2, n2) = (live.clone(), name.clone());
+        let handle = std::thread::spawn(move || delete_pre(&l2, &n2));
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(!handle.is_finished(), "delete must wait for the lock");
+        // A restore staged while the delete was waiting.
+        fs::write(live.join(MARKER), "{}").unwrap();
+        drop(guard);
+        assert_eq!(handle.join().unwrap(), Err(PRE_BUSY.into()));
+        assert!(live.join(&name).exists());
+    }
+
+    fn assert_waits_for_lock<F: FnOnce() + Send + 'static>(f: F) {
+        let guard = OP_LOCK.blocking_lock();
+        let handle = std::thread::spawn(f);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(!handle.is_finished(), "must wait for the restore lock");
+        drop(guard);
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn abandon_and_commit_wait_for_lock() {
+        let (live, _) = setup("p3-lock-ops");
+        let l = live.clone();
+        assert_waits_for_lock(move || { let _ = abandon_restore(&l); });
+        assert_waits_for_lock(move || { let _ = commit_preview(&live); });
     }
 }
