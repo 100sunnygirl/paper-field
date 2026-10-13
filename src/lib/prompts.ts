@@ -1,4 +1,5 @@
 import type { DraftedNotes, PaperDetail, PreparedMeta } from "./types";
+import { safeHttpUrl } from "./urls";
 
 export const PREPARE_META_SYSTEM = `You are a research librarian filling structured metadata for a local paper notes app.
 Return ONLY valid JSON matching this schema:
@@ -20,12 +21,11 @@ Return ONLY valid JSON matching this schema:
   "confidence": 0.0
 }
 Rules:
-- Prefer the MinerU markdown when it is present. It is the text of the local PDF.
-- Use the provided title / arXiv / DOI only as hints. If you recognize the paper, fill accurate public metadata.
+- Bibliographic fields (title, authors, year, venue, abstract, DOI, arXiv, pdf URL) may already be filled from arXiv, Crossref, or OpenAlex. Leave those null.
+- Fill only fields that are still empty: titleZh, tags, labs, codeOpenSource, codeURL, projectPage.
 - titleZh should be a concise Chinese translation when possible, else null.
 - codeOpenSource: open if official code is public; closed if weights/code are known unreleased; request if available on request; unknown otherwise.
-- pdfURL is a public link only. Never replace or invent the local file path.
-- Never invent a DOI or arXiv id. Leave fields null when unsure.
+- codeURL and projectPage must be http or https. Never invent a DOI, arXiv id, or local file path.
 - Do not mention reading status. Do not output markdown.`;
 
 export const DRAFT_NOTES_SYSTEM = `You draft first-person research notes for a human who will edit them.
@@ -59,15 +59,18 @@ export function prepareMetaUserPrompt(input: {
   pdfPath?: string | null;
   abstract?: string | null;
   parsedMarkdown?: string | null;
+  /** Fields already stored from a bibliographic API; the model must not refill them. */
+  filledByApi?: string[];
 }): string {
   const markdown = excerpt(input.parsedMarkdown);
+  const filled = input.filledByApi?.filter(Boolean) ?? [];
   return [
     `Title: ${input.title}`,
     input.arxivId ? `arXiv: ${input.arxivId}` : null,
     input.doi ? `DOI: ${input.doi}` : null,
-    input.pdfPath ? `Local PDF: ${input.pdfPath}` : null,
     input.pdfUrl ? `Public PDF: ${input.pdfUrl}` : null,
     input.abstract ? `Abstract already on file:\n${input.abstract}` : null,
+    filled.length ? `Already filled from a bibliographic database (leave these null): ${filled.join(", ")}` : null,
     markdown ? `MinerU markdown:\n${markdown}` : null,
   ]
     .filter(Boolean)
@@ -106,9 +109,9 @@ export function normalizeMeta(raw: PreparedMeta, fallbackTitle: string): Prepare
     labs: Array.isArray(raw.labs) ? raw.labs.filter((l) => l?.name) : [],
     codeOpenSource:
       open === "open" || open === "closed" || open === "request" || open === "unknown" ? open : "unknown",
-    codeURL: raw.codeURL || null,
-    projectPage: raw.projectPage || null,
-    pdfURL: raw.pdfURL || null,
+    codeURL: safeHttpUrl(raw.codeURL),
+    projectPage: safeHttpUrl(raw.projectPage),
+    pdfURL: safeHttpUrl(raw.pdfURL),
     tags: Array.isArray(raw.tags) ? raw.tags.map(String) : [],
     confidence: raw.confidence,
   };

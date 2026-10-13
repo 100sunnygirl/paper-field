@@ -11,8 +11,12 @@ export async function makeTestEngine(): Promise<TestEngineHandle> {
   const SQL = await initSqlJs();
   const db = new SQL.Database();
   const engine: SqlEngine = {
-    async execute(sql: string, params: unknown[] = []): Promise<void> {
+    async execute(sql: string, params: unknown[] = []): Promise<number> {
       db.run(sql, params as (string | number | null | Uint8Array)[]);
+      return db.getRowsModified();
+    },
+    snapshot(): Uint8Array {
+      return db.export();
     },
     async select<T>(sql: string, params: unknown[] = []): Promise<T[]> {
       const stmt = db.prepare(sql);

@@ -1,0 +1,28 @@
+{
+  "status": "ok",
+  "message": {
+    "title": ["Attention Is All You Need"],
+    "author": [
+      {
+        "given": "Ashish",
+        "family": "Vaswani",
+        "affiliation": [{ "name": "Google Brain" }]
+      },
+      {
+        "given": "Noam",
+        "family": "Shazeer",
+        "affiliation": [{ "name": "Google Research" }]
+      }
+    ],
+    "published": { "date-parts": [[2017, 6, 12]] },
+    "container-title": ["Advances in Neural Information Processing Systems"],
+    "abstract": "<jats:p>The dominant sequence transduction models.</jats:p>",
+    "DOI": "10.48550/arXiv.1706.03762",
+    "link": [
+      {
+        "URL": "https://arxiv.org/pdf/1706.03762",
+        "content-type": "application/pdf"
+      }
+    ]
+  }
+}

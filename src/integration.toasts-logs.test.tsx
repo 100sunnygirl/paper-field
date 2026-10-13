@@ -223,7 +223,7 @@ beforeEach(async () => {
   vi.mocked(repo.listReadyForMeta).mockReset().mockResolvedValue([]);
   vi.mocked(repo.importLocalPdfs).mockReset();
   vi.mocked(repo.createJob).mockReset().mockResolvedValue({ id: "job-1", status: "queued" } as LlmJob);
-  vi.mocked(repo.updateJob).mockReset().mockResolvedValue(undefined);
+  vi.mocked(repo.updateJob).mockReset().mockResolvedValue(true);
   vi.mocked(repo.setMineruState).mockReset().mockResolvedValue(undefined);
   vi.mocked(repo.saveParsedMarkdown).mockReset().mockResolvedValue(undefined);
   vi.mocked(repo.applyPreparedMeta).mockReset().mockResolvedValue(undefined);
@@ -528,7 +528,13 @@ describe("设置保存 × MinerU 补全深链路", () => {
     expect(messages).toContain("info/llm/AI 作业开始（job-bf）");
     expect(messages).toContain("info/llm/AI 作业完成（job-bf）");
     // 自动补全 overwrite=false（用户编辑锁）+ quiet（不刷「AI 作业完成。」通知）。
-    expect(repo.applyPreparedMeta).toHaveBeenCalledWith("p-9", expect.anything(), false);
+    // 第四参带上开始时的 meta_rev 与作业 id，写入时再对一次，飞行中的手改不会被盖掉。
+    expect(repo.applyPreparedMeta).toHaveBeenCalledWith(
+      "p-9",
+      expect.anything(),
+      false,
+      expect.objectContaining({ source: "llm", jobId: "job-bf" }),
+    );
     expect(getToasts().some((t) => t.text === "AI 作业完成。阅读状态未改动。")).toBe(false);
   });
 

@@ -16,9 +16,10 @@ import {
   type ReadingStatus,
 } from "../lib/types";
 import { hasUsableProvider } from "../lib/settings";
+import { arxivAbsUrl, arxivPdfUrl, doiUrl, openExternal, safeHttpUrl } from "../lib/urls";
 import { formatDate, pad2 } from "../lib/util";
 import { useField } from "../store";
-import { Button, ButtonLink, Dialog, Empty, ExternalResource, Icon } from "./ui";
+import { Button, Dialog, Empty, ExternalResource, Icon, SourceBadge } from "./ui";
 
 function NoteEditor({
   kind,
@@ -140,12 +141,14 @@ function ContextPanel({
   const jobs = useField((s) => s.jobs);
   const setReadingStatus = useField((s) => s.setReadingStatus);
   const runPrepareMeta = useField((s) => s.runPrepareMeta);
+  const runRefreshLinks = useField((s) => s.runRefreshLinks);
   const runDraftNotes = useField((s) => s.runDraftNotes);
   const retryMineru = useField((s) => s.retryMineru);
   const mineru = useField((s) => s.mineru);
   const cancelJob = useField((s) => s.cancelJob);
   const savePaperPatch = useField((s) => s.savePaperPatch);
   const setMode = useField((s) => s.setMode);
+  const lookupHint = useField((s) => s.lookupHint);
   const openDialog = useField((s) => s.openDialog);
   const active = jobs.filter(
     (job) => job.paperId === paper.id && (job.status === "running" || job.status === "queued"),
@@ -178,23 +181,39 @@ function ContextPanel({
 
       <section className="ef-context-block">
         <h2 className="ef-context-title">资料与链接</h2>
-        {paper.codeUrl ? (
+        {paper.codeUrl && safeHttpUrl(paper.codeUrl) ? (
           <ExternalResource href={paper.codeUrl} icon="code">
             代码仓库
+            <SourceBadge source={paper.fieldSources?.codeUrl} provider={paper.fieldProviders?.codeUrl} />
           </ExternalResource>
         ) : (
           <p className="ef-missing">未提供代码仓库</p>
         )}
-        {paper.projectPage ? (
+        {paper.projectPage && safeHttpUrl(paper.projectPage) ? (
           <ExternalResource href={paper.projectPage} icon="link">
             项目主页
+            <SourceBadge source={paper.fieldSources?.projectPage} provider={paper.fieldProviders?.projectPage} />
           </ExternalResource>
         ) : (
           <p className="ef-missing">未提供项目主页</p>
         )}
         <div className="ef-identifier">
           arXiv
-          <span className="mono">{paper.arxivId || "未提供"}</span>
+          <SourceBadge source={paper.fieldSources?.arxivId} provider={paper.fieldProviders?.arxivId} />
+          {arxivAbsUrl(paper.arxivId) ? (
+            <button type="button" className="mono ef-id-link" onClick={() => void openExternal(arxivAbsUrl(paper.arxivId))}>
+              {paper.arxivId}
+            </button>
+          ) : (
+            <span className="mono">{paper.arxivId || "未提供"}</span>
+          )}
+        </div>
+        <div className="ef-identifier">
+          <span>
+            来源
+            <SourceBadge source={paper.fieldSources?.venue} provider={paper.fieldProviders?.venue} />
+          </span>
+          <span className="mono">{[paper.venue, paper.year].filter(Boolean).join(" ") || "未提供"}</span>
         </div>
         <label className="ef-os-select">
           <span>开源状态</span>
@@ -229,10 +248,18 @@ function ContextPanel({
             ) : (
               <p>作者信息待补充</p>
             )}
+            <SourceBadge source={paper.fieldSources?.authors} provider={paper.fieldProviders?.authors} />
             <p>
               DOI
+              <SourceBadge source={paper.fieldSources?.doi} provider={paper.fieldProviders?.doi} />
               <br />
-              <span className="mono">{paper.doi || "未提供"}</span>
+              {doiUrl(paper.doi) ? (
+                <button type="button" className="mono ef-id-link" onClick={() => void openExternal(doiUrl(paper.doi))}>
+                  {paper.doi}
+                </button>
+              ) : (
+                <span className="mono">{paper.doi || "未提供"}</span>
+              )}
             </p>
           </div>
         </details>
@@ -324,12 +351,26 @@ function ContextPanel({
                 openDialog("confirm-meta");
                 return;
               }
-              void runPrepareMeta(paper.id);
+              void runPrepareMeta(paper.id, false);
             }}
           >
             <Icon name="file" />
             补全论文信息
           </Button>
+          <Button type="button" disabled={Boolean(active.length)} onClick={() => void runRefreshLinks(paper.id)}>
+            <Icon name="link" />
+            刷新链接
+          </Button>
+          {lookupHint?.paperId === paper.id && lookupHint.notices.length ? (
+            <div className="ef-lookup-hint">
+              {lookupHint.notices.map((notice) => (
+                <p key={`${notice.source}-${notice.code}`}>{notice.message}</p>
+              ))}
+              <button type="button" onClick={() => void setMode("system")}>
+                设置 → 文献库
+              </button>
+            </div>
+          ) : null}
           <Button
             type="button"
             disabled={!hasUsableProvider(settings) || Boolean(active.length)}
@@ -579,18 +620,17 @@ export function ReadingStage({
             <Icon name="file" />
             打开 PDF
           </Button>
-        ) : paper.pdfUrl ? (
-          <ButtonLink
+        ) : safeHttpUrl(arxivPdfUrl(paper.arxivId) ?? paper.pdfUrl) ? (
+          <Button
+            type="button"
             className="ef-pdf-action"
             variant="primary"
-            href={paper.pdfUrl}
-            target="_blank"
-            rel="noreferrer"
+            onClick={() => void openExternal(arxivPdfUrl(paper.arxivId) ?? paper.pdfUrl)}
           >
             <Icon name="file" />
             打开 PDF
             <Icon name="external" className="ef-ico" />
-          </ButtonLink>
+          </Button>
         ) : (
           <span className="ef-pdf-missing ef-pdf-action">
             这篇论文还没有 PDF。
@@ -670,7 +710,10 @@ export function ReadingStage({
             </p>
             <section className="ef-abstract" id="abstract">
               <h2 className="ef-section-label">
-                <span>摘要</span>
+                <span>
+                  摘要
+                  <SourceBadge source={paper.fieldSources?.abstract} provider={paper.fieldProviders?.abstract} />
+                </span>
                 <i className="ef-section-rule" aria-hidden="true" />
               </h2>
               <p>{paper.abstract || "尚未填写摘要。可在「更多」中编辑论文信息。"}</p>

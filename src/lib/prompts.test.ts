@@ -108,7 +108,8 @@ describe("用户 prompt 组装", () => {
     expect(prompt).toContain("Title: T");
     expect(prompt).toContain("arXiv: 2301.00001");
     expect(prompt).toContain("DOI: 10.1/x");
-    expect(prompt).toContain("Local PDF: /local/a.pdf");
+    expect(prompt).not.toContain("/local/a.pdf");
+    expect(prompt).not.toContain("Local PDF");
     expect(prompt).toContain("Public PDF: https://example.com/a.pdf");
     expect(prompt).toContain("Abstract already on file:\nabs");
     expect(prompt).toContain("MinerU markdown:\n");

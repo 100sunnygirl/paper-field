@@ -1,10 +1,13 @@
-import { PAPER_MIGRATIONS, SCHEMA_STATEMENTS } from "./schema";
+import { runMigrations, SCHEMA_VERSION, tableExists, userVersion } from "./schema";
 import { isTauri } from "./util";
 import type initSqlJsType from "sql.js";
 
 export interface SqlEngine {
-  execute(sql: string, params?: unknown[]): Promise<void>;
+  execute(sql: string, params?: unknown[]): Promise<number>;
   select<T>(sql: string, params?: unknown[]): Promise<T[]>;
+  /** Consistent bytes of the current database, used to copy it aside before migrating. */
+  snapshot?(): Uint8Array;
+  close?(): Promise<void>;
 }
 
 // SQLite 落盘失败的单出口：App 挂载后注入 handler 走 toast 通知
@@ -21,9 +24,15 @@ class SqlJsEngine implements SqlEngine {
 
   constructor(private db: import("sql.js").Database) {}
 
-  async execute(sql: string, params: unknown[] = []): Promise<void> {
+  async execute(sql: string, params: unknown[] = []): Promise<number> {
     this.db.run(sql, params as (string | number | null | Uint8Array)[]);
+    const changed = this.db.getRowsModified();
     this.schedulePersist();
+    return changed;
+  }
+
+  snapshot(): Uint8Array {
+    return this.db.export();
   }
 
   async select<T>(sql: string, params: unknown[] = []): Promise<T[]> {
@@ -61,12 +70,17 @@ class SqlJsEngine implements SqlEngine {
 class TauriEngine implements SqlEngine {
   constructor(private db: import("@tauri-apps/plugin-sql").default) {}
 
-  async execute(sql: string, params: unknown[] = []): Promise<void> {
-    await this.db.execute(sql, params);
+  async execute(sql: string, params: unknown[] = []): Promise<number> {
+    const changed = await this.db.execute(sql, params);
+    return typeof changed === "number" ? changed : 0;
   }
 
   async select<T>(sql: string, params: unknown[] = []): Promise<T[]> {
     return this.db.select<T[]>(sql, params);
+  }
+
+  async close(): Promise<void> {
+    await this.db.close();
   }
 }
 
@@ -98,34 +112,65 @@ async function loadSqlJsBytes(): Promise<Uint8Array | null> {
   });
 }
 
-async function persistSqlJs(bytes: Uint8Array): Promise<void> {
+async function persistSqlJs(bytes: Uint8Array, key = IDB_KEY): Promise<void> {
   const db = await idb();
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction(IDB_STORE, "readwrite");
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
-    tx.objectStore(IDB_STORE).put(bytes, IDB_KEY);
+    tx.objectStore(IDB_STORE).put(bytes, key);
   });
+}
+
+let lastPremigrationBackup: Uint8Array | null = null;
+
+/** Bytes copied aside before the most recent migration in this process, if the engine could snapshot. */
+export function premigrationBackup(): Uint8Array | null {
+  return lastPremigrationBackup;
+}
+
+export function clearPremigrationBackup(): void {
+  lastPremigrationBackup = null;
+}
+
+async function backupBeforeMigration(engine: SqlEngine): Promise<void> {
+  if (engine.snapshot) {
+    lastPremigrationBackup = engine.snapshot();
+    if (!isTauri() && typeof indexedDB !== "undefined") {
+      await persistSqlJs(lastPremigrationBackup, "paper-field.db.premigrate").catch((err) => {
+        console.error("Failed to persist pre-migration database copy", err);
+      });
+    }
+  }
+  if (!isTauri()) return;
+  await engine.execute("PRAGMA wal_checkpoint(FULL)");
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("backup_database_file");
 }
 
 export async function applySchema(engine: SqlEngine): Promise<void> {
   await engine.execute("PRAGMA foreign_keys = ON");
-  for (const statement of SCHEMA_STATEMENTS) {
-    await engine.execute(statement);
+  const current = await userVersion(engine);
+  if (current >= SCHEMA_VERSION) return;
+  if (await tableExists(engine, "papers")) {
+    await backupBeforeMigration(engine);
   }
-  for (const statement of PAPER_MIGRATIONS) {
-    try {
-      await engine.execute(statement);
-    } catch (err) {
-      const message = (err instanceof Error ? err.message : String(err)).toLowerCase();
-      if (message.includes("duplicate column")) continue;
-      throw err;
-    }
-  }
-  await engine.execute("CREATE INDEX IF NOT EXISTS idx_papers_pdf_path ON papers(pdf_path)");
+  await runMigrations(engine, current);
 }
 
 let singleton: Promise<SqlEngine> | null = null;
+
+export async function resetEngine(): Promise<void> {
+  const pending = singleton;
+  singleton = null;
+  if (!pending) return;
+  try {
+    const engine = await pending;
+    await engine.close?.();
+  } catch {
+    singleton = null;
+  }
+}
 
 export function getEngine(): Promise<SqlEngine> {
   if (!singleton) {

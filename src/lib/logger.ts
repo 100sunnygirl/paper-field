@@ -9,6 +9,7 @@
 // - 非 Tauri（浏览器预览 / jsdom 测试）只缓冲 + console，零动态 import、零 IPC；
 // - 落盘失败静默降级为仅内存缓冲，并只写一条 warn 条目（防自激励循环）。
 // 约定：message/detail 不得包含 API Key / Token 等机密（现有 flash 文案只回显 hasKey）。
+import { redactSecrets } from "./redact";
 import { isTauri, nowIso } from "./util";
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
@@ -64,8 +65,8 @@ function push(level: LogLevel, scope: LogScope, message: string, detail?: string
     ts: nowIso(),
     level,
     scope,
-    message,
-    ...(detail === undefined ? {} : { detail }),
+    message: redactSecrets(message),
+    ...(detail === undefined ? {} : { detail: redactSecrets(detail) }),
   };
   buffer.push(entry);
   if (buffer.length > LOG_BUFFER_LIMIT) buffer.splice(0, buffer.length - LOG_BUFFER_LIMIT);
@@ -92,7 +93,8 @@ export const log = {
 
 function detailText(detail: unknown): string | undefined {
   if (detail === undefined) return undefined;
-  return detail instanceof Error ? detail.message : String(detail);
+  const text = detail instanceof Error ? detail.message : String(detail);
+  return redactSecrets(text);
 }
 
 function mirror(entry: LogEntry): void {

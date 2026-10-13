@@ -10,6 +10,37 @@ export type NoteKind = (typeof NOTE_KINDS)[number];
 export type ReadingStatus = "unread" | "reading" | "read";
 export type OpenSource = "unknown" | "open" | "closed" | "request";
 export type NoteSource = "manual" | "llm";
+export type FieldSource = "api" | "llm" | "user";
+export type MetaField =
+  | "title"
+  | "titleZh"
+  | "abstract"
+  | "year"
+  | "venue"
+  | "doi"
+  | "arxivId"
+  | "pdfUrl"
+  | "codeUrl"
+  | "codeOpenSource"
+  | "projectPage"
+  | "tags"
+  | "labs"
+  | "authors";
+export type FieldSources = Partial<Record<MetaField, FieldSource>>;
+/** Which bibliographic service wrote an api-sourced field. */
+export type FieldProviders = Partial<Record<MetaField, string>>;
+
+export const BIBLIO_PROVIDER_LABELS: Record<string, string> = {
+  arxiv: "arXiv",
+  crossref: "Crossref",
+  openalex: "OpenAlex",
+  semanticscholar: "Semantic Scholar",
+};
+
+export function biblioProviderLabel(id: string | null | undefined): string | null {
+  if (!id) return null;
+  return BIBLIO_PROVIDER_LABELS[id] ?? id;
+}
 export type JobType = "prepareMeta" | "draftNotes" | "refreshLinks" | "mineruParse";
 export type MineruProviderKind = "local" | "ssh" | "api";
 export type MineruStatus = "queued" | "submitted" | "parsing" | "done" | "error" | "cancelled";
@@ -81,6 +112,11 @@ export interface Paper {
   notesDraftedByLlm: boolean;
   userNotesTouched: boolean;
   userMetaTouched: boolean;
+  fieldSources?: FieldSources;
+  fieldProviders?: FieldProviders;
+  metaConfidence?: number | null;
+  metaRev?: number;
+  pdfOriginalPath?: string | null;
   mineruStatus: MineruStatus | null;
   mineruParseId: string | null;
   mineruDocRef: string | null;
@@ -195,6 +231,8 @@ export interface PreparedMeta {
   pdfURL: string | null;
   tags: string[];
   confidence?: number;
+  /** Per-field bibliographic service when this payload came from lookup. */
+  fieldProviders?: FieldProviders;
 }
 
 export interface DraftedNotes {
@@ -224,6 +262,12 @@ export const READING_STATUS_LABELS: Record<ReadingStatus, string> = {
   unread: "未读",
   reading: "在读",
   read: "已读",
+};
+
+export const FIELD_SOURCE_LABELS: Record<FieldSource, string> = {
+  api: "数据库",
+  llm: "模型",
+  user: "手动",
 };
 
 export const OPEN_SOURCE_LABELS: Record<OpenSource, string> = {

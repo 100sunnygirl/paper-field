@@ -445,21 +445,55 @@ fn read_file(app: &AppHandle) -> Result<MineruFileV2, String> {
         return Ok(default_file_v2());
     }
     let raw = fs::read_to_string(&path).map_err(|e| format!("读取 MinerU 设置失败：{e}"))?;
+    scrub_mineru_backup(&path)?;
     let (mut file, migrated) = parse_settings(&raw)?;
-    if migrated {
-        let bak = path.with_extension("v1.bak");
-        if !bak.exists() {
-            fs::copy(&path, &bak).map_err(|e| format!("备份旧版 MinerU 设置失败：{e}"))?;
+    let store = crate::secrets::store_for(path.parent().unwrap_or_else(|| Path::new(".")));
+    let mut lifted = false;
+    if !file.api.token.trim().is_empty() {
+        store.set(crate::secrets::MINERU_ACCOUNT, file.api.token.trim())?;
+        lifted = true;
+    } else if let Some(token) = store.get(crate::secrets::MINERU_ACCOUNT)? {
+        file.api.token = token;
+    }
+    if migrated || lifted {
+        if migrated {
+            let bak = path.with_extension("v1.bak");
+            if !bak.exists() {
+                crate::io_util::atomic_write(&bak, crate::secrets::scrub_json_secrets(&raw).as_bytes())?;
+            } else {
+                scrub_mineru_backup(&path)?;
+            }
         }
         file.version = 2;
-        write_file_at(&path, &file)?;
+        write_public_mineru(&path, &file)?;
     }
     Ok(file)
 }
 
+fn scrub_mineru_backup(path: &Path) -> Result<(), String> {
+    let bak = path.with_extension("v1.bak");
+    if !bak.exists() {
+        return Ok(());
+    }
+    let raw = fs::read_to_string(&bak).map_err(|err| err.to_string())?;
+    let cleaned = crate::secrets::scrub_json_secrets(&raw);
+    if cleaned != raw {
+        crate::io_util::atomic_write(&bak, cleaned.as_bytes())?;
+    }
+    Ok(())
+}
+
+fn write_public_mineru(path: &Path, file: &MineruFileV2) -> Result<(), String> {
+    let mut public = file.clone();
+    public.api.token.clear();
+    let raw = serde_json::to_string_pretty(&public).map_err(|err| err.to_string())?;
+    crate::io_util::atomic_write(path, raw.as_bytes())
+}
+
 fn write_file_at(path: &Path, file: &MineruFileV2) -> Result<(), String> {
-    let raw = serde_json::to_string_pretty(file).map_err(|e| e.to_string())?;
-    fs::write(path, raw).map_err(|e| format!("写入 MinerU 设置失败：{e}"))
+    let store = crate::secrets::store_for(path.parent().unwrap_or_else(|| Path::new(".")));
+    store.set(crate::secrets::MINERU_ACCOUNT, file.api.token.trim())?;
+    write_public_mineru(path, file)
 }
 
 /// 修正 order：过滤非法项与重复项，补全缺失来源（按 local→ssh→api 追加）。
