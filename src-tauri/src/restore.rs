@@ -460,14 +460,20 @@ pub fn restore_status() -> RestoreStatus {
 
 /// User confirmed a stale staged restore: refresh its timestamp; applied on next launch.
 #[tauri::command]
-pub fn restore_confirm_pending(app: AppHandle) -> Result<(), String> {
-    let dir = app_config_dir(&app)?;
-    let Some(Ok(mut marker)) = read_marker(&dir) else { return Err("没有待确认的恢复".into()) };
+pub async fn restore_confirm_pending(app: AppHandle) -> Result<(), String> {
+    confirm_pending(&app_config_dir(&app)?).await
+}
+
+/// Holds the lock across read and write so an abandon can't slip in between
+/// and have its cleared marker written back.
+pub async fn confirm_pending(dir: &Path) -> Result<(), String> {
+    let _guard = OP_LOCK.lock().await;
+    let Some(Ok(mut marker)) = read_marker(dir) else { return Err("没有待确认的恢复".into()) };
     if marker.stage != Stage::Staged {
         return Err("没有待确认的恢复".into());
     }
     marker.created_ms = now_ms();
-    write_marker(&dir, &marker)
+    write_marker(dir, &marker)
 }
 
 /// The user confirmed the preview: from now on the next launch swaps it in.
@@ -1223,6 +1229,32 @@ mod tests {
         tauri::async_runtime::block_on(commit_preview(&live)).unwrap();
         // Now staged: a second commit is refused.
         assert!(tauri::async_runtime::block_on(commit_preview(&live)).is_err());
+    }
+
+    #[test]
+    fn confirm_pending_after_abandon_does_not_write_marker_back() {
+        let (live, zip) = setup("p10-confirm-after-abandon");
+        stage(&live, &zip).unwrap();
+        tauri::async_runtime::block_on(confirm_pending(&live)).unwrap();
+        tauri::async_runtime::block_on(abandon_restore(&live)).unwrap();
+        assert_eq!(tauri::async_runtime::block_on(confirm_pending(&live)), Err("没有待确认的恢复".into()));
+        assert!(!live.join(MARKER).exists());
+    }
+
+    #[test]
+    fn confirm_pending_waits_for_lock_and_sees_abandon() {
+        let (live, zip) = setup("p10-confirm-lock");
+        stage(&live, &zip).unwrap();
+        let guard = OP_LOCK.blocking_lock();
+        let l2 = live.clone();
+        let handle = std::thread::spawn(move || tauri::async_runtime::block_on(confirm_pending(&l2)));
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(!handle.is_finished(), "confirm must wait for the restore lock");
+        // An abandon runs while confirm is waiting (we hold the lock for it).
+        abandon_locked(&live).unwrap();
+        drop(guard);
+        assert_eq!(handle.join().unwrap(), Err("没有待确认的恢复".into()));
+        assert!(!live.join(MARKER).exists(), "abandoned marker must not come back");
     }
 
     #[test]
