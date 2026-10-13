@@ -41,6 +41,8 @@ const STALE_MS: u128 = 10 * 60 * 1000;
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum Stage {
+    /// Staged but the user has not confirmed yet; startup discards it, never swaps.
+    Previewed,
     Staged,
     Swapping,
 }
@@ -239,7 +241,7 @@ pub async fn stage_restore(dir: &Path, src: &Path) -> Result<BackupSummary, Stri
             zip_bytes: fs::metadata(src).map(|m| m.len()).unwrap_or(0),
         };
         let marker = Marker {
-            stage: Stage::Staged,
+            stage: Stage::Previewed,
             created_ms: now_ms(),
             attempts: 0,
             pre: format!("pre-restore-{}", now_ms()),
@@ -390,6 +392,12 @@ pub fn apply_pending_restore_at(dir: &Path, now: u128) -> RestoreStatus {
             return RestoreStatus::Stuck { pre: String::new(), db_available: dir.join(DB).exists() };
         }
     };
+    if marker.stage == Stage::Previewed {
+        // The app quit or crashed while the confirm dialog was open: nothing was
+        // moved yet, so dropping the marker and staging is a complete undo.
+        finish(dir);
+        return RestoreStatus::None;
+    }
     if marker.stage == Stage::Staged && now.saturating_sub(marker.created_ms) > STALE_MS {
         return RestoreStatus::PendingConfirm;
     }
@@ -444,6 +452,22 @@ pub fn restore_confirm_pending(app: AppHandle) -> Result<(), String> {
     }
     marker.created_ms = now_ms();
     write_marker(&dir, &marker)
+}
+
+/// The user confirmed the preview: from now on the next launch swaps it in.
+pub fn commit_preview(dir: &Path) -> Result<(), String> {
+    let Some(Ok(mut marker)) = read_marker(dir) else { return Err("没有待确认的恢复".into()) };
+    if marker.stage != Stage::Previewed {
+        return Err("没有待确认的恢复".into());
+    }
+    marker.stage = Stage::Staged;
+    marker.created_ms = now_ms();
+    write_marker(dir, &marker)
+}
+
+#[tauri::command]
+pub fn restore_commit_preview(app: AppHandle) -> Result<(), String> {
+    commit_preview(&app_config_dir(&app)?)
 }
 
 /// User gives up on the pending restore, whatever state it is in (staged,
@@ -537,7 +561,8 @@ mod tests {
     }
 
     fn stage(live: &Path, zip: &Path) -> Result<(), String> {
-        stage_summary(live, zip).map(|_| ())
+        stage_summary(live, zip)?;
+        commit_preview(live)
     }
 
     fn stage_summary(live: &Path, zip: &Path) -> Result<BackupSummary, String> {
@@ -890,5 +915,37 @@ mod tests {
         let s = stage_summary(&live, &zip_path).unwrap();
         assert_eq!((s.papers, s.pdfs, s.latest_updated_at), (0, 0, None));
         assert!(live.join(MARKER).exists());
+    }
+
+    #[test]
+    fn abandon_after_preview_cancel_leaves_everything_as_before() {
+        let (live, zip) = setup("preview-cancel");
+        stage(&live, &zip).unwrap();
+        abandon_restore(&live).unwrap();
+        assert_original(&live);
+        assert!(!live.join(MARKER).exists());
+        assert!(!live.join(STAGING).exists());
+        assert!(pre_dirs(&live).is_empty(), "cancel must not create pre-restore dirs");
+        stage(&live, &zip).expect("a new restore is allowed after cancel");
+    }
+
+    #[test]
+    fn unconfirmed_preview_is_discarded_on_next_launch() {
+        let (live, zip) = setup("preview-crash");
+        stage_summary(&live, &zip).unwrap();
+        assert_eq!(apply_pending_restore_at(&live, now_ms()), RestoreStatus::None);
+        assert_original(&live);
+        assert!(!live.join(MARKER).exists());
+        assert!(!live.join(STAGING).exists());
+        assert!(pre_dirs(&live).is_empty());
+    }
+
+    #[test]
+    fn commit_preview_only_accepts_previewed() {
+        let (live, zip) = setup("preview-commit");
+        assert!(commit_preview(&live).is_err(), "no marker");
+        stage(&live, &zip).unwrap();
+        assert!(commit_preview(&live).is_err(), "already staged");
+        assert_eq!(apply_pending_restore_at(&live, now_ms()), RestoreStatus::Restored);
     }
 }

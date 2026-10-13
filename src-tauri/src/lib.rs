@@ -238,6 +238,7 @@ pub fn run() {
             restore::restore_library_backup,
             restore::restore_status,
             restore::restore_confirm_pending,
+            restore::restore_commit_preview,
             restore::restore_abandon,
             import_pdf_to_library
         ])

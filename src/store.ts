@@ -1042,7 +1042,7 @@ async function dropUnreachableLinks(paperId: string): Promise<void> {
       continue;
     }
     const reach = await verifyReachable(url);
-    if (url !== raw) {
+    if (url !== raw.trim()) {
       // A prefix we added is a guess (`v1.2` -> https://v1.2): keep it only when proven reachable.
       patch[key] = reach === "reachable" ? url : null;
     } else if (reach === "unreachable") {
