@@ -164,6 +164,11 @@ function currentList(state: FieldState): PaperListItem[] {
   return state.papers;
 }
 
+export const SEARCH_DEBOUNCE_MS = 250;
+let refreshSeq = 0;
+let searchTimer: ReturnType<typeof setTimeout> | null = null;
+let searchWaiters: { resolve: () => void; reject: (err: unknown) => void }[] = [];
+
 export const useField = create<FieldState>((set, get) => ({
   ready: false,
   error: null,
@@ -267,6 +272,9 @@ export const useField = create<FieldState>((set, get) => ({
   },
 
   refresh: async () => {
+    // Only the latest refresh may write: a slow earlier one (old search term,
+    // previous domain/filter) must not overwrite newer results.
+    const seq = ++refreshSeq;
     const state = get();
     const [stats, jobs, domains] = await Promise.all([
       repo.stats(),
@@ -297,6 +305,7 @@ export const useField = create<FieldState>((set, get) => ({
         (p) => p.id === id,
       ),
     );
+    if (seq !== refreshSeq) return;
     set({ stats, jobs, domains, papers, archive, intake, selectedPaperId, paper, checkedPaperIds });
   },
 
@@ -326,9 +335,25 @@ export const useField = create<FieldState>((set, get) => ({
     }
   },
 
-  setSearch: async (value) => {
+  setSearch: (value) => {
+    // The input shows `value` at once; the query runs SEARCH_DEBOUNCE_MS after
+    // the last keystroke. Every caller's promise settles when that refresh does.
     set({ search: value });
-    await get().refresh();
+    if (searchTimer) clearTimeout(searchTimer);
+    return new Promise<void>((resolve, reject) => {
+      searchWaiters.push({ resolve, reject });
+      searchTimer = setTimeout(() => {
+        searchTimer = null;
+        const waiters = searchWaiters;
+        searchWaiters = [];
+        get()
+          .refresh()
+          .then(
+            () => waiters.forEach((w) => w.resolve()),
+            (err) => waiters.forEach((w) => w.reject(err)),
+          );
+      }, SEARCH_DEBOUNCE_MS);
+    });
   },
 
   setArchiveFilter: async (value) => {
