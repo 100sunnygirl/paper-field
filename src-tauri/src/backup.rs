@@ -246,8 +246,11 @@ mod tester_backup_b1 {
     #[test] fn b7_db_copy_waits_while_abandon_holds_lock() {
         let d = tmp("b7");
         fs::write(d.join("paper-field.db"), b"db").unwrap();
+        fs::write(d.join("paper-field.db-wal"), b"wal").unwrap();
+        fs::write(d.join("paper-field.db-shm"), b"shm").unwrap();
         let copies = |d: &Path| fs::read_dir(d).unwrap().flatten()
             .filter(|e| e.file_name().to_string_lossy().starts_with("paper-field.db.premigrate-")).count();
+        // While waiting nothing at all may be copied: not the db, nor its -wal / -shm.
         let guard = crate::restore::OP_LOCK.blocking_lock();
         let d2 = d.clone();
         let h = std::thread::spawn(move || tauri::async_runtime::block_on(backup_database_at(d2.join("paper-field.db"))));
@@ -257,7 +260,9 @@ mod tester_backup_b1 {
         drop(guard);
         let out = h.join().unwrap().unwrap();
         assert_eq!(fs::read(&out).unwrap(), b"db");
-        assert_eq!(copies(&d), 1);
+        assert_eq!(fs::read(format!("{out}-wal")).unwrap(), b"wal");
+        assert_eq!(fs::read(format!("{out}-shm")).unwrap(), b"shm");
+        assert_eq!(copies(&d), 3, "db, -wal and -shm copied once each");
         // No database yet: nothing to copy, empty path.
         assert_eq!(tauri::async_runtime::block_on(backup_database_at(tmp("b7-none").join("paper-field.db"))).unwrap(), "");
     }
