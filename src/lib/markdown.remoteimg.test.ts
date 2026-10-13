@@ -4,7 +4,7 @@ const openUrl = vi.fn();
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: (u: string) => openUrl(u) }));
 vi.mock("./util", async (orig) => ({ ...(await orig<object>()), isTauri: () => true }));
 
-import { onMarkdownClick, renderMarkdown, REMOTE_IMG_ATTR } from "./markdown";
+import { classifyImgSrc, onMarkdownClick, renderMarkdown, REMOTE_IMG_ATTR } from "./markdown";
 
 function mount(html: string): HTMLElement {
   const div = document.createElement("div");
@@ -68,5 +68,44 @@ describe("remote images", () => {
     const root = mount(renderMarkdown("plain **text**"));
     expect(await click(root.querySelector("strong")!)).not.toHaveBeenCalled();
     expect(openUrl).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["//host/x.png", "remote"],
+    ["HtTpS://e.com/a.png", "remote"],
+    [" https://e.com/a.png", "remote"],
+    ["http://e.com/a.png", "remote"],
+    ["/abs.png", "unsaved"],
+    ["images/a.jpg", "unsaved"],
+    ["./images/a.jpg", "unsaved"],
+    ["images/A.JPEG?v=1", "unsaved"],
+    ["x", "keep"],
+    ["data:image/png;base64,AAAA", "keep"],
+    ["blob:http://localhost/1234", "keep"],
+    ["http://asset.localhost/C%3A/lib/x.png", "keep"],
+    ["asset://localhost/x.png", "keep"],
+    ["", "keep"],
+  ])("classifies %j as %s", (src, kind) => {
+    expect(classifyImgSrc(src)).toBe(kind);
+  });
+
+  it("shows an unsaved placeholder without an open button for relative images", () => {
+    const root = mount(renderMarkdown("![fig 2](images/abc.jpg)"));
+    expect(root.querySelector("img")).toBeNull();
+    const box = root.querySelector(".ef-md-remote-img")!;
+    expect(box.textContent).toBe("图片未随解析结果保存（fig 2）");
+    expect(box.querySelector(`[${REMOTE_IMG_ATTR}]`)).toBeNull();
+  });
+
+  it("opens protocol-relative images over https", async () => {
+    const root = mount(renderMarkdown("![](//cdn.example.com/a.png)"));
+    await click(root.querySelector(`[${REMOTE_IMG_ATTR}]`)!);
+    expect(openUrl).toHaveBeenCalledWith("https://cdn.example.com/a.png");
+  });
+
+  it("keeps http://asset.localhost images as images", () => {
+    const root = mount(renderMarkdown('<img src="http://asset.localhost/x.png" alt="x">'));
+    expect(root.querySelector("img")?.getAttribute("src")).toBe("http://asset.localhost/x.png");
+    expect(root.querySelector(".ef-md-remote-img")).toBeNull();
   });
 });

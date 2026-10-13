@@ -4,26 +4,55 @@ import { openExternal, safeHttpUrl } from "./urls";
 
 marked.setOptions({ gfm: true, breaks: true });
 
-/** Attribute on the placeholder link; the click handler opens it via `openExternal`. */
+/**
+ * Attribute on the placeholder button holding the original image URL.
+ * DOMPurify lets `data-*` through, so user markdown can set it too: never read
+ * it directly; always go through `onMarkdownClick` (which re-checks via `openExternal`).
+ */
 export const REMOTE_IMG_ATTR = "data-remote-src";
 
+const IMG_EXT = /\.(png|jpe?g|gif|webp|bmp|svg)$/i;
+
+type ImgKind = "remote" | "unsaved" | "keep";
+
+/** Same parser as `safeHttpUrl`, so case, whitespace and `//host` are judged alike. */
+export function classifyImgSrc(raw: string): ImgKind {
+  const src = raw.trim();
+  if (!src) return "keep";
+  let url: URL;
+  try {
+    url = new URL(src.startsWith("//") ? `https:${src}` : src);
+  } catch {
+    // No scheme: a path such as MinerU's `images/x.jpg`. Only image-file paths count,
+    // so other bare values keep the existing sanitized <img> unchanged.
+    return IMG_EXT.test(src.split(/[?#]/)[0]) ? "unsaved" : "keep";
+  }
+  if (url.protocol === "http:" || url.protocol === "https:") {
+    // Tauri serves local files as http://asset.localhost on Windows; allowed by CSP.
+    return url.hostname === "asset.localhost" ? "keep" : "remote";
+  }
+  return "keep"; // data:, blob:, asset:, and anything DOMPurify already handled
+}
+
 /**
- * The CSP (`img-src 'self' data: blob: asset:`) blocks remote images silently.
- * Swap each http(s) <img> for a visible placeholder instead of a broken image.
+ * The CSP (`img-src 'self' data: blob: asset: http://asset.localhost`) blocks remote
+ * images silently, and parsed papers reference image files that were never saved.
+ * Replace both with a visible placeholder instead of a broken image.
  */
-function replaceRemoteImages(html: string): string {
+function replaceImages(html: string): string {
   if (!/<img/i.test(html)) return html;
   const tpl = document.createElement("template");
   tpl.innerHTML = html;
   for (const img of Array.from(tpl.content.querySelectorAll("img"))) {
     const raw = img.getAttribute("src") ?? "";
-    if (!/^\s*https?:/i.test(raw)) continue;
+    const kind = classifyImgSrc(raw);
+    if (kind === "keep") continue;
     const box = document.createElement("span");
     box.className = "ef-md-remote-img";
-    box.append("远程图片未加载");
+    box.append(kind === "remote" ? "远程图片未加载" : "图片未随解析结果保存");
     const alt = img.getAttribute("alt")?.trim();
     if (alt) box.append(`（${alt}）`);
-    const url = safeHttpUrl(raw);
+    const url = kind === "remote" ? safeHttpUrl(raw.trim().startsWith("//") ? `https:${raw.trim()}` : raw) : null;
     if (url) {
       const link = document.createElement("button");
       link.type = "button";
@@ -43,7 +72,7 @@ export function renderMarkdown(source: string): string {
     FORBID_TAGS: ["iframe", "object", "embed", "form", "style"],
     FORBID_ATTR: ["style"],
   });
-  return replaceRemoteImages(clean);
+  return replaceImages(clean);
 }
 
 /** Delegated click handler for rendered markdown containers. */
