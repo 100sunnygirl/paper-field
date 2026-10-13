@@ -283,7 +283,7 @@ async fn download_checked(url: reqwest::Url, limits: ResultLimits) -> Result<Str
             .timeout(Duration::from_secs(FETCH_TIMEOUT.as_secs().max(60)))
             .send()
             .await
-            .map_err(|e| format!("下载解析结果失败：{}", error_chain(&e)))?;
+            .map_err(|e| format!("下载解析结果失败：{}", error_chain(&redact_url(e))))?;
         if !response.status().is_success() {
             return Err(format!("下载解析结果失败（HTTP {}）", response.status()));
         }
@@ -295,7 +295,7 @@ async fn download_checked(url: reqwest::Url, limits: ResultLimits) -> Result<Str
         while let Some(chunk) = response
             .chunk()
             .await
-            .map_err(|e| format!("下载解析结果失败：{e}"))?
+            .map_err(|e| format!("下载解析结果失败：{}", redact_url(e)))?
         {
             if bytes.len() as u64 + chunk.len() as u64 > limits.zip_bytes {
                 return Err(too_big());
@@ -305,6 +305,16 @@ async fn download_checked(url: reqwest::Url, limits: ResultLimits) -> Result<Str
         extract_full_md_with(&bytes, limits.md_bytes)
     })
     .await
+}
+
+/// Result URLs are pre-signed; drop query and fragment so signatures never
+/// reach error messages or logs.
+fn redact_url(mut e: reqwest::Error) -> reqwest::Error {
+    if let Some(url) = e.url_mut() {
+        url.set_query(None);
+        url.set_fragment(None);
+    }
+    e
 }
 
 /// reqwest hides the redirect-policy message in `source()`; surface it.
@@ -750,5 +760,19 @@ mod tests {
         let err = get(&url, ResultLimits::default()).unwrap_err();
         assert!(err.contains("下载解析结果失败"), "{err}");
         assert!(err.contains("结果下载地址重定向到了不允许的地址"), "{err}");
+    }
+
+    #[test]
+    fn error_messages_drop_signed_query() {
+        let redirect = serve_raw(b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/x.zip?sig=LEAK2\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec());
+        let err = get(&format!("{redirect}?Signature=LEAK1#frag"), ResultLimits::default()).unwrap_err();
+        assert!(err.contains("结果下载地址重定向到了不允许的地址"), "{err}");
+        assert!(!err.contains("LEAK") && !err.contains("frag"), "{err}");
+
+        // Body cut short: the error comes from the streaming read instead.
+        let short = serve_raw(b"HTTP/1.1 200 OK\r\nContent-Length: 10240\r\nConnection: close\r\n\r\nabc".to_vec());
+        let err = get(&format!("{short}?Signature=LEAK3"), ResultLimits::default()).unwrap_err();
+        assert!(err.starts_with("下载解析结果失败"), "{err}");
+        assert!(!err.contains("LEAK"), "{err}");
     }
 }
