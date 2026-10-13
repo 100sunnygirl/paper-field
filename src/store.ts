@@ -993,10 +993,10 @@ async function dropUnreachableLinks(paperId: string): Promise<void> {
   const paper = await repo.getPaper(paperId);
   if (!paper) return;
   const patch: { codeUrl?: string | null; projectPage?: string | null } = {};
-  if (paper.codeUrl && paper.fieldSources?.codeUrl !== "user" && !(await verifyReachable(paper.codeUrl))) {
+  if (paper.codeUrl && paper.fieldSources?.codeUrl !== "user" && (await verifyReachable(paper.codeUrl)) === "unreachable") {
     patch.codeUrl = null;
   }
-  if (paper.projectPage && paper.fieldSources?.projectPage !== "user" && !(await verifyReachable(paper.projectPage))) {
+  if (paper.projectPage && paper.fieldSources?.projectPage !== "user" && (await verifyReachable(paper.projectPage)) === "unreachable") {
     patch.projectPage = null;
   }
   if (Object.keys(patch).length) await repo.updatePaper(paperId, patch, false);

@@ -102,16 +102,21 @@ export async function lookupPaper(
   }
 }
 
-export async function verifyReachable(url: string): Promise<boolean> {
+/** Only "unreachable" (a definite 404/410, or a malformed URL) may drop a link. */
+export type Reach = "reachable" | "unreachable" | "unknown";
+
+export async function verifyReachable(url: string): Promise<Reach> {
   const safe = safeHttpUrl(url);
-  if (!safe) return false;
-  if (!isTauri()) return true;
+  if (!safe) return "unreachable";
+  if (!isTauri()) return "reachable";
   try {
     const { invoke } = await import("@tauri-apps/api/core");
-    return await invoke<boolean>("verify_url", { url: safe });
+    const reach = await invoke<Reach>("verify_url", { url: safe });
+    if (reach === "unknown") log.info("llm", "链接暂时无法校验，已保留", safe);
+    return reach;
   } catch (err) {
-    log.warn("llm", "链接校验失败，已丢弃", err instanceof Error ? err.message : String(err));
-    return false;
+    log.warn("llm", "链接校验出错，已保留", err instanceof Error ? err.message : String(err));
+    return "unknown";
   }
 }
 
