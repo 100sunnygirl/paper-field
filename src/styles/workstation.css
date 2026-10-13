@@ -40,7 +40,7 @@
   --pf-tint-danger: #f19a92;
 
   /* ---- Type ---- */
-  --pf-font-ui: Inter, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --pf-font-ui: Inter, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
   --pf-font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   /* 界面阶梯：tag 等宽角标 / caption 元信息 / ui 控件与面板正文 /
      title 条目标题 / h2 区块与对话框标题 / h1 页面标题 / display 论文主标题。 */
