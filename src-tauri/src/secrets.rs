@@ -295,10 +295,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         fn dir(n: &str) -> std::path::PathBuf {
-            let d = std::env::temp_dir().join(format!("pf-tester-sec-{n}-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&d);
-            std::fs::create_dir_all(&d).unwrap();
-            d
+            crate::test_util::unique_temp_dir(&format!("pf-tester-sec-{n}"))
         }
 
         #[test]
