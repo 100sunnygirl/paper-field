@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { renderMarkdown } from "../lib/markdown";
+import { onMarkdownClick, renderMarkdown } from "../lib/markdown";
 import { openLocalPdf } from "../lib/mineru";
 import {
   JOB_STATUS_LABELS,
@@ -120,7 +120,7 @@ function NoteEditor({
           </div>
         </>
       ) : value.trim() ? (
-        <div className="ef-note-text ef-md" dangerouslySetInnerHTML={{ __html: renderMarkdown(value) }} />
+        <div className="ef-note-text ef-md" onClick={onMarkdownClick} dangerouslySetInnerHTML={{ __html: renderMarkdown(value) }} />
       ) : (
         <p className="ef-empty-note">尚未记录，点击「编辑」写下你的判断。</p>
       )}
@@ -749,6 +749,7 @@ export function ReadingStage({
               {paper.parsedMarkdown.trim() ? (
                 <div
                   className="ef-note-text ef-md"
+                  onClick={onMarkdownClick}
                   dangerouslySetInnerHTML={{ __html: renderMarkdown(paper.parsedMarkdown) }}
                 />
               ) : (
