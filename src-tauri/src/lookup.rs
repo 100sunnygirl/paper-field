@@ -920,7 +920,7 @@ pub(crate) fn proxy_configured() -> bool {
         .any(|k| std::env::var(k).is_ok_and(|v| !v.trim().is_empty()))
 }
 
-enum Resolved {
+pub(crate) enum Resolved {
     /// Checked address to pin the connection to.
     Pinned(std::net::SocketAddr),
     /// Behind a proxy whose own DNS we cannot pin; host not known to be internal.
@@ -936,16 +936,36 @@ async fn check_target(
     proxied: bool,
     forbidden: fn(std::net::IpAddr) -> bool,
 ) -> Option<Resolved> {
+    check_target_with(url, proxied, forbidden, system_resolve).await
+}
+
+/// Name resolver; injectable so tests can point a name anywhere without DNS.
+pub(crate) type Resolver = fn(String, u16) -> std::io::Result<Vec<std::net::SocketAddr>>;
+
+pub(crate) fn system_resolve(host: String, port: u16) -> std::io::Result<Vec<std::net::SocketAddr>> {
+    use std::net::ToSocketAddrs as _;
+    Ok((host.as_str(), port).to_socket_addrs()?.collect())
+}
+
+pub(crate) async fn check_target_with(
+    url: &reqwest::Url,
+    proxied: bool,
+    forbidden: fn(std::net::IpAddr) -> bool,
+    resolve: Resolver,
+) -> Option<Resolved> {
     let port = url.port_or_known_default()?;
     let host = url.host_str()?;
     let literal = host.trim_start_matches('[').trim_end_matches(']').parse::<std::net::IpAddr>();
     let addrs: Vec<std::net::SocketAddr> = match literal {
         Ok(ip) => vec![(ip, port).into()],
-        Err(_) => match tokio::net::lookup_host((host, port)).await {
-            Ok(it) => it.collect(),
-            Err(_) if proxied => return Some(Resolved::ViaProxy),
-            Err(_) => return None,
-        },
+        Err(_) => {
+            let name = host.to_string();
+            match tokio::task::spawn_blocking(move || resolve(name, port)).await {
+                Ok(Ok(addrs)) => addrs,
+                _ if proxied => return Some(Resolved::ViaProxy),
+                _ => return None,
+            }
+        }
     };
     if addrs.is_empty() || addrs.iter().any(|a| forbidden(a.ip())) {
         return None;
