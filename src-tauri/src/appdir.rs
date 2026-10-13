@@ -327,16 +327,9 @@ fn apply_migrations(new_dirs: &[PathBuf]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn scratch() -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let dir = std::env::temp_dir().join(format!("pf-appdir-{nanos}-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        dir
+        crate::test_util::unique_temp_dir("pf-appdir")
     }
 
     #[test]
