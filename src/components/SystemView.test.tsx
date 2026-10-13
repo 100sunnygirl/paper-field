@@ -517,3 +517,20 @@ describe("SystemView · 运行日志面板", () => {
     expect(writeText.mock.calls[0]![0]).toContain("INFO app COPY-ROW");
   });
 });
+
+describe("SystemView · 文献库", () => {
+  beforeEach(() => {
+    useField.setState(useField.getInitialState(), true);
+  });
+
+  it("默认匿名，说明标题会发给文献服务，并链到申请页", () => {
+    render(<SystemView />);
+    expect(screen.getByRole("heading", { name: "文献库" })).toBeInTheDocument();
+    expect(screen.getByText(/论文标题和 DOI 会发送到这些服务/)).toBeInTheDocument();
+    expect(screen.getByText(/OpenAlex 会把请求日志保留 90 天/)).toBeInTheDocument();
+    expect(screen.getAllByText("匿名").length).toBeGreaterThanOrEqual(4);
+    expect(screen.getByRole("button", { name: "openalex.org/settings/api" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "semanticscholar.org/product/api" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "保存文献库设置" })).toBeInTheDocument();
+  });
+});
