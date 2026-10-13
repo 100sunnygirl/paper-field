@@ -59,13 +59,21 @@ pub fn llm_account(provider_id: &str) -> String {
 
 pub const MINERU_ACCOUNT: &str = "mineru:token";
 
+/// Service name in macOS Keychain and Windows Credential Manager.
+///
+/// This does not follow the bundle identifier. Entries saved while the app
+/// was `com.paperfield.app` stay under `paper-field`, so the move to
+/// `com.paperfield.notes` does not orphan them. Linux keeps the same accounts
+/// in `secrets.json`, which the app-support copy migrates with the other files.
+pub const KEYCHAIN_SERVICE: &str = "paper-field";
+
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 pub struct KeyringStore;
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 impl SecretStore for KeyringStore {
     fn get(&self, account: &str) -> Result<Option<String>, String> {
-        let entry = keyring::Entry::new("paper-field", account).map_err(|err| err.to_string())?;
+        let entry = keyring::Entry::new(KEYCHAIN_SERVICE, account).map_err(|err| err.to_string())?;
         match entry.get_password() {
             Ok(value) => Ok(Some(value)),
             Err(keyring::Error::NoEntry) => Ok(None),
@@ -74,7 +82,7 @@ impl SecretStore for KeyringStore {
     }
 
     fn set(&self, account: &str, secret: &str) -> Result<(), String> {
-        let entry = keyring::Entry::new("paper-field", account).map_err(|err| err.to_string())?;
+        let entry = keyring::Entry::new(KEYCHAIN_SERVICE, account).map_err(|err| err.to_string())?;
         if secret.is_empty() {
             return match entry.delete_credential() {
                 Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
@@ -246,6 +254,14 @@ fn scrub_value(value: &mut Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keychain_service_stays_paper_field_across_bundle_id_change() {
+        assert_eq!(KEYCHAIN_SERVICE, "paper-field");
+        assert!(!KEYCHAIN_SERVICE.contains("com.paperfield"));
+        assert_ne!(KEYCHAIN_SERVICE, crate::appdir::NEW_IDENTIFIER);
+        assert_ne!(KEYCHAIN_SERVICE, crate::appdir::OLD_IDENTIFIER);
+    }
 
     #[test]
     fn memory_store_round_trip_and_delete() {

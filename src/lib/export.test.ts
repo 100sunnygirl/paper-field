@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildDomainExport } from "./export";
+import { browserExportFilename, buildDomainExport } from "./export";
 import type { Domain, PaperDetail } from "./types";
 
 function makeDomain(overrides: Partial<Domain> = {}): Domain {
@@ -114,6 +114,11 @@ describe("buildDomainExport", () => {
     const files = buildDomainExport(makeDomain(), [makePaper({ title: "视觉指令微调", year: null })]);
     expect(files[0].relativePath).toBe("MM-01/README.md");
     expect(files[1].relativePath).toBe("MM-01/n-视觉指令微调.md");
+  });
+
+  it("浏览器下载名是小写领域代码加 export.md，而不是 download", () => {
+    expect(browserExportFilename(makeDomain())).toBe("mm-01-export.md");
+    expect(browserExportFilename(makeDomain({ code: "", name: "多模态" }))).toBe("多模态-export.md");
   });
 
   it("README 索引包含标题与阅读状态", () => {

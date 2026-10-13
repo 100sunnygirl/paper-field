@@ -181,11 +181,16 @@ Windows 直接运行 `src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsi
 
 本地笔记数据在应用数据目录，**不在** `.app` 包内，替换应用一般不会丢数据：
 
-- macOS SQLite：`~/Library/Application Support/com.paperfield.app/paper-field.db`
-- Windows SQLite：`%APPDATA%\com.paperfield.app\paper-field.db`
+应用数据目录跟 bundle identifier 走。当前标识是 `com.paperfield.notes`（不再使用以 `.app` 结尾的 `com.paperfield.app`，那个后缀会让 macOS 把数据目录当成应用程序包，Tauri 也会在打包时警告）。
+
+- macOS：`~/Library/Application Support/com.paperfield.notes/paper-field.db`
+- Windows：`%APPDATA%\com.paperfield.notes\paper-field.db`（即 `C:\Users\<你>\AppData\Roaming\com.paperfield.notes\`）
+- Linux 配置（含数据库、文库与设置）：`~/.config/com.paperfield.notes/`，若设置了 `XDG_CONFIG_HOME` 则用那个目录。数据目录是 `~/.local/share/com.paperfield.notes/`（或 `XDG_DATA_HOME`）
 - 文库 PDF：同目录下的 `library/`
-- 设置（不含密钥）：同目录下的 `llm-settings.json`、`mineru-settings.json`（界面不回显 Key）
-- 密钥：macOS Keychain / Windows Credential Manager，服务名 `paper-field`。Linux 为同目录 `secrets.json`（权限 0600）。浏览器预览仍用 `localStorage`。
+- 设置（不含密钥）：同目录下的 `llm-settings.json`、`mineru-settings.json`、`biblio-settings.json`（界面不回显 Key）
+- 密钥：macOS Keychain / Windows Credential Manager，服务名仍是 `paper-field`（不随 bundle identifier 改成 `com.paperfield.notes`，所以换包之后原来的 Key 还在同一条钥匙串记录里）。Linux 为同目录 `secrets.json`（权限 0600）。浏览器预览仍用 `localStorage`。
+
+**从旧目录迁移（只复制一次）**：第一次启动时，如果新目录还不存在或是空的，并且旧目录 `com.paperfield.app` 还在（macOS 的 `~/Library/Application Support/com.paperfield.app`、Windows 的 `%APPDATA%\com.paperfield.app`、Linux 的 `~/.config/com.paperfield.app` 与 `~/.local/share/com.paperfield.app`），应用会在打开数据库之前把旧目录里的全部内容**复制**到新目录。这包括 `paper-field.db`、`library/`、`llm-settings.json`、`mineru-settings.json`、`biblio-settings.json`，以及 Linux 上的 `secrets.json`。钥匙串里的密钥不在这个目录里，服务名保持 `paper-field`，不会因为换 identifier 而改名。旧目录留在原地，不会被删，也不会覆盖新目录里已经有的文件。复制成功后新目录里会留下标记文件 `.migrated-from-com.paperfield.app`，之后即使把新目录清空也不会再复制一次。终端里会有一行 `[paper-field] 已将应用数据从 … 复制到 …`。
 
 更新步骤：
 
@@ -204,6 +209,69 @@ xattr -dr com.apple.quarantine "/Applications/Paper Field.app"
 若只想验证 UI、暂不重打包，可先 `npm run tauri dev`。
 
 浏览器预览（非桌面）：`npm run dev` → `http://127.0.0.1:43173`（LLM 可能遇 CORS，完整能力以桌面为准）。
+
+## 签名、公证和自动更新 / Signing, notarization, and updates
+
+桌面安装包默认可以**不签名**打出来。GitHub Actions 只有在下面这些仓库 Secrets 都已经填好时才会签名；缺任何一个，对应的步骤会跳过，Windows 安装包和 macOS `.dmg` 仍然会构建成功。不要把私钥或证书提交到仓库。
+
+### 1. Apple 签名和公证（只影响 macOS）
+
+需要一个 [Apple Developer](https://developer.apple.com/programs/) 账号（年费，用你自己的 Apple ID 注册）。证书和公证都在这个账号下完成。
+
+1. 用钥匙串访问或 Xcode 生成一个 **Developer ID Application** 证书，并导出为 `.p12`（导出时设一个密码，记下来）。
+2. 在终端把证书编成一行文本（macOS）：
+
+   ```bash
+   base64 -i Certificates.p12 | pbcopy
+   ```
+
+3. 打开 GitHub 仓库 → **Settings → Secrets and variables → Actions → New repository secret**，逐个添加：
+
+   | Secret | 填什么 |
+   |---|---|
+   | `APPLE_CERTIFICATE` | 上一步复制的整段 base64（一行，不要换行） |
+   | `APPLE_CERTIFICATE_PASSWORD` | 导出 `.p12` 时设的密码 |
+   | `APPLE_SIGNING_IDENTITY` | 钥匙串里证书的全名，例如 `Developer ID Application: Your Name (TEAMID)` |
+   | `APPLE_ID` | 你的 Apple ID 邮箱 |
+   | `APPLE_PASSWORD` | 在 [account.apple.com](https://account.apple.com) 生成的 **App 专用密码**，不是 Apple ID 登录密码 |
+   | `APPLE_TEAM_ID` | 开发者账号的 Team ID，10 位，在 [developer.apple.com/account](https://developer.apple.com/account) 的会员详情里 |
+
+   这五项（外加证书密码）必须一起存在。少一个，工作流会当作未签名构建，避免公证走到一半失败。
+
+4. 推一个 `v*` tag（例如 `v0.2.15`）。macOS 任务会导入证书、用该身份签名，并把 `.dmg` 提交公证。公证由 Apple 异步处理，第一次可能要几分钟；Tauri 会等公证结果。没有这些 secret 时，发布说明里会保留 Gatekeeper 的打开办法。
+
+### 2. 更新签名密钥（检查更新用）
+
+自动更新用另一对密钥，和 Apple 证书不是同一个。公钥写进应用，私钥只放在 GitHub Secret 里。
+
+1. 在自己的电脑上生成（不要加到 git）：
+
+   ```bash
+   npm run tauri signer generate -- -w "$HOME/.tauri/paper-field.key"
+   ```
+
+   命令会问一个密码（可以留空）。它打印两段内容：公钥，以及私钥文件路径。私钥文件在 `~/.tauri/paper-field.key`，只留在你的电脑和 GitHub Secret 里。
+
+2. 用打印出来的公钥**替换** `src-tauri/tauri.conf.json` 里 `plugins.updater.pubkey` 的整段值。现在这段是占位公钥：解码后的注释里有 `PLACEHOLDER`。占位期间，设置页的「检查更新」不会联网，只提示尚未配置公钥。换成你自己的公钥并重新打包之后，按钮才会真正检查。
+
+3. 把私钥文件的**全部内容**存成 Secret `TAURI_SIGNING_PRIVATE_KEY`（不是文件路径；把文件打开，从 `untrusted comment` 起整段复制）。如果生成时设了密码，再加 Secret `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。没有私钥时，工作流会把 `createUpdaterArtifacts` 关掉，安装包照常产出，只是没有 `.sig` 和 `latest.json`。
+
+4. 再推一个 `v*` tag。带私钥的构建会多出：
+
+   - macOS：`*.app.tar.gz` 和同名 `.sig`（通用二进制同时给 `darwin-aarch64` 和 `darwin-x86_64`）
+   - Windows：`*.nsis.zip` 和同名 `.sig`
+   - 发布任务把这些收成 `latest.json`，地址是  
+     `https://github.com/100sunnygirl/paper-field/releases/latest/download/latest.json`
+
+### 3. 用户如何更新
+
+1. 安装的应用必须是用**你的公钥**打出来的那一版。占位公钥的版本点「检查更新」只会看到说明，不会下载。
+2. 打开 **设置**，在「软件更新」里点 **检查更新**。
+3. 已是最新：提示「已是最新版本。」
+4. 有新版本：应用下载 GitHub Release 里的更新包，核对签名，安装后重新打开。Windows 安装更新时窗口会退出，这是安装器的限制。
+5. 签名对不上、网络失败，或 Release 里还没有 `latest.json`：按钮下面显示失败原因，笔记数据不动。
+
+本地笔记在上面的应用数据目录里，不在 `.app` 包内。换包或自动更新都不会清掉已经迁移过去的数据库。
 
 ## Keyboard
 
@@ -246,7 +314,7 @@ cargo test --manifest-path src-tauri/Cargo.toml
 
 ## Data
 
-SQLite schema: `domains`, `papers`, `authors`, `paper_authors`, `notes`, `llm_jobs`. `papers.mineru_provider` records which MinerU source parsed each paper (本地 CLI / SSH 远程 / 官方 API). `papers.field_sources` records per-field provenance (`api` 数据库 / `llm` 模型 / `user` 手动). `PRAGMA user_version` is the migration cursor (currently 3). On an existing library the app copies the database aside (`paper-field.db.premigrate-<时间>`, or IndexedDB `paper-field.db.premigrate` in the browser) before applying ordered migrations, then backfills non-empty fields so the first lookup does not clobber them. A corrupt settings file is left untouched; it is not treated as a v1 migration.
+SQLite schema: `domains`, `papers`, `authors`, `paper_authors`, `notes`, `llm_jobs`. `papers.mineru_provider` records which MinerU source parsed each paper (本地 CLI / SSH 远程 / 官方 API). `papers.field_sources` records per-field provenance (`api` 数据库 / `llm` 模型 / `user` 手动). `PRAGMA user_version` is the migration cursor (currently 4). On an existing library the app copies the database aside (`paper-field.db.premigrate-<时间>`, or IndexedDB `paper-field.db.premigrate` in the browser) before applying ordered migrations, then backfills non-empty fields so the first lookup does not clobber them. A corrupt settings file is left untouched; it is not treated as a v1 migration.
 
 `prepareMeta` writes structured JSON onto the paper and authors. It does **not** change `reading_status`. Bibliographic lookup runs first and marks filled fields `api`. The model only fills fields still empty (`titleZh`, tags, labs, code-link guess) and those are marked `llm`. The default is fill-empty-only. 「用 AI 结果覆盖」 is the only path that passes `overwrite=true`, and a field edited while that request was in flight is still kept. `draftNotes` will not silently overwrite notes you already edited; an explicit overwrite marks the blocks `llm`.
 

@@ -43,6 +43,7 @@ describe("SystemView · MinerU 三源卡片", () => {
     useField.setState({ mineru: mineruState() });
     render(<SystemView />);
     const ssh = screen.getByRole("region", { name: "SSH 远程" });
+    fireEvent.click(within(ssh).getByRole("button", { name: "高级" }));
     for (const label of ["主机", "端口", "用户", "私钥路径", "远程 Socket 路径", "远程暂存目录"]) {
       expect(within(ssh).getByText(label)).toBeInTheDocument();
     }
@@ -515,6 +516,49 @@ describe("SystemView · 运行日志面板", () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
     expect(writeText.mock.calls[0]![0]).toContain("COPY-ROW");
     expect(writeText.mock.calls[0]![0]).toContain("INFO app COPY-ROW");
+  });
+});
+
+describe("SystemView · 设置页顺序与 MinerU 高级项", () => {
+  beforeEach(() => {
+    useField.setState(useField.getInitialState(), true);
+    localStorage.clear();
+  });
+
+  it("数据导出和快捷键在运行日志之前，MinerU 连接字段默认收起", () => {
+    useField.setState({ mineru: mineruState() });
+    render(<SystemView />);
+    const headings = screen.getAllByRole("heading", { level: 3 }).map((node) => node.textContent);
+    const at = (title: string) => headings.indexOf(title);
+    expect(at("AI 服务设置")).toBeGreaterThanOrEqual(0);
+    expect(at("数据导出")).toBeGreaterThan(at("AI 服务设置"));
+    expect(at("备份与恢复")).toBeGreaterThan(at("数据导出"));
+    expect(at("快捷键")).toBeGreaterThan(at("备份与恢复"));
+    expect(at("软件更新")).toBeGreaterThan(at("快捷键"));
+    expect(at("MinerU 解析源")).toBeGreaterThan(at("软件更新"));
+    expect(at("文献库")).toBeGreaterThan(at("MinerU 解析源"));
+    expect(at("运行日志")).toBeGreaterThan(at("文献库"));
+    expect(screen.queryByText("Socket 路径")).not.toBeInTheDocument();
+    expect(screen.queryByRole("option", { name: "English" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "检查更新" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "添加提供商" })).toBeInTheDocument();
+  });
+
+  it("展开官方 API 的高级项后，语言是「英文」，并说明 pipeline / vlm", () => {
+    useField.setState({ mineru: mineruState() });
+    render(<SystemView />);
+    const api = screen.getByRole("region", { name: "官方 API" });
+    fireEvent.click(within(api).getByRole("button", { name: "高级" }));
+    expect(within(api).getByRole("option", { name: "英文" })).toBeInTheDocument();
+    expect(within(api).getByRole("option", { name: /流水线/ })).toBeInTheDocument();
+    expect(within(api).getByRole("option", { name: /视觉语言模型/ })).toBeInTheDocument();
+    expect(within(api).getByText(/pipeline 走通用解析流水线/)).toBeInTheDocument();
+  });
+
+  it("未配置更新公钥时，检查更新给出中文说明且不报 download", async () => {
+    render(<SystemView />);
+    fireEvent.click(screen.getByRole("button", { name: "检查更新" }));
+    expect(await screen.findByText(/尚未配置更新签名公钥/)).toBeInTheDocument();
   });
 });
 

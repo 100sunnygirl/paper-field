@@ -672,6 +672,25 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   gap: 12px;
   margin-top: 10px;
 }
+button.ef-domain-picker {
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+button.ef-domain-picker:hover .ef-domain-select,
+button.ef-domain-picker:focus-visible .ef-domain-select {
+  border-color: var(--pf-ink);
+  background: var(--pf-ink);
+  color: var(--pf-signal);
+}
+button.ef-domain-picker:hover .ef-domain-select .ef-ico,
+button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
+  transform: translateY(1px);
+}
 .ef-domain-picker h2 {
   font-size: var(--pf-fs-h2);
   font-weight: 700;
@@ -893,7 +912,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
    is-batch 允许换行：窄屏导航列 272px 时四个控件一行放不下。 */
 .ef-list-head.is-batch { flex-wrap: wrap; gap: 6px 10px; }
 .ef-list-head-right { display: inline-flex; align-items: center; gap: 6px; }
-.ef-batch-toggle { min-height: 28px; padding: 4px 6px; color: var(--pf-muted); }
+.ef-batch-toggle { min-height: 28px; padding: 4px 8px; color: var(--pf-muted); gap: 4px; }
 .ef-batch-toggle:hover:not(:disabled) { color: var(--pf-ink); }
 .ef-batch-all {
   display: inline-flex;
@@ -2054,6 +2073,31 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 }
 /* 单独成行的字段（如本地 Socket）不拉伸满宽 */
 .ef-provider-card > .ef-field { max-width: 520px; }
+.ef-advanced { margin: 0 0 10px; }
+.ef-advanced-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--pf-secondary);
+  font: inherit;
+  font-size: var(--pf-fs-caption);
+  font-weight: 600;
+  cursor: pointer;
+}
+.ef-advanced-toggle:hover { color: var(--pf-ink); }
+.ef-advanced-toggle .ef-ico { width: 12px; height: 12px; transition: transform var(--pf-direct); }
+.ef-advanced.is-open .ef-advanced-toggle .ef-ico { transform: rotate(90deg); }
+.ef-advanced-body { padding-top: 8px; }
+.ef-advanced-hint {
+  margin: 0 0 8px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
+  line-height: 1.6;
+}
 .ef-provider-card {
   /* 信号条 ::before 的定位锚；卡片本体保持平面（1px 边框 + 明度差，不悬停浮起）。 */
   position: relative;
