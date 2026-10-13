@@ -2,7 +2,7 @@
 //! Restore copies the current database aside before replacing anything.
 
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -59,10 +59,9 @@ fn add_file(zip: &mut ZipWriter<File>, options: SimpleFileOptions, name: &str, p
         return Ok(());
     }
     let mut file = File::open(path).map_err(|err| err.to_string())?;
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes).map_err(|err| err.to_string())?;
     zip.start_file(name, options).map_err(|err| err.to_string())?;
-    zip.write_all(&bytes).map_err(|err| err.to_string())?;
+    // Stream: a large PDF is never held in memory whole.
+    std::io::copy(&mut file, zip).map_err(|err| err.to_string())?;
     Ok(())
 }
 
@@ -79,13 +78,23 @@ fn add_scrubbed_settings(zip: &mut ZipWriter<File>, options: SimpleFileOptions, 
 
 #[tauri::command]
 pub async fn create_library_backup(app: AppHandle, dest: String) -> Result<(), String> {
-    let dir = config_dir(&app)?;
+    backup_at(config_dir(&app)?, dest).await
+}
+
+/// Holds the restore lock so an abandon can't move files back into
+/// `library/` (or swap the database) while the zip is being written.
+async fn backup_at(dir: PathBuf, dest: String) -> Result<(), String> {
+    let _guard = crate::restore::OP_LOCK.lock().await;
     let db = dir.join("paper-field.db");
     let snap = dir.join(format!(".backup-snapshot-{}.db", stamp()));
     if db.exists() {
         snapshot_database(&db, &snap).await?;
     }
-    let result = write_backup_zip(&dir, &snap, &dest);
+    let snap2 = snap.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || write_backup_zip(&dir, &snap2, &dest))
+        .await
+        .map_err(|err| err.to_string())
+        .and_then(|r| r);
     let _ = fs::remove_file(&snap);
     result
 }
@@ -204,6 +213,42 @@ mod tester_backup_b1 {
             assert!(snapshot_database(&db, &snap).await.is_err());
             assert!(!db.exists(), "BUG: empty db created"); assert!(!snap.exists());
         });
+    }
+
+    #[test] fn b5_backup_waits_while_abandon_holds_lock() {
+        let d = tmp("b5");
+        fs::create_dir_all(d.join("library")).unwrap();
+        fs::write(d.join("library").join("a.pdf"), b"%PDF a").unwrap();
+        let dest = d.join("out.zip");
+        // abandon_restore holds this lock while it moves files back into library/.
+        let guard = crate::restore::OP_LOCK.blocking_lock();
+        let (d2, dest2) = (d.clone(), dest.to_string_lossy().into_owned());
+        let h = std::thread::spawn(move || tauri::async_runtime::block_on(backup_at(d2, dest2)));
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(!h.is_finished(), "backup must wait for the restore lock");
+        assert!(!dest.exists(), "nothing written while waiting");
+        drop(guard);
+        h.join().unwrap().unwrap();
+        assert!(dest.exists());
+    }
+
+    #[test] fn b6_backup_round_trip_keeps_bytes() {
+        use std::io::Read;
+        let d = tmp("b6");
+        fs::create_dir_all(d.join("library")).unwrap();
+        // Larger than io::copy's buffer so streaming really takes several chunks.
+        let big: Vec<u8> = (0..300_000u32).map(|i| (i * 31 % 251) as u8).collect();
+        fs::write(d.join("library").join("big.pdf"), &big).unwrap();
+        fs::write(d.join("library").join("small.PDF"), b"%PDF s").unwrap();
+        fs::write(d.join("library").join("skip.txt"), b"no").unwrap();
+        let dest = d.join("out.zip");
+        tauri::async_runtime::block_on(backup_at(d.clone(), dest.to_string_lossy().into_owned())).unwrap();
+        let mut z = zip::ZipArchive::new(File::open(&dest).unwrap()).unwrap();
+        let mut read = |n: &str| { let mut v = Vec::new(); z.by_name(n).unwrap().read_to_end(&mut v).unwrap(); v };
+        assert_eq!(read("library/big.pdf"), big);
+        assert_eq!(read("library/small.PDF"), b"%PDF s");
+        assert!(z.by_name("library/skip.txt").is_err());
+        assert!(fs::read_dir(&d).unwrap().flatten().all(|e| !e.file_name().to_string_lossy().starts_with(".backup-snapshot-")));
     }
 
     #[test] fn b4_cleanup_removes_only_snapshots() {

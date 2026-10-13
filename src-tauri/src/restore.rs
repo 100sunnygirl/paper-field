@@ -84,7 +84,8 @@ static STATUS: Mutex<Option<RestoreStatus>> = Mutex::new(None);
 
 /// Serializes every command that reads or writes the marker or pre-restore dirs,
 /// so a delete cannot pass its "no marker" check while a restore is being staged.
-static OP_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// Also taken by library import and backup, which read or write `library/`.
+pub(crate) static OP_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn now_ms() -> u128 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
@@ -579,10 +580,19 @@ pub async fn restore_list_pre(app: AppHandle) -> Result<PreList, String> {
     list_pre_off_thread(app_config_dir(&app)?).await
 }
 
+#[cfg(test)]
+static LIST_PRE_THREAD: Mutex<Option<std::thread::ThreadId>> = Mutex::new(None);
+
 /// `tree_bytes` walks every file of every copy: keep it off the calling thread.
 async fn list_pre_off_thread(dir: PathBuf) -> Result<PreList, String> {
-    let (dirs, busy) = tauri::async_runtime::spawn_blocking(move || list_pre(&dir))
-        .await
+    let (dirs, busy) = tauri::async_runtime::spawn_blocking(move || {
+        #[cfg(test)]
+        {
+            *LIST_PRE_THREAD.lock().unwrap() = Some(std::thread::current().id());
+        }
+        list_pre(&dir)
+    })
+    .await
         .map_err(|e| e.to_string())?;
     Ok(PreList { dirs, busy })
 }
@@ -1261,12 +1271,10 @@ mod tests {
     fn list_pre_runs_off_the_calling_thread() {
         let live = restored_live("p9-list-offthread");
         let caller = std::thread::current().id();
-        let mut fut = Box::pin(list_pre_off_thread(live.clone()));
-        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
-        // A sync walk inside the future would finish on this first poll, on this thread.
-        assert!(std::future::Future::poll(fut.as_mut(), &mut cx).is_pending(), "size walk must not run on the caller");
-        let list = tauri::async_runtime::block_on(fut).unwrap();
-        assert_eq!(std::thread::current().id(), caller);
+        *LIST_PRE_THREAD.lock().unwrap() = None;
+        let list = tauri::async_runtime::block_on(list_pre_off_thread(live.clone())).unwrap();
+        let walker = LIST_PRE_THREAD.lock().unwrap().take().expect("walk ran inside spawn_blocking");
+        assert_ne!(walker, caller, "size walk must not run on the caller");
         assert_eq!(list.dirs, list_pre(&live).0);
         assert!(!list.busy);
     }
