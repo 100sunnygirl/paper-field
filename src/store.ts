@@ -23,6 +23,7 @@ import { pickProviderFromHealths, providerLabel, summarizeHealths } from "./lib/
 import { backupLibrary, restoreLibrary } from "./lib/backup";
 import { DEFAULT_BIBLIO, loadBiblioSettings, saveBiblioSettings, type BiblioSaveInput, type BiblioStatus } from "./lib/biblio";
 import { filledFrom, lookupPaper, type LookupResult, verifyReachable } from "./lib/lookup";
+import { safeHttpUrl, withDefaultScheme } from "./lib/urls";
 import { DRAFT_NOTES_SYSTEM, PREPARE_META_SYSTEM, draftNotesUserPrompt, normalizeMeta, normalizeNotes, prepareMetaUserPrompt } from "./lib/prompts";
 import { redactSecrets } from "./lib/redact";
 import { repo } from "./lib/repo";
@@ -349,6 +350,8 @@ export const useField = create<FieldState>((set, get) => ({
     // the last keystroke. Every caller's promise settles when that refresh does.
     set({ search: value });
     if (searchTimer) clearTimeout(searchTimer);
+    // Clearing the box restores the full list at once; there is nothing to debounce.
+    const delay = value.trim() === "" ? 0 : SEARCH_DEBOUNCE_MS;
     return new Promise<void>((resolve, reject) => {
       searchWaiters.push({ resolve, reject });
       searchTimer = setTimeout(() => {
@@ -361,7 +364,7 @@ export const useField = create<FieldState>((set, get) => ({
             () => waiters.forEach((w) => w.resolve()),
             (err) => waiters.forEach((w) => w.reject(err)),
           );
-      }, SEARCH_DEBOUNCE_MS);
+      }, delay);
     });
   },
 
@@ -1028,11 +1031,23 @@ async function dropUnreachableLinks(paperId: string): Promise<void> {
   const paper = await repo.getPaper(paperId);
   if (!paper) return;
   const patch: { codeUrl?: string | null; projectPage?: string | null } = {};
-  if (paper.codeUrl && paper.fieldSources?.codeUrl !== "user" && (await verifyReachable(paper.codeUrl)) === "unreachable") {
-    patch.codeUrl = null;
-  }
-  if (paper.projectPage && paper.fieldSources?.projectPage !== "user" && (await verifyReachable(paper.projectPage)) === "unreachable") {
-    patch.projectPage = null;
+  for (const key of ["codeUrl", "projectPage"] as const) {
+    const raw = paper[key];
+    if (!raw || paper.fieldSources?.[key] === "user") continue;
+    // Schemeless AI links (`github.com/x`) are stored as https:// only if reachable.
+    const url = withDefaultScheme(raw);
+    // Not an http(s) URL even after completion (`localhost:3000`, `v1`): drop without probing.
+    if (!safeHttpUrl(url)) {
+      patch[key] = null;
+      continue;
+    }
+    const reach = await verifyReachable(url);
+    if (url !== raw) {
+      // A prefix we added is a guess (`v1.2` -> https://v1.2): keep it only when proven reachable.
+      patch[key] = reach === "reachable" ? url : null;
+    } else if (reach === "unreachable") {
+      patch[key] = null;
+    }
   }
   if (Object.keys(patch).length) await repo.updatePaper(paperId, patch, false);
 }

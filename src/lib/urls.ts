@@ -66,3 +66,19 @@ export async function openExternal(value: string | null | undefined): Promise<vo
   }
   window.open(url, "_blank", "noopener,noreferrer");
 }
+
+/**
+ * AI-filled links often come back as `github.com/x/y` with no scheme.
+ * Prefix `https://` only when there is no scheme at all; anything that already
+ * names a scheme (including `javascript:`) is returned untouched so
+ * safeHttpUrl still rejects it. `host:port/...` counts as schemeless.
+ * Callers must only keep a prefixed value once it is verified reachable.
+ */
+export function withDefaultScheme(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed || /\s/.test(trimmed)) return trimmed;
+  if (/^[a-z][a-z0-9+.-]*:(?!\d)/i.test(trimmed)) return trimmed;
+  if (trimmed.startsWith("//")) return `https:${trimmed}`;
+  if (!/^[^/?#]+\.[^/?#]+/.test(trimmed)) return trimmed;
+  return `https://${trimmed}`;
+}
