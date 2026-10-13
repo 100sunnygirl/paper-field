@@ -8,6 +8,7 @@ mod lookup_run;
 mod mineru;
 mod mineru_api;
 mod platform;
+mod restore;
 mod secrets;
 mod transport;
 
@@ -210,7 +211,10 @@ pub fn run() {
             biblio::save_biblio_settings,
             backup::backup_database_file,
             backup::create_library_backup,
-            backup::restore_library_backup,
+            restore::restore_library_backup,
+            restore::restore_status,
+            restore::restore_confirm_pending,
+            restore::restore_abandon,
             import_pdf_to_library
         ])
         .run(tauri::generate_context!())

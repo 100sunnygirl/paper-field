@@ -158,6 +158,23 @@ export async function applySchema(engine: SqlEngine): Promise<void> {
   await runMigrations(engine, current);
 }
 
+export type RestoreStatus =
+  | { kind: "none" }
+  | { kind: "restored" }
+  | { kind: "rolledBack"; pre: string }
+  | { kind: "pendingConfirm" }
+  | { kind: "stuck"; pre: string; dbAvailable: boolean };
+
+export class RestoreStuckError extends Error {
+  constructor(readonly pre: string) {
+    super(`上一次恢复没有完成，为保护数据暂不打开文库。原数据保存在 ${pre || "应用数据目录"}。`);
+    this.name = "RestoreStuckError";
+  }
+}
+
+/** Startup restore outcome, for the UI to surface (rolled back, pending confirm, stuck). */
+export let lastRestoreStatus: RestoreStatus = { kind: "none" };
+
 let singleton: Promise<SqlEngine> | null = null;
 
 export async function resetEngine(): Promise<void> {
@@ -211,6 +228,14 @@ async function loadBrowserSql(): Promise<typeof initSqlJsType> {
 
 async function openEngine(): Promise<SqlEngine> {
   if (isTauri()) {
+    // Must run before Database.load: load creates an empty database when the file is missing.
+    const { invoke } = await import("@tauri-apps/api/core");
+    const status = await invoke<RestoreStatus>("restore_status");
+    // Any stuck restore blocks: a database file may exist but be half-swapped.
+    if (status.kind === "stuck") {
+      throw new RestoreStuckError(status.pre);
+    }
+    lastRestoreStatus = status;
     const Database = (await import("@tauri-apps/plugin-sql")).default;
     const db = await Database.load("sqlite:paper-field.db");
     const engine = new TauriEngine(db);

@@ -267,6 +267,7 @@ pub fn migration_plugin<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
             migrate_on_startup(app);
             if let Ok(dir) = app.path().app_config_dir() {
                 crate::backup::cleanup_backup_snapshots(&dir);
+                crate::restore::apply_pending_restore(&dir);
             }
             Ok(())
         })

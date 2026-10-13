@@ -16,6 +16,7 @@ import { JobsPanel } from "./components/JobsPanel";
 import { Dock, Rail, StatusStrip } from "./components/Shell";
 import { SystemView } from "./components/SystemView";
 import { Toasts } from "./components/Toasts";
+import { RestoreNotice } from "./components/RestoreNotice";
 import { useField } from "./store";
 import { setPersistFailureHandler } from "./lib/engine";
 import { notify } from "./toasts";
@@ -171,6 +172,7 @@ export default function App() {
   if (error) {
     return (
       <div className="empty" style={{ padding: 48 }}>
+        <RestoreNotice />
         <h2>存储无法打开</h2>
         <p>{error}</p>
       </div>
@@ -191,6 +193,7 @@ export default function App() {
       data-mode={mode}
       data-has-paper={paper && mode !== "system" ? "true" : "false"}
     >
+      <RestoreNotice />
       <Rail mode={mode} />
       <Dock domain={domain} search={search} />
       {mode === "system" ? (

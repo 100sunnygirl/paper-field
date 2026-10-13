@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use tauri::AppHandle;
 use zip::write::SimpleFileOptions;
-use zip::{CompressionMethod, ZipArchive, ZipWriter};
+use zip::{CompressionMethod, ZipWriter};
 
 use crate::app_config_dir;
 use crate::secrets::scrub_json_secrets;
@@ -155,7 +155,7 @@ fn write_backup_zip(dir: &Path, snap: &Path, dest: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn safe_entry_name(name: &str) -> Option<&str> {
+pub(crate) fn safe_entry_name(name: &str) -> Option<&str> {
     if name.is_empty() || name.starts_with('/') || name.starts_with('\\') || name.contains("..") {
         return None;
     }
@@ -166,55 +166,51 @@ fn safe_entry_name(name: &str) -> Option<&str> {
     Some(name)
 }
 
-#[tauri::command]
-pub fn restore_library_backup(app: AppHandle, src: String) -> Result<String, String> {
-    let dir = config_dir(&app)?;
-    let db = dir.join("paper-field.db");
-    let mut pre = String::new();
-    if db.exists() {
-        let dest = db.with_file_name(format!("paper-field.db.pre-restore-{}", stamp()));
-        copy_sqlite_family(&db, &dest)?;
-        pre = dest.display().to_string();
+#[cfg(test)]
+mod tester_backup_b1 {
+    use super::*;
+    use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
+    use sqlx::Row;
+    fn tmp(n: &str) -> PathBuf { let d = std::env::temp_dir().join(format!("pf-tester-{n}-{}", std::process::id())); let _ = fs::remove_dir_all(&d); fs::create_dir_all(&d).unwrap(); d }
+
+    #[test] fn b1_snapshot_includes_uncheckpointed_wal_writes() {
+        tauri::async_runtime::block_on(async {
+            let d = tmp("b1"); let db = d.join("paper-field.db"); let snap = d.join("snap.db");
+            let opts = SqliteConnectOptions::new().filename(&db).create_if_missing(true).journal_mode(SqliteJournalMode::Wal);
+            let live = SqlitePoolOptions::new().max_connections(1).connect_with(opts).await.unwrap();
+            sqlx::query("PRAGMA wal_autocheckpoint=0").execute(&live).await.unwrap();
+            sqlx::query("CREATE TABLE papers(id INTEGER PRIMARY KEY, t TEXT)").execute(&live).await.unwrap();
+            for i in 0..50 { sqlx::query("INSERT INTO papers(t) VALUES (?)").bind(format!("p{i}")).execute(&live).await.unwrap(); }
+            let wal = fs::metadata(d.join("paper-field.db-wal")).map(|m| m.len()).unwrap_or(0);
+            assert!(wal > 0, "precondition: WAL must hold uncheckpointed data");
+            // live connection still open, WAL not checkpointed
+            snapshot_database(&db, &snap).await.expect("snapshot");
+            let s = SqlitePoolOptions::new().connect_with(SqliteConnectOptions::new().filename(&snap).read_only(true)).await.unwrap();
+            let n: i64 = sqlx::query("SELECT count(*) c FROM papers").fetch_one(&s).await.unwrap().get("c");
+            let ic: String = sqlx::query("PRAGMA integrity_check").fetch_one(&s).await.unwrap().get(0);
+            eprintln!("B1 wal_bytes={wal} snapshot_rows={n} integrity={ic}");
+            assert_eq!(n, 50); assert_eq!(ic, "ok");
+            // the raw main file alone (old behaviour) would miss them
+            let raw = d.join("raw.db"); fs::copy(&db, &raw).unwrap();
+            let r = SqlitePoolOptions::new().connect_with(SqliteConnectOptions::new().filename(&raw).read_only(true)).await;
+            let raw_rows: i64 = match r { Ok(p) => sqlx::query("SELECT count(*) c FROM papers").fetch_one(&p).await.map(|x| x.get("c")).unwrap_or(-1), Err(_) => -1 };
+            eprintln!("B1 old-behaviour raw copy rows={raw_rows} (-1 = table missing)");
+        });
     }
-    let file = File::open(&src).map_err(|err| format!("无法打开备份：{err}"))?;
-    let mut archive = ZipArchive::new(file).map_err(|err| format!("备份不是有效的 zip：{err}"))?;
-    for index in 0..archive.len() {
-        let mut entry = archive.by_index(index).map_err(|err| err.to_string())?;
-        let Some(name) = entry.enclosed_name().map(|path| path.to_path_buf()) else {
-            continue;
-        };
-        let name_str = name.to_string_lossy().replace('\\', "/");
-        if safe_entry_name(&name_str).is_none() {
-            return Err(format!("备份包含不安全路径：{name_str}"));
-        }
-        let dest = if name_str == "paper-field.db" {
-            db.clone()
-        } else if let Some(file_name) = name_str.strip_prefix("library/") {
-            if file_name.contains('/') || !file_name.to_ascii_lowercase().ends_with(".pdf") {
-                continue;
-            }
-            dir.join("library").join(file_name)
-        } else if name_str == "settings/llm-settings.json" {
-            dir.join("llm-settings.json")
-        } else if name_str == "settings/mineru-settings.json" {
-            dir.join("mineru-settings.json")
-        } else if name_str == "settings/biblio-settings.json" {
-            dir.join("biblio-settings.json")
-        } else {
-            continue;
-        };
-        if let Some(parent) = dest.parent() {
-            fs::create_dir_all(parent).map_err(|err| err.to_string())?;
-        }
-        let mut bytes = Vec::new();
-        entry.read_to_end(&mut bytes).map_err(|err| err.to_string())?;
-        if name_str.starts_with("settings/") {
-            let scrubbed = scrub_json_secrets(&String::from_utf8_lossy(&bytes));
-            crate::io_util::atomic_write(&dest, scrubbed.as_bytes())?;
-        } else {
-            let mut out = File::create(&dest).map_err(|err| err.to_string())?;
-            out.write_all(&bytes).map_err(|err| err.to_string())?;
-        }
+
+    #[test] fn b3_missing_db_not_created() {
+        tauri::async_runtime::block_on(async {
+            let d = tmp("b3"); let db = d.join("paper-field.db"); let snap = d.join("snap.db");
+            assert!(snapshot_database(&db, &snap).await.is_err());
+            assert!(!db.exists(), "BUG: empty db created"); assert!(!snap.exists());
+        });
     }
-    Ok(pre)
+
+    #[test] fn b4_cleanup_removes_only_snapshots() {
+        let d = tmp("b4");
+        for n in [".backup-snapshot-1.db", ".backup-snapshot-2.db", "paper-field.db", ".backup-snapshot-x.txt"] { fs::write(d.join(n), "x").unwrap(); }
+        cleanup_backup_snapshots(&d);
+        assert!(!d.join(".backup-snapshot-1.db").exists() && !d.join(".backup-snapshot-2.db").exists());
+        assert!(d.join("paper-field.db").exists() && d.join(".backup-snapshot-x.txt").exists());
+    }
 }

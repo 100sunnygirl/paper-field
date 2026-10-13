@@ -28,11 +28,10 @@ export async function restoreLibrary(): Promise<boolean> {
     filters: [{ name: "Zip", extensions: ["zip"] }],
   });
   if (!picked || Array.isArray(picked)) return false;
-  const { getEngine } = await import("./engine");
-  const engine = await getEngine();
-  await engine.execute("PRAGMA wal_checkpoint(FULL)");
-  await resetEngine();
+  // Only stages the backup; files are swapped on next launch before the database opens.
   await invoke("restore_library_backup", { src: picked });
-  window.location.reload();
+  await resetEngine();
+  const { relaunch } = await import("@tauri-apps/plugin-process");
+  await relaunch();
   return true;
 }
