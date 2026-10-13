@@ -223,49 +223,160 @@ impl ApiClient {
     }
 }
 
-/// 下载结果 ZIP 并取出 full.md（下载超时 300s，200MB 余量）。
+/// Upper bound for the downloaded result ZIP.
+pub const MAX_ZIP_BYTES: u64 = 200 * 1024 * 1024;
+/// Upper bound for the uncompressed `full.md`.
+pub const MAX_MD_BYTES: u64 = 50 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug)]
+pub struct ResultLimits {
+    pub zip_bytes: u64,
+    pub md_bytes: u64,
+}
+
+impl Default for ResultLimits {
+    fn default() -> Self {
+        Self { zip_bytes: MAX_ZIP_BYTES, md_bytes: MAX_MD_BYTES }
+    }
+}
+
+fn mb(n: u64) -> u64 {
+    (n / 1024 / 1024).max(1)
+}
+
+/// `full_zip_url` comes straight from the API response: https only, and an IP-literal
+/// host must not be loopback/private/link-local (same rule as the lookup SSRF guard).
+/// No domain allowlist yet: we have no real sample of the CDN host.
+pub fn check_result_url(raw: &str) -> Result<reqwest::Url, String> {
+    let url = reqwest::Url::parse(raw.trim()).map_err(|_| "结果下载地址无效".to_string())?;
+    if url.scheme() != "https" {
+        return Err("结果下载地址必须是 https".into());
+    }
+    let host = url.host_str().ok_or_else(|| "结果下载地址无效".to_string())?;
+    let literal = host.trim_start_matches('[').trim_end_matches(']');
+    if let Ok(ip) = literal.parse::<std::net::IpAddr>() {
+        if crate::lookup::is_forbidden(ip) {
+            return Err("结果下载地址指向内网或本机，已拒绝".into());
+        }
+    }
+    if host.eq_ignore_ascii_case("localhost") || host.to_ascii_lowercase().ends_with(".localhost") {
+        return Err("结果下载地址指向内网或本机，已拒绝".into());
+    }
+    Ok(url)
+}
+
+/// 下载结果 ZIP 并取出 full.md（下载超时 300s，ZIP 上限 200MB）。
 pub async fn download_and_extract_markdown(url: &str) -> Result<String, String> {
+    download_and_extract_markdown_with(url, ResultLimits::default()).await
+}
+
+pub async fn download_and_extract_markdown_with(url: &str, limits: ResultLimits) -> Result<String, String> {
+    download_checked(check_result_url(url)?, limits).await
+}
+
+/// Caller must have run `check_result_url`; split out so tests can use a local server.
+async fn download_checked(url: reqwest::Url, limits: ResultLimits) -> Result<String, String> {
     with_timeout(FETCH_TIMEOUT, async {
-        let client = api_client()?;
-        let response = client
+        let client = download_client()?;
+        let mut response = client
             .get(url)
             .timeout(Duration::from_secs(FETCH_TIMEOUT.as_secs().max(60)))
             .send()
             .await
-            .map_err(|e| format!("下载解析结果失败：{e}"))?;
+            .map_err(|e| format!("下载解析结果失败：{}", error_chain(&e)))?;
         if !response.status().is_success() {
             return Err(format!("下载解析结果失败（HTTP {}）", response.status()));
         }
-        let bytes = response
-            .bytes()
+        let too_big = || format!("解析结果压缩包超过 {}MB，已停止下载", mb(limits.zip_bytes));
+        if response.content_length().is_some_and(|n| n > limits.zip_bytes) {
+            return Err(too_big());
+        }
+        let mut bytes: Vec<u8> = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
             .await
-            .map_err(|e| format!("下载解析结果失败：{e}"))?;
-        extract_full_md(&bytes)
+            .map_err(|e| format!("下载解析结果失败：{e}"))?
+        {
+            if bytes.len() as u64 + chunk.len() as u64 > limits.zip_bytes {
+                return Err(too_big());
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        extract_full_md_with(&bytes, limits.md_bytes)
     })
     .await
 }
 
+/// reqwest hides the redirect-policy message in `source()`; surface it.
+fn error_chain(e: &dyn std::error::Error) -> String {
+    let mut out = e.to_string();
+    let mut cur = e.source();
+    while let Some(src) = cur {
+        let msg = src.to_string();
+        if !out.contains(&msg) {
+            out.push_str("：");
+            out.push_str(&msg);
+        }
+        cur = src.source();
+    }
+    out
+}
+
+/// `full.md` at the root or one directory down, matched by whole file name.
+fn is_full_md(name: &str) -> bool {
+    name == "full.md" || name.rsplit_once('/').is_some_and(|(_, file)| file == "full.md")
+}
+
 /// 从 ZIP 字节中取出 full.md；找不到时报中文错误。
 pub fn extract_full_md(bytes: &[u8]) -> Result<String, String> {
-    let mut archive = zip::ZipArchive::new(Cursor::new(bytes.to_vec()))
+    extract_full_md_with(bytes, MAX_MD_BYTES)
+}
+
+pub fn extract_full_md_with(bytes: &[u8], max_md: u64) -> Result<String, String> {
+    let mut archive = zip::ZipArchive::new(Cursor::new(bytes))
         .map_err(|e| format!("解析结果压缩包无效：{e}"))?;
     for index in 0..archive.len() {
-        let mut entry = archive
+        let entry = archive
             .by_index(index)
             .map_err(|e| format!("解析结果压缩包无效：{e}"))?;
-        if entry.is_dir() || !entry.name().ends_with("full.md") {
+        if entry.is_dir() || !is_full_md(entry.name()) {
             continue;
         }
-        let mut out = String::new();
+        // Never trust the declared size: cap the actual decompressed bytes.
+        let mut raw = Vec::new();
         entry
-            .read_to_string(&mut out)
+            .take(max_md + 1)
+            .read_to_end(&mut raw)
             .map_err(|e| format!("读取 full.md 失败：{e}"))?;
+        if raw.len() as u64 > max_md {
+            return Err(format!("full.md 解压后超过 {}MB，已拒绝", mb(max_md)));
+        }
+        let out = String::from_utf8(raw).map_err(|_| "读取 full.md 失败：不是 UTF-8 文本".to_string())?;
         if out.trim().is_empty() {
             return Err("MinerU 解析结果为空".into());
         }
         return Ok(out.trim().to_string());
     }
     Err("压缩包中没有 full.md".into())
+}
+
+/// Like `api_client`, but every redirect hop must pass `check_result_url` too.
+fn download_client() -> Result<reqwest::Client, String> {
+    let policy = reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() >= 5 {
+            attempt.error("重定向次数过多")
+        } else if check_result_url(attempt.url().as_str()).is_err() {
+            attempt.error("结果下载地址重定向到了不允许的地址")
+        } else {
+            attempt.follow()
+        }
+    });
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .use_rustls_tls()
+        .redirect(policy)
+        .build()
+        .map_err(|e| format!("创建网络客户端失败：{e}"))
 }
 
 fn api_client() -> Result<reqwest::Client, String> {
@@ -509,5 +620,135 @@ mod tests {
         writer.write_all(b"   ").unwrap();
         let bytes = writer.finish().unwrap().into_inner();
         assert_eq!(extract_full_md(&bytes).unwrap_err(), "MinerU 解析结果为空");
+    }
+
+    fn zip_of(entries: &[(&str, &[u8])], method: zip::CompressionMethod) -> Vec<u8> {
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default().compression_method(method);
+        for (name, data) in entries {
+            writer.start_file(*name, options).unwrap();
+            writer.write_all(data).unwrap();
+        }
+        writer.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn full_md_name_is_matched_exactly() {
+        let st = zip::CompressionMethod::Stored;
+        let bytes = zip_of(&[("xfull.md", b"wrong"), ("a/notfull.md", b"wrong")], st);
+        assert_eq!(extract_full_md(&bytes).unwrap_err(), "压缩包中没有 full.md");
+        let bytes = zip_of(&[("xfull.md", b"wrong"), ("paper/full.md", b"right")], st);
+        assert_eq!(extract_full_md(&bytes).unwrap(), "right");
+        assert!(is_full_md("full.md") && is_full_md("a/full.md"));
+        assert!(!is_full_md("xfull.md") && !is_full_md("full.md.bak") && !is_full_md("a/xfull.md"));
+    }
+
+    #[test]
+    fn zip_bomb_full_md_is_rejected() {
+        // 2 MB of zeros deflates to a few KB; cap at 1 MB.
+        let bomb = vec![b'0'; 2 * 1024 * 1024];
+        let bytes = zip_of(&[("full.md", &bomb)], zip::CompressionMethod::Deflated);
+        assert!(bytes.len() < 64 * 1024, "fixture should be highly compressed");
+        let err = extract_full_md_with(&bytes, 1024 * 1024).unwrap_err();
+        assert_eq!(err, "full.md 解压后超过 1MB，已拒绝");
+        // Exactly at the limit is fine.
+        let ok = zip_of(&[("full.md", &vec![b'a'; 1024 * 1024][..])], zip::CompressionMethod::Deflated);
+        assert_eq!(extract_full_md_with(&ok, 1024 * 1024).unwrap().len(), 1024 * 1024);
+    }
+
+    #[test]
+    fn result_url_must_be_public_https() {
+        assert!(check_result_url("https://cdn-mineru.example.com/r/a.zip").is_ok());
+        assert_eq!(check_result_url("http://cdn.example.com/a.zip").unwrap_err(), "结果下载地址必须是 https");
+        assert!(check_result_url("file:///etc/passwd").is_err());
+        assert!(check_result_url("not a url").is_err());
+        for bad in [
+            "https://127.0.0.1/a.zip",
+            "https://10.0.0.5/a.zip",
+            "https://192.168.1.1/a.zip",
+            "https://169.254.169.254/latest/meta-data",
+            "https://[::1]/a.zip",
+            "https://[::ffff:10.0.0.1]/a.zip",
+            "https://localhost/a.zip",
+            "https://foo.localhost/a.zip",
+        ] {
+            assert_eq!(check_result_url(bad).unwrap_err(), "结果下载地址指向内网或本机，已拒绝", "{bad}");
+        }
+        assert!(check_result_url("https://8.8.8.8/a.zip").is_ok());
+    }
+
+    #[test]
+    fn download_rejects_internal_url_before_any_request() {
+        let err = tauri::async_runtime::block_on(download_and_extract_markdown("https://127.0.0.1:1/a.zip"));
+        assert_eq!(err.unwrap_err(), "结果下载地址指向内网或本机，已拒绝");
+    }
+
+    /// One-shot HTTP server; `declare_len` false sends no Content-Length (chunked-less close).
+    fn serve_once(body: Vec<u8>, declare_len: bool) -> String {
+        use std::io::Read as _;
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        std::thread::spawn(move || {
+            if let Ok((mut c, _)) = l.accept() {
+                let mut buf = [0u8; 2048];
+                let _ = c.read(&mut buf);
+                let head = if declare_len {
+                    format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len())
+                } else {
+                    "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n".to_string()
+                };
+                let _ = c.write_all(head.as_bytes());
+                let _ = c.write_all(&body);
+            }
+        });
+        format!("http://{addr}/r.zip")
+    }
+
+    fn get(url: &str, limits: ResultLimits) -> Result<String, String> {
+        let url = reqwest::Url::parse(url).unwrap();
+        tauri::async_runtime::block_on(download_checked(url, limits))
+    }
+
+    #[test]
+    fn oversized_download_is_rejected_by_header_and_by_stream() {
+        let body = zip_of(&[("full.md", &vec![b'x'; 8 * 1024][..])], zip::CompressionMethod::Stored);
+        let small = ResultLimits { zip_bytes: 1024, md_bytes: MAX_MD_BYTES };
+        let msg = "解析结果压缩包超过 1MB，已停止下载";
+        assert_eq!(get(&serve_once(body.clone(), true), small).unwrap_err(), msg);
+        assert_eq!(get(&serve_once(body.clone(), false), small).unwrap_err(), msg);
+        let ok = get(&serve_once(body, false), ResultLimits::default()).unwrap();
+        assert_eq!(ok.len(), 8 * 1024);
+    }
+
+    /// Raw one-shot HTTP response (head + optional body), then close.
+    fn serve_raw(raw: Vec<u8>) -> String {
+        use std::io::Read as _;
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        std::thread::spawn(move || {
+            if let Ok((mut c, _)) = l.accept() {
+                let mut buf = [0u8; 2048];
+                let _ = c.read(&mut buf);
+                let _ = c.write_all(&raw);
+            }
+        });
+        format!("http://{addr}/r.zip")
+    }
+
+    #[test]
+    fn declared_oversize_is_rejected_before_reading_body() {
+        // Header claims 10 KB, no body follows: only the Content-Length check can
+        // produce the size error; the stream check would see a truncated body instead.
+        let url = serve_raw(b"HTTP/1.1 200 OK\r\nContent-Length: 10240\r\nConnection: close\r\n\r\n".to_vec());
+        let small = ResultLimits { zip_bytes: 1024, md_bytes: MAX_MD_BYTES };
+        assert_eq!(get(&url, small).unwrap_err(), "解析结果压缩包超过 1MB，已停止下载");
+    }
+
+    #[test]
+    fn redirect_to_disallowed_url_is_refused() {
+        let url = serve_raw(b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/x.zip\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec());
+        let err = get(&url, ResultLimits::default()).unwrap_err();
+        assert!(err.contains("下载解析结果失败"), "{err}");
+        assert!(err.contains("结果下载地址重定向到了不允许的地址"), "{err}");
     }
 }
