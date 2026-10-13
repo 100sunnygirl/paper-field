@@ -134,14 +134,20 @@ const PAPER_LIST_SQL = `
 // 三种模式（现场 / 归档 / 入库）与跨域搜索共用的匹配条件：
 // 标题、中文标题、摘要、期刊、DOI、arXiv、标签、实验室 JSON 文本 + 作者名。
 const PAPER_SEARCH_MATCH_SQL = `(
-            p.title LIKE ? OR IFNULL(p.title_zh,'') LIKE ? OR IFNULL(p.abstract,'') LIKE ?
-            OR IFNULL(p.venue,'') LIKE ? OR IFNULL(p.doi,'') LIKE ? OR IFNULL(p.arxiv_id,'') LIKE ?
-            OR p.tags LIKE ? OR p.labs LIKE ?
+            p.title LIKE ? ESCAPE '\\' OR IFNULL(p.title_zh,'') LIKE ? ESCAPE '\\' OR IFNULL(p.abstract,'') LIKE ? ESCAPE '\\'
+            OR IFNULL(p.venue,'') LIKE ? ESCAPE '\\' OR IFNULL(p.doi,'') LIKE ? ESCAPE '\\' OR IFNULL(p.arxiv_id,'') LIKE ? ESCAPE '\\'
+            OR p.tags LIKE ? ESCAPE '\\' OR p.labs LIKE ? ESCAPE '\\'
             OR EXISTS (
               SELECT 1 FROM paper_authors pa JOIN authors a ON a.id = pa.author_id
-               WHERE pa.paper_id = p.id AND a.name LIKE ?
+               WHERE pa.paper_id = p.id AND a.name LIKE ? ESCAPE '\\'
             )
           )`;
+
+/** `%q%` with LIKE wildcards escaped, for `LIKE ? ESCAPE '\\'`: a search for
+ *  `50%` or `a_b` matches only that literal text. */
+export function likePattern(q: string): string {
+  return `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+}
 
 function searchParams(like: string): unknown[] {
   return [like, like, like, like, like, like, like, like, like];
@@ -380,7 +386,7 @@ export const repo = {
       );
       return rows.map(mapListItem);
     }
-    const like = `%${q}%`;
+    const like = likePattern(q);
     const rows = await engine.select<PaperRow>(
       `${PAPER_LIST_SQL}
         WHERE p.domain_id = ?
@@ -395,7 +401,7 @@ export const repo = {
     const engine = await getEngine();
     const q = search.trim();
     if (!q) return [];
-    const like = `%${q}%`;
+    const like = likePattern(q);
     const rows = await engine.select<PaperRow>(
       `${PAPER_LIST_SQL}
         WHERE ${PAPER_SEARCH_MATCH_SQL}
@@ -417,7 +423,7 @@ export const repo = {
       params.push(filter.openSource);
     }
     if (filter.search?.trim()) {
-      const like = `%${filter.search.trim()}%`;
+      const like = likePattern(filter.search.trim());
       clauses.push(PAPER_SEARCH_MATCH_SQL);
       params.push(...searchParams(like));
     }
@@ -440,7 +446,7 @@ export const repo = {
       );
       return rows.map(mapListItem);
     }
-    const like = `%${q}%`;
+    const like = likePattern(q);
     const rows = await engine.select<PaperRow>(
       `${PAPER_LIST_SQL}
         WHERE (p.reading_status != 'read'
