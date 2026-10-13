@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { renderMarkdown } from "../lib/markdown";
 import { openLocalPdf } from "../lib/mineru";
 import {
@@ -8,7 +8,6 @@ import {
   MINERU_STATUS_LABELS,
   NOTE_DISPLAY_ORDER,
   NOTE_LABELS,
-  OPEN_SOURCE_LABELS,
   READING_STATUS_LABELS,
   noteSourceLabel,
   type NoteKind,
@@ -208,6 +207,13 @@ function ContextPanel({
           ) : (
             <span className="mono">{paper.arxivId || "未提供"}</span>
           )}
+        </div>
+        <div className="ef-identifier">
+          <span>
+            来源
+            <SourceBadge source={paper.fieldSources?.venue} provider={paper.fieldProviders?.venue} />
+          </span>
+          <span className="mono">{[paper.venue, paper.year].filter(Boolean).join(" ") || "未提供"}</span>
         </div>
         <label className="ef-os-select">
           <span>开源状态</span>
@@ -413,6 +419,7 @@ export function ReadingStage({
 }) {
   const paper = useField((s) => s.paper);
   const mode = useField((s) => s.mode);
+  const search = useField((s) => s.search);
   const openDialog = useField((s) => s.openDialog);
   const unsavedNote = useField((s) => s.unsavedNote);
   const setFlash = useField((s) => s.setFlash);
@@ -480,11 +487,6 @@ export function ReadingStage({
     };
   }, [paper?.id]);
 
-  const venueLine = useMemo(() => {
-    if (!paper) return "";
-    return [paper.venue, paper.year].filter(Boolean).join(" ");
-  }, [paper]);
-
   function jump(id: string) {
     const root = scrollRef.current;
     const target = root?.querySelector<HTMLElement>(`#${id}`);
@@ -510,6 +512,8 @@ export function ReadingStage({
   }
 
   if (!paper) {
+    const searching = mode === "field" && search.trim().length > 0;
+    const emptyDomain = mode === "field" && !searching;
     return (
       <section className="ef-read" id="stage" aria-labelledby="read-empty">
         <div className="ef-toolbar">
@@ -527,15 +531,13 @@ export function ReadingStage({
         <div className="ef-read-scroll">
           <div className="ef-reading-grid">
             <Empty
-              title="选择一篇论文"
-              body="从左侧列表选择一篇论文，阅读摘要、撰写阅读笔记，或直接打开 PDF。"
-              action={
-                mode === "field" ? (
-                  <Button type="button" variant="primary" onClick={() => openDialog("paper")}>
-                    <Icon name="plus" />
-                    导入 PDF
-                  </Button>
-                ) : null
+              title={searching ? "没有符合条件的论文" : emptyDomain ? "此领域还没有论文" : "选择一篇论文"}
+              body={
+                searching
+                  ? "可以调整搜索词，或清空搜索后继续阅读。"
+                  : emptyDomain
+                    ? "使用顶部的「导入 PDF」添加第一篇论文。"
+                    : "从左侧列表选择一篇论文，阅读摘要、撰写阅读笔记，或直接打开 PDF。"
               }
             />
           </div>
@@ -630,15 +632,12 @@ export function ReadingStage({
             <Icon name="external" className="ef-ico" />
           </Button>
         ) : (
-          <Button
-            type="button"
-            className="ef-pdf-action"
-            variant="primary"
-            onClick={() => setFlash({ tone: "warn", text: "这篇论文还没有本地 PDF，可在「编辑论文信息」中补充公开 PDF 链接。" })}
-          >
-            <Icon name="file" />
-            打开 PDF
-          </Button>
+          <span className="ef-pdf-missing ef-pdf-action">
+            这篇论文还没有 PDF。
+            <Button type="button" variant="text" onClick={() => openDialog("edit-paper")}>
+              编辑论文信息
+            </Button>
+          </span>
         )}
         <Button type="button" className="ef-write-note" onClick={writeNote}>
           <Icon name="edit" />
@@ -709,42 +708,6 @@ export function ReadingStage({
                 ? paper.authors.map((author) => author.name).join(" · ")
                 : "作者信息待补充"}
             </p>
-            {/* 数据铭牌：把散落的元信息收成一排可扫读的格子（全部是真实字段）。 */}
-            <dl className="ef-plate">
-              <div>
-                <dt>
-                  来源
-                  <SourceBadge source={paper.fieldSources?.venue} provider={paper.fieldProviders?.venue} />
-                </dt>
-                <dd>{venueLine || "待补充"}</dd>
-              </div>
-              <div>
-                <dt>
-                  arXiv
-                  <SourceBadge source={paper.fieldSources?.arxivId} provider={paper.fieldProviders?.arxivId} />
-                </dt>
-                <dd className="mono">
-                  {arxivAbsUrl(paper.arxivId) ? (
-                    <button type="button" className="ef-id-link" onClick={() => void openExternal(arxivAbsUrl(paper.arxivId))}>
-                      {paper.arxivId}
-                    </button>
-                  ) : (
-                    paper.arxivId || "—"
-                  )}
-                </dd>
-              </div>
-              <div>
-                <dt>开源状态</dt>
-                <dd>{OPEN_SOURCE_LABELS[paper.codeOpenSource] ?? OPEN_SOURCE_LABELS.unknown}</dd>
-              </div>
-              <div>
-                <dt>笔记</dt>
-                <dd>
-                  <b className="mono">{notesWritten}</b>
-                  <span className="mono"> / {NOTE_DISPLAY_ORDER.length}</span>
-                </dd>
-              </div>
-            </dl>
             <section className="ef-abstract" id="abstract">
               <h2 className="ef-section-label">
                 <span>
@@ -755,22 +718,6 @@ export function ReadingStage({
               </h2>
               <p>{paper.abstract || "尚未填写摘要。可在「更多」中编辑论文信息。"}</p>
             </section>
-            <details className="ef-fulltext" id="fulltext">
-              <summary className="ef-section-label">
-                <span>解析全文</span>
-                <small>{fulltextStatus}</small>
-                <i className="ef-section-rule" aria-hidden="true" />
-                <Icon name="right" />
-              </summary>
-              {paper.parsedMarkdown.trim() ? (
-                <div
-                  className="ef-note-text ef-md"
-                  dangerouslySetInnerHTML={{ __html: renderMarkdown(paper.parsedMarkdown) }}
-                />
-              ) : (
-                <p className="ef-empty-note">尚未解析出全文。导入 PDF 并启用解析源后，这里会显示解析结果。</p>
-              )}
-            </details>
             <div className="ef-notes-heading">
               <h2 className="ef-section-label">
                 <span>阅读笔记</span>
@@ -792,6 +739,22 @@ export function ReadingStage({
                 onStop={() => setEditingKind(null)}
               />
             ))}
+            <details className="ef-fulltext" id="fulltext">
+              <summary className="ef-section-label">
+                <span>解析全文</span>
+                <small>{fulltextStatus}</small>
+                <i className="ef-section-rule" aria-hidden="true" />
+                <Icon name="right" />
+              </summary>
+              {paper.parsedMarkdown.trim() ? (
+                <div
+                  className="ef-note-text ef-md"
+                  dangerouslySetInnerHTML={{ __html: renderMarkdown(paper.parsedMarkdown) }}
+                />
+              ) : (
+                <p className="ef-empty-note">尚未解析出全文。导入 PDF 并启用解析源后，这里会显示解析结果。</p>
+              )}
+            </details>
           </article>
         </div>
       </div>

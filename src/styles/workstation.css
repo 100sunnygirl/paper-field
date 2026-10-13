@@ -70,8 +70,8 @@
   /* Side columns grow gently with the window so wide screens are not all canvas. */
   --pf-paper-list-width: clamp(292px, 15vw, 340px);
   --pf-context-width: clamp(256px, 14.5vw, 336px);
-  /* The document fills the centre column; the cap only bites on very wide screens. */
-  --pf-document-max-width: 1400px;
+  /* 正文栏稳定行长。更宽的窗口把多余宽度留成页边；收窄时行长只减不增。 */
+  --pf-document-max-width: 760px;
   --pf-stage-pad-x: clamp(24px, 2vw, 48px);
   --pf-stage-pad-y: clamp(28px, 1.6vw, 40px);
   --pf-document-pad: clamp(30px, 2.4vw, 56px);
@@ -125,13 +125,8 @@
   --pf-t-sweep: 1100ms var(--pf-ease-loop);
   /* 匀速爬行：作业面板「处理中」色块的斜纹，循环一周正好平移一个纹距，首尾无缝。 */
   --pf-t-crawl: 900ms linear;
-  /* 舞台刷出（源设计：bjtu-hpc-submit-skill 登录页 ef-reveal）：新视图 clip-path
-     左→右硬边刷出 + 10px 水平回位，一条缓动 650ms 一次到位。缓动按源设计保留
-     独立贝塞尔（起步极快、收尾柔停）；位移 10px 为源设计原值（纯几何刷出，
-     不含 opacity 参与制造的运动错觉）。刷出边缘另有一条信号黄扫描线同速跟随
-     （pf-scan，同一令牌，永远落在裁剪边内侧）。 */
-  --pf-t-wipe: 650ms cubic-bezier(0.22, 0.8, 0.2, 1);
-  --pf-wipe-shift: 10px;
+  /* 模式切换：第一帧即可读，只做不超过 150ms 的轻微透明过渡。 */
+  --pf-t-mode: 150ms var(--pf-ease-out);
   /* Press & selection geometry: :active sinks, list stagger (items capped at
      12), left-edge selection bar width. */
   --pf-nudge: 1px;
@@ -451,10 +446,9 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 }
 .ef-shell.is-focus .ef-nav { display: none; }
 .ef-shell.is-focus .ef-read { grid-area: read; }
-/* Focus mode: single centred measure, still fluid but narrower than the workstation. */
+/* Focus mode hides the side columns; the article keeps the same 760px measure. */
 .ef-shell.is-focus .ef-read,
 .ef-shell.is-focus .ef-read.has-context {
-  --pf-document-max-width: clamp(820px, 54vw, 1120px);
   grid-template-columns: minmax(0, 1fr);
   grid-template-areas:
     "toolbar"
@@ -1103,6 +1097,22 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 .ef-toolbar .ef-pdf-action {
   flex-shrink: 0;
 }
+.ef-pdf-missing {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  color: var(--pf-muted);
+  font-size: var(--pf-fs-caption);
+  font-weight: 500;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+.ef-pdf-missing .ef-btn {
+  min-height: 32px;
+  padding: 0 8px;
+  color: var(--pf-secondary);
+}
 .ef-list-back, .ef-context-toggle { display: none; }
 .ef-menu-wrap { position: relative; }
 .ef-menu-wrap > .ef-btn .ef-ico { width: 16px; height: 16px; transition: transform var(--pf-direct); }
@@ -1172,17 +1182,18 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   background-size: 24px 24px;
   background-attachment: local;
 }
-/* The stage: fills the centre column, capped only on very wide screens. */
+/* 中栏里的正文卡片：文字栏约 760px，卡片含页边距，多余宽度留在画布两侧。 */
 .ef-reading-grid {
   width: 100%;
-  max-width: calc(var(--pf-document-max-width) + 2 * var(--pf-stage-pad-x));
+  max-width: calc(var(--pf-document-max-width) + 2 * var(--pf-document-pad) + 2 * var(--pf-stage-pad-x) + 2px);
   margin: 0 auto;
   padding: var(--pf-stage-pad-y) var(--pf-stage-pad-x) 72px;
   min-width: 0;
 }
 .ef-document {
   min-width: 0;
-  width: 100%;
+  width: min(100%, calc(var(--pf-document-max-width) + 2 * var(--pf-document-pad) + 2px));
+  margin-inline: auto;
   background: var(--pf-surface);
   border: 1px solid var(--pf-divider);
   border-top: 3px solid var(--pf-ink);
@@ -1218,13 +1229,7 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
     linear-gradient(var(--c), var(--c)) right top / 1px 100% no-repeat,
     linear-gradient(var(--c), var(--c)) right bottom / 18px 1px no-repeat;
 }
-/* 换文进场：纸面整体 rise 一次（opacity + 8px，:mount 播放、退场即时）。
-   Dossier 给 article 挂 key={paper.id}，换文即重放；随后主标题色块揭幕、
-   区段引导线依次画出。正文（摘要/笔记/全文）文字本身零动效。选择器锁在
-   .ef-shell 伞内，prefers-reduced-motion 兜底继续全覆盖。 */
-.ef-shell .ef-reading-grid .ef-document {
-  animation: pf-rise var(--pf-t-enter);
-}
+/* 换文第一帧即可读。区段引导线仍可随后画出；正文文字本身零动效。 */
 .ef-paper-category {
   display: flex;
   align-items: center;
@@ -1255,18 +1260,6 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   overflow-wrap: anywhere;
 }
 .ef-read-title:focus { outline: none; }
-/* 主标题色块揭幕：信号黄块自左铺满标题，再向右收起，文字在色块下换出。 */
-.ef-shell .ef-read-title {
-  animation: pf-text-in var(--pf-t-reveal) both;
-}
-.ef-shell .ef-read-title::after {
-  content: "";
-  position: absolute;
-  inset: 4px -6px;
-  background: var(--pf-signal);
-  pointer-events: none;
-  animation: pf-block-reveal var(--pf-t-reveal) both;
-}
 .ef-paper-en {
   font-size: var(--pf-doc-h3);
   line-height: 1.5;
@@ -3450,56 +3443,15 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   from { transform: scaleX(1); }
   to { transform: scaleX(0); }
 }
-/* 主标题色块揭幕：色块自左铺满（0→45%），停半拍，再向右收起（55%→100%）；
-   文字在色块铺满的那一帧换出（pf-text-in 的 50% 断点）。 */
-@keyframes pf-block-reveal {
-  0% { transform: scaleX(0); transform-origin: left; }
-  45% { transform: scaleX(1); transform-origin: left; }
-  55% { transform: scaleX(1); transform-origin: right; }
-  100% { transform: scaleX(0); transform-origin: right; }
-}
-@keyframes pf-text-in {
-  0%, 49% { color: transparent; }
-  50%, 100% { color: var(--pf-ink); }
-}
-/* 舞台扫描线：与 pf-wipe 同令牌同缓动，整幅覆盖层右缘带一条 2px 信号黄
-   与一段淡黄拖尾，随刷出边缘同步推进，结束时淡出。 */
-@keyframes pf-scan {
-  0% { transform: translateX(-100%); opacity: 1; }
-  80% { opacity: 1; }
-  100% { transform: none; opacity: 0; }
-}
-/* 舞台刷出：模式/领域切换与启动揭幕时，舞台三面（.ef-nav / .ef-read / .ef-system）
-   在 App 以 mode+domain 为 key 重挂后各自播放一次。fill 只用 backwards —— 起播前
-   即处于遮蔽态（首帧无闪现），结束后回归自然样式：clip-path 不残留，菜单浮层、
-   卡片阴影与滚动容器都不受长期裁剪。作用域在 .ef-shell 伞内，reduced-motion
-   兜底块按构造覆盖（animation: none 直接落定）。 */
-@keyframes pf-wipe {
-  from { clip-path: inset(0 100% 0 0); transform: translateX(calc(var(--pf-wipe-shift) * -1)); }
-  to { clip-path: inset(0); transform: none; }
+/* 模式切换：从已经可读的透明度轻轻落到实底，不遮住新页面。 */
+@keyframes pf-mode-fade {
+  from { opacity: 0.88; }
+  to { opacity: 1; }
 }
 .ef-shell .ef-nav,
 .ef-shell .ef-read,
 .ef-shell .ef-system {
-  animation: pf-wipe var(--pf-t-wipe) backwards;
-}
-/* 扫描线挂在 .ef-nav / .ef-read 的 ::after 上：整幅覆盖层被宿主自身的 clip-path
-   裁在已刷出区域内，右缘信号黄线因此永远贴着刷出边缘；pointer-events 关闭，
-   结束后 opacity 0 停留（fill both），不拦截任何交互。 */
-.ef-shell .ef-nav::after,
-.ef-shell .ef-read::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: 40;
-  pointer-events: none;
-  background: linear-gradient(
-    90deg,
-    transparent calc(100% - 96px),
-    color-mix(in srgb, var(--pf-signal) 18%, transparent) calc(100% - 2px),
-    var(--pf-signal) calc(100% - 2px)
-  );
-  animation: pf-scan var(--pf-t-wipe) both;
+  animation: pf-mode-fade var(--pf-t-mode) both;
 }
 
 /* ---- Reusable motion utilities (foundation-owned) ----
@@ -3602,7 +3554,9 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
       "toolbar"
       "scroll";
   }
-  .ef-reading-grid { --pf-document-max-width: clamp(820px, 70vw, 1120px); }
+  /* 资料栏收起后不要把行长拉回去。1400px 三栏时正文大约只有 650px，
+     这里把上限钉在同一数值，收窄窗口时行长只减不增。 */
+  .ef-read { --pf-document-max-width: 650px; }
   .ef-context { display: none; }
   .ef-context-toggle { display: inline-flex; }
   .ef-toolbar { padding: 0 24px; }
@@ -3640,13 +3594,17 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   .ef-dock { gap: 18px; }
   .ef-toolbar-label { display: none; }
   .ef-toolbar { gap: 7px; }
-  .ef-reading-grid { padding: 28px; --pf-document-max-width: 100%; }
+  /* 列表收进抽屉后，行长不超过收起前（1101px）那一档。 */
+  .ef-read { --pf-document-max-width: 620px; --pf-stage-pad-x: 28px; }
+  .ef-reading-grid { padding: 28px; }
   .ef-status > span:nth-child(4),
   .ef-status > span:nth-child(5) { display: none; }
 }
 
 @media (max-width: 700px) {
   :root { --pf-rail-width: 0px; }
+  /* 底栏出现、侧轨消失时，行长不超过 701px 那一档。 */
+  .ef-read { --pf-document-max-width: 490px; --pf-document-pad: 19px; }
   .ef-shell,
   .ef-shell.is-focus,
   .ef-shell[data-mode="system"] {
@@ -3757,10 +3715,6 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
     transition: none !important;
     scroll-behavior: auto !important;
   }
-  /* 纯动效覆盖层（扫描线、标题色块）在无动画时没有落点，直接移除。 */
-  .ef-shell .ef-nav::after,
-  .ef-shell .ef-read::after,
-  .ef-shell .ef-read-title::after { display: none; }
 }
 
 /* ---- Cross-domain search dropdown (Dock) ---- */
@@ -3862,8 +3816,8 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
    摘要之后的第二个区段：summary 沿用 .ef-section-label 的标题写法，
    尾部 V 形箭头展开时旋转 90°。 */
 .ef-fulltext {
-  margin: 0;
-  padding: 0 0 32px;
+  margin: 32px 0 0;
+  padding: 0;
   scroll-margin-top: 24px;
 }
 .ef-fulltext summary {
