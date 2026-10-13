@@ -85,7 +85,7 @@ export function PaperDialog() {
   return (
     <Dialog
       open={open}
-      title="导入 PDF"
+      title={items.length === 0 ? "添加论文" : "导入 PDF"}
       className="is-wide"
       onClose={closeDialog}
       footer={
@@ -93,27 +93,29 @@ export function PaperDialog() {
           <Button type="button" onClick={closeDialog}>
             取消
           </Button>
-          <Button
-            variant="primary"
-            type="button"
-            disabled={!fresh.length || busy}
-            onClick={() => {
-              setError(null);
-              setBusy(true);
-              void importPdfs(fresh.map((item) => item.path), (done, total, current) =>
-                setProgress({ done, total, current }),
-              )
-                .catch((err: unknown) => {
-                  setError(err instanceof Error ? err.message : String(err));
-                })
-                .finally(() => {
-                  setBusy(false);
-                  setProgress(null);
-                });
-            }}
-          >
-            {busy ? "导入中…" : `导入 ${fresh.length ? fresh.length : ""}`}
-          </Button>
+          {fresh.length > 0 ? (
+            <Button
+              variant="primary"
+              type="button"
+              disabled={busy}
+              onClick={() => {
+                setError(null);
+                setBusy(true);
+                void importPdfs(fresh.map((item) => item.path), (done, total, current) =>
+                  setProgress({ done, total, current }),
+                )
+                  .catch((err: unknown) => {
+                    setError(err instanceof Error ? err.message : String(err));
+                  })
+                  .finally(() => {
+                    setBusy(false);
+                    setProgress(null);
+                  });
+              }}
+            >
+              {busy ? "导入中…" : `导入 ${fresh.length}`}
+            </Button>
+          ) : null}
         </>
       }
     >
@@ -145,8 +147,10 @@ export function PaperDialog() {
       ) : (
         <p>浏览器预览不能读取本机 PDF，仍可手动添加论文。完整导入请在桌面应用中进行。</p>
       )}
-      {isTauri() && manualOpen ? <ManualPaperForm onCreated={() => setManualOpen(false)} /> : null}
-      {!isTauri() ? <ManualPaperForm onCreated={() => undefined} /> : null}
+      {isTauri() && manualOpen ? (
+        <ManualPaperForm primary={fresh.length === 0} onCreated={() => setManualOpen(false)} />
+      ) : null}
+      {!isTauri() ? <ManualPaperForm primary onCreated={() => undefined} /> : null}
       {busy ? (
         <>
           {/* 装饰性扫动条：仅加载期间存在，3px 高，伴随文字状态不替代。 */}
@@ -214,7 +218,7 @@ export function PaperDialog() {
   );
 }
 
-function ManualPaperForm({ onCreated }: { onCreated: () => void }) {
+function ManualPaperForm({ onCreated, primary = false }: { onCreated: () => void; primary?: boolean }) {
   const createManualPaper = useField((s) => s.createManualPaper);
   const [title, setTitle] = useState("");
   const [arxivId, setArxivId] = useState("");
@@ -273,7 +277,7 @@ function ManualPaperForm({ onCreated }: { onCreated: () => void }) {
       ) : null}
       <div className="ef-import-actions">
         <Button
-          variant="primary"
+          variant={primary ? "primary" : "secondary"}
           type="button"
           disabled={busy}
           onClick={() => {
@@ -343,41 +347,42 @@ export function DomainDialog() {
       onClose={closeDialog}
       danger={confirmDelete}
       footer={
-        <>
-          {editing ? (
-            confirmDelete ? (
-              <Button
-                type="button"
-                className="ef-btn-danger-solid"
-                onClick={() => void deleteDomain()}
-              >
-                确认删除领域
-              </Button>
-            ) : (
+        confirmDelete ? (
+          <>
+            <Button type="button" onClick={closeDialog}>
+              取消
+            </Button>
+            <Button type="button" className="ef-btn-danger-solid" onClick={() => void deleteDomain()}>
+              确认删除领域
+            </Button>
+          </>
+        ) : (
+          <>
+            {editing ? (
               <Button type="button" variant="danger" onClick={() => setConfirmDelete(true)}>
                 删除领域…
               </Button>
-            )
-          ) : null}
-          <Button type="button" onClick={closeDialog}>
-            取消
-          </Button>
-          <Button
-            variant="primary"
-            type="button"
-            onClick={() => {
-              setError(null);
-              const run = editing
-                ? updateDomain({ name, code, summary })
-                : createDomain({ name, code, summary });
-              void run.catch((err: unknown) =>
-                setError(err instanceof Error ? err.message : String(err)),
-              );
-            }}
-          >
-            {editing ? "保存修改" : "创建领域"}
-          </Button>
-        </>
+            ) : null}
+            <Button type="button" onClick={closeDialog}>
+              取消
+            </Button>
+            <Button
+              variant="primary"
+              type="button"
+              onClick={() => {
+                setError(null);
+                const run = editing
+                  ? updateDomain({ name, code, summary })
+                  : createDomain({ name, code, summary });
+                void run.catch((err: unknown) =>
+                  setError(err instanceof Error ? err.message : String(err)),
+                );
+              }}
+            >
+              {editing ? "保存修改" : "创建领域"}
+            </Button>
+          </>
+        )
       }
     >
       {confirmDelete ? (

@@ -532,10 +532,12 @@ describe("SystemView · 设置页顺序与 MinerU 高级项", () => {
     const at = (title: string) => headings.indexOf(title);
     expect(at("AI 服务设置")).toBeGreaterThanOrEqual(0);
     expect(at("数据导出")).toBeGreaterThan(at("AI 服务设置"));
-    expect(at("快捷键")).toBeGreaterThan(at("数据导出"));
+    expect(at("备份与恢复")).toBeGreaterThan(at("数据导出"));
+    expect(at("快捷键")).toBeGreaterThan(at("备份与恢复"));
     expect(at("软件更新")).toBeGreaterThan(at("快捷键"));
-    expect(at("MinerU 解析源")).toBeGreaterThan(at("快捷键"));
-    expect(at("运行日志")).toBeGreaterThan(at("MinerU 解析源"));
+    expect(at("MinerU 解析源")).toBeGreaterThan(at("软件更新"));
+    expect(at("文献库")).toBeGreaterThan(at("MinerU 解析源"));
+    expect(at("运行日志")).toBeGreaterThan(at("文献库"));
     expect(screen.queryByText("Socket 路径")).not.toBeInTheDocument();
     expect(screen.queryByRole("option", { name: "English" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "检查更新" })).toBeInTheDocument();
@@ -557,5 +559,22 @@ describe("SystemView · 设置页顺序与 MinerU 高级项", () => {
     render(<SystemView />);
     fireEvent.click(screen.getByRole("button", { name: "检查更新" }));
     expect(await screen.findByText(/尚未配置更新签名公钥/)).toBeInTheDocument();
+  });
+});
+
+describe("SystemView · 文献库", () => {
+  beforeEach(() => {
+    useField.setState(useField.getInitialState(), true);
+  });
+
+  it("默认匿名，说明标题会发给文献服务，并链到申请页", () => {
+    render(<SystemView />);
+    expect(screen.getByRole("heading", { name: "文献库" })).toBeInTheDocument();
+    expect(screen.getByText(/论文标题和 DOI 会发送到这些服务/)).toBeInTheDocument();
+    expect(screen.getByText(/OpenAlex 会把请求日志保留 90 天/)).toBeInTheDocument();
+    expect(screen.getAllByText("匿名").length).toBeGreaterThanOrEqual(4);
+    expect(screen.getByRole("button", { name: "openalex.org/settings/api" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "semanticscholar.org/product/api" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "保存文献库设置" })).toBeInTheDocument();
   });
 });

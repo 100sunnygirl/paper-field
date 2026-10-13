@@ -1,0 +1,33 @@
+{
+  "results": [
+    {
+      "display_name": "Attention is all you need",
+      "relevance_score": 248.1,
+      "publication_year": 2017,
+      "doi": "https://doi.org/10.48550/arxiv.1706.03762",
+      "ids": { "pmid": null },
+      "authorships": [
+        {
+          "author": { "display_name": "Ashish Vaswani" },
+          "institutions": [{ "display_name": "Google (United States)" }]
+        }
+      ],
+      "primary_location": {
+        "source": { "display_name": "Neural Information Processing Systems" },
+        "pdf_url": "https://arxiv.org/pdf/1706.03762"
+      },
+      "abstract_inverted_index": {
+        "The": [0],
+        "dominant": [1],
+        "sequence": [2]
+      },
+      "open_access": { "oa_url": "https://arxiv.org/pdf/1706.03762" }
+    },
+    {
+      "display_name": "A completely unrelated chemistry paper",
+      "relevance_score": 1.2,
+      "publication_year": 1999,
+      "authorships": []
+    }
+  ]
+}

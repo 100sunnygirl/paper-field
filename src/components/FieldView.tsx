@@ -1,13 +1,18 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import {
   JOB_STATUS_LABELS,
   JOB_TYPE_LABELS,
   type OpenSource,
+  type PaperListItem,
 } from "../lib/types";
+import { repo } from "../lib/repo";
 import { pad2 } from "../lib/util";
 import { useField } from "../store";
 import { CheckSquare, PaperMatrix } from "./PaperMatrix";
 import { Button, Icon } from "./ui";
+
+/** 搜索只改列表。进度和「本领域论文」沿用未过滤的领域论文，换领域后若搜索还在则补一次无搜索词的读取。 */
+let domainCensus: { domainId: string; items: PaperListItem[] } | null = null;
 
 const ARCHIVE_FILTERS: Array<{ value: OpenSource | "all"; label: string }> = [
   { value: "all", label: "全部" },
@@ -39,12 +44,37 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
   const setBatchMode = useField((s) => s.setBatchMode);
   const toggleCheckedPaper = useField((s) => s.toggleCheckedPaper);
   const setCheckedPaperIds = useField((s) => s.setCheckedPaperIds);
+  const [censusEpoch, setCensusEpoch] = useState(0);
+
+  if (mode === "field" && selectedDomainId && !search.trim()) {
+    domainCensus = { domainId: selectedDomainId, items: papers };
+  }
+
+  useEffect(() => {
+    if (mode !== "field" || !selectedDomainId || !search.trim()) return;
+    if (domainCensus?.domainId === selectedDomainId) return;
+    let cancel = false;
+    void repo
+      .listPapers(selectedDomainId)
+      .then((items) => {
+        if (cancel) return;
+        domainCensus = { domainId: selectedDomainId, items };
+        setCensusEpoch((n) => n + 1);
+      })
+      .catch(() => {});
+    return () => {
+      cancel = true;
+    };
+  }, [mode, selectedDomainId, search]);
 
   const domain = domains.find((d) => d.id === selectedDomainId) ?? null;
   const list = mode === "archive" ? archive : mode === "intake" ? intake : papers;
+  const domainPapers =
+    mode === "field" && domainCensus?.domainId === selectedDomainId ? domainCensus.items : papers;
+  void censusEpoch;
   const failedParseCount = intake.filter((p) => p.mineruStatus === "error").length;
-  const domainRead = papers.filter((p) => p.readingStatus === "read").length;
-  const fill = papers.length ? domainRead / papers.length : 0;
+  const domainRead = domainPapers.filter((p) => p.readingStatus === "read").length;
+  const fill = domainPapers.length ? domainRead / domainPapers.length : 0;
   const allChecked = list.length > 0 && checkedPaperIds.length === list.length;
 
   // 批量模式下 Esc 退出。对话框打开时 Dialog 的捕获层会拦截 Esc，不会误退批量模式。
@@ -81,7 +111,7 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
             <span>阅读进度</span>
             <span className="ef-progress-value">
               已读 <b className="mono">{domainRead}</b>
-              <span className="mono"> / {papers.length}</span>
+              <span className="mono"> / {domainPapers.length}</span>
             </span>
           </div>
           <div className="ef-progress" aria-hidden="true">
@@ -207,7 +237,7 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
               {mode === "archive" ? "已读归档" : mode === "intake" ? "待处理论文" : "本领域论文"}
             </span>
             <span className="ef-list-head-right">
-              <span className="ef-count mono">{pad2(list.length)}</span>
+              <span className="ef-count mono">{pad2(mode === "field" ? domainPapers.length : list.length)}</span>
               {list.length ? (
                 <Button
                   type="button"
@@ -235,7 +265,7 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
               ? "还没有手动标记已读的论文。"
               : mode === "intake"
                 ? "没有待处理论文。"
-                : "向该领域投放第一篇论文。"}
+                : "此领域还没有论文。"}
         </p>
       ) : (
         <PaperMatrix

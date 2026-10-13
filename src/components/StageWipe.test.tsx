@@ -1,17 +1,10 @@
-// 舞台刷出（pf-wipe，源设计 bjtu-hpc-submit-skill 登录页 ef-reveal）的接线契约：
-// 产品侧在 App.tsx 以 mode+domain 为 key 重挂舞台三面触发重播，动效侧在
-// workstation.css 以令牌 + keyframes 落地。jsdom 不播 CSS 动画，故沿用
-// Toasts.audit 的「源码 + CSS 口径」断言先例（Toasts.audit.test.tsx 同款读法），
-// 固定以下不回退点：
-//   1. 舞台三面（PaperNav / ReadingStage / SystemView）都挂由 stageKey 派生的 key
-//      —— 缺一个就有切换路径不重播（最易漏的是 field↔archive：树位置不变，无 key
-//      不重挂）；且三者互不相同：PaperNav 与 ReadingStage 同处一个 Fragment，
-//      重复 key 会让 React 残留旧节点（旧 .ef-nav 逐次堆积、遮挡点击）；
-//   2. keyframes 只用 clip-path + 位移（无 opacity / 无随机），fill 只 backwards
-//      —— 结束后 clip 不残留，浮层与阴影不受长期裁剪；
-//   3. 动画挂在 .ef-shell 伞内的三个根类上，reduced-motion 兜底按构造覆盖；
-//   4. 时长 / 缓动 / 位移全部走令牌，消费点无裸值；像素消融（.ef-dissolve）
-//      已整体移除，不得回潮。
+// 模式切换的接线契约：产品侧在 App.tsx 以 mode+domain 为 key 重挂舞台三面，
+// 动效侧不再用整页 pf-wipe / pf-scan 或标题 pf-text-in 把内容藏到第一帧之后。
+// jsdom 不播 CSS 动画，故沿用「源码 + CSS 口径」断言。不回退点：
+//   1. 舞台三面都挂由 stageKey 派生、且互不相同的 key；
+//   2. 模式切换最多 150ms 透明度过渡，起点仍可读，不用 clip-path 刷出；
+//   3. 标题保持 --pf-ink，不播色块揭幕；
+//   4. prefers-reduced-motion 仍关掉壳内动画；像素消融不得回潮。
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -38,27 +31,29 @@ describe("舞台刷出：App 接线（源码口径）", () => {
   });
 });
 
-describe("舞台刷出：动效契约（CSS 口径）", () => {
-  it("令牌齐备：复合时长令牌（含源设计缓动）与位移令牌", () => {
-    expect(css).toContain("--pf-t-wipe: 650ms cubic-bezier(0.22, 0.8, 0.2, 1)");
-    expect(css).toContain("--pf-wipe-shift: 10px");
-  });
-
-  it("keyframes 只用 clip-path 硬边 + 位移回位，无 opacity", () => {
-    const frames = css.match(/@keyframes pf-wipe \{[\s\S]*?\n\}/)![0];
-    expect(frames).toContain("clip-path: inset(0 100% 0 0)");
-    expect(frames).toContain("clip-path: inset(0)");
-    expect(frames).toContain("translateX(calc(var(--pf-wipe-shift) * -1))");
-    expect(frames).not.toContain("opacity");
-  });
-
-  it("动画挂 .ef-shell 伞内三面根类，fill 只 backwards（clip 不残留）", () => {
-    const attachments = css.match(
-      /\.ef-shell \.ef-nav,\n\.ef-shell \.ef-read,\n\.ef-shell \.ef-system \{\n  animation: pf-wipe var\(--pf-t-wipe\) backwards;\n\}/,
+describe("舞台切换：动效不遮住内容（CSS 口径）", () => {
+  it("模式切换不用整页刷出，只保留 150ms 且起点可读的透明度过渡", () => {
+    expect(css).not.toContain("pf-wipe");
+    expect(css).not.toContain("pf-scan");
+    expect(css).toContain("--pf-t-mode: 150ms var(--pf-ease-out)");
+    const frames = css.match(/@keyframes pf-mode-fade \{[\s\S]*?\n\}/)![0];
+    expect(frames).toContain("opacity: 0.88");
+    expect(frames).not.toContain("opacity: 0;");
+    expect(frames).not.toContain("clip-path");
+    expect(css).toMatch(
+      /\.ef-shell \.ef-nav,\n\.ef-shell \.ef-read,\n\.ef-shell \.ef-system \{\n  animation: pf-mode-fade var\(--pf-t-mode\) both;\n\}/,
     );
-    expect(attachments).not.toBeNull();
-    // 伞作用域保证 reduced-motion 兜底覆盖（.ef-shell * → animation: none）。
+  });
+
+  it("标题不再色块揭幕，样式里直接是墨色", () => {
+    expect(css).not.toContain("pf-text-in");
+    expect(css).not.toContain("pf-block-reveal");
+    expect(css).toMatch(/\.ef-read-title \{[^}]*color: var\(--pf-ink\);/);
+  });
+
+  it("reduced-motion 仍然关掉壳内动画", () => {
     expect(css).toMatch(/\.ef-shell,\n  \.ef-shell \*,/);
     expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)/);
+    expect(css).toContain("animation: none !important");
   });
 });

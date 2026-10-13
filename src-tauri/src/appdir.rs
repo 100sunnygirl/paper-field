@@ -5,6 +5,10 @@
 //! data directories move with it. This runs before `tauri-plugin-sql` opens
 //! `paper-field.db`: if the new directory is missing or empty and the old one
 //! exists, its contents are copied (never moved, never over an existing file).
+//! That copy includes later files in the same directory: `library/`,
+//! `biblio-settings.json`, `llm-settings.json`, `mineru-settings.json`, and
+//! Linux `secrets.json`. Keychain entries are not files; their service name
+//! stays `paper-field` in `secrets`.
 
 use std::collections::HashSet;
 use std::fs;
@@ -472,6 +476,31 @@ mod tests {
             MigrationStatus::Copied { files: 1 }
         );
         assert_eq!(fs::read(new_dir.join("mineru-settings.json")).unwrap(), b"{}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn copies_library_biblio_settings_and_secrets() {
+        let root = scratch();
+        let old = root.join(OLD_IDENTIFIER);
+        let new_dir = root.join(NEW_IDENTIFIER);
+        fs::create_dir_all(old.join("library")).unwrap();
+        fs::write(old.join("paper-field.db"), b"db").unwrap();
+        fs::write(old.join("library").join("paper.pdf"), b"%PDF").unwrap();
+        fs::write(old.join("biblio-settings.json"), br#"{"email":"a@b.c"}"#).unwrap();
+        fs::write(old.join("llm-settings.json"), b"{}").unwrap();
+        fs::write(old.join("mineru-settings.json"), b"{}").unwrap();
+        fs::write(old.join("secrets.json"), br#"{"llm:p":"sk-old"}"#).unwrap();
+
+        let status = migrate_dir(&old, &new_dir).unwrap();
+        assert_eq!(status, MigrationStatus::Copied { files: 6 });
+        assert_eq!(fs::read(new_dir.join("biblio-settings.json")).unwrap(), br#"{"email":"a@b.c"}"#);
+        assert_eq!(fs::read(new_dir.join("library").join("paper.pdf")).unwrap(), b"%PDF");
+        assert_eq!(fs::read(new_dir.join("llm-settings.json")).unwrap(), b"{}");
+        assert_eq!(fs::read(new_dir.join("mineru-settings.json")).unwrap(), b"{}");
+        assert_eq!(fs::read(new_dir.join("secrets.json")).unwrap(), br#"{"llm:p":"sk-old"}"#);
+        assert_eq!(fs::read(old.join("secrets.json")).unwrap(), br#"{"llm:p":"sk-old"}"#);
+        assert!(new_dir.join(MARKER_NAME).is_file());
         let _ = fs::remove_dir_all(&root);
     }
 

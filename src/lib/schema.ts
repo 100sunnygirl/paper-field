@@ -1,4 +1,88 @@
-export const SCHEMA_STATEMENTS = [
+import type { SqlEngine } from "./engine";
+
+/**
+ * Ordered schema versions. `PRAGMA user_version` is the only migration cursor.
+ * Each step may add columns, backfill, and replace triggers (DROP + CREATE).
+ * `CREATE TRIGGER IF NOT EXISTS` is not used for the final bodies: an existing
+ * database would otherwise keep a stale trigger forever.
+ */
+export const SCHEMA_VERSION = 4;
+
+export const DOMAIN_CASCADE_SQL = `CREATE TRIGGER pf_domain_cascade
+    AFTER DELETE ON domains
+    BEGIN
+      DELETE FROM papers WHERE domain_id = OLD.id;
+      DELETE FROM authors WHERE id NOT IN (SELECT author_id FROM paper_authors);
+    END`;
+
+export const PAPER_CASCADE_SQL = `CREATE TRIGGER pf_paper_cascade
+    AFTER DELETE ON papers
+    BEGIN
+      DELETE FROM llm_jobs WHERE paper_id = OLD.id;
+      DELETE FROM paper_parse WHERE paper_id = OLD.id;
+      DELETE FROM notes WHERE paper_id = OLD.id;
+      DELETE FROM paper_authors WHERE paper_id = OLD.id;
+    END`;
+
+/**
+ * One UPDATE of papers.author_replace rewrites that paper's authors.
+ * The trigger body runs inside the same statement, so a failure rolls the
+ * delete and the inserts back together. plugin-sql does not keep a transaction
+ * open across statements, and sql.js rejects INSERT/DELETE inside a CTE.
+ * A global authors row is reused only when affiliation and lab are both set
+ * and match. Blank affiliation never collapses two same-name coauthors.
+ */
+export const AUTHOR_REPLACE_SQL = `CREATE TRIGGER pf_author_replace
+    AFTER UPDATE OF author_replace ON papers
+    WHEN NEW.author_replace IS NOT NULL
+    BEGIN
+      DELETE FROM pf_author_stage WHERE paper_id = NEW.id;
+      INSERT INTO pf_author_stage (paper_id, ord, new_id, name, affiliation, lab, corresponding)
+      SELECT NEW.id,
+             CAST(j.key AS INTEGER),
+             lower(hex(randomblob(16))),
+             TRIM(json_extract(j.value, '$.name')),
+             NULLIF(TRIM(IFNULL(json_extract(j.value, '$.affiliation'), '')), ''),
+             NULLIF(TRIM(IFNULL(json_extract(j.value, '$.lab'), '')), ''),
+             CASE WHEN json_extract(j.value, '$.corresponding') IN (1, '1', 'true') THEN 1 ELSE 0 END
+        FROM json_each(NEW.author_replace) AS j
+       WHERE TRIM(IFNULL(json_extract(j.value, '$.name'), '')) != '';
+      DELETE FROM paper_authors WHERE paper_id = NEW.id;
+      INSERT INTO authors (id, name, name_zh, affiliation, lab, homepage, orcid)
+      SELECT s.new_id, s.name, NULL, s.affiliation, s.lab, NULL, NULL
+        FROM pf_author_stage s
+       WHERE s.paper_id = NEW.id
+         AND NOT (
+           IFNULL(s.affiliation, '') != ''
+           AND IFNULL(s.lab, '') != ''
+           AND EXISTS (
+             SELECT 1 FROM authors a
+              WHERE lower(a.name) = lower(s.name)
+                AND IFNULL(TRIM(a.affiliation), '') = IFNULL(s.affiliation, '')
+                AND IFNULL(TRIM(a.lab), '') = IFNULL(s.lab, '')
+           )
+         );
+      INSERT INTO paper_authors (paper_id, author_id, sort_order, is_corresponding)
+      SELECT s.paper_id,
+             COALESCE(
+               (SELECT a.id FROM authors a
+                 WHERE IFNULL(s.affiliation, '') != ''
+                   AND IFNULL(s.lab, '') != ''
+                   AND lower(a.name) = lower(s.name)
+                   AND IFNULL(TRIM(a.affiliation), '') = IFNULL(s.affiliation, '')
+                   AND IFNULL(TRIM(a.lab), '') = IFNULL(s.lab, '')
+                 LIMIT 1),
+               s.new_id
+             ),
+             s.ord,
+             s.corresponding
+        FROM pf_author_stage s
+       WHERE s.paper_id = NEW.id;
+      DELETE FROM pf_author_stage WHERE paper_id = NEW.id;
+      UPDATE papers SET author_replace = NULL WHERE id = NEW.id;
+    END`;
+
+const BASE_TABLES = [
   `CREATE TABLE IF NOT EXISTS domains (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -9,7 +93,7 @@ export const SCHEMA_STATEMENTS = [
   )`,
   `CREATE TABLE IF NOT EXISTS papers (
     id TEXT PRIMARY KEY,
-    domain_id TEXT NOT NULL REFERENCES domains(id) ON DELETE CASCADE,
+    domain_id TEXT NOT NULL,
     title TEXT NOT NULL,
     title_zh TEXT,
     abstract TEXT NOT NULL DEFAULT '',
@@ -33,13 +117,14 @@ export const SCHEMA_STATEMENTS = [
     mineru_doc_ref TEXT,
     mineru_error TEXT,
     mineru_parse_ids TEXT NOT NULL DEFAULT '[]',
+    mineru_provider TEXT,
     tags TEXT NOT NULL DEFAULT '[]',
     labs TEXT NOT NULL DEFAULT '[]',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   )`,
   `CREATE TABLE IF NOT EXISTS paper_parse (
-    paper_id TEXT PRIMARY KEY REFERENCES papers(id) ON DELETE CASCADE,
+    paper_id TEXT PRIMARY KEY,
     markdown TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL
   )`,
@@ -53,15 +138,15 @@ export const SCHEMA_STATEMENTS = [
     orcid TEXT
   )`,
   `CREATE TABLE IF NOT EXISTS paper_authors (
-    paper_id TEXT NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
-    author_id TEXT NOT NULL REFERENCES authors(id) ON DELETE CASCADE,
+    paper_id TEXT NOT NULL,
+    author_id TEXT NOT NULL,
     sort_order INTEGER NOT NULL,
     is_corresponding INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (paper_id, author_id)
   )`,
   `CREATE TABLE IF NOT EXISTS notes (
     id TEXT PRIMARY KEY,
-    paper_id TEXT NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
+    paper_id TEXT NOT NULL,
     kind TEXT NOT NULL,
     content TEXT NOT NULL DEFAULT '',
     source TEXT NOT NULL DEFAULT 'manual',
@@ -71,7 +156,7 @@ export const SCHEMA_STATEMENTS = [
   )`,
   `CREATE TABLE IF NOT EXISTS llm_jobs (
     id TEXT PRIMARY KEY,
-    paper_id TEXT NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
+    paper_id TEXT NOT NULL,
     type TEXT NOT NULL,
     status TEXT NOT NULL,
     prompt TEXT,
@@ -90,42 +175,188 @@ export const SCHEMA_STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS idx_papers_updated ON papers(updated_at)`,
   `CREATE INDEX IF NOT EXISTS idx_jobs_status ON llm_jobs(status)`,
   `CREATE INDEX IF NOT EXISTS idx_authors_name ON authors(name)`,
-  // 级联删除触发器：DELETE domains / papers 单语句即原子清空全部关联行并扫孤儿作者。
-  // 为什么不用 BEGIN…COMMIT 事务（0.2.8 方案）：Tauri 端 plugin-sql 底层是 sqlx 连接池
-  // （Pool::connect，默认 max 10），每条 execute 独立取连接，BEGIN/语句/COMMIT 会落在
-  // 不同连接上；失败时 ROLLBACK 错位被吞，把池连接留在「未提交事务 + 持锁」状态，此后
-  // 所有写入报 cannot start a transaction within a transaction / database is locked
-  // （app-log.json 2026-10-03 实录）。为什么不用表上已有的 FK ON DELETE CASCADE：
-  // foreign_keys 是每连接 PRAGMA，池化下无法保证每条连接都开启。触发器属于数据库
-  // 本体、不依赖任何 PRAGMA，单语句自带原子性（中途报错自动回滚整条语句）。
-  // 孤儿作者清扫只放在域级联的末尾（不挂在 pf_paper_cascade，更不挂 paper_authors
-  // 的 DELETE 触发器）：deletePaper 按既有契约保留 authors 全局行（repo.test
-  // 「删除论文清理关联行，authors 全局行保留」）；replaceAuthors 也会先删后插同一
-  // 论文的 paper_authors，挂在那会把跨论文复用的 authors 行误删。域删除时统一清扫
-  // 与旧版 sweepOrphanAuthors 语义一致（顺带回收历史 deletePaper 遗留的孤儿）。
-  `CREATE TRIGGER IF NOT EXISTS pf_domain_cascade
-    AFTER DELETE ON domains
-    BEGIN
-      DELETE FROM papers WHERE domain_id = OLD.id;
-      DELETE FROM authors WHERE id NOT IN (SELECT author_id FROM paper_authors);
-    END`,
-  `CREATE TRIGGER IF NOT EXISTS pf_paper_cascade
-    AFTER DELETE ON papers
-    BEGIN
-      DELETE FROM llm_jobs WHERE paper_id = OLD.id;
-      DELETE FROM paper_parse WHERE paper_id = OLD.id;
-      DELETE FROM notes WHERE paper_id = OLD.id;
-      DELETE FROM paper_authors WHERE paper_id = OLD.id;
-    END`,
+  `CREATE INDEX IF NOT EXISTS idx_papers_pdf_path ON papers(pdf_path)`,
 ];
 
-export const PAPER_MIGRATIONS = [
-  "ALTER TABLE papers ADD COLUMN pdf_path TEXT",
-  "ALTER TABLE papers ADD COLUMN user_meta_touched INTEGER NOT NULL DEFAULT 0",
-  "ALTER TABLE papers ADD COLUMN mineru_status TEXT",
-  "ALTER TABLE papers ADD COLUMN mineru_parse_id INTEGER",
-  "ALTER TABLE papers ADD COLUMN mineru_doc_ref TEXT",
-  "ALTER TABLE papers ADD COLUMN mineru_error TEXT",
-  "ALTER TABLE papers ADD COLUMN mineru_parse_ids TEXT NOT NULL DEFAULT '[]'",
-  "ALTER TABLE papers ADD COLUMN mineru_provider TEXT",
+/** Columns that older CREATE TABLE bodies may lack. Definition includes the name. */
+const V1_PAPER_COLUMNS: Array<[string, string]> = [
+  ["pdf_path", "pdf_path TEXT"],
+  ["user_meta_touched", "user_meta_touched INTEGER NOT NULL DEFAULT 0"],
+  ["mineru_status", "mineru_status TEXT"],
+  ["mineru_parse_id", "mineru_parse_id INTEGER"],
+  ["mineru_doc_ref", "mineru_doc_ref TEXT"],
+  ["mineru_error", "mineru_error TEXT"],
+  ["mineru_parse_ids", "mineru_parse_ids TEXT NOT NULL DEFAULT '[]'"],
+  ["mineru_provider", "mineru_provider TEXT"],
 ];
+
+async function columnExists(engine: SqlEngine, table: string, name: string): Promise<boolean> {
+  const rows = await engine.select<{ name: string }>(
+    `SELECT name FROM pragma_table_info('${table}') WHERE name = ?`,
+    [name],
+  );
+  return rows.length > 0;
+}
+
+async function addColumn(engine: SqlEngine, table: string, name: string, definition: string): Promise<void> {
+  if (await columnExists(engine, table, name)) return;
+  await engine.execute(`ALTER TABLE ${table} ADD COLUMN ${definition}`);
+}
+
+async function migrateV1(engine: SqlEngine): Promise<void> {
+  for (const statement of BASE_TABLES) {
+    await engine.execute(statement);
+  }
+  for (const [name, definition] of V1_PAPER_COLUMNS) {
+    await addColumn(engine, "papers", name, definition);
+  }
+  await engine.execute("DROP TRIGGER IF EXISTS pf_domain_cascade");
+  await engine.execute("DROP TRIGGER IF EXISTS pf_paper_cascade");
+  await engine.execute(DOMAIN_CASCADE_SQL);
+  await engine.execute(PAPER_CASCADE_SQL);
+}
+
+async function migrateV2(engine: SqlEngine): Promise<void> {
+  await addColumn(engine, "papers", "field_sources", "field_sources TEXT NOT NULL DEFAULT '{}'");
+  await addColumn(engine, "papers", "meta_confidence", "meta_confidence REAL");
+  await addColumn(engine, "papers", "meta_rev", "meta_rev INTEGER NOT NULL DEFAULT 0");
+  await addColumn(engine, "papers", "pdf_original_path", "pdf_original_path TEXT");
+  await backfillFieldSources(engine);
+}
+
+interface LegacyPaperSourceRow {
+  id: string;
+  title: string;
+  title_zh: string | null;
+  abstract: string | null;
+  year: number | null;
+  venue: string | null;
+  doi: string | null;
+  arxiv_id: string | null;
+  pdf_url: string | null;
+  code_url: string | null;
+  code_open_source: string | null;
+  project_page: string | null;
+  tags: string | null;
+  labs: string | null;
+  user_meta_touched: number | null;
+}
+
+/** Existing non-empty fields become user-owned or model-owned so the first lookup does not clobber a library. */
+async function backfillFieldSources(engine: SqlEngine): Promise<void> {
+  const rows = await engine.select<LegacyPaperSourceRow>(
+    `SELECT id, title, title_zh, abstract, year, venue, doi, arxiv_id, pdf_url, code_url,
+            code_open_source, project_page, tags, labs, user_meta_touched
+       FROM papers`,
+  );
+  for (const row of rows) {
+    const src = row.user_meta_touched ? "user" : "llm";
+    const sources: Record<string, string> = {};
+    if (row.title?.trim() && row.title !== "未命名论文") sources.title = src;
+    if (row.title_zh?.trim()) sources.titleZh = src;
+    if (row.abstract?.trim()) sources.abstract = src;
+    if (row.year != null) sources.year = src;
+    if (row.venue?.trim()) sources.venue = src;
+    if (row.doi?.trim()) sources.doi = src;
+    if (row.arxiv_id?.trim()) sources.arxivId = src;
+    if (row.pdf_url?.trim()) sources.pdfUrl = src;
+    if (row.code_url?.trim()) sources.codeUrl = src;
+    if (row.project_page?.trim()) sources.projectPage = src;
+    if (row.code_open_source && row.code_open_source !== "unknown") sources.codeOpenSource = src;
+    if (row.tags && row.tags !== "[]") sources.tags = src;
+    if (row.labs && row.labs !== "[]") sources.labs = src;
+    const authors = await engine.select<{ c: number }>(
+      "SELECT COUNT(*) AS c FROM paper_authors WHERE paper_id = ?",
+      [row.id],
+    );
+    if (Number(authors[0]?.c ?? 0) > 0) sources.authors = src;
+    if (Object.keys(sources).length) {
+      await engine.execute("UPDATE papers SET field_sources = ? WHERE id = ?", [JSON.stringify(sources), row.id]);
+    }
+  }
+}
+
+/**
+ * paper_authors was keyed by (paper_id, author_id), so two coauthors who share
+ * a name and have no affiliation collapsed into one row. Position in the paper
+ * is the key; global author reuse happens only in the write path.
+ * Triggers are replaced again so a later edit of their bodies reaches existing databases.
+ */
+async function migrateV3(engine: SqlEngine): Promise<void> {
+  // Triggers reference paper_authors. Drop them before the table is rebuilt,
+  // or SQLite refuses the DROP with "no such table: paper_authors".
+  await engine.execute("DROP TRIGGER IF EXISTS pf_domain_cascade");
+  await engine.execute("DROP TRIGGER IF EXISTS pf_paper_cascade");
+  const tables = await engine.select<{ name: string }>(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'paper_authors'",
+  );
+  if (tables.length) {
+    await engine.execute("DROP TABLE IF EXISTS paper_authors_next");
+    await engine.execute(
+      `CREATE TABLE paper_authors_next (
+        paper_id TEXT NOT NULL,
+        author_id TEXT NOT NULL,
+        sort_order INTEGER NOT NULL,
+        is_corresponding INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (paper_id, sort_order)
+      )`,
+    );
+    await engine.execute(
+      `INSERT INTO paper_authors_next (paper_id, author_id, sort_order, is_corresponding)
+       SELECT paper_id, author_id,
+              ROW_NUMBER() OVER (PARTITION BY paper_id ORDER BY sort_order, author_id) - 1,
+              is_corresponding
+         FROM paper_authors`,
+    );
+    await engine.execute("DROP TABLE paper_authors");
+    await engine.execute("ALTER TABLE paper_authors_next RENAME TO paper_authors");
+  }
+  await engine.execute(DOMAIN_CASCADE_SQL);
+  await engine.execute(PAPER_CASCADE_SQL);
+  await addColumn(engine, "papers", "author_replace", "author_replace TEXT");
+  await engine.execute(`CREATE TABLE IF NOT EXISTS pf_author_stage (
+    paper_id TEXT NOT NULL,
+    ord INTEGER NOT NULL,
+    new_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    affiliation TEXT,
+    lab TEXT,
+    corresponding INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (paper_id, ord)
+  )`);
+  await engine.execute("DROP TRIGGER IF EXISTS pf_author_replace");
+  await engine.execute(AUTHOR_REPLACE_SQL);
+}
+
+async function migrateV4(engine: SqlEngine): Promise<void> {
+  await addColumn(engine, "papers", "field_providers", "field_providers TEXT NOT NULL DEFAULT '{}'");
+}
+
+const MIGRATIONS: Array<{ version: number; up: (engine: SqlEngine) => Promise<void> }> = [
+  { version: 1, up: migrateV1 },
+  { version: 2, up: migrateV2 },
+  { version: 3, up: migrateV3 },
+  { version: 4, up: migrateV4 },
+];
+
+export async function userVersion(engine: SqlEngine): Promise<number> {
+  const rows = await engine.select<{ user_version: number }>("PRAGMA user_version");
+  return Number(rows[0]?.user_version ?? 0);
+}
+
+export async function tableExists(engine: SqlEngine, name: string): Promise<boolean> {
+  const rows = await engine.select<{ name: string }>(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+    [name],
+  );
+  return rows.length > 0;
+}
+
+/** Run every migration newer than `fromVersion`, then stamp user_version. */
+export async function runMigrations(engine: SqlEngine, fromVersion: number): Promise<void> {
+  for (const migration of MIGRATIONS) {
+    if (migration.version <= fromVersion) continue;
+    await migration.up(engine);
+    await engine.execute(`PRAGMA user_version = ${migration.version}`);
+  }
+}

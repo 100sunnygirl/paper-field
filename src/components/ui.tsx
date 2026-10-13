@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { OPEN_SOURCE_LABELS, type OpenSource } from "../lib/types";
+import { biblioProviderLabel, FIELD_SOURCE_LABELS, OPEN_SOURCE_LABELS, type FieldSource, type OpenSource } from "../lib/types";
+import { openExternal, safeHttpUrl } from "../lib/urls";
 
 export type ButtonVariant = "primary" | "secondary" | "text" | "danger" | "link";
 export type ButtonSize = "md" | "sm";
@@ -257,6 +258,13 @@ export function OpenChip({ value }: { value: string }) {
   return <span className={`ef-chip ${key}`}>{OPEN_SOURCE_LABELS[key]}</span>;
 }
 
+export function SourceBadge({ source, provider }: { source?: FieldSource | null; provider?: string | null }) {
+  if (!source) return null;
+  const database = source === "api" ? biblioProviderLabel(provider) : null;
+  const label = database ? `${FIELD_SOURCE_LABELS.api} · ${database}` : FIELD_SOURCE_LABELS[source];
+  return <span className="ef-source-badge">{label}</span>;
+}
+
 export function ExternalResource({
   href,
   icon,
@@ -266,8 +274,17 @@ export function ExternalResource({
   icon: IconName;
   children: ReactNode;
 }) {
+  const safe = safeHttpUrl(href);
+  if (!safe) return null;
   return (
-    <a className="ef-resource-link" href={href} target="_blank" rel="noreferrer">
+    <a
+      className="ef-resource-link"
+      href={safe}
+      onClick={(event) => {
+        event.preventDefault();
+        void openExternal(safe);
+      }}
+    >
       <Icon name={icon} />
       <span>{children}</span>
       <Icon name="external" />

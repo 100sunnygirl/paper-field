@@ -1,6 +1,6 @@
 //! LLM 多提供商接入：预设 + 顺序故障转移 + 测试连接 + 模型发现 + 轻量用量统计。
 //!
-//! - llm-settings.json v2：providers 数组顺序即回退顺序；密钥只存本机、永不出后端；
+//! - llm-settings.json v2：providers 数组顺序即回退顺序；密钥在 macOS Keychain / Windows 凭据管理器（其他平台为 0600 的 secrets.json），设置文件与 .v1.bak 不留明文；
 //! - 旧版扁平格式（无 version 字段的 {baseUrl, model, apiKey}）读入时自动迁移为
 //!   一条 provider 记录（baseUrl 反查预设），备份 llm-settings.json.v1.bak 后写回 v2；
 //! - llm_complete 依序尝试「启用且密钥就绪」的提供商：单提供商内保留有界重试
@@ -21,6 +21,8 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, State};
 
 use crate::app_config_dir;
+use crate::io_util::atomic_write;
+use crate::secrets::{llm_account, redact_secrets, scrub_json_secrets, store_for};
 
 // ---------- 预设反查表（仅迁移用；唯一权威在 TS 侧 src/lib/settings.ts） ----------
 
@@ -221,24 +223,37 @@ fn usage_file(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app_config_dir(app)?.join("llm-usage.json"))
 }
 
-fn write_file_at(path: &Path, file: &LlmFileV2) -> Result<(), String> {
-    let raw = serde_json::to_string_pretty(file).map_err(|e| e.to_string())?;
-    fs::write(path, raw).map_err(|e| format!("写入 LLM 设置失败：{e}"))
+fn write_public_llm(path: &Path, file: &LlmFileV2) -> Result<(), String> {
+    let mut public = file.clone();
+    for provider in &mut public.providers {
+        provider.api_key.clear();
+    }
+    let raw = serde_json::to_string_pretty(&public).map_err(|err| err.to_string())?;
+    atomic_write(path, raw.as_bytes())
 }
 
-/// 解析设置原文；无 version 字段（v1 扁平）自动迁移为 v2，version>2 直接报错
-/// （静默迁移新版本会把用户数据洗掉）。返回 (文件, 是否发生了迁移)。
+fn write_file_at(path: &Path, file: &LlmFileV2) -> Result<(), String> {
+    let store = store_for(path.parent().unwrap_or_else(|| Path::new(".")));
+    for provider in &file.providers {
+        store.set(&llm_account(&provider.id), provider.api_key.trim())?;
+    }
+    write_public_llm(path, file)
+}
+
+/// 解析设置原文。坏 JSON 或 v2 形态损坏时返回错误并保留原文件，不当成 v1 迁移。
+/// 无 version 的对象仍按 v1 扁平格式迁移。version>2 直接报错。
 fn parse_settings(raw: &str) -> Result<(LlmFileV2, bool), String> {
-    // 历史镜像写入曾把文件写成异格式甚至坏 JSON；沿用「不让启动失败」的宽容策略：
-    // 解析失败按空 v1 处理（回落旧默认值），而不是报错。
-    let value: Value = serde_json::from_str(raw).unwrap_or(Value::Null);
+    let value: Value = serde_json::from_str(raw)
+        .map_err(|err| format!("LLM 设置无法解析，已保留原文件：{err}"))?;
+    if !value.is_object() {
+        return Err("LLM 设置不是 JSON 对象，已保留原文件".into());
+    }
     match value.get("version").and_then(Value::as_u64) {
-        Some(2) => match serde_json::from_value::<LlmFileV2>(value) {
-            Ok(file) => Ok((file, false)),
-            // v2 形态但字段类型坏（如 providers 不是数组）：同样不让启动失败，
-            // 回落空 v2 并按迁移处理，让 read_or_migrate_at 先备份原文再重写。
-            Err(_) => Ok((LlmFileV2::default(), true)),
-        },
+        Some(2) => {
+            let file = serde_json::from_value::<LlmFileV2>(value)
+                .map_err(|err| format!("LLM 设置无法解析，已保留原文件：{err}"))?;
+            Ok((file, false))
+        }
         Some(version) => Err(format!("LLM 设置版本过新（v{version}），请升级应用后再试")),
         None => Ok((migrate_v1(&value), true)),
     }
@@ -270,19 +285,59 @@ fn migrate_v1(value: &Value) -> LlmFileV2 {
 
 /// 读取（含迁移）：v1 → 先备份 llm-settings.json.v1.bak（仅一次）→ 写回 v2。
 /// 抽成基于路径的函数，便于测试备份与回写行为。
+fn scrub_settings_backup(path: &Path) -> Result<(), String> {
+    let bak = backup_path(path);
+    if !bak.exists() {
+        return Ok(());
+    }
+    let raw = fs::read_to_string(&bak).map_err(|err| format!("读取 LLM 设置备份失败：{err}"))?;
+    let cleaned = scrub_json_secrets(&raw);
+    if cleaned != raw {
+        atomic_write(&bak, cleaned.as_bytes())?;
+    }
+    Ok(())
+}
+
+fn write_scrubbed_backup(path: &Path, raw: &str) -> Result<(), String> {
+    let bak = backup_path(path);
+    let scrubbed = scrub_json_secrets(raw);
+    if bak.exists() {
+        let millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis())
+            .unwrap_or(0);
+        let stamped = PathBuf::from(format!("{bak}.{millis}", bak = bak.display()));
+        atomic_write(&stamped, scrubbed.as_bytes())?;
+    } else {
+        atomic_write(&bak, scrubbed.as_bytes())?;
+    }
+    scrub_settings_backup(path)
+}
+
 fn read_or_migrate_at(path: &Path) -> Result<LlmFileV2, String> {
     if !path.exists() {
         return Ok(LlmFileV2::default());
     }
-    let raw = fs::read_to_string(path).map_err(|e| format!("读取 LLM 设置失败：{e}"))?;
+    let raw = fs::read_to_string(path).map_err(|err| format!("读取 LLM 设置失败：{err}"))?;
+    scrub_settings_backup(path)?;
     let (mut file, migrated) = parse_settings(&raw)?;
-    if migrated {
-        let bak = backup_path(path);
-        if !bak.exists() {
-            fs::copy(path, &bak).map_err(|e| format!("备份旧版 LLM 设置失败：{e}"))?;
+    let store = store_for(path.parent().unwrap_or_else(|| Path::new(".")));
+    let mut lifted = false;
+    for provider in &mut file.providers {
+        let key = provider.api_key.trim().to_string();
+        if !key.is_empty() {
+            store.set(&llm_account(&provider.id), &key)?;
+            lifted = true;
+        } else if let Some(secret) = store.get(&llm_account(&provider.id))? {
+            provider.api_key = secret;
+        }
+    }
+    if migrated || lifted {
+        if migrated {
+            write_scrubbed_backup(path, &raw)?;
         }
         file.version = 2;
-        write_file_at(path, &file)?;
+        write_public_llm(path, &file)?;
     }
     Ok(file)
 }
@@ -464,15 +519,23 @@ struct UsageMemory {
     entries: HashMap<String, UsageEntry>,
 }
 
+struct JobBook {
+    handles: HashMap<String, tokio::task::AbortHandle>,
+    cancelled: HashMap<String, ()>,
+}
+
 pub struct LlmState {
-    jobs: Mutex<HashMap<String, tokio::task::AbortHandle>>,
+    jobs: Mutex<JobBook>,
     usage: Mutex<UsageMemory>,
 }
 
 impl LlmState {
     pub fn new() -> Self {
         Self {
-            jobs: Mutex::new(HashMap::new()),
+            jobs: Mutex::new(JobBook {
+                handles: HashMap::new(),
+                cancelled: HashMap::new(),
+            }),
             usage: Mutex::new(UsageMemory::default()),
         }
     }
@@ -593,12 +656,16 @@ fn parse_retry_after_secs(value: &str) -> Option<u64> {
 
 /// OpenAI 兼容端点的标准错误体 {"error":{"message":..}}；解析失败时退回原文前 240 字符。
 fn extract_error_detail(body: &str) -> String {
-    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(body) {
+    let detail = if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(body) {
         if let Some(message) = parsed["error"]["message"].as_str() {
-            return message.chars().take(240).collect();
+            message.chars().take(240).collect()
+        } else {
+            body.chars().take(240).collect()
         }
-    }
-    body.chars().take(240).collect()
+    } else {
+        body.chars().take(240).collect::<String>()
+    };
+    redact_secrets(&detail)
 }
 
 /// 把状态码 + 细节翻译成用户可行动的中文提示。
@@ -987,17 +1054,26 @@ pub async fn llm_complete(
         return Err("NO_API_KEY".into());
     }
     let job_key = job_id.clone();
-    // 取消传播：任务持有多提供商回退循环，abort 直接杀掉整个任务，
-    // 不会吞掉取消、也不会把取消误当成某一家失败而转移到下一家。
+    // 取消传播：先占位再放行请求，避免 cancel 落在 spawn 与登记 abort handle 之间。
+    let (permit_tx, permit_rx) = tokio::sync::oneshot::channel::<()>();
     let handle = tokio::spawn(async move {
+        let _ = permit_rx.await;
         complete_with_fallback(&candidates, &system_prompt, &user_prompt).await
     });
-    if let Ok(mut jobs) = state.jobs.lock() {
-        jobs.insert(job_key.clone(), handle.abort_handle());
+    {
+        let mut jobs = state.jobs.lock().unwrap_or_else(|err| err.into_inner());
+        if jobs.cancelled.remove(&job_key).is_some() {
+            drop(jobs);
+            handle.abort();
+            return Err("LLM job cancelled".into());
+        }
+        jobs.handles.insert(job_key.clone(), handle.abort_handle());
     }
+    let _ = permit_tx.send(());
     let outcome = handle.await.map_err(|_| "LLM job cancelled".to_string())?;
-    if let Ok(mut jobs) = state.jobs.lock() {
-        jobs.remove(&job_key);
+    {
+        let mut jobs = state.jobs.lock().unwrap_or_else(|err| err.into_inner());
+        jobs.handles.remove(&job_key);
     }
     match outcome {
         JobOutcome::Success { content, provider_id, input_tokens, output_tokens } => {
@@ -1017,10 +1093,11 @@ pub async fn llm_complete(
 
 #[tauri::command]
 pub fn llm_cancel(state: State<LlmState>, job_id: String) -> Result<(), String> {
-    if let Ok(mut jobs) = state.jobs.lock() {
-        if let Some(handle) = jobs.remove(&job_id) {
-            handle.abort();
-        }
+    let mut jobs = state.jobs.lock().unwrap_or_else(|err| err.into_inner());
+    if let Some(handle) = jobs.handles.remove(&job_id) {
+        handle.abort();
+    } else {
+        jobs.cancelled.insert(job_id, ());
     }
     Ok(())
 }
@@ -1112,16 +1189,21 @@ mod tests {
     }
 
     #[test]
-    fn migrate_v1_empty_fields_fall_back_to_openai_defaults() {
-        // 空 JSON / 坏 JSON / 空对象都按 v1 缺省迁移，不让启动失败
-        for raw in ["{}", "not json at all", "null"] {
-            let (file, migrated) = parse_settings(raw).unwrap();
-            assert!(migrated, "{raw}");
-            let p = &file.providers[0];
-            assert_eq!(p.base_url, V1_DEFAULT_BASE_URL, "{raw}");
-            assert_eq!(p.model, V1_DEFAULT_MODEL, "{raw}");
-            assert_eq!(p.preset_id.as_deref(), Some("openai"), "{raw}");
-            assert_eq!(p.api_key, "", "{raw}");
+    fn migrate_v1_empty_object_falls_back_to_openai_defaults() {
+        let (file, migrated) = parse_settings("{}").unwrap();
+        assert!(migrated);
+        let p = &file.providers[0];
+        assert_eq!(p.base_url, V1_DEFAULT_BASE_URL);
+        assert_eq!(p.model, V1_DEFAULT_MODEL);
+        assert_eq!(p.preset_id.as_deref(), Some("openai"));
+        assert_eq!(p.api_key, "");
+    }
+
+    #[test]
+    fn corrupt_json_is_not_treated_as_v1() {
+        for raw in ["not json at all", "null", "[]"] {
+            let err = parse_settings(raw).unwrap_err();
+            assert!(err.contains("保留原文件") || err.contains("无法解析") || err.contains("不是 JSON"), "{raw}: {err}");
         }
     }
 
@@ -1137,16 +1219,18 @@ mod tests {
 
         let bak = dir.join("llm-settings.json.v1.bak");
         assert!(bak.exists(), "应生成备份 {}", bak.display());
-        assert_eq!(fs::read_to_string(&bak).unwrap(), v1_raw, "备份保留原文");
+        let bak_raw = fs::read_to_string(&bak).unwrap();
+        assert!(bak_raw.contains("deepseek-chat"), "备份保留非密钥字段：{bak_raw}");
+        assert!(!bak_raw.contains("sk-old"), "备份也要抹掉 Key：{bak_raw}");
 
         let rewritten = fs::read_to_string(&path).unwrap();
         assert!(rewritten.contains("\"version\": 2"), "写回 v2：{rewritten}");
-        assert!(rewritten.contains("\"apiKey\": \"sk-old\""), "写回保留 Key：{rewritten}");
+        assert!(!rewritten.contains("sk-old"), "明文 Key 不得留在设置文件：{rewritten}");
 
-        // 二次读取不再迁移，备份也不被覆盖
+        // 二次读取从密钥库取回 Key，不再改写备份。
         let again = read_or_migrate_at(&path).unwrap();
         assert_eq!(again.providers[0].api_key, "sk-old");
-        assert_eq!(fs::read_to_string(&bak).unwrap(), v1_raw);
+        assert!(!fs::read_to_string(&bak).unwrap().contains("sk-old"));
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -1174,32 +1258,24 @@ mod tests {
     }
 
     #[test]
-    fn parse_v2_corrupt_fields_fall_back_to_empty_v2() {
-        // v2 形态但字段类型坏：不让启动失败，回落空 v2（原文由备份保全）。
+    fn parse_v2_corrupt_fields_are_left_untouched() {
         for raw in [r#"{"version":2,"providers":"oops"}"#, r#"{"version":2,"providers":[{"id":123}]}"#] {
-            let (file, migrated) = parse_settings(raw).unwrap();
-            assert!(migrated, "{raw}");
-            assert_eq!(file.version, 2);
-            assert!(file.providers.is_empty(), "{raw}");
+            let err = parse_settings(raw).unwrap_err();
+            assert!(err.contains("无法解析") || err.contains("保留原文件"), "{raw}: {err}");
         }
     }
 
     #[test]
-    fn read_or_migrate_at_backs_up_corrupt_v2_and_rewrites_empty() {
+    fn read_or_migrate_at_refuses_corrupt_v2_without_rewriting() {
         let dir = temp_dir("corrupt-v2");
         let path = dir.join("llm-settings.json");
         let corrupt = r#"{"version":2,"providers":"oops"}"#;
         fs::write(&path, corrupt).unwrap();
 
-        let file = read_or_migrate_at(&path).unwrap();
-        assert!(file.providers.is_empty());
-
-        // 坏原文先备份再重写为空 v2，用户数据不静默丢失
-        let bak = dir.join("llm-settings.json.v1.bak");
-        assert_eq!(fs::read_to_string(&bak).unwrap(), corrupt, "备份保留坏原文");
-        let rewritten = fs::read_to_string(&path).unwrap();
-        assert!(rewritten.contains("\"version\": 2"), "写回 v2：{rewritten}");
-        assert!(!rewritten.contains("oops"), "不再含坏字段：{rewritten}");
+        let err = read_or_migrate_at(&path).unwrap_err();
+        assert!(err.contains("无法解析") || err.contains("保留原文件"), "{err}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), corrupt, "坏文件必须原样保留");
+        assert!(!dir.join("llm-settings.json.v1.bak").exists());
         fs::remove_dir_all(&dir).ok();
     }
 
