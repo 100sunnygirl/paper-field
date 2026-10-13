@@ -148,8 +148,20 @@ fn unpack(src: &Path, staging: &Path) -> Result<Vec<String>, String> {
     Ok(written)
 }
 
+/// What a staged backup contains, returned to the UI before the user confirms.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupSummary {
+    pub papers: i64,
+    /// Newest `papers.updated_at`; `None` for an empty library or an old schema without it.
+    pub latest_updated_at: Option<String>,
+    pub pdfs: usize,
+    pub zip_bytes: u64,
+}
+
 /// `integrity_check` must be `ok` and `user_version` must not be newer than this app.
-pub async fn check_staged_db(db: &Path) -> Result<(), String> {
+/// On success returns the paper count and newest `updated_at`, read on the same connection.
+pub async fn check_staged_db(db: &Path) -> Result<(i64, Option<String>), String> {
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
     use sqlx::Row;
     let options = SqliteConnectOptions::new().filename(db).read_only(true).create_if_missing(false);
@@ -175,7 +187,17 @@ pub async fn check_staged_db(db: &Path) -> Result<(), String> {
         if version > SCHEMA_VERSION {
             return Err(format!("备份来自更新版本的应用（数据库版本 {version}），请先升级应用"));
         }
-        Ok(())
+        let papers: i64 = sqlx::query("SELECT count(*) FROM papers")
+            .fetch_one(&pool)
+            .await
+            .map_err(|e| format!("备份中的数据库缺少文献表：{e}"))?
+            .get(0);
+        // Older schemas may lack updated_at; the summary is informational, so treat that as unknown.
+        let latest: Option<String> = match sqlx::query("SELECT max(updated_at) FROM papers").fetch_one(&pool).await {
+            Ok(row) => row.try_get(0).ok().flatten(),
+            Err(_) => None,
+        };
+        Ok((papers, latest))
     }
     .await;
     pool.close().await;
@@ -200,7 +222,7 @@ fn build_plan(dir: &Path, staged: &[String]) -> Vec<PlanItem> {
     plan
 }
 
-pub async fn stage_restore(dir: &Path, src: &Path) -> Result<(), String> {
+pub async fn stage_restore(dir: &Path, src: &Path) -> Result<BackupSummary, String> {
     if dir.join(MARKER).exists() {
         return Err("上一次恢复还没处理完，请先重启应用".into());
     }
@@ -209,7 +231,13 @@ pub async fn stage_restore(dir: &Path, src: &Path) -> Result<(), String> {
     fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
     let result = async {
         let staged = unpack(src, &staging)?;
-        check_staged_db(&staging.join(DB)).await?;
+        let (papers, latest_updated_at) = check_staged_db(&staging.join(DB)).await?;
+        let summary = BackupSummary {
+            papers,
+            latest_updated_at,
+            pdfs: staged.iter().filter(|d| d.to_ascii_lowercase().ends_with(".pdf")).count(),
+            zip_bytes: fs::metadata(src).map(|m| m.len()).unwrap_or(0),
+        };
         let marker = Marker {
             stage: Stage::Staged,
             created_ms: now_ms(),
@@ -217,7 +245,8 @@ pub async fn stage_restore(dir: &Path, src: &Path) -> Result<(), String> {
             pre: format!("pre-restore-{}", now_ms()),
             plan: build_plan(dir, &staged),
         };
-        write_marker(dir, &marker)
+        write_marker(dir, &marker)?;
+        Ok(summary)
     }
     .await;
     if result.is_err() {
@@ -228,7 +257,7 @@ pub async fn stage_restore(dir: &Path, src: &Path) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn restore_library_backup(app: AppHandle, src: String) -> Result<(), String> {
+pub async fn restore_library_backup(app: AppHandle, src: String) -> Result<BackupSummary, String> {
     stage_restore(&app_config_dir(&app)?, Path::new(&src)).await
 }
 
@@ -508,6 +537,10 @@ mod tests {
     }
 
     fn stage(live: &Path, zip: &Path) -> Result<(), String> {
+        stage_summary(live, zip).map(|_| ())
+    }
+
+    fn stage_summary(live: &Path, zip: &Path) -> Result<BackupSummary, String> {
         tauri::async_runtime::block_on(stage_restore(live, zip))
     }
 
@@ -802,5 +835,60 @@ mod tests {
         assert_eq!(q.len(), 1);
         assert_eq!(fs::read(q[0].path().join("paper-field.db-wal")).unwrap(), b"stray-wal");
         assert!(q[0].path().join("paper-field.db-shm").exists());
+    }
+
+    #[test]
+    fn summary_counts_papers_and_pdfs() {
+        let (live, zip) = setup("summary");
+        let s = stage_summary(&live, &zip).unwrap();
+        assert_eq!(s.papers, 7);
+        assert_eq!(s.pdfs, 2);
+        assert_eq!(s.zip_bytes, fs::metadata(&zip).unwrap().len());
+        assert_eq!(s.latest_updated_at, None, "test schema has no updated_at");
+        assert_original(&live);
+    }
+
+    #[test]
+    fn summary_reads_latest_updated_at() {
+        let d = tmp("summary-ts");
+        let live = d.join("live");
+        fs::create_dir_all(&live).unwrap();
+        let db = d.join("src.db");
+        tauri::async_runtime::block_on(async {
+            let o = SqliteConnectOptions::new().filename(&db).create_if_missing(true);
+            let p = SqlitePoolOptions::new().max_connections(1).connect_with(o).await.unwrap();
+            sqlx::query("CREATE TABLE papers(id INTEGER PRIMARY KEY, updated_at TEXT NOT NULL)").execute(&p).await.unwrap();
+            for t in ["2026-01-02T00:00:00Z", "2026-10-13T09:00:00Z", "2025-05-05T00:00:00Z"] {
+                sqlx::query("INSERT INTO papers(updated_at) VALUES (?)").bind(t).execute(&p).await.unwrap();
+            }
+            sqlx::query("PRAGMA user_version = 4").execute(&p).await.unwrap();
+            p.close().await;
+        });
+        let zip_path = d.join("b.zip");
+        let mut z = zip::ZipWriter::new(File::create(&zip_path).unwrap());
+        z.start_file(DB, zip::write::SimpleFileOptions::default()).unwrap();
+        z.write_all(&fs::read(&db).unwrap()).unwrap();
+        z.finish().unwrap();
+        let s = stage_summary(&live, &zip_path).unwrap();
+        assert_eq!(s.papers, 3);
+        assert_eq!(s.pdfs, 0);
+        assert_eq!(s.latest_updated_at.as_deref(), Some("2026-10-13T09:00:00Z"));
+    }
+
+    #[test]
+    fn summary_of_empty_library_is_zero() {
+        let d = tmp("summary-empty");
+        let live = d.join("live");
+        fs::create_dir_all(&live).unwrap();
+        let db = d.join("src.db");
+        make_db(&db, 4, 0);
+        let zip_path = d.join("b.zip");
+        let mut z = zip::ZipWriter::new(File::create(&zip_path).unwrap());
+        z.start_file(DB, zip::write::SimpleFileOptions::default()).unwrap();
+        z.write_all(&fs::read(&db).unwrap()).unwrap();
+        z.finish().unwrap();
+        let s = stage_summary(&live, &zip_path).unwrap();
+        assert_eq!((s.papers, s.pdfs, s.latest_updated_at), (0, 0, None));
+        assert!(live.join(MARKER).exists());
     }
 }
