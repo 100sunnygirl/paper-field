@@ -164,6 +164,15 @@ function currentList(state: FieldState): PaperListItem[] {
   return state.papers;
 }
 
+const IMPORT_FAILURES_SHOWN = 5;
+
+/** Every failed file (up to 5 in the toast, the rest counted), not just the first. */
+export function importFailureList(failed: Array<{ name: string; message: string }>): string {
+  const shown = failed.slice(0, IMPORT_FAILURES_SHOWN).map((f) => `${f.name}（${f.message}）`).join("、");
+  const rest = failed.length - IMPORT_FAILURES_SHOWN;
+  return rest > 0 ? `${shown} 等，另有 ${rest} 篇` : shown;
+}
+
 export const SEARCH_DEBOUNCE_MS = 250;
 let refreshSeq = 0;
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
@@ -426,10 +435,11 @@ export const useField = create<FieldState>((set, get) => ({
       });
       await get().refresh();
       const skippedText = skippedCount ? `，跳过 ${skippedCount} 篇已在库中` : "";
+      for (const f of failed) log.warn("store", `PDF 导入失败：${f.name}`, f.message);
       if (failed.length) {
         get().setFlash({
           tone: "error",
-          text: `已导入 ${created.length} 篇${skippedText}，${failed.length} 篇失败：${failed[0].name}（${failed[0].message}）。`,
+          text: `已导入 ${created.length} 篇${skippedText}，${failed.length} 篇失败：${importFailureList(failed)}。${failed.length > 1 ? "完整失败列表见日志。" : ""}`,
         });
       }
       if (!created.length) {
