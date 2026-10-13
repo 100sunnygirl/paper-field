@@ -82,20 +82,45 @@ fn import_pdf_to_library(app: tauri::AppHandle, source: String) -> Result<Import
 fn export_files(root: String, files: Vec<ExportFile>) -> Result<(), String> {
     let root = PathBuf::from(root);
     fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+    let root = root.canonicalize().map_err(|e| e.to_string())?;
     for file in files {
-        if file.relative_path.contains("..") {
-            return Err("invalid export path".into());
-        }
-        let dest = root.join(&file.relative_path);
-        if let Some(parent) = dest.parent() {
-            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
-        if !dest.starts_with(&root) {
-            return Err("invalid export path".into());
-        }
-        fs::write(dest, file.content).map_err(|e| e.to_string())?;
+        export_one(&root, &file.relative_path, file.content.as_bytes())?;
     }
     Ok(())
+}
+
+/// Writes `content` to `root/rel`, creating directories one level at a time.
+/// Rejects absolute paths, `..`, `.`, and any symlink along the way.
+fn export_one(root: &std::path::Path, rel: &str, content: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    use std::path::Component;
+    const INVALID: &str = "invalid export path";
+    let comps: Vec<_> = std::path::Path::new(rel).components().collect();
+    if comps.is_empty() {
+        return Err(INVALID.into());
+    }
+    let mut cur = root.to_path_buf();
+    for (i, c) in comps.iter().enumerate() {
+        let Component::Normal(part) = c else { return Err(INVALID.into()) };
+        cur.push(part);
+        let last = i + 1 == comps.len();
+        match fs::symlink_metadata(&cur) {
+            Ok(m) if m.file_type().is_symlink() => return Err(INVALID.into()),
+            Ok(m) if !last && !m.is_dir() => return Err(INVALID.into()),
+            Ok(m) if last && m.is_dir() => return Err(INVALID.into()),
+            Err(_) if !last => fs::create_dir(&cur).map_err(|e| e.to_string())?,
+            _ => {}
+        }
+    }
+    let mut opts = fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut out = opts.open(&cur).map_err(|e| e.to_string())?;
+    out.write_all(content).map_err(|e| e.to_string())
 }
 
 fn build_menu(app: &tauri::App) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
@@ -190,4 +215,124 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Paper Field");
+}
+
+#[cfg(test)]
+mod tester_export_repro {
+    use super::*;
+    fn f(p: &str) -> ExportFile { ExportFile { relative_path: p.into(), content: "x".into() } }
+    fn tmp(n: &str) -> PathBuf { let d = std::env::temp_dir().join(format!("pf-tester-{n}-{}", std::process::id())); let _ = fs::remove_dir_all(&d); fs::create_dir_all(&d).unwrap(); d }
+    #[test] fn e1_absolute_path_rejected_without_side_effect() {
+        let base = tmp("e1"); let root = base.join("root"); let outside = base.join("outside");
+        let r = export_files(root.to_string_lossy().into(), vec![f(&format!("{}/sub/a.md", outside.display()))]);
+        assert!(r.is_err(), "absolute path should be rejected");
+        assert!(!outside.exists(), "BUG: dir created outside root: {}", outside.display());
+    }
+    #[test] fn e2_dotdot_rejected() {
+        let base = tmp("e2"); let root = base.join("root");
+        assert!(export_files(root.to_string_lossy().into(), vec![f("../evil/a.md")]).is_err());
+        assert!(!base.join("evil").exists());
+    }
+    #[test] fn e3_double_dot_in_filename_allowed() {
+        let root = tmp("e3");
+        export_files(root.to_string_lossy().into(), vec![f("a..b.md")]).expect("a..b.md is a legal filename");
+        assert!(root.join("a..b.md").exists());
+    }
+    #[cfg(unix)] #[test] fn e4_symlink_escape_rejected() {
+        let base = tmp("e4"); let root = base.join("root"); let outside = base.join("outside");
+        fs::create_dir_all(&root).unwrap(); fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
+        let r = export_files(root.to_string_lossy().into(), vec![f("link/a.md")]);
+        assert!(r.is_err() && !outside.join("a.md").exists(), "BUG: wrote through symlink to {}", outside.join("a.md").display());
+    }
+    #[test] fn e6_reexport_overwrites() {
+        let root = tmp("e6");
+        export_files(root.to_string_lossy().into(), vec![f("a.md")]).unwrap();
+        export_files(root.to_string_lossy().into(), vec![ExportFile{relative_path:"a.md".into(),content:"new".into()}]).expect("re-export must succeed");
+        assert_eq!(fs::read_to_string(root.join("a.md")).unwrap(), "new");
+    }
+    #[cfg(unix)] #[test] fn e7_final_symlink_file_rejected() {
+        let base = tmp("e7"); let root = base.join("root"); fs::create_dir_all(&root).unwrap();
+        fs::write(base.join("target.txt"), "orig").unwrap();
+        std::os::unix::fs::symlink(base.join("target.txt"), root.join("a.md")).unwrap();
+        assert!(export_files(root.to_string_lossy().into(), vec![f("a.md")]).is_err());
+        assert_eq!(fs::read_to_string(base.join("target.txt")).unwrap(), "orig");
+    }
+    #[test] fn e5_nested_ok() {
+        let root = tmp("e5");
+        export_files(root.to_string_lossy().into(), vec![f("x/y/z.md")]).unwrap();
+        assert_eq!(fs::read_to_string(root.join("x/y/z.md")).unwrap(), "x");
+    }
+}
+
+#[cfg(test)]
+mod export_tests {
+    use super::export_one;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn scratch(name: &str) -> (PathBuf, PathBuf) {
+        let base = std::env::temp_dir().join(format!("pf-export-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let root = base.join("root");
+        fs::create_dir_all(&root).unwrap();
+        (base, root.canonicalize().unwrap())
+    }
+
+    #[test]
+    fn rejects_absolute_path_without_creating_dirs() {
+        let (base, root) = scratch("e1");
+        let outside = base.join("outside").join("a.md");
+        assert!(export_one(&root, outside.to_str().unwrap(), b"x").is_err());
+        assert!(!base.join("outside").exists());
+    }
+
+    #[test]
+    fn rejects_parent_dir() {
+        let (base, root) = scratch("e2");
+        assert!(export_one(&root, "../outside/a.md", b"x").is_err());
+        assert!(!base.join("outside").exists());
+    }
+
+    #[test]
+    fn accepts_double_dot_inside_file_name() {
+        let (_base, root) = scratch("e3");
+        export_one(&root, "a..b.md", b"ok").unwrap();
+        assert_eq!(fs::read(root.join("a..b.md")).unwrap(), b"ok");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlinked_directory() {
+        let (base, root) = scratch("e4");
+        fs::create_dir_all(base.join("outside")).unwrap();
+        std::os::unix::fs::symlink(base.join("outside"), root.join("link")).unwrap();
+        assert!(export_one(&root, "link/a.md", b"x").is_err());
+        assert!(!base.join("outside/a.md").exists());
+    }
+
+    #[test]
+    fn writes_nested_path() {
+        let (_base, root) = scratch("e5");
+        export_one(&root, "x/y/z.md", b"nested").unwrap();
+        assert_eq!(fs::read(root.join("x/y/z.md")).unwrap(), b"nested");
+    }
+
+    #[test]
+    fn overwrites_existing_file() {
+        let (_base, root) = scratch("e6");
+        export_one(&root, "a.md", b"one").unwrap();
+        export_one(&root, "a.md", b"two").unwrap();
+        assert_eq!(fs::read(root.join("a.md")).unwrap(), b"two");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlinked_target_file() {
+        let (base, root) = scratch("e7");
+        fs::write(base.join("victim.md"), b"orig").unwrap();
+        std::os::unix::fs::symlink(base.join("victim.md"), root.join("a.md")).unwrap();
+        assert!(export_one(&root, "a.md", b"x").is_err());
+        assert_eq!(fs::read(base.join("victim.md")).unwrap(), b"orig");
+    }
 }

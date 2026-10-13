@@ -265,6 +265,9 @@ pub fn migration_plugin<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
     tauri::plugin::Builder::new("appdir-migrate")
         .setup(|app, _api| {
             migrate_on_startup(app);
+            if let Ok(dir) = app.path().app_config_dir() {
+                crate::backup::cleanup_backup_snapshots(&dir);
+            }
             Ok(())
         })
         .build()

@@ -27,6 +27,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 tokio = { version = "1", features = ["sync", "process", "io-util", "time", "rt", "macros"] }
 unicode-normalization = "0.1.25"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+sqlx = { version = "=0.8.6", default-features = false, features = ["sqlite", "runtime-tokio"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3", default-features = false, features = ["apple-native"] }
@@ -40,3 +41,6 @@ lto = true
 opt-level = 3
 panic = "abort"
 strip = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
