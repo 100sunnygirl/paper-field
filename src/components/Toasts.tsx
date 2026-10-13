@@ -28,6 +28,19 @@ function ToastRow({ toast }: { toast: ToastItem }) {
     >
       <span className="sr-only">{TONE_PREFIX[toast.tone]}：</span>
       <span>{toast.text}</span>
+      {toast.action ? (
+        <button
+          type="button"
+          className="ef-toast-action"
+          onClick={() => {
+            const { run } = toast.action!;
+            dismiss(toast.id, "manual");
+            run();
+          }}
+        >
+          {toast.action.label}
+        </button>
+      ) : null}
       <button
         type="button"
         className="ef-toast-close"

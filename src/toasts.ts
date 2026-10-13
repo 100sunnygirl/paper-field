@@ -23,6 +23,7 @@ export interface ToastItem {
   scope?: string;
   /** 停留计时的重置次数：去重刷新时 +1，UI 据此重播倒计时条。 */
   rev?: number;
+  action?: ToastAction;
 }
 
 /** 各级别默认停留时长（毫秒）：错误类更久，与原 flash 自动消失节奏一致。 */
@@ -155,14 +156,27 @@ export interface NotifyOptions {
   durationMs?: number;
   /** 来源标记，随日志事件透出。 */
   scope?: string;
+  /** 一个可点的操作按钮（如「重试」）；带操作的通知不自动消退，免得用户来不及点。 */
+  action?: ToastAction;
+}
+
+export interface ToastAction {
+  label: string;
+  run: () => void;
 }
 
 /** 发出一条通知；同 (tone,text) 已在场时只刷新停留计时（不重复入列、不重复 emit）。 */
 export function notify(tone: ToastTone, text: string, options?: NotifyOptions): void {
+  if (options?.action && options.durationMs === undefined) options = { ...options, durationMs: 0 };
   const existing = items.find((item) => item.tone === tone && item.text === text);
   if (existing) {
     armTimer(existing.id, options?.durationMs ?? existing.durationMs ?? TOAST_DURATION[tone]);
-    items = items.map((item) => (item.id === existing.id ? { ...item, rev: (item.rev ?? 0) + 1 } : item));
+    // A refreshed toast takes the newest action (e.g. retry with the latest failed list).
+    items = items.map((item) =>
+      item.id === existing.id
+        ? { ...item, rev: (item.rev ?? 0) + 1, ...(options?.action ? { action: options.action } : {}) }
+        : item,
+    );
     bump();
     sinkEvent("refresh", { ...existing, scope: options?.scope ?? existing.scope });
     return;
@@ -174,6 +188,7 @@ export function notify(tone: ToastTone, text: string, options?: NotifyOptions): 
     createdAt: nowIso(),
     ...(options?.durationMs !== undefined ? { durationMs: options.durationMs } : {}),
     ...(options?.scope ? { scope: options.scope } : {}),
+    ...(options?.action ? { action: options.action } : {}),
   };
   nextId += 1;
   items = [...items, item];

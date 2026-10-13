@@ -29,7 +29,7 @@ import { redactSecrets } from "./lib/redact";
 import { repo } from "./lib/repo";
 import { cancelChat, completeChat, hasUsableProvider, loadSettings, saveSettings, type LlmSaveInput } from "./lib/settings";
 import { log } from "./lib/logger";
-import { dismissAll, notify } from "./toasts";
+import { dismissAll, notify, type ToastAction } from "./toasts";
 import type {
   AppMode,
   Domain,
@@ -48,6 +48,7 @@ const abortMap = new Map<string, AbortController>();
 interface Flash {
   tone: "ok" | "warn" | "error";
   text: string;
+  action?: ToastAction;
 }
 
 interface FieldState {
@@ -166,10 +167,17 @@ function currentList(state: FieldState): PaperListItem[] {
 }
 
 const IMPORT_FAILURES_SHOWN = 5;
+/** Rust errors often carry full local paths; the toast keeps a short reason, the log keeps all of it. */
+export const IMPORT_REASON_MAX = 60;
+
+export function shortReason(message: string): string {
+  const chars = [...message.replace(/\s+/g, " ").trim()];
+  return chars.length > IMPORT_REASON_MAX ? `${chars.slice(0, IMPORT_REASON_MAX - 1).join("")}…` : chars.join("");
+}
 
 /** Every failed file (up to 5 in the toast, the rest counted), not just the first. */
 export function importFailureList(failed: Array<{ name: string; message: string }>): string {
-  const shown = failed.slice(0, IMPORT_FAILURES_SHOWN).map((f) => `${f.name}（${f.message}）`).join("、");
+  const shown = failed.slice(0, IMPORT_FAILURES_SHOWN).map((f) => `${f.name}（${shortReason(f.message)}）`).join("、");
   const rest = failed.length - IMPORT_FAILURES_SHOWN;
   return rest > 0 ? `${shown} 等，另有 ${rest} 篇` : shown;
 }
@@ -216,7 +224,7 @@ export const useField = create<FieldState>((set, get) => ({
   // 否则会出现「有弹窗、无日志」的盲区（store.test.ts 有零 IPC + 收口防回归用例）。
   setFlash: (flash) => {
     set({ flash });
-    if (flash) notify(flash.tone, flash.text);
+    if (flash) notify(flash.tone, flash.text, flash.action ? { action: flash.action } : undefined);
     else dismissAll("manual");
   },
   setUnsavedNote: (value) => set({ unsavedNote: value }),
@@ -417,7 +425,7 @@ export const useField = create<FieldState>((set, get) => ({
       // 逐篇入库以回报真实进度（n/总数 · 当前文件）；单篇失败不中断整批。
       const created: PaperListItem["id"][] = [];
       let skippedCount = 0;
-      const failed: Array<{ name: string; message: string }> = [];
+      const failed: Array<{ name: string; path: string; message: string }> = [];
       let done = 0;
       for (const path of unique) {
         const name = path.split(/[/\\]/).pop() ?? path;
@@ -426,7 +434,7 @@ export const useField = create<FieldState>((set, get) => ({
           for (const paper of result.created) created.push(paper.id);
           skippedCount += result.skipped.length;
         } catch (err) {
-          failed.push({ name, message: errText(err) });
+          failed.push({ name, path, message: errText(err) });
         }
         done += 1;
         onProgress?.(done, unique.length, name);
@@ -443,6 +451,16 @@ export const useField = create<FieldState>((set, get) => ({
         get().setFlash({
           tone: "error",
           text: `已导入 ${created.length} 篇${skippedText}，${failed.length} 篇失败：${importFailureList(failed)}。${failed.length > 1 ? "完整失败列表见日志。" : ""}`,
+          action: {
+            label: failed.length > 1 ? `重试这 ${failed.length} 篇` : "重试",
+            // Only the failed paths go back in; already-imported ones are not re-sent.
+            run: () => {
+              const retry = failed.map((f) => f.path);
+              get()
+                .importPdfs(retry)
+                .catch((err) => get().setFlash({ tone: "error", text: `重试导入失败：${errText(err)}` }));
+            },
+          },
         });
       }
       if (!created.length) {
