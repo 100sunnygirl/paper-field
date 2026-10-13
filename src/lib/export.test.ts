@@ -111,9 +111,9 @@ describe("buildDomainExport", () => {
   });
 
   it("中文标题进入文件名 slug，领域目录取 code", () => {
-    const files = buildDomainExport(makeDomain(), [makePaper({ title: "视觉指令微调", year: null })]);
-    expect(files[0].relativePath).toBe("MM-01/README.md");
-    expect(files[1].relativePath).toBe("MM-01/n-视觉指令微调.md");
+    const files = buildDomainExport(makeDomain(), [makePaper({ title: "视觉指令微调", year: null })], new Date(2026, 0, 2, 3, 4, 5));
+    expect(files[0].relativePath).toBe("MM-01-20260102-030405/README.md");
+    expect(files[1].relativePath).toBe("MM-01-20260102-030405/n-视觉指令微调.md");
   });
 
   it("浏览器下载名是小写领域代码加 export.md，而不是 download", () => {
@@ -126,5 +126,18 @@ describe("buildDomainExport", () => {
     const readme = files.find((file) => file.relativePath.endsWith("README.md"))!;
     expect(readme.content).toContain("1. [Sample Paper](");
     expect(readme.content).toContain("— read");
+  });
+});
+
+describe("export folder never reuses an existing name", () => {
+  it("suffixes the domain folder with a local timestamp", () => {
+    const files = buildDomainExport(makeDomain(), [makePaper()], new Date(2026, 9, 13, 9, 5, 7));
+    for (const f of files) expect(f.relativePath.split("/")[0]).toMatch(/-20261013-090507$/);
+  });
+
+  it("two exports a second apart go to different folders", () => {
+    const a = buildDomainExport(makeDomain(), [makePaper()], new Date(2026, 0, 1, 0, 0, 0));
+    const b = buildDomainExport(makeDomain(), [makePaper()], new Date(2026, 0, 1, 0, 0, 1));
+    expect(a[0].relativePath.split("/")[0]).not.toBe(b[0].relativePath.split("/")[0]);
   });
 });

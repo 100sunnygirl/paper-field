@@ -60,8 +60,16 @@ export interface ExportFile {
   content: string;
 }
 
-export function buildDomainExport(domain: Domain, papers: PaperDetail[]): ExportFile[] {
-  const folder = slug(domain.code || domain.name);
+/** Local-time `YYYYMMDD-HHmmss`, so each export lands in a fresh folder. */
+export function exportStamp(now: Date): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}-${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}`;
+}
+
+export function buildDomainExport(domain: Domain, papers: PaperDetail[], now: Date = new Date()): ExportFile[] {
+  // Fixed folder names made a second export overwrite the first one, including
+  // any edits the user made to those files; a timestamp suffix never collides.
+  const folder = `${slug(domain.code || domain.name)}-${exportStamp(now)}`;
   // 同年同标题的论文会生成相同 slug 互相覆盖；先统一分配唯一文件名，
   // README 索引与实际文件都使用这份分配结果。
   const used = new Set<string>();
