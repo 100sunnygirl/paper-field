@@ -259,7 +259,8 @@ pub fn check_result_url(raw: &str) -> Result<reqwest::Url, String> {
             return Err("结果下载地址指向内网或本机，已拒绝".into());
         }
     }
-    if host.eq_ignore_ascii_case("localhost") || host.to_ascii_lowercase().ends_with(".localhost") {
+    let name = host.trim_end_matches('.').to_ascii_lowercase();
+    if name == "localhost" || name.ends_with(".localhost") {
         return Err("结果下载地址指向内网或本机，已拒绝".into());
     }
     Ok(url)
@@ -276,14 +277,107 @@ pub async fn download_and_extract_markdown_with(url: &str, limits: ResultLimits)
 
 /// Caller must have run `check_result_url`; split out so tests can use a local server.
 async fn download_checked(url: reqwest::Url, limits: ResultLimits) -> Result<String, String> {
+    download_pinned(url, limits, crate::lookup::proxy_configured(), download_forbidden, system_resolve).await
+}
+
+/// Like `lookup::is_forbidden`, but lets 198.18.0.0/15 through: Clash/Surge
+/// fake-ip (TUN) mode answers every name from that benchmark range without
+/// setting any proxy env var, and the proxy then dials the real host itself.
+fn download_forbidden(ip: std::net::IpAddr) -> bool {
+    let v4 = match ip {
+        std::net::IpAddr::V4(v4) => Some(v4),
+        std::net::IpAddr::V6(v6) => v6.to_ipv4_mapped(),
+    };
+    if v4.is_some_and(|v4| matches!(v4.octets(), [198, 18 | 19, _, _])) {
+        return false;
+    }
+    crate::lookup::is_forbidden(ip)
+}
+
+type Resolver = fn(String, u16) -> std::io::Result<Vec<std::net::SocketAddr>>;
+
+fn system_resolve(host: String, port: u16) -> std::io::Result<Vec<std::net::SocketAddr>> {
+    use std::net::ToSocketAddrs as _;
+    Ok((host.as_str(), port).to_socket_addrs()?.collect())
+}
+
+enum Target {
+    /// Checked address to pin the connection to.
+    Pinned(std::net::SocketAddr),
+    /// Behind a configured proxy whose DNS we cannot pin.
+    ViaProxy,
+}
+
+/// Same rule as `lookup::check_target`: resolve once, refuse if any address is
+/// forbidden, pin to the first. With a proxy, a name we cannot resolve locally
+/// is left to the proxy.
+async fn resolve_target(
+    url: &reqwest::Url,
+    proxied: bool,
+    forbidden: fn(std::net::IpAddr) -> bool,
+    resolve: Resolver,
+) -> Option<Target> {
+    let port = url.port_or_known_default()?;
+    let host = url.host_str()?;
+    let literal = host.trim_start_matches('[').trim_end_matches(']').parse::<std::net::IpAddr>();
+    let addrs = match literal {
+        Ok(ip) => vec![(ip, port).into()],
+        Err(_) => {
+            let name = host.to_string();
+            match tauri::async_runtime::spawn_blocking(move || resolve(name, port)).await {
+                Ok(Ok(addrs)) => addrs,
+                _ if proxied => return Some(Target::ViaProxy),
+                _ => return None,
+            }
+        }
+    };
+    if addrs.is_empty() || addrs.iter().any(|a| forbidden(a.ip())) {
+        return None;
+    }
+    if proxied {
+        Some(Target::ViaProxy)
+    } else {
+        addrs.first().copied().map(Target::Pinned)
+    }
+}
+
+/// Redirects are followed by hand: every hop passes `check_result_url` (after
+/// the first, which the caller checked), then is resolved once, refused if any
+/// address is internal, and the connection is pinned to the checked address so
+/// a second DNS answer cannot point it elsewhere.
+async fn download_pinned(
+    mut url: reqwest::Url,
+    limits: ResultLimits,
+    proxied: bool,
+    forbidden: fn(std::net::IpAddr) -> bool,
+    resolve: Resolver,
+) -> Result<String, String> {
     with_timeout(FETCH_TIMEOUT, async {
-        let client = download_client()?;
-        let mut response = client
-            .get(url)
-            .timeout(Duration::from_secs(FETCH_TIMEOUT.as_secs().max(60)))
-            .send()
-            .await
-            .map_err(|e| format!("下载解析结果失败：{}", error_chain(&redact_url(e))))?;
+        let mut hops = 0;
+        let mut response = loop {
+            let client = download_client(&url, proxied, forbidden, resolve).await?;
+            let response = client
+                .get(url.clone())
+                .timeout(Duration::from_secs(FETCH_TIMEOUT.as_secs().max(60)))
+                .send()
+                .await
+                .map_err(|e| format!("下载解析结果失败：{}", error_chain(&redact_url(e))))?;
+            if !response.status().is_redirection() {
+                break response;
+            }
+            hops += 1;
+            if hops > MAX_REDIRECTS {
+                return Err("下载解析结果失败：重定向次数过多".into());
+            }
+            let next = response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|loc| url.join(loc).ok())
+                .ok_or_else(|| "下载解析结果失败：重定向地址无效".to_string())?;
+            url = check_result_url(next.as_str())
+                .map_err(|_| "下载解析结果失败：结果下载地址重定向到了不允许的地址".to_string())?;
+        };
         if !response.status().is_success() {
             return Err(format!("下载解析结果失败（HTTP {}）", response.status()));
         }
@@ -306,6 +400,8 @@ async fn download_checked(url: reqwest::Url, limits: ResultLimits) -> Result<Str
     })
     .await
 }
+
+const MAX_REDIRECTS: usize = 5;
 
 /// Result URLs are pre-signed; drop query and fragment so signatures never
 /// reach error messages or logs.
@@ -370,23 +466,27 @@ pub fn extract_full_md_with(bytes: &[u8], max_md: u64) -> Result<String, String>
     Err("压缩包中没有 full.md".into())
 }
 
-/// Like `api_client`, but every redirect hop must pass `check_result_url` too.
-fn download_client() -> Result<reqwest::Client, String> {
-    let policy = reqwest::redirect::Policy::custom(|attempt| {
-        if attempt.previous().len() >= 5 {
-            attempt.error("重定向次数过多")
-        } else if check_result_url(attempt.url().as_str()).is_err() {
-            attempt.error("结果下载地址重定向到了不允许的地址")
-        } else {
-            attempt.follow()
-        }
-    });
-    reqwest::Client::builder()
+/// One client per hop, pinned to the address `check_target` approved.
+async fn download_client(
+    url: &reqwest::Url,
+    proxied: bool,
+    forbidden: fn(std::net::IpAddr) -> bool,
+    resolve: Resolver,
+) -> Result<reqwest::Client, String> {
+    let target = resolve_target(url, proxied, forbidden, resolve)
+        .await
+        .ok_or_else(|| "结果下载地址指向内网或本机，已拒绝".to_string())?;
+    let mut builder = reqwest::Client::builder()
         .timeout(Duration::from_secs(60))
         .use_rustls_tls()
-        .redirect(policy)
-        .build()
-        .map_err(|e| format!("创建网络客户端失败：{e}"))
+        .redirect(reqwest::redirect::Policy::none());
+    if let Target::Pinned(addr) = target {
+        builder = builder.no_proxy();
+        if let Some(domain) = url.host_str().filter(|h| h.parse::<std::net::IpAddr>().is_err() && !h.starts_with('[')) {
+            builder = builder.resolve(domain, addr);
+        }
+    }
+    builder.build().map_err(|e| format!("创建网络客户端失败：{e}"))
 }
 
 fn api_client() -> Result<reqwest::Client, String> {
@@ -716,7 +816,114 @@ mod tests {
 
     fn get(url: &str, limits: ResultLimits) -> Result<String, String> {
         let url = reqwest::Url::parse(url).unwrap();
-        tauri::async_runtime::block_on(download_checked(url, limits))
+        // Test servers live on loopback, so nothing is forbidden here.
+        tauri::async_runtime::block_on(download_pinned(url, limits, false, |_| false, system_resolve))
+    }
+
+    /// Listener that reports whether anyone connected.
+    fn tripwire(ip: &str) -> (u16, std::sync::Arc<std::sync::atomic::AtomicBool>) {
+        let l = std::net::TcpListener::bind((ip, 0)).unwrap();
+        let port = l.local_addr().unwrap().port();
+        let hit = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = hit.clone();
+        std::thread::spawn(move || {
+            if l.accept().is_ok() {
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+        (port, hit)
+    }
+
+    #[test]
+    fn name_resolving_to_internal_address_is_refused_before_connecting() {
+        let (port, hit) = tripwire("127.0.0.1");
+        let url = reqwest::Url::parse(&format!("http://localhost:{port}/r.zip")).unwrap();
+        let err = tauri::async_runtime::block_on(download_pinned(
+            url,
+            ResultLimits::default(),
+            false,
+            crate::lookup::is_forbidden,
+            system_resolve,
+        ))
+        .unwrap_err();
+        assert_eq!(err, "结果下载地址指向内网或本机，已拒绝");
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!hit.load(std::sync::atomic::Ordering::SeqCst), "must not connect");
+    }
+
+    /// Injected DNS: `evil.test` points inside, `fake.test` at a fake-ip answer.
+    fn fake_dns(host: String, port: u16) -> std::io::Result<Vec<std::net::SocketAddr>> {
+        match host.as_str() {
+            "evil.test" => Ok(vec![(std::net::Ipv4Addr::new(127, 0, 0, 1), port).into()]),
+            "fake.test" => Ok(vec![(std::net::Ipv4Addr::new(198, 18, 0, 7), port).into()]),
+            "mixed.test" => Ok(vec![
+                (std::net::Ipv4Addr::new(8, 8, 8, 8), port).into(),
+                (std::net::Ipv4Addr::new(10, 0, 0, 5), port).into(),
+            ]),
+            _ => Err(std::io::ErrorKind::NotFound.into()),
+        }
+    }
+
+    #[test]
+    fn redirect_hop_to_name_resolving_internal_is_refused() {
+        // The first hop is the loopback test server; only the redirect target
+        // goes through the real rule.
+        fn forbid_named(ip: std::net::IpAddr) -> bool {
+            ip != std::net::IpAddr::from([127, 0, 0, 1]) && download_forbidden(ip)
+        }
+        let url = serve_raw(b"HTTP/1.1 302 Found\r\nLocation: https://evil.test/x.zip\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec());
+        let url = reqwest::Url::parse(&url).unwrap();
+        fn evil_inside(host: String, port: u16) -> std::io::Result<Vec<std::net::SocketAddr>> {
+            match host.as_str() {
+                "evil.test" => Ok(vec![(std::net::Ipv4Addr::new(10, 0, 0, 5), port).into()]),
+                _ => fake_dns(host, port),
+            }
+        }
+        let err = tauri::async_runtime::block_on(download_pinned(url, ResultLimits::default(), false, forbid_named, evil_inside))
+            .unwrap_err();
+        assert_eq!(err, "结果下载地址指向内网或本机，已拒绝");
+    }
+
+    #[test]
+    fn name_resolving_to_loopback_is_refused_with_injected_dns() {
+        let url = reqwest::Url::parse("https://evil.test/r.zip").unwrap();
+        let t = tauri::async_runtime::block_on(resolve_target(&url, false, download_forbidden, fake_dns));
+        assert!(t.is_none());
+    }
+
+    #[test]
+    fn name_with_one_internal_address_among_public_is_refused() {
+        let url = reqwest::Url::parse("https://mixed.test/r.zip").unwrap();
+        let t = tauri::async_runtime::block_on(resolve_target(&url, false, download_forbidden, fake_dns));
+        assert!(t.is_none(), "any internal address must refuse the whole name");
+    }
+
+    #[test]
+    fn fake_ip_answer_is_allowed_and_pinned() {
+        let url = reqwest::Url::parse("https://fake.test/r.zip").unwrap();
+        let t = tauri::async_runtime::block_on(resolve_target(&url, false, download_forbidden, fake_dns));
+        assert!(matches!(t, Some(Target::Pinned(a)) if a == (std::net::Ipv4Addr::new(198, 18, 0, 7), 443).into()));
+    }
+
+    #[test]
+    fn download_forbidden_only_relaxes_benchmark_range() {
+        for ok in ["198.18.0.1", "198.19.255.254", "::ffff:198.18.0.1", "8.8.8.8"] {
+            assert!(!download_forbidden(ok.parse().unwrap()), "{ok}");
+        }
+        for bad in ["127.0.0.1", "10.0.0.1", "192.168.1.1", "::1", "169.254.169.254"] {
+            assert!(download_forbidden(bad.parse().unwrap()), "{bad}");
+        }
+        for edge in ["198.17.255.255", "198.20.0.0"] {
+            let ip = edge.parse().unwrap();
+            assert_eq!(download_forbidden(ip), crate::lookup::is_forbidden(ip), "{edge}: outside the range, unchanged");
+        }
+        assert!(crate::lookup::is_forbidden("198.18.0.1".parse().unwrap()), "lookup keeps blocking it");
+    }
+
+    #[test]
+    fn trailing_dot_localhost_is_refused() {
+        assert!(check_result_url("https://localhost./r.zip").is_err());
+        assert!(check_result_url("https://a.localhost./r.zip").is_err());
     }
 
     #[test]
