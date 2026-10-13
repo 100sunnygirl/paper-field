@@ -368,7 +368,7 @@ describe("SystemView · AI 服务设置（多提供商）", () => {
     expect(await within(first).findByText(/LLM 鉴权失败：请检查设置页的 API Key/)).toBeInTheDocument();
   });
 
-  it("获取模型列表：datalist 候选 = 拉取列表 ∪ 预设推荐（去重）", async () => {
+  it("获取模型列表：候选 = 拉取列表 ∪ 预设推荐（去重）", async () => {
     useField.setState({ settings: llmSettings(), saveLlmSettings: vi.fn(async () => undefined) });
     primeLlmBrowser();
     const fetchMock = vi.fn(
@@ -381,9 +381,10 @@ describe("SystemView · AI 服务设置（多提供商）", () => {
     fireEvent.click(within(first).getByRole("button", { name: "获取模型列表" }));
     expect(await within(first).findByText(/已获取 2 个模型/)).toBeInTheDocument();
     expect(fetchMock.mock.calls[0]![0]).toBe("https://api.deepseek.com/v1/models");
-    const options = Array.from(first.querySelectorAll("datalist option")).map((option) =>
-      option.getAttribute("value"),
-    );
+    fireEvent.click(within(first).getByRole("button", { name: "展开模型列表" }));
+    const options = within(within(first).getByRole("listbox", { name: "候选模型" }))
+      .getAllByRole("option")
+      .map((option) => option.textContent);
     // 拉取列表由 lib 侧排序（chat 在 coder 前），∪ 预设推荐去重后追加 reasoner。
     expect(options).toEqual(["deepseek-chat", "deepseek-coder", "deepseek-reasoner"]);
   });

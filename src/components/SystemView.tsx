@@ -1,4 +1,5 @@
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
+import { ModelCombobox } from "./ModelCombobox";
 import {
   testMineru,
   type MineruLanguage,
@@ -396,7 +397,7 @@ function LlmSettingsBlock() {
         {rows.map((row, index) => {
           const active = firstUsable?.id === row.id;
           const preset = presetById(row.presetId);
-          // datalist 候选 = 拉取列表 ∪ 预设推荐（去重，拉取的在前列出）。
+          // 模型候选 = 拉取列表 ∪ 预设推荐（去重，拉取的在前列出）。
           const modelOptions = [...new Set([...(fetchedModels[row.id] ?? []), ...(preset?.models ?? [])])];
           return (
             <section
@@ -458,17 +459,13 @@ function LlmSettingsBlock() {
                   />
                 </Field>
                 <Field label="模型">
-                  <input
+                  <ModelCombobox
                     value={row.model}
-                    onChange={(e) => updateRow(row.id, { model: e.target.value })}
-                    list={`ef-models-${row.id}`}
+                    options={modelOptions}
+                    onChange={(model) => updateRow(row.id, { model })}
                     placeholder="model-id"
+                    label="模型"
                   />
-                  <datalist id={`ef-models-${row.id}`}>
-                    {modelOptions.map((model) => (
-                      <option key={model} value={model} />
-                    ))}
-                  </datalist>
                 </Field>
                 <Field label={keyFieldLabel(row)}>
                   <input

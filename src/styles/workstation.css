@@ -3887,3 +3887,20 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 .ef-fulltext[open] summary .ef-ico { transform: rotate(90deg); }
 .ef-fulltext .ef-note-text { margin-top: 6px; animation: pf-fade var(--pf-t-enter); }
 .ef-fulltext .ef-empty-note { margin: 6px 0 0; }
+
+/* Model id combobox (replaces <datalist>, see ModelCombobox.tsx). */
+.ef-combobox { position: relative; display: flex; }
+.ef-combobox > input { flex: 1; min-width: 0; padding-right: 28px; }
+.ef-combobox-toggle {
+  position: absolute; right: 0; top: 0; bottom: 0; width: 28px;
+  border: 0; background: transparent; color: var(--pf-ink); cursor: pointer;
+}
+.ef-combobox-toggle:disabled { opacity: 0.35; cursor: default; }
+.ef-combobox-list {
+  position: absolute; z-index: 20; top: 100%; left: 0; right: 0; margin: 2px 0 0; padding: 4px 0;
+  list-style: none; max-height: 220px; overflow-y: auto;
+  background: var(--pf-surface); border: 1px solid var(--pf-control-border); border-radius: 4px;
+}
+.ef-combobox-list li { padding: 4px 8px; cursor: pointer; color: var(--pf-ink); }
+.ef-combobox-list li[data-active], .ef-combobox-list li:hover { background: var(--pf-hover-flat); }
+.ef-combobox-list li[aria-selected="true"] { font-weight: 600; }
