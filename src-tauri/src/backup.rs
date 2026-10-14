@@ -78,12 +78,60 @@ fn add_scrubbed_settings(zip: &mut ZipWriter<File>, options: SimpleFileOptions, 
 }
 
 #[tauri::command]
-pub fn create_library_backup(app: AppHandle, dest: String) -> Result<(), String> {
+pub async fn create_library_backup(app: AppHandle, dest: String) -> Result<(), String> {
     let dir = config_dir(&app)?;
-    let file = File::create(&dest).map_err(|err| format!("无法创建备份：{err}"))?;
+    let db = dir.join("paper-field.db");
+    let snap = dir.join(format!(".backup-snapshot-{}.db", stamp()));
+    if db.exists() {
+        snapshot_database(&db, &snap).await?;
+    }
+    let result = write_backup_zip(&dir, &snap, &dest);
+    let _ = fs::remove_file(&snap);
+    result
+}
+
+/// Consistent copy of the live database via `VACUUM INTO`, independent of WAL state.
+async fn snapshot_database(db: &Path, snap: &Path) -> Result<(), String> {
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    let options = SqliteConnectOptions::new()
+        .filename(db)
+        .read_only(true)
+        .create_if_missing(false);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .map_err(|err| format!("打开数据库失败：{err}"))?;
+    let result = sqlx::query("VACUUM INTO ?")
+        .bind(snap.to_string_lossy().to_string())
+        .execute(&pool)
+        .await
+        .map(|_| ())
+        .map_err(|err| format!("生成数据库快照失败：{err}"));
+    pool.close().await;
+    if result.is_err() {
+        let _ = fs::remove_file(snap);
+    }
+    result
+}
+
+/// Removes `.backup-snapshot-*.db` files left behind by a crash mid-backup.
+pub fn cleanup_backup_snapshots(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with(".backup-snapshot-") && name.ends_with(".db") {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+fn write_backup_zip(dir: &Path, snap: &Path, dest: &str) -> Result<(), String> {
+    let file = File::create(dest).map_err(|err| format!("无法创建备份：{err}"))?;
     let mut zip = ZipWriter::new(file);
     let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
-    add_file(&mut zip, options, "paper-field.db", &dir.join("paper-field.db"))?;
+    add_file(&mut zip, options, "paper-field.db", snap)?;
     let library = dir.join("library");
     if library.is_dir() {
         for entry in fs::read_dir(&library).map_err(|err| err.to_string())? {
