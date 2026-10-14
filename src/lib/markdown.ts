@@ -11,6 +11,28 @@ marked.setOptions({ gfm: true, breaks: true });
  */
 export const REMOTE_IMG_ATTR = "data-remote-src";
 
+/**
+ * Marks images whose `src` uses a scheme the webview cannot load (e.g. MinerU's
+ * SSH-source internal refs such as `doc:…`; the exact format is not relied on).
+ * DOMPurify drops unknown schemes, which would leave a bare `<img>` with no
+ * placeholder; the mark survives (`data-*`) so `replaceImages` shows the same
+ * "unsaved" notice as API-source `images/x.jpg`. Schemes with existing handling
+ * (http/https, data:, blob:, asset:) are left alone. Setting the mark from user
+ * markdown only yields that notice, never a fetch.
+ */
+const UNSAVED_REF_ATTR = "data-pf-unsaved-ref";
+const HANDLED_SCHEMES = new Set(["http:", "https:", "data:", "blob:", "asset:"]);
+
+function isUnloadableScheme(raw: string): boolean {
+  const src = raw.trim();
+  if (!src || src.startsWith("//")) return false;
+  try {
+    return !HANDLED_SCHEMES.has(new URL(src).protocol);
+  } catch {
+    return false; // no scheme: relative path, handled by classifyImgSrc
+  }
+}
+
 const IMG_EXT = /\.(png|jpe?g|gif|webp|bmp|svg)$/i;
 
 type ImgKind = "remote" | "unsaved" | "keep";
@@ -45,7 +67,7 @@ function replaceImages(html: string): string {
   tpl.innerHTML = html;
   for (const img of Array.from(tpl.content.querySelectorAll("img"))) {
     const raw = img.getAttribute("src") ?? "";
-    const kind = classifyImgSrc(raw);
+    const kind = img.hasAttribute(UNSAVED_REF_ATTR) ? "unsaved" : classifyImgSrc(raw);
     if (kind === "keep") continue;
     const box = document.createElement("span");
     box.className = "ef-md-remote-img";
@@ -66,12 +88,26 @@ function replaceImages(html: string): string {
   return tpl.innerHTML;
 }
 
+function markUnloadableImg(node: Element): void {
+  if (node.nodeName === "IMG" && isUnloadableScheme(node.getAttribute("src") ?? "")) {
+    node.setAttribute(UNSAVED_REF_ATTR, "");
+  }
+}
+
 export function renderMarkdown(source: string): string {
   const html = marked.parse(source || "") as string;
-  const clean = DOMPurify.sanitize(html, {
-    FORBID_TAGS: ["iframe", "object", "embed", "form", "style"],
-    FORBID_ATTR: ["style"],
-  });
+  // Hooks are global on the DOMPurify instance; scope this one to this call and
+  // remove exactly this function so other hooks of the same kind survive.
+  DOMPurify.addHook("beforeSanitizeAttributes", markUnloadableImg);
+  let clean: string;
+  try {
+    clean = DOMPurify.sanitize(html, {
+      FORBID_TAGS: ["iframe", "object", "embed", "form", "style"],
+      FORBID_ATTR: ["style"],
+    });
+  } finally {
+    DOMPurify.removeHook("beforeSanitizeAttributes", markUnloadableImg);
+  }
   return replaceImages(clean);
 }
 
