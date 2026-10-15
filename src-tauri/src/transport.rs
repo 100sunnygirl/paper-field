@@ -381,7 +381,6 @@ mod tests {
     #[cfg(unix)]
     mod process {
         use std::fs;
-        use std::os::unix::fs::PermissionsExt;
         use std::time::{Duration, Instant};
 
         use super::super::*;
@@ -404,12 +403,21 @@ mod tests {
             fs::create_dir_all(&dir).unwrap();
             let script = dir.join("fake-curl.sh");
             fs::write(&script, "#!/bin/sh\nexec cat\n").unwrap();
-            fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
 
             let started = Instant::now();
             let output = tokio::time::timeout(
                 Duration::from_secs(3),
-                run_command(Command::new(&script), Some(b"hello-body")),
+                run_command(
+                    {
+                        // Run via `sh` instead of exec'ing the freshly written
+                        // file: exec can fail with ETXTBSY when a parallel test
+                        // forks while our write handle is still inherited.
+                        let mut cmd = Command::new("sh");
+                        cmd.arg(&script);
+                        cmd
+                    },
+                    Some(b"hello-body"),
+                ),
             )
             .await
             .unwrap();
