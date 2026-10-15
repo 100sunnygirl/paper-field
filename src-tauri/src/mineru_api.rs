@@ -294,52 +294,7 @@ fn download_forbidden(ip: std::net::IpAddr) -> bool {
     crate::lookup::is_forbidden(ip)
 }
 
-type Resolver = fn(String, u16) -> std::io::Result<Vec<std::net::SocketAddr>>;
-
-fn system_resolve(host: String, port: u16) -> std::io::Result<Vec<std::net::SocketAddr>> {
-    use std::net::ToSocketAddrs as _;
-    Ok((host.as_str(), port).to_socket_addrs()?.collect())
-}
-
-enum Target {
-    /// Checked address to pin the connection to.
-    Pinned(std::net::SocketAddr),
-    /// Behind a configured proxy whose DNS we cannot pin.
-    ViaProxy,
-}
-
-/// Same rule as `lookup::check_target`: resolve once, refuse if any address is
-/// forbidden, pin to the first. With a proxy, a name we cannot resolve locally
-/// is left to the proxy.
-async fn resolve_target(
-    url: &reqwest::Url,
-    proxied: bool,
-    forbidden: fn(std::net::IpAddr) -> bool,
-    resolve: Resolver,
-) -> Option<Target> {
-    let port = url.port_or_known_default()?;
-    let host = url.host_str()?;
-    let literal = host.trim_start_matches('[').trim_end_matches(']').parse::<std::net::IpAddr>();
-    let addrs = match literal {
-        Ok(ip) => vec![(ip, port).into()],
-        Err(_) => {
-            let name = host.to_string();
-            match tauri::async_runtime::spawn_blocking(move || resolve(name, port)).await {
-                Ok(Ok(addrs)) => addrs,
-                _ if proxied => return Some(Target::ViaProxy),
-                _ => return None,
-            }
-        }
-    };
-    if addrs.is_empty() || addrs.iter().any(|a| forbidden(a.ip())) {
-        return None;
-    }
-    if proxied {
-        Some(Target::ViaProxy)
-    } else {
-        addrs.first().copied().map(Target::Pinned)
-    }
-}
+use crate::lookup::{check_target_with, system_resolve, Resolved, Resolver};
 
 /// Redirects are followed by hand: every hop passes `check_result_url` (after
 /// the first, which the caller checked), then is resolved once, refused if any
@@ -473,14 +428,14 @@ async fn download_client(
     forbidden: fn(std::net::IpAddr) -> bool,
     resolve: Resolver,
 ) -> Result<reqwest::Client, String> {
-    let target = resolve_target(url, proxied, forbidden, resolve)
+    let target = check_target_with(url, proxied, forbidden, resolve)
         .await
         .ok_or_else(|| "结果下载地址指向内网或本机，已拒绝".to_string())?;
     let mut builder = reqwest::Client::builder()
         .timeout(Duration::from_secs(60))
         .use_rustls_tls()
         .redirect(reqwest::redirect::Policy::none());
-    if let Target::Pinned(addr) = target {
+    if let Resolved::Pinned(addr) = target {
         builder = builder.no_proxy();
         if let Some(domain) = url.host_str().filter(|h| h.parse::<std::net::IpAddr>().is_err() && !h.starts_with('[')) {
             builder = builder.resolve(domain, addr);
@@ -887,22 +842,22 @@ mod tests {
     #[test]
     fn name_resolving_to_loopback_is_refused_with_injected_dns() {
         let url = reqwest::Url::parse("https://evil.test/r.zip").unwrap();
-        let t = tauri::async_runtime::block_on(resolve_target(&url, false, download_forbidden, fake_dns));
+        let t = tauri::async_runtime::block_on(check_target_with(&url, false, download_forbidden, fake_dns));
         assert!(t.is_none());
     }
 
     #[test]
     fn name_with_one_internal_address_among_public_is_refused() {
         let url = reqwest::Url::parse("https://mixed.test/r.zip").unwrap();
-        let t = tauri::async_runtime::block_on(resolve_target(&url, false, download_forbidden, fake_dns));
+        let t = tauri::async_runtime::block_on(check_target_with(&url, false, download_forbidden, fake_dns));
         assert!(t.is_none(), "any internal address must refuse the whole name");
     }
 
     #[test]
     fn fake_ip_answer_is_allowed_and_pinned() {
         let url = reqwest::Url::parse("https://fake.test/r.zip").unwrap();
-        let t = tauri::async_runtime::block_on(resolve_target(&url, false, download_forbidden, fake_dns));
-        assert!(matches!(t, Some(Target::Pinned(a)) if a == (std::net::Ipv4Addr::new(198, 18, 0, 7), 443).into()));
+        let t = tauri::async_runtime::block_on(check_target_with(&url, false, download_forbidden, fake_dns));
+        assert!(matches!(t, Some(Resolved::Pinned(a)) if a == (std::net::Ipv4Addr::new(198, 18, 0, 7), 443).into()));
     }
 
     #[test]

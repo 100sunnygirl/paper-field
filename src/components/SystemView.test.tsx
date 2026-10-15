@@ -578,3 +578,24 @@ describe("SystemView · 文献库", () => {
     expect(screen.getByRole("button", { name: "保存文献库设置" })).toBeInTheDocument();
   });
 });
+
+describe("SystemView · 设置读取失败提示", () => {
+  beforeEach(() => {
+    useField.setState(useField.getInitialState(), true);
+    localStorage.clear();
+  });
+
+  it("MinerU 与文献库读取失败时各显示一条 alert，含默认值说明与错误原文", () => {
+    useField.setState({ settingsLoadError: { mineru: "MinerU 设置无法解析", biblio: "文献库设置无法解析" } });
+    render(<SystemView />);
+    const alerts = screen.getAllByRole("alert").map((a) => a.textContent ?? "");
+    expect(alerts.some((t) => t.includes("MinerU设置文件无法读取") && t.includes("下面显示的是默认值") && t.includes("MinerU 设置无法解析"))).toBe(true);
+    expect(alerts.some((t) => t.includes("文献库设置文件无法读取") && t.includes("文献库设置无法解析"))).toBe(true);
+  });
+
+  it("没有读取错误时不显示该 alert", () => {
+    render(<SystemView />);
+    const alerts = screen.queryAllByRole("alert").map((a) => a.textContent ?? "");
+    expect(alerts.filter((t) => t.includes("设置文件无法读取"))).toHaveLength(0);
+  });
+});

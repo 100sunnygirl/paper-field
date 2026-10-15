@@ -647,6 +647,17 @@ function AdvancedFields({ children }: { children: ReactNode }) {
   );
 }
 
+function SettingsLoadError({ which }: { which: "mineru" | "biblio" }) {
+  const message = useField((s) => s.settingsLoadError[which]);
+  if (!message) return null;
+  const name = which === "mineru" ? "MinerU" : "文献库";
+  return (
+    <p className="ef-probe-line is-error" role="alert">
+      {name}设置文件无法读取，下面显示的是默认值，原文件未被改动。保存前请先修复或删除该文件。错误：{message}
+    </p>
+  );
+}
+
 function BiblioSettings() {
   const saved = useField((s) => s.biblio);
   const saveBiblio = useField((s) => s.saveBiblioSettings);
@@ -674,6 +685,7 @@ function BiblioSettings() {
         <h3>文献库</h3>
         <p>不填写也能查询。邮箱和 Key 只改变请求走哪条通道、多快、每天能查多少，不改变查哪些库、按什么顺序查。</p>
       </header>
+      <SettingsLoadError which="biblio" />
       <ul className="ef-kbd-list">
         <li>
           <span>arXiv</span>
@@ -963,6 +975,7 @@ function MineruSettings() {
         <h3>MinerU 解析源</h3>
         <p>导入 PDF 后自动送解析：按回退顺序探测，上方解析源不可用时自动切到下一个。</p>
       </header>
+      <SettingsLoadError which="mineru" />
 
       <div className={`ef-statusbar ${statusTone}`} aria-live="polite">
         <span className="ef-statusbar-dot" aria-hidden="true" />

@@ -78,6 +78,8 @@ interface FieldState {
   settings: LlmSettings;
   mineru: MineruSettingsV2;
   biblio: BiblioStatus;
+  /** Settings files that exist but failed to load; the page shows defaults plus this error. */
+  settingsLoadError: { mineru: string | null; biblio: string | null };
   /** Quiet lookup hints for one paper. The dossier shows them only when that paper is open. */
   lookupHint: { paperId: string; notices: LookupResult["notices"] } | null;
   mineruHealth: ProviderHealth[];
@@ -200,6 +202,7 @@ export const useField = create<FieldState>((set, get) => ({
   settings: { version: 2, providers: [], usage: {} },
   mineru: DEFAULT_MINERU,
   biblio: DEFAULT_BIBLIO,
+  settingsLoadError: { mineru: null, biblio: null },
   lookupHint: null,
   mineruHealth: [],
   effectiveProvider: null,
@@ -259,14 +262,20 @@ export const useField = create<FieldState>((set, get) => ({
   init: async () => {
     try {
       await repo.init();
+      const settingsLoadError: { mineru: string | null; biblio: string | null } = { mineru: null, biblio: null };
+      const fallback = <T,>(key: "mineru" | "biblio", value: T) => (err: unknown): T => {
+        settingsLoadError[key] = err instanceof Error ? err.message : String(err);
+        log.error(key === "mineru" ? "mineru" : "store", key === "mineru" ? "MinerU 设置读取失败，已显示默认值" : "文献库设置读取失败，已显示默认值", err);
+        return value;
+      };
       const [domains, settings, mineru, biblio] = await Promise.all([
         repo.listDomains(),
         loadSettings(),
-        loadMineruSettings().catch(() => DEFAULT_MINERU),
-        loadBiblioSettings().catch(() => DEFAULT_BIBLIO),
+        loadMineruSettings().catch(fallback("mineru", DEFAULT_MINERU)),
+        loadBiblioSettings().catch(fallback("biblio", DEFAULT_BIBLIO)),
       ]);
       const selectedDomainId = domains[0]?.id ?? null;
-      set({ domains, selectedDomainId, settings, mineru, biblio, ready: true, error: null });
+      set({ domains, selectedDomainId, settings, mineru, biblio, settingsLoadError, ready: true, error: null });
       await get().refresh();
       // 探测不阻断 ready：浏览器预览直接返回 []，桌面端最多 20s，完成后异步更新状态条。
       void get().probeMineru();

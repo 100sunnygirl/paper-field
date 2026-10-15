@@ -109,3 +109,79 @@ describe("remote images", () => {
     expect(root.querySelector(".ef-md-remote-img")).toBeNull();
   });
 });
+
+describe("unsaved images: API paths and unloadable schemes", () => {
+  const NOTE = "图片未随解析结果保存";
+
+  function expectUnsaved(md: string, alt: string) {
+    const root = mount(renderMarkdown(md));
+    expect(root.querySelector("img")).toBeNull();
+    const box = root.querySelector(".ef-md-remote-img");
+    expect(box?.textContent).toBe(alt ? `${NOTE}（${alt}）` : NOTE);
+    expect(root.querySelector(`[${REMOTE_IMG_ATTR}]`)).toBeNull();
+  }
+
+  it("API source relative path shows the unsaved notice without an open button", () => {
+    expectUnsaved("![图 1](images/abc.jpg)", "图 1");
+  });
+
+  const schemes = [
+    "doc:89500a3/tier:hi/p1.jpg",
+    "doc:x",
+    "DOC:x",
+    "foo:bar",
+    "file:///Users/a/fig.png",
+    "C:\\fig.png",
+  ];
+  it.each(schemes.flatMap((src) => [[src, "图"], [src, ""]]))("%s (alt=%j) shows the unsaved notice", (src, alt) => {
+    expectUnsaved(`![${alt}](<${src}>)`, alt);
+  });
+
+  // Verbatim links from the SSH (doclib) source, refetched for pr41: no file
+  // extension and several colons in the path.
+  it.each([
+    ["Image block", "doc:89500a3/tier:standard/page:5/block:3"],
+    ["Chart block", "doc:89500a3/tier:standard/page:11/block:3"],
+  ])("real doclib link (%s) shows the unsaved notice", (alt, src) => {
+    expectUnsaved(`![${alt}](${src})`, alt);
+  });
+
+  it("leading whitespace in an HTML src is still recognised", () => {
+    const root = mount(renderMarkdown('<img src="  doc:x" alt="图">'));
+    expect(root.querySelector("img")).toBeNull();
+    expect(root.querySelector(".ef-md-remote-img")?.textContent).toBe(`${NOTE}（图）`);
+  });
+
+  it("keeps handled schemes as before (data:, asset:, http://asset.localhost, https)", () => {
+    const root = mount(
+      renderMarkdown(
+        "![d](data:image/png;base64,AAAA) ![a](asset://localhost/x.png) ![h](http://asset.localhost/x.png) ![r](https://e.com/a.png)",
+      ),
+    );
+    const srcs = Array.from(root.querySelectorAll("img")).map((i) => i.getAttribute("src"));
+    expect(srcs).toEqual(["data:image/png;base64,AAAA", null, "http://asset.localhost/x.png"]);
+    const boxes = Array.from(root.querySelectorAll(".ef-md-remote-img")).map((b) => b.textContent ?? "");
+    expect(boxes).toHaveLength(1);
+    expect(boxes[0]).toContain("远程图片未加载（r）");
+    expect(boxes.join("")).not.toContain(NOTE);
+  });
+
+  it("strips event handlers and javascript: from unloadable images", () => {
+    const html = renderMarkdown('<img src="doc:x" onerror="alert(1)"> ![j](javascript:alert(1))');
+    expect(html).not.toMatch(/onerror|alert|javascript:/i);
+  });
+
+  it("removes its sanitize hook after rendering", async () => {
+    const { default: DOMPurify } = await import("dompurify");
+    renderMarkdown("![f](doc:x)");
+    expect(DOMPurify.sanitize('<img src="doc:x">')).not.toContain("data-pf-unsaved-ref");
+  });
+
+  it("a hand-written mark only yields the notice, never an open button or fetch", async () => {
+    const root = mount(renderMarkdown('<img data-pf-unsaved-ref src="https://e.com/a.png">'));
+    expect(root.querySelector("img")).toBeNull();
+    expect(root.querySelector(`[${REMOTE_IMG_ATTR}]`)).toBeNull();
+    expect(root.querySelector(".ef-md-remote-img")?.textContent).toBe(NOTE);
+    expect(openUrl).not.toHaveBeenCalled();
+  });
+});
