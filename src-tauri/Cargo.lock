@@ -2852,7 +2852,7 @@ dependencies = [
 
 [[package]]
 name = "paper-field"
-version = "0.2.14"
+version = "0.2.16"
 dependencies = [
  "dunce",
  "keyring",
