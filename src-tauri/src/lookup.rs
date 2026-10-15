@@ -851,14 +851,6 @@ pub fn parse_s2_match(body: &str, query: &TitleQuery) -> Result<Option<LookupHit
     parse_semantic_scholar(&wrapped.to_string(), query)
 }
 
-fn http_client() -> Result<Client, String> {
-    Client::builder()
-        .connect_timeout(Duration::from_secs(8))
-        .timeout(Duration::from_secs(12))
-        .build()
-        .map_err(|err| format!("无法创建 HTTP 客户端：{err}"))
-}
-
 pub(crate) fn urlencoding_min(value: &str) -> String {
     let mut out = String::new();
     for byte in value.bytes() {
@@ -872,27 +864,169 @@ pub(crate) fn urlencoding_min(value: &str) -> String {
     out
 }
 
-pub async fn url_reachable(url: &str) -> bool {
-    if !is_http_url(url) {
-        return false;
-    }
-    let Ok(client) = http_client() else {
-        return false;
-    };
-    let head = client.head(url).send().await;
-    if let Ok(response) = head {
-        let status = response.status();
-        if status.is_success() || status.is_redirection() {
-            return true;
+/// Addresses `verify_url` must never dial: anything not on the public internet.
+pub(crate) fn is_forbidden(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_multicast()
+                || v4.is_documentation()
+                || o[0] == 0
+                || (o[0] == 100 && (o[1] & 0xc0) == 64) // 100.64.0.0/10 shared CGNAT
+                || (o[0] == 198 && (o[1] & 0xfe) == 18) // 198.18.0.0/15 benchmarking
+                || o[0] >= 240
+        }
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_forbidden(IpAddr::V4(v4));
+            }
+            let seg = v6.segments();
+            // deprecated IPv4-compatible ::a.b.c.d (but not :: or ::1)
+            if seg[..6].iter().all(|&x| x == 0) && !v6.is_loopback() && !v6.is_unspecified() {
+                if let Some(v4) = v6.to_ipv4() {
+                    return is_forbidden(IpAddr::V4(v4));
+                }
+            }
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || (seg[0] & 0xfe00) == 0xfc00 // fc00::/7 unique local
+                || (seg[0] & 0xffc0) == 0xfe80 // fe80::/10 link local
+                || (seg[0] == 0x64 && seg[1] == 0xff9b) // 64:ff9b::/96 NAT64
         }
     }
-    client
-        .get(url)
-        .header("Range", "bytes=0-0")
-        .send()
-        .await
-        .map(|response| response.status().is_success() || response.status().is_redirection())
-        .unwrap_or(false)
+}
+
+/// Outcome of a link check. Only `Unreachable` (a definite 404/410 or a
+/// malformed URL) justifies dropping a link; everything else keeps it.
+#[derive(serde::Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Reach {
+    Reachable,
+    Unreachable,
+    Unknown,
+}
+
+/// Mirrors reqwest's env-based proxy detection (system-proxy feature is off).
+fn proxy_configured() -> bool {
+    ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"]
+        .iter()
+        .any(|k| std::env::var(k).is_ok_and(|v| !v.trim().is_empty()))
+}
+
+enum Resolved {
+    /// Checked address to pin the connection to.
+    Pinned(std::net::SocketAddr),
+    /// Behind a proxy whose own DNS we cannot pin; host not known to be internal.
+    ViaProxy,
+}
+
+/// Refuse internal targets before any request. Without a proxy: resolve once,
+/// reject if any address is internal, and pin to one (no DNS rebinding). With
+/// a proxy: reject IP literals and names that resolve locally to internal
+/// addresses; a name that only the proxy can resolve is allowed through.
+async fn check_target(
+    url: &reqwest::Url,
+    proxied: bool,
+    forbidden: fn(std::net::IpAddr) -> bool,
+) -> Option<Resolved> {
+    let port = url.port_or_known_default()?;
+    let host = url.host_str()?;
+    let literal = host.trim_start_matches('[').trim_end_matches(']').parse::<std::net::IpAddr>();
+    let addrs: Vec<std::net::SocketAddr> = match literal {
+        Ok(ip) => vec![(ip, port).into()],
+        Err(_) => match tokio::net::lookup_host((host, port)).await {
+            Ok(it) => it.collect(),
+            Err(_) if proxied => return Some(Resolved::ViaProxy),
+            Err(_) => return None,
+        },
+    };
+    if addrs.is_empty() || addrs.iter().any(|a| forbidden(a.ip())) {
+        return None;
+    }
+    if proxied {
+        Some(Resolved::ViaProxy)
+    } else {
+        addrs.first().copied().map(Resolved::Pinned)
+    }
+}
+
+const MAX_HOPS: usize = 5;
+
+pub async fn probe_url(url: &str) -> Reach {
+    probe_with(url, proxy_configured(), is_forbidden).await
+}
+
+/// Redirects are followed by hand so every hop is checked before it is dialed.
+async fn probe_with(url: &str, proxied: bool, forbidden: fn(std::net::IpAddr) -> bool) -> Reach {
+    if !is_http_url(url) {
+        return Reach::Unreachable;
+    }
+    let Ok(mut current) = reqwest::Url::parse(url) else {
+        return Reach::Unreachable;
+    };
+    for _ in 0..MAX_HOPS {
+        if !matches!(current.scheme(), "http" | "https") {
+            return Reach::Unknown;
+        }
+        let Some(target) = check_target(&current, proxied, forbidden).await else {
+            return Reach::Unknown;
+        };
+        let mut builder = Client::builder()
+            .connect_timeout(Duration::from_secs(8))
+            .timeout(Duration::from_secs(12))
+            .redirect(reqwest::redirect::Policy::none());
+        match target {
+            Resolved::Pinned(addr) => {
+                builder = builder.no_proxy();
+                if let Some(d) = current.host_str().filter(|h| h.parse::<std::net::IpAddr>().is_err() && !h.starts_with('[')) {
+                    builder = builder.resolve(d, addr);
+                }
+            }
+            Resolved::ViaProxy => {}
+        }
+        let Ok(client) = builder.build() else {
+            return Reach::Unknown;
+        };
+        let mut response = client.head(current.clone()).send().await.ok();
+        if !response.as_ref().is_some_and(|r| r.status().is_success() || r.status().is_redirection()) {
+            // many servers reject HEAD; ask with GET before judging
+            response = client.get(current.clone()).header("Range", "bytes=0-0").send().await.ok();
+        }
+        let Some(response) = response else {
+            return Reach::Unknown;
+        };
+        let status = response.status();
+        if status.is_success() {
+            return Reach::Reachable;
+        }
+        if status == reqwest::StatusCode::NOT_FOUND || status == reqwest::StatusCode::GONE {
+            return Reach::Unreachable;
+        }
+        if !status.is_redirection() {
+            return Reach::Unknown;
+        }
+        let next = response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|loc| current.join(loc).ok());
+        match next {
+            Some(n) => current = n,
+            None => return Reach::Unknown,
+        }
+    }
+    Reach::Unknown
+}
+
+pub async fn url_reachable(url: &str) -> bool {
+    probe_url(url).await == Reach::Reachable
 }
 
 #[tauri::command]
@@ -918,8 +1052,8 @@ pub async fn lookup_paper(
 }
 
 #[tauri::command]
-pub async fn verify_url(url: String) -> Result<bool, String> {
-    Ok(url_reachable(&url).await)
+pub async fn verify_url(url: String) -> Result<Reach, String> {
+    Ok(probe_url(&url).await)
 }
 
 #[cfg(test)]
@@ -1312,5 +1446,154 @@ mod tests {
             .unwrap()
             .expect("id paper");
         assert_eq!(direct.arxiv_id.as_deref(), Some("1706.03762"));
+    }
+
+    // ---- Tester #6 repro: verify_url must not reach internal addresses ----
+    mod tester_ssrf {
+        use super::super::*;
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        /// Tiny HTTP server answering every request with `resp`; returns port.
+        fn serve(bind: &str, resp: &'static str) -> Option<u16> {
+            let l = TcpListener::bind(bind).ok()?;
+            let port = l.local_addr().ok()?.port();
+            std::thread::spawn(move || {
+                for s in l.incoming().flatten() {
+                    let mut s = s;
+                    let mut buf = [0u8; 2048];
+                    let _ = s.read(&mut buf);
+                    let _ = s.write_all(resp.as_bytes());
+                }
+            });
+            Some(port)
+        }
+        const OK: &str = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+
+        #[tokio::test]
+        async fn tester_ssrf_ipv4_loopback_rejected() {
+            let p = serve("127.0.0.1:0", OK).unwrap();
+            assert!(!url_reachable(&format!("http://127.0.0.1:{p}/")).await, "loopback probed");
+        }
+
+        #[tokio::test]
+        async fn tester_ssrf_localhost_name_rejected() {
+            let p = serve("127.0.0.1:0", OK).unwrap();
+            assert!(!url_reachable(&format!("http://localhost:{p}/")).await, "localhost probed");
+        }
+
+        #[tokio::test]
+        async fn tester_ssrf_ipv6_loopback_rejected() {
+            let Some(p) = serve("[::1]:0", OK) else { eprintln!("no ipv6, skip"); return };
+            assert!(!url_reachable(&format!("http://[::1]:{p}/")).await, "[::1] probed");
+        }
+
+        #[tokio::test]
+        async fn tester_ssrf_ipv4_mapped_v6_rejected() {
+            let Some(p) = serve("[::]:0", OK) else { eprintln!("no ipv6, skip"); return };
+            assert!(!url_reachable(&format!("http://[::ffff:127.0.0.1]:{p}/")).await, "mapped probed");
+        }
+
+        #[tokio::test]
+        async fn tester_ssrf_redirect_to_internal_not_followed_as_reachable() {
+            // Server A 302s to an internal target; even a 3xx must not count as "reachable"
+            // when the hop target is internal. (A is loopback here only because the test
+            // has no public host; after the fix A itself is rejected too.)
+            let target = serve("127.0.0.1:0", OK).unwrap();
+            let resp: &'static str = Box::leak(format!(
+                "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{target}/admin\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").into_boxed_str());
+            let a = serve("127.0.0.1:0", resp).unwrap();
+            assert!(!url_reachable(&format!("http://127.0.0.1:{a}/")).await);
+        }
+
+        // 10.x and 169.254.169.254 cannot be served on this box; they must be rejected
+        // before any connect. Asserting a fast `false` (well under connect_timeout=8s)
+        // shows the address was refused up front, not just timed out.
+        #[tokio::test]
+        async fn tester_ssrf_private_and_metadata_rejected_without_connecting() {
+            for u in ["http://10.0.0.1/", "http://169.254.169.254/latest/meta-data/", "http://192.168.1.1/"] {
+                let t = std::time::Instant::now();
+                assert!(!url_reachable(u).await, "{u}");
+                assert!(t.elapsed() < std::time::Duration::from_secs(1), "{u} was dialed ({:?})", t.elapsed());
+            }
+        }
+    }
+
+    #[test]
+    fn is_forbidden_covers_internal_ranges() {
+        for ip in ["127.0.0.1", "10.0.0.1", "172.16.5.4", "192.168.1.1", "169.254.169.254", "0.0.0.0",
+                   "100.64.0.1", "255.255.255.255", "224.0.0.1", "::1", "::", "fc00::1", "fd12::1",
+                   "fe80::1", "::ffff:127.0.0.1", "::127.0.0.1", "::10.0.0.1", "::ffff:10.0.0.1", "64:ff9b::a00:1"] {
+            assert!(is_forbidden(ip.parse().unwrap()), "{ip}");
+        }
+        for ip in ["8.8.8.8", "1.1.1.1", "2606:4700:4700::1111", "::ffff:8.8.8.8", "::8.8.8.8"] {
+            assert!(!is_forbidden(ip.parse().unwrap()), "{ip}");
+        }
+    }
+
+    mod probe {
+        use super::super::*;
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        fn serve(resp: &'static str) -> u16 {
+            let l = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = l.local_addr().unwrap().port();
+            std::thread::spawn(move || {
+                for mut s in l.incoming().flatten() {
+                    let mut buf = [0u8; 2048];
+                    let _ = s.read(&mut buf);
+                    let _ = s.write_all(resp.as_bytes());
+                }
+            });
+            port
+        }
+        fn allow_all(_: std::net::IpAddr) -> bool {
+            false
+        }
+
+        #[tokio::test]
+        async fn definite_404_and_410_are_unreachable() {
+            for r in ["HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                      "HTTP/1.1 410 Gone\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"] {
+                let p = serve(r);
+                assert_eq!(probe_with(&format!("http://127.0.0.1:{p}/"), false, allow_all).await, Reach::Unreachable);
+            }
+        }
+
+        #[tokio::test]
+        async fn server_errors_and_refused_connections_are_unknown() {
+            let p = serve("HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+            assert_eq!(probe_with(&format!("http://127.0.0.1:{p}/"), false, allow_all).await, Reach::Unknown);
+            let closed = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+            assert_eq!(probe_with(&format!("http://127.0.0.1:{closed}/"), false, allow_all).await, Reach::Unknown);
+        }
+
+        #[tokio::test]
+        async fn dns_failure_is_unknown_not_unreachable() {
+            assert_eq!(probe_with("http://no-such-host.invalid/", false, is_forbidden).await, Reach::Unknown);
+        }
+
+        #[tokio::test]
+        async fn forbidden_target_is_unknown_so_link_is_kept() {
+            assert_eq!(probe_with("http://10.0.0.1/", false, is_forbidden).await, Reach::Unknown);
+        }
+
+        #[tokio::test]
+        async fn with_proxy_internal_literals_and_names_are_still_refused_without_dialing() {
+            for u in ["http://10.0.0.1/", "http://169.254.169.254/", "http://[::1]/", "http://localhost/"] {
+                let t = std::time::Instant::now();
+                assert_eq!(probe_with(u, true, is_forbidden).await, Reach::Unknown, "{u}");
+                assert!(t.elapsed() < std::time::Duration::from_secs(1), "{u} dialed");
+            }
+        }
+
+        #[test]
+        fn proxy_env_is_detected() {
+            // read-only check of the detector's key list; no env mutation (tests run in parallel)
+            let any = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"]
+                .iter().any(|k| std::env::var(k).is_ok_and(|v| !v.trim().is_empty()));
+            assert_eq!(proxy_configured(), any);
+        }
     }
 }

@@ -8,6 +8,7 @@ mod lookup_run;
 mod mineru;
 mod mineru_api;
 mod platform;
+mod restore;
 mod secrets;
 mod transport;
 
@@ -70,12 +71,36 @@ fn import_pdf_to_library(app: tauri::AppHandle, source: String) -> Result<Import
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis())
         .unwrap_or(0);
-    let dest = library.join(format!("{millis}-{stem}.pdf"));
-    fs::copy(&canon, &dest).map_err(|err| format!("复制 PDF 到文库失败：{err}"))?;
+    let dest = copy_into_library(&library, &canon, &format!("{millis}-{stem}"))?;
     Ok(ImportedPdf {
         library_path: dest.to_string_lossy().to_string(),
         original_path: canon.to_string_lossy().to_string(),
     })
+}
+
+/// Copies `src` to `library/<base>.pdf` without ever replacing an existing
+/// file: two imports with the same name in the same millisecond (a batch of
+/// same-named PDFs from different folders) used to overwrite each other.
+/// `create_new` makes the claim atomic; on a clash try `<base>-2.pdf`, `-3`, …
+fn copy_into_library(library: &std::path::Path, src: &std::path::Path, base: &str) -> Result<PathBuf, String> {
+    let mut input = fs::File::open(src).map_err(|err| format!("读取 PDF 失败：{err}"))?;
+    for n in 1..=1000u32 {
+        let name = if n == 1 { format!("{base}.pdf") } else { format!("{base}-{n}.pdf") };
+        let dest = library.join(name);
+        let mut out = match fs::OpenOptions::new().write(true).create_new(true).open(&dest) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(format!("复制 PDF 到文库失败：{e}")),
+        };
+        let copied = std::io::copy(&mut input, &mut out).and_then(|_| out.sync_all());
+        if let Err(e) = copied {
+            drop(out);
+            let _ = fs::remove_file(&dest);
+            return Err(format!("复制 PDF 到文库失败：{e}"));
+        }
+        return Ok(dest);
+    }
+    Err("复制 PDF 到文库失败：同名文件过多".into())
 }
 
 #[tauri::command]
@@ -210,7 +235,13 @@ pub fn run() {
             biblio::save_biblio_settings,
             backup::backup_database_file,
             backup::create_library_backup,
-            backup::restore_library_backup,
+            restore::restore_library_backup,
+            restore::restore_status,
+            restore::restore_confirm_pending,
+            restore::restore_commit_preview,
+            restore::restore_list_pre,
+            restore::restore_delete_pre,
+            restore::restore_abandon,
             import_pdf_to_library
         ])
         .run(tauri::generate_context!())
@@ -334,5 +365,49 @@ mod export_tests {
         std::os::unix::fs::symlink(base.join("victim.md"), root.join("a.md")).unwrap();
         assert!(export_one(&root, "a.md", b"x").is_err());
         assert_eq!(fs::read(base.join("victim.md")).unwrap(), b"orig");
+    }
+}
+
+#[cfg(test)]
+mod import_tests {
+    use super::copy_into_library;
+    use std::fs;
+
+    fn dir(n: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("pf-import-{n}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(d.join("lib")).unwrap();
+        d
+    }
+
+    #[test]
+    fn same_name_same_millisecond_never_overwrites() {
+        let d = dir("clash");
+        let (a, b) = (d.join("a.pdf"), d.join("b.pdf"));
+        fs::write(&a, b"%PDF first").unwrap();
+        fs::write(&b, b"%PDF second").unwrap();
+        let lib = d.join("lib");
+        let p1 = copy_into_library(&lib, &a, "1700000000000-paper").unwrap();
+        let p2 = copy_into_library(&lib, &b, "1700000000000-paper").unwrap();
+        let p3 = copy_into_library(&lib, &a, "1700000000000-paper").unwrap();
+        assert_eq!(p1, lib.join("1700000000000-paper.pdf"));
+        assert_eq!(p2, lib.join("1700000000000-paper-2.pdf"));
+        assert_eq!(p3, lib.join("1700000000000-paper-3.pdf"));
+        assert_eq!(fs::read(&p1).unwrap(), b"%PDF first");
+        assert_eq!(fs::read(&p2).unwrap(), b"%PDF second");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn planted_symlink_at_target_is_skipped_not_written_through() {
+        let d = dir("link");
+        let src = d.join("s.pdf");
+        fs::write(&src, b"%PDF data").unwrap();
+        let bait = d.join("bait");
+        fs::write(&bait, b"keep").unwrap();
+        std::os::unix::fs::symlink(&bait, d.join("lib").join("x.pdf")).unwrap();
+        let p = copy_into_library(&d.join("lib"), &src, "x").unwrap();
+        assert_eq!(p, d.join("lib").join("x-2.pdf"));
+        assert_eq!(fs::read(&bait).unwrap(), b"keep");
     }
 }

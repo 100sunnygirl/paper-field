@@ -23,6 +23,7 @@ import { openExternal } from "../lib/urls";
 import { formatDate, pad2, shortcut, uid } from "../lib/util";
 import { useField } from "../store";
 import { LogPanel } from "./LogPanel";
+import { PreRestoreList } from "./PreRestoreList";
 import { Button, Field, Icon } from "./ui";
 
 function errText(err: unknown): string {
@@ -147,6 +148,7 @@ function BackupBlock() {
           </Button>
         </div>
       ) : null}
+      <PreRestoreList />
     </article>
   );
 }

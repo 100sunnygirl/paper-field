@@ -23,6 +23,7 @@ import { pickProviderFromHealths, providerLabel, summarizeHealths } from "./lib/
 import { backupLibrary, restoreLibrary } from "./lib/backup";
 import { DEFAULT_BIBLIO, loadBiblioSettings, saveBiblioSettings, type BiblioSaveInput, type BiblioStatus } from "./lib/biblio";
 import { filledFrom, lookupPaper, type LookupResult, verifyReachable } from "./lib/lookup";
+import { safeHttpUrl, withDefaultScheme } from "./lib/urls";
 import { DRAFT_NOTES_SYSTEM, PREPARE_META_SYSTEM, draftNotesUserPrompt, normalizeMeta, normalizeNotes, prepareMetaUserPrompt } from "./lib/prompts";
 import { redactSecrets } from "./lib/redact";
 import { repo } from "./lib/repo";
@@ -164,6 +165,20 @@ function currentList(state: FieldState): PaperListItem[] {
   return state.papers;
 }
 
+const IMPORT_FAILURES_SHOWN = 5;
+
+/** Every failed file (up to 5 in the toast, the rest counted), not just the first. */
+export function importFailureList(failed: Array<{ name: string; message: string }>): string {
+  const shown = failed.slice(0, IMPORT_FAILURES_SHOWN).map((f) => `${f.name}（${f.message}）`).join("、");
+  const rest = failed.length - IMPORT_FAILURES_SHOWN;
+  return rest > 0 ? `${shown} 等，另有 ${rest} 篇` : shown;
+}
+
+export const SEARCH_DEBOUNCE_MS = 250;
+let refreshSeq = 0;
+let searchTimer: ReturnType<typeof setTimeout> | null = null;
+let searchWaiters: { resolve: () => void; reject: (err: unknown) => void }[] = [];
+
 export const useField = create<FieldState>((set, get) => ({
   ready: false,
   error: null,
@@ -267,6 +282,9 @@ export const useField = create<FieldState>((set, get) => ({
   },
 
   refresh: async () => {
+    // Only the latest refresh may write: a slow earlier one (old search term,
+    // previous domain/filter) must not overwrite newer results.
+    const seq = ++refreshSeq;
     const state = get();
     const [stats, jobs, domains] = await Promise.all([
       repo.stats(),
@@ -297,6 +315,7 @@ export const useField = create<FieldState>((set, get) => ({
         (p) => p.id === id,
       ),
     );
+    if (seq !== refreshSeq) return;
     set({ stats, jobs, domains, papers, archive, intake, selectedPaperId, paper, checkedPaperIds });
   },
 
@@ -326,9 +345,27 @@ export const useField = create<FieldState>((set, get) => ({
     }
   },
 
-  setSearch: async (value) => {
+  setSearch: (value) => {
+    // The input shows `value` at once; the query runs SEARCH_DEBOUNCE_MS after
+    // the last keystroke. Every caller's promise settles when that refresh does.
     set({ search: value });
-    await get().refresh();
+    if (searchTimer) clearTimeout(searchTimer);
+    // Clearing the box restores the full list at once; there is nothing to debounce.
+    const delay = value.trim() === "" ? 0 : SEARCH_DEBOUNCE_MS;
+    return new Promise<void>((resolve, reject) => {
+      searchWaiters.push({ resolve, reject });
+      searchTimer = setTimeout(() => {
+        searchTimer = null;
+        const waiters = searchWaiters;
+        searchWaiters = [];
+        get()
+          .refresh()
+          .then(
+            () => waiters.forEach((w) => w.resolve()),
+            (err) => waiters.forEach((w) => w.reject(err)),
+          );
+      }, delay);
+    });
   },
 
   setArchiveFilter: async (value) => {
@@ -401,10 +438,11 @@ export const useField = create<FieldState>((set, get) => ({
       });
       await get().refresh();
       const skippedText = skippedCount ? `，跳过 ${skippedCount} 篇已在库中` : "";
+      for (const f of failed) log.warn("store", `PDF 导入失败：${f.name}`, f.message);
       if (failed.length) {
         get().setFlash({
           tone: "error",
-          text: `已导入 ${created.length} 篇${skippedText}，${failed.length} 篇失败：${failed[0].name}（${failed[0].message}）。`,
+          text: `已导入 ${created.length} 篇${skippedText}，${failed.length} 篇失败：${importFailureList(failed)}。${failed.length > 1 ? "完整失败列表见日志。" : ""}`,
         });
       }
       if (!created.length) {
@@ -993,11 +1031,23 @@ async function dropUnreachableLinks(paperId: string): Promise<void> {
   const paper = await repo.getPaper(paperId);
   if (!paper) return;
   const patch: { codeUrl?: string | null; projectPage?: string | null } = {};
-  if (paper.codeUrl && paper.fieldSources?.codeUrl !== "user" && !(await verifyReachable(paper.codeUrl))) {
-    patch.codeUrl = null;
-  }
-  if (paper.projectPage && paper.fieldSources?.projectPage !== "user" && !(await verifyReachable(paper.projectPage))) {
-    patch.projectPage = null;
+  for (const key of ["codeUrl", "projectPage"] as const) {
+    const raw = paper[key];
+    if (!raw || paper.fieldSources?.[key] === "user") continue;
+    // Schemeless AI links (`github.com/x`) are stored as https:// only if reachable.
+    const url = withDefaultScheme(raw);
+    // Not an http(s) URL even after completion (`localhost:3000`, `v1`): drop without probing.
+    if (!safeHttpUrl(url)) {
+      patch[key] = null;
+      continue;
+    }
+    const reach = await verifyReachable(url);
+    if (url !== raw.trim()) {
+      // A prefix we added is a guess (`v1.2` -> https://v1.2): keep it only when proven reachable.
+      patch[key] = reach === "reachable" ? url : null;
+    } else if (reach === "unreachable") {
+      patch[key] = null;
+    }
   }
   if (Object.keys(patch).length) await repo.updatePaper(paperId, patch, false);
 }

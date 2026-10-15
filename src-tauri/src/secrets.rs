@@ -122,13 +122,10 @@ impl FileSecretStore {
 
     fn save(&self, map: &HashMap<String, String>) -> Result<(), String> {
         let raw = serde_json::to_string(map).map_err(|err| err.to_string())?;
-        crate::io_util::atomic_write(&self.path, raw.as_bytes())?;
         #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(&self.path, fs::Permissions::from_mode(0o600));
-        }
-        Ok(())
+        return crate::io_util::atomic_write_private(&self.path, raw.as_bytes());
+        #[cfg(not(unix))]
+        crate::io_util::atomic_write(&self.path, raw.as_bytes())
     }
 }
 
@@ -289,5 +286,57 @@ mod tests {
         assert!(!cleaned.contains("sk-old"), "{cleaned}");
         assert!(!cleaned.contains("sk-keep"), "{cleaned}");
         assert!(cleaned.contains("\"model\""), "{cleaned}");
+    }
+
+    // ---- Tester #7 repro: secrets file must be 0600 from creation, never via symlink ----
+    #[cfg(all(unix, not(any(target_os = "macos", target_os = "windows"))))]
+    mod tester_perm {
+        use super::super::*;
+        use std::os::unix::fs::PermissionsExt;
+
+        fn dir(n: &str) -> std::path::PathBuf {
+            let d = std::env::temp_dir().join(format!("pf-tester-sec-{n}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&d);
+            std::fs::create_dir_all(&d).unwrap();
+            d
+        }
+
+        #[test]
+        fn tester_secrets_final_mode_is_0600() {
+            let d = dir("mode");
+            FileSecretStore::new(&d).set("k", "sk-secret").unwrap();
+            let m = std::fs::metadata(d.join("secrets.json")).unwrap().permissions().mode() & 0o777;
+            assert_eq!(m, 0o600);
+        }
+
+        #[test]
+        fn tester_secrets_tmp_symlink_is_not_followed() {
+            // Attacker pre-plants secrets.json.tmp -> file they can read.
+            let d = dir("link");
+            let bait = d.join("attacker-readable");
+            std::fs::write(&bait, b"").unwrap();
+            std::fs::set_permissions(&bait, std::fs::Permissions::from_mode(0o644)).unwrap();
+            std::os::unix::fs::symlink(&bait, d.join("secrets.json.tmp")).unwrap();
+            let _ = FileSecretStore::new(&d).set("k", "sk-secret");
+            let leaked = std::fs::read_to_string(&bait).unwrap();
+            assert!(!leaked.contains("sk-secret"), "secret written through symlink into 0644 file: {leaked}");
+        }
+
+        #[test]
+        fn tester_secrets_first_write_never_world_readable() {
+            // The bytes must never sit in a file with group/other bits. Observe the mode of the
+            // inode that receives the data by pre-creating the tmp path as a hard link we keep.
+            let d = dir("first");
+            let tmp = d.join("secrets.json.tmp");
+            std::fs::write(&tmp, b"").unwrap();
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o644)).unwrap();
+            let keep = d.join("observer");
+            std::fs::hard_link(&tmp, &keep).unwrap();
+            let _ = FileSecretStore::new(&d).set("k", "sk-secret");
+            let data = std::fs::read_to_string(&keep).unwrap_or_default();
+            let m = std::fs::metadata(&keep).unwrap().permissions().mode() & 0o777;
+            assert!(!(data.contains("sk-secret") && m & 0o077 != 0),
+                "secret sat in mode {m:o} inode (create_new should refuse an existing tmp)");
+        }
     }
 }

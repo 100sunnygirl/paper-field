@@ -40,7 +40,7 @@
   --pf-tint-danger: #f19a92;
 
   /* ---- Type ---- */
-  --pf-font-ui: Inter, "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --pf-font-ui: Inter, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
   --pf-font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   /* 界面阶梯：tag 等宽角标 / caption 元信息 / ui 控件与面板正文 /
      title 条目标题 / h2 区块与对话框标题 / h1 页面标题 / display 论文主标题。 */
@@ -1570,6 +1570,8 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   margin-right: auto;
   line-height: 1.5;
 }
+.ef-md-remote-img { display: inline-block; padding: 6px 10px; border: 1px dashed currentColor; opacity: 0.75; font-size: 0.9em; }
+.ef-md-remote-open { margin-left: 4px; background: none; border: 0; padding: 0; color: inherit; text-decoration: underline; cursor: pointer; font: inherit; }
 .ef-md p { margin: 0 0 12px; }
 .ef-md ul, .ef-md ol { margin: 0 0 12px; padding-left: 1.2rem; }
 .ef-md h1, .ef-md h2, .ef-md h3, .ef-md h4 {
