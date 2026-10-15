@@ -46,7 +46,20 @@ struct ImportedPdf {
 }
 
 #[tauri::command]
-fn import_pdf_to_library(app: tauri::AppHandle, source: String) -> Result<ImportedPdf, String> {
+async fn import_pdf_to_library(app: tauri::AppHandle, source: String) -> Result<ImportedPdf, String> {
+    import_pdf_at(app_config_dir(&app)?, source).await
+}
+
+/// Waits for the restore lock (an abandon may be moving files back into
+/// `library/`), then copies off the async worker.
+async fn import_pdf_at(config: PathBuf, source: String) -> Result<ImportedPdf, String> {
+    let _guard = restore::OP_LOCK.lock().await;
+    tauri::async_runtime::spawn_blocking(move || import_pdf_locked(&config, &source))
+        .await
+        .map_err(|err| err.to_string())?
+}
+
+fn import_pdf_locked(config: &std::path::Path, source: &str) -> Result<ImportedPdf, String> {
     let src = PathBuf::from(&source);
     if !src.is_file() {
         return Err("PDF 不存在".into());
@@ -60,7 +73,7 @@ fn import_pdf_to_library(app: tauri::AppHandle, source: String) -> Result<Import
     if !is_pdf {
         return Err("请选择 PDF 文件".into());
     }
-    let library = app_config_dir(&app)?.join("library");
+    let library = config.join("library");
     fs::create_dir_all(&library).map_err(|err| err.to_string())?;
     let stem = canon
         .file_stem()
@@ -106,7 +119,13 @@ fn copy_into_library(library: &std::path::Path, src: &std::path::Path, base: &st
 }
 
 #[tauri::command]
-fn export_files(root: String, files: Vec<ExportFile>) -> Result<(), String> {
+async fn export_files(root: String, files: Vec<ExportFile>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || export_files_at(root, files))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn export_files_at(root: String, files: Vec<ExportFile>) -> Result<(), String> {
     let root = PathBuf::from(root);
     fs::create_dir_all(&root).map_err(|e| e.to_string())?;
     let root = root.canonicalize().map_err(|e| e.to_string())?;
@@ -257,43 +276,43 @@ mod tester_export_repro {
     fn tmp(n: &str) -> PathBuf { crate::test_util::unique_temp_dir(&format!("pf-tester-{n}")) }
     #[test] fn e1_absolute_path_rejected_without_side_effect() {
         let base = tmp("e1"); let root = base.join("root"); let outside = base.join("outside");
-        let r = export_files(root.to_string_lossy().into(), vec![f(&format!("{}/sub/a.md", outside.display()))]);
+        let r = export_files_at(root.to_string_lossy().into(), vec![f(&format!("{}/sub/a.md", outside.display()))]);
         assert!(r.is_err(), "absolute path should be rejected");
         assert!(!outside.exists(), "BUG: dir created outside root: {}", outside.display());
     }
     #[test] fn e2_dotdot_rejected() {
         let base = tmp("e2"); let root = base.join("root");
-        assert!(export_files(root.to_string_lossy().into(), vec![f("../evil/a.md")]).is_err());
+        assert!(export_files_at(root.to_string_lossy().into(), vec![f("../evil/a.md")]).is_err());
         assert!(!base.join("evil").exists());
     }
     #[test] fn e3_double_dot_in_filename_allowed() {
         let root = tmp("e3");
-        export_files(root.to_string_lossy().into(), vec![f("a..b.md")]).expect("a..b.md is a legal filename");
+        export_files_at(root.to_string_lossy().into(), vec![f("a..b.md")]).expect("a..b.md is a legal filename");
         assert!(root.join("a..b.md").exists());
     }
     #[cfg(unix)] #[test] fn e4_symlink_escape_rejected() {
         let base = tmp("e4"); let root = base.join("root"); let outside = base.join("outside");
         fs::create_dir_all(&root).unwrap(); fs::create_dir_all(&outside).unwrap();
         std::os::unix::fs::symlink(&outside, root.join("link")).unwrap();
-        let r = export_files(root.to_string_lossy().into(), vec![f("link/a.md")]);
+        let r = export_files_at(root.to_string_lossy().into(), vec![f("link/a.md")]);
         assert!(r.is_err() && !outside.join("a.md").exists(), "BUG: wrote through symlink to {}", outside.join("a.md").display());
     }
     #[test] fn e6_reexport_overwrites() {
         let root = tmp("e6");
-        export_files(root.to_string_lossy().into(), vec![f("a.md")]).unwrap();
-        export_files(root.to_string_lossy().into(), vec![ExportFile{relative_path:"a.md".into(),content:"new".into()}]).expect("re-export must succeed");
+        export_files_at(root.to_string_lossy().into(), vec![f("a.md")]).unwrap();
+        export_files_at(root.to_string_lossy().into(), vec![ExportFile{relative_path:"a.md".into(),content:"new".into()}]).expect("re-export must succeed");
         assert_eq!(fs::read_to_string(root.join("a.md")).unwrap(), "new");
     }
     #[cfg(unix)] #[test] fn e7_final_symlink_file_rejected() {
         let base = tmp("e7"); let root = base.join("root"); fs::create_dir_all(&root).unwrap();
         fs::write(base.join("target.txt"), "orig").unwrap();
         std::os::unix::fs::symlink(base.join("target.txt"), root.join("a.md")).unwrap();
-        assert!(export_files(root.to_string_lossy().into(), vec![f("a.md")]).is_err());
+        assert!(export_files_at(root.to_string_lossy().into(), vec![f("a.md")]).is_err());
         assert_eq!(fs::read_to_string(base.join("target.txt")).unwrap(), "orig");
     }
     #[test] fn e5_nested_ok() {
         let root = tmp("e5");
-        export_files(root.to_string_lossy().into(), vec![f("x/y/z.md")]).unwrap();
+        export_files_at(root.to_string_lossy().into(), vec![f("x/y/z.md")]).unwrap();
         assert_eq!(fs::read_to_string(root.join("x/y/z.md")).unwrap(), "x");
     }
 }
@@ -378,6 +397,22 @@ mod import_tests {
         let d = crate::test_util::unique_temp_dir(&format!("pf-import-{n}"));
         fs::create_dir_all(d.join("lib")).unwrap();
         d
+    }
+
+    #[test]
+    fn import_waits_while_abandon_holds_lock() {
+        let d = dir("lock");
+        let src = d.join("p.pdf");
+        fs::write(&src, b"%PDF x").unwrap();
+        let guard = crate::restore::OP_LOCK.blocking_lock();
+        let (cfg, s2) = (d.join("cfg"), src.to_string_lossy().into_owned());
+        let h = std::thread::spawn(move || tauri::async_runtime::block_on(super::import_pdf_at(cfg, s2)));
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(!h.is_finished(), "import must wait for the restore lock");
+        assert!(!d.join("cfg").join("library").exists(), "nothing written while waiting");
+        drop(guard);
+        let got = h.join().unwrap().unwrap();
+        assert_eq!(fs::read(&got.library_path).unwrap(), b"%PDF x");
     }
 
     #[test]
