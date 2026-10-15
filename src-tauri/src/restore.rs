@@ -809,6 +809,7 @@ mod tests {
         assert_original(&live);
     }
 
+    #[cfg(unix)]
     fn nix_is_root() -> bool {
         unsafe { libc::geteuid() == 0 }
     }
