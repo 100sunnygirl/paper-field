@@ -44,13 +44,24 @@ fn copy_sqlite_family(src: &Path, dest: &Path) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn backup_database_file(app: AppHandle) -> Result<String, String> {
-    let src = database_file(&app)?;
+pub async fn backup_database_file(app: AppHandle) -> Result<String, String> {
+    backup_database_at(database_file(&app)?).await
+}
+
+/// Holds the restore lock so an abandon can't swap the database mid-copy.
+async fn backup_database_at(db: PathBuf) -> Result<String, String> {
+    let _guard = crate::restore::OP_LOCK.lock().await;
+    tauri::async_runtime::spawn_blocking(move || copy_database_aside(&db))
+        .await
+        .map_err(|err| err.to_string())?
+}
+
+fn copy_database_aside(src: &Path) -> Result<String, String> {
     if !src.exists() {
         return Ok(String::new());
     }
     let dest = src.with_file_name(format!("paper-field.db.premigrate-{}", stamp()));
-    copy_sqlite_family(&src, &dest)?;
+    copy_sqlite_family(src, &dest)?;
     Ok(dest.display().to_string())
 }
 
@@ -230,6 +241,25 @@ mod tester_backup_b1 {
         drop(guard);
         h.join().unwrap().unwrap();
         assert!(dest.exists());
+    }
+
+    #[test] fn b7_db_copy_waits_while_abandon_holds_lock() {
+        let d = tmp("b7");
+        fs::write(d.join("paper-field.db"), b"db").unwrap();
+        let copies = |d: &Path| fs::read_dir(d).unwrap().flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with("paper-field.db.premigrate-")).count();
+        let guard = crate::restore::OP_LOCK.blocking_lock();
+        let d2 = d.clone();
+        let h = std::thread::spawn(move || tauri::async_runtime::block_on(backup_database_at(d2.join("paper-field.db"))));
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(!h.is_finished(), "db copy must wait for the restore lock");
+        assert_eq!(copies(&d), 0, "nothing copied while waiting");
+        drop(guard);
+        let out = h.join().unwrap().unwrap();
+        assert_eq!(fs::read(&out).unwrap(), b"db");
+        assert_eq!(copies(&d), 1);
+        // No database yet: nothing to copy, empty path.
+        assert_eq!(tauri::async_runtime::block_on(backup_database_at(tmp("b7-none").join("paper-field.db"))).unwrap(), "");
     }
 
     #[test] fn b6_backup_round_trip_keeps_bytes() {
