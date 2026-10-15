@@ -610,8 +610,7 @@ mod tests {
     use std::io::Write;
 
     fn tmp(n: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("pf-restore-{n}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&d);
+        let d = crate::test_util::unique_temp_dir(&format!("pf-restore-{n}"));
         fs::create_dir_all(d.join("library")).unwrap();
         d
     }

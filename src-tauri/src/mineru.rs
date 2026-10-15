@@ -1459,8 +1459,7 @@ mod tests {
 
     #[test]
     fn canonical_pdf_returns_shell_friendly_absolute_path() {
-        let dir = std::env::temp_dir().join(format!("pf-canonical-pdf-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
+        let dir = crate::test_util::unique_temp_dir("pf-canonical-pdf");
         let file = dir.join("sample.pdf");
         fs::write(&file, b"pdf").unwrap();
         let canonical = canonical_pdf(&file.to_string_lossy()).unwrap();
@@ -1909,10 +1908,7 @@ mod tests {
     // ---------- list_pdfs：只读所选目录一层，不进入子目录 ----------
 
     fn temp_scan_dir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("pf-list-pdfs-{tag}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).expect("创建临时目录失败");
-        dir
+        crate::test_util::unique_temp_dir(&format!("pf-list-pdfs-{tag}"))
     }
 
     #[test]

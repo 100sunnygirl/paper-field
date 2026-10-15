@@ -399,8 +399,7 @@ mod tests {
 
         #[tokio::test]
         async fn command_input_receives_eof_immediately() {
-            let dir = std::env::temp_dir().join(format!("paper-field-eof-{}", std::process::id()));
-            fs::create_dir_all(&dir).unwrap();
+            let dir = crate::test_util::unique_temp_dir("paper-field-eof");
             let script = dir.join("fake-curl.sh");
             fs::write(&script, "#!/bin/sh\nexec cat\n").unwrap();
 
