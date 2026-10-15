@@ -1107,9 +1107,7 @@ mod tests {
     use super::*;
 
     fn temp_dir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("pf-llm-{tag}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).expect("创建临时目录失败");
+        let dir = crate::test_util::unique_temp_dir(&format!("pf-llm-{tag}"));
         dir
     }
 

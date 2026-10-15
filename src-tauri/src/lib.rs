@@ -10,6 +10,8 @@ mod mineru_api;
 mod platform;
 mod restore;
 mod secrets;
+#[cfg(test)]
+mod test_util;
 mod transport;
 
 use std::fs;
@@ -252,7 +254,7 @@ pub fn run() {
 mod tester_export_repro {
     use super::*;
     fn f(p: &str) -> ExportFile { ExportFile { relative_path: p.into(), content: "x".into() } }
-    fn tmp(n: &str) -> PathBuf { let d = std::env::temp_dir().join(format!("pf-tester-{n}-{}", std::process::id())); let _ = fs::remove_dir_all(&d); fs::create_dir_all(&d).unwrap(); d }
+    fn tmp(n: &str) -> PathBuf { crate::test_util::unique_temp_dir(&format!("pf-tester-{n}")) }
     #[test] fn e1_absolute_path_rejected_without_side_effect() {
         let base = tmp("e1"); let root = base.join("root"); let outside = base.join("outside");
         let r = export_files(root.to_string_lossy().into(), vec![f(&format!("{}/sub/a.md", outside.display()))]);
@@ -303,8 +305,7 @@ mod export_tests {
     use std::path::PathBuf;
 
     fn scratch(name: &str) -> (PathBuf, PathBuf) {
-        let base = std::env::temp_dir().join(format!("pf-export-{name}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&base);
+        let base = crate::test_util::unique_temp_dir(&format!("pf-export-{name}"));
         let root = base.join("root");
         fs::create_dir_all(&root).unwrap();
         (base, root.canonicalize().unwrap())
@@ -374,8 +375,7 @@ mod import_tests {
     use std::fs;
 
     fn dir(n: &str) -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("pf-import-{n}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&d);
+        let d = crate::test_util::unique_temp_dir(&format!("pf-import-{n}"));
         fs::create_dir_all(d.join("lib")).unwrap();
         d
     }

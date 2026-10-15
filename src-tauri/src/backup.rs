@@ -171,7 +171,7 @@ mod tester_backup_b1 {
     use super::*;
     use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
     use sqlx::Row;
-    fn tmp(n: &str) -> PathBuf { let d = std::env::temp_dir().join(format!("pf-tester-{n}-{}", std::process::id())); let _ = fs::remove_dir_all(&d); fs::create_dir_all(&d).unwrap(); d }
+    fn tmp(n: &str) -> PathBuf { crate::test_util::unique_temp_dir(&format!("pf-tester-{n}")) }
 
     #[test] fn b1_snapshot_includes_uncheckpointed_wal_writes() {
         tauri::async_runtime::block_on(async {

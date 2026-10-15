@@ -125,13 +125,7 @@ mod tests {
     use crate::secrets::MemorySecretStore;
 
     fn scratch() -> std::path::PathBuf {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("paper-field-biblio-{}-{nanos}", std::process::id()));
-        fs::create_dir_all(&path).unwrap();
-        path
+        crate::test_util::unique_temp_dir("paper-field-biblio")
     }
 
     #[test]
