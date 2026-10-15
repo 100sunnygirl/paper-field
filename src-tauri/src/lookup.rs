@@ -914,7 +914,7 @@ pub enum Reach {
 }
 
 /// Mirrors reqwest's env-based proxy detection (system-proxy feature is off).
-fn proxy_configured() -> bool {
+pub(crate) fn proxy_configured() -> bool {
     ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"]
         .iter()
         .any(|k| std::env::var(k).is_ok_and(|v| !v.trim().is_empty()))
