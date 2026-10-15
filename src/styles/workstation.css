@@ -2729,6 +2729,19 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   transition: opacity var(--pf-motion), transform var(--pf-direct);
 }
 .ef-toast-close:hover { opacity: 1; transform: rotate(90deg); }
+.ef-toast-action {
+  flex: none;
+  align-self: center;
+  background: transparent;
+  color: var(--pf-on-dark);
+  border: 1px solid currentColor;
+  border-radius: var(--pf-radius);
+  padding: 1px 8px;
+  cursor: pointer;
+  font: inherit;
+  white-space: nowrap;
+}
+.ef-toast-action:hover { background: rgba(255, 255, 255, 0.12); }
 .ef-toast-life {
   position: absolute;
   left: 0;
