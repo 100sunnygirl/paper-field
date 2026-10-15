@@ -22,17 +22,18 @@ export function PreRestoreList() {
   }, [refresh]);
 
   if (!list || list.dirs.length === 0) return null;
+  const newestRollback = list.dirs.find((d) => !d.orphans)?.name;
 
   return (
     <div className="pf-pre-restore">
       <h4>恢复前的原数据</h4>
       {list.busy ? <p>恢复还没处理完，暂不能清理。</p> : null}
       <ul>
-        {list.dirs.map((d, i) => (
+        {list.dirs.map((d) => (
           <li key={d.name}>
             <span>
               {formatDate(new Date(d.createdMs).toISOString())} · {formatBytes(d.bytes)}
-              {i === 0 ? "（最近一次）" : ""}
+              {d.orphans ? "（临时文件）" : d.name === newestRollback ? "（最近一次）" : ""}
             </span>
             <Button
               type="button"

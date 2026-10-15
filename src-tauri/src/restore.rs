@@ -494,7 +494,7 @@ pub async fn restore_commit_preview(app: AppHandle) -> Result<(), String> {
     commit_preview(&app_config_dir(&app)?).await
 }
 
-/// One `pre-restore-<ms>` copy of the library taken before a restore.
+/// One restorable library copy or stray sidecar directory kept after a restore.
 #[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct PreDir {
@@ -503,13 +503,17 @@ pub struct PreDir {
     pub created_ms: u128,
     pub bytes: u64,
     pub has_db: bool,
+    /// Stray WAL/SHM files moved aside during rollback, not a library copy.
+    pub orphans: bool,
 }
 
 const PRE_BUSY: &str = "恢复还没处理完，暂不能清理原数据副本";
 
-/// `pre-restore-<digits>` exactly; returns the timestamp.
+/// `pre-restore-<digits>` or `.restore-orphans-<digits>` exactly.
 fn pre_name_ms(name: &str) -> Option<u128> {
-    let digits = name.strip_prefix("pre-restore-")?;
+    let digits = name
+        .strip_prefix("pre-restore-")
+        .or_else(|| name.strip_prefix(".restore-orphans-"))?;
     if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
@@ -540,6 +544,7 @@ pub fn list_pre(dir: &Path) -> (Vec<PreDir>, bool) {
                         path: abs(dir, &name),
                         bytes: tree_bytes(&e.path()),
                         has_db: e.path().join(DB).is_file(),
+                        orphans: name.starts_with(".restore-orphans-"),
                         name,
                         created_ms,
                     })
@@ -1131,6 +1136,40 @@ mod tests {
         tauri::async_runtime::block_on(delete_pre(&live, "pre-restore-5")).unwrap();
         assert!(!live.join("pre-restore-5").exists());
         assert!(live.join(&dirs[0].name).exists(), "other dirs untouched");
+    }
+
+    #[test]
+    fn orphan_sidecar_dirs_are_listed_and_deletable() {
+        let live = restored_live("restore-orphans");
+        let orphan = live.join(".restore-orphans-77");
+        fs::create_dir(&orphan).unwrap();
+        fs::write(orphan.join("paper-field.db-wal"), b"stray").unwrap();
+
+        let (dirs, busy) = list_pre(&live);
+        assert!(!busy);
+        let listed = dirs
+            .iter()
+            .find(|d| d.name == ".restore-orphans-77")
+            .expect("orphan listed");
+        assert!(listed.orphans && !listed.has_db && listed.bytes == 5);
+        assert!(dirs
+            .iter()
+            .filter(|d| d.name.starts_with("pre-restore-"))
+            .all(|d| !d.orphans));
+
+        for bad in [
+            ".restore-orphans-",
+            ".restore-orphans-7x",
+            ".restore-orphans-1/..",
+        ] {
+            assert!(
+                tauri::async_runtime::block_on(delete_pre(&live, bad)).is_err(),
+                "{bad}"
+            );
+        }
+        tauri::async_runtime::block_on(delete_pre(&live, ".restore-orphans-77")).unwrap();
+        assert!(!orphan.exists());
+        assert!(live.join(DB).exists(), "live database untouched");
     }
 
     #[test]
