@@ -471,8 +471,8 @@ pub fn restore_confirm_pending(app: AppHandle) -> Result<(), String> {
 }
 
 /// The user confirmed the preview: from now on the next launch swaps it in.
-pub fn commit_preview(dir: &Path) -> Result<(), String> {
-    let _guard = OP_LOCK.blocking_lock();
+pub async fn commit_preview(dir: &Path) -> Result<(), String> {
+    let _guard = OP_LOCK.lock().await;
     let Some(Ok(mut marker)) = read_marker(dir) else { return Err("没有待确认的恢复".into()) };
     if marker.stage != Stage::Previewed {
         return Err("没有待确认的恢复".into());
@@ -483,8 +483,8 @@ pub fn commit_preview(dir: &Path) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn restore_commit_preview(app: AppHandle) -> Result<(), String> {
-    commit_preview(&app_config_dir(&app)?)
+pub async fn restore_commit_preview(app: AppHandle) -> Result<(), String> {
+    commit_preview(&app_config_dir(&app)?).await
 }
 
 /// One `pre-restore-<ms>` copy of the library taken before a restore.
@@ -569,8 +569,15 @@ pub struct PreList {
 }
 
 #[tauri::command]
-pub fn restore_list_pre(app: AppHandle) -> Result<PreList, String> {
-    let (dirs, busy) = list_pre(&app_config_dir(&app)?);
+pub async fn restore_list_pre(app: AppHandle) -> Result<PreList, String> {
+    list_pre_off_thread(app_config_dir(&app)?).await
+}
+
+/// `tree_bytes` walks every file of every copy: keep it off the calling thread.
+async fn list_pre_off_thread(dir: PathBuf) -> Result<PreList, String> {
+    let (dirs, busy) = tauri::async_runtime::spawn_blocking(move || list_pre(&dir))
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(PreList { dirs, busy })
 }
 
@@ -680,7 +687,7 @@ mod tests {
 
     fn stage(live: &Path, zip: &Path) -> Result<(), String> {
         stage_summary(live, zip)?;
-        commit_preview(live)
+        tauri::async_runtime::block_on(commit_preview(live))
     }
 
     fn stage_summary(live: &Path, zip: &Path) -> Result<BackupSummary, String> {
@@ -1062,9 +1069,9 @@ mod tests {
     #[test]
     fn commit_preview_only_accepts_previewed() {
         let (live, zip) = setup("preview-commit");
-        assert!(commit_preview(&live).is_err(), "no marker");
+        assert!(tauri::async_runtime::block_on(commit_preview(&live)).is_err(), "no marker");
         stage(&live, &zip).unwrap();
-        assert!(commit_preview(&live).is_err(), "already staged");
+        assert!(tauri::async_runtime::block_on(commit_preview(&live)).is_err(), "already staged");
         assert!(matches!(apply_pending_restore_at(&live, now_ms()), RestoreStatus::Restored { .. }));
     }
 
@@ -1200,6 +1207,35 @@ mod tests {
         let (live, _) = setup("p3-lock-ops");
         let l = live.clone();
         assert_waits_for_lock(move || { let _ = tauri::async_runtime::block_on(abandon_restore(&l)); });
-        assert_waits_for_lock(move || { let _ = commit_preview(&live); });
+        assert_waits_for_lock(move || { let _ = tauri::async_runtime::block_on(commit_preview(&live)); });
+    }
+
+    #[test]
+    fn commit_preview_does_not_block_its_thread_while_restore_holds_lock() {
+        let (live, zip) = setup("p9-commit-nonblock");
+        stage_summary(&live, &zip).unwrap();
+        let guard = OP_LOCK.blocking_lock();
+        let waited = tauri::async_runtime::block_on(async {
+            tokio::time::timeout(std::time::Duration::from_millis(100), commit_preview(&live)).await
+        });
+        assert!(waited.is_err(), "must still be waiting for the lock");
+        drop(guard);
+        tauri::async_runtime::block_on(commit_preview(&live)).unwrap();
+        // Now staged: a second commit is refused.
+        assert!(tauri::async_runtime::block_on(commit_preview(&live)).is_err());
+    }
+
+    #[test]
+    fn list_pre_runs_off_the_calling_thread() {
+        let live = restored_live("p9-list-offthread");
+        let caller = std::thread::current().id();
+        let mut fut = Box::pin(list_pre_off_thread(live.clone()));
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        // A sync walk inside the future would finish on this first poll, on this thread.
+        assert!(std::future::Future::poll(fut.as_mut(), &mut cx).is_pending(), "size walk must not run on the caller");
+        let list = tauri::async_runtime::block_on(fut).unwrap();
+        assert_eq!(std::thread::current().id(), caller);
+        assert_eq!(list.dirs, list_pre(&live).0);
+        assert!(!list.busy);
     }
 }
