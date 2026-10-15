@@ -231,13 +231,20 @@ fn build_plan(dir: &Path, staged: &[String]) -> Vec<PlanItem> {
     plan
 }
 
+/// Large trees take a while to delete; keep that off the async worker.
+async fn remove_dir_off_thread(path: PathBuf) -> std::io::Result<()> {
+    tauri::async_runtime::spawn_blocking(move || fs::remove_dir_all(path))
+        .await
+        .map_err(std::io::Error::other)?
+}
+
 pub async fn stage_restore(dir: &Path, src: &Path) -> Result<BackupSummary, String> {
     let _guard = OP_LOCK.lock().await;
     if dir.join(MARKER).exists() {
         return Err("上一次恢复还没处理完，请先重启应用".into());
     }
     let staging = dir.join(STAGING);
-    let _ = fs::remove_dir_all(&staging);
+    let _ = remove_dir_off_thread(staging.clone()).await;
     fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
     let result = async {
         let staged = unpack(src, &staging)?;
@@ -262,7 +269,7 @@ pub async fn stage_restore(dir: &Path, src: &Path) -> Result<BackupSummary, Stri
     .await;
     if result.is_err() {
         let _ = fs::remove_file(dir.join(MARKER));
-        let _ = fs::remove_dir_all(&staging);
+        let _ = remove_dir_off_thread(staging).await;
     }
     result
 }
@@ -537,8 +544,8 @@ pub fn list_pre(dir: &Path) -> (Vec<PreDir>, bool) {
     (out, busy)
 }
 
-pub fn delete_pre(dir: &Path, name: &str) -> Result<(), String> {
-    let _guard = OP_LOCK.blocking_lock();
+pub async fn delete_pre(dir: &Path, name: &str) -> Result<(), String> {
+    let _guard = OP_LOCK.lock().await;
     if pre_name_ms(name).is_none() {
         return Err("不是原数据副本目录".into());
     }
@@ -551,7 +558,7 @@ pub fn delete_pre(dir: &Path, name: &str) -> Result<(), String> {
     if !meta.is_dir() || meta.file_type().is_symlink() {
         return Err("不是原数据副本目录".into());
     }
-    fs::remove_dir_all(&target).map_err(|e| format!("删除失败：{e}"))
+    remove_dir_off_thread(target).await.map_err(|e| format!("删除失败：{e}"))
 }
 
 #[derive(Serialize)]
@@ -568,8 +575,8 @@ pub fn restore_list_pre(app: AppHandle) -> Result<PreList, String> {
 }
 
 #[tauri::command]
-pub fn restore_delete_pre(app: AppHandle, name: String) -> Result<(), String> {
-    delete_pre(&app_config_dir(&app)?, &name)
+pub async fn restore_delete_pre(app: AppHandle, name: String) -> Result<(), String> {
+    delete_pre(&app_config_dir(&app)?, &name).await
 }
 
 /// User gives up on the pending restore, whatever state it is in (staged,
@@ -1089,7 +1096,7 @@ mod tests {
         assert_eq!(dirs.len(), 2);
         assert!(dirs[0].has_db && dirs[0].bytes > 0, "newest first, holds the old db");
         assert_eq!(dirs[1].name, "pre-restore-5");
-        delete_pre(&live, "pre-restore-5").unwrap();
+        tauri::async_runtime::block_on(delete_pre(&live, "pre-restore-5")).unwrap();
         assert!(!live.join("pre-restore-5").exists());
         assert!(live.join(&dirs[0].name).exists(), "other dirs untouched");
     }
@@ -1100,7 +1107,7 @@ mod tests {
         let name = list_pre(&live).0[0].name.clone();
         fs::write(live.join(MARKER), "not json").unwrap();
         assert!(list_pre(&live).1);
-        assert_eq!(delete_pre(&live, &name), Err(PRE_BUSY.into()));
+        assert_eq!(tauri::async_runtime::block_on(delete_pre(&live, &name)), Err(PRE_BUSY.into()));
         assert!(live.join(&name).exists());
     }
 
@@ -1108,7 +1115,7 @@ mod tests {
     fn delete_pre_rejects_bad_names_and_symlinks() {
         let live = restored_live("p3-names");
         for bad in ["../x", "pre-restore-1/..", "library", "pre-restore-", "pre-restore-1a", DB] {
-            assert!(delete_pre(&live, bad).is_err(), "{bad}");
+            assert!(tauri::async_runtime::block_on(delete_pre(&live, bad)).is_err(), "{bad}");
         }
         assert!(live.join("library").exists() && live.join(DB).exists());
         #[cfg(unix)]
@@ -1117,7 +1124,7 @@ mod tests {
             fs::create_dir_all(&outside).unwrap();
             fs::write(outside.join("keep"), "x").unwrap();
             std::os::unix::fs::symlink(&outside, live.join("pre-restore-9")).unwrap();
-            assert!(delete_pre(&live, "pre-restore-9").is_err());
+            assert!(tauri::async_runtime::block_on(delete_pre(&live, "pre-restore-9")).is_err());
             assert!(outside.join("keep").exists());
         }
     }
@@ -1128,7 +1135,7 @@ mod tests {
         let name = list_pre(&live).0[0].name.clone();
         let guard = OP_LOCK.blocking_lock();
         let (l2, n2) = (live.clone(), name.clone());
-        let handle = std::thread::spawn(move || delete_pre(&l2, &n2));
+        let handle = std::thread::spawn(move || tauri::async_runtime::block_on(delete_pre(&l2, &n2)));
         std::thread::sleep(std::time::Duration::from_millis(100));
         assert!(!handle.is_finished(), "delete must wait for the lock");
         // A restore staged while the delete was waiting.
@@ -1136,6 +1143,23 @@ mod tests {
         drop(guard);
         assert_eq!(handle.join().unwrap(), Err(PRE_BUSY.into()));
         assert!(live.join(&name).exists());
+    }
+
+    #[test]
+    fn delete_does_not_block_its_thread_while_restore_holds_lock() {
+        let live = restored_live("p7-nonblock");
+        let name = list_pre(&live).0[0].name.clone();
+        let guard = OP_LOCK.blocking_lock();
+        let started = std::time::Instant::now();
+        // Old sync version parked the calling (main) thread here until the lock freed.
+        let waited = tauri::async_runtime::block_on(async {
+            tokio::time::timeout(std::time::Duration::from_millis(100), delete_pre(&live, &name)).await
+        });
+        assert!(waited.is_err(), "must still be waiting for the lock");
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        drop(guard);
+        tauri::async_runtime::block_on(delete_pre(&live, &name)).unwrap();
+        assert!(!live.join(&name).exists());
     }
 
     fn assert_waits_for_lock<F: FnOnce() + Send + 'static>(f: F) {
