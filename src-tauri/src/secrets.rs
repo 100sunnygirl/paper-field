@@ -68,6 +68,7 @@ pub const MINERU_ACCOUNT: &str = "mineru:token";
 pub const KEYCHAIN_SERVICE: &str = "paper-field";
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg_attr(test, allow(dead_code))]
 pub struct KeyringStore;
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -99,12 +100,12 @@ impl SecretStore for KeyringStore {
 
 /// Linux builds (this dev VM) have no macOS Keychain. Secrets stay out of the
 /// settings JSON, in a mode-0600 file. macOS and Windows use the keyring crate.
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(any(test, not(any(target_os = "macos", target_os = "windows"))))]
 pub struct FileSecretStore {
     path: std::path::PathBuf,
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(any(test, not(any(target_os = "macos", target_os = "windows"))))]
 impl FileSecretStore {
     pub fn new(dir: &Path) -> Self {
         Self {
@@ -129,7 +130,7 @@ impl FileSecretStore {
     }
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(any(test, not(any(target_os = "macos", target_os = "windows"))))]
 impl SecretStore for FileSecretStore {
     fn get(&self, account: &str) -> Result<Option<String>, String> {
         Ok(self.load()?.get(account).cloned())
@@ -150,13 +151,19 @@ impl SecretStore for FileSecretStore {
     }
 }
 
+/// Tests never reach the real OS keychain: under `cfg(test)` every platform
+/// uses the file store inside `dir` (a per-test temp dir).
+///
+/// Caveat: `cfg(test)` only covers this crate's unit tests. Integration tests
+/// under `tests/`, other features, or bins calling `store_for` still compile
+/// without `cfg(test)` and would hit the real keychain on macOS/Windows.
 pub fn store_for(dir: &Path) -> Box<dyn SecretStore> {
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(all(any(target_os = "macos", target_os = "windows"), not(test)))]
     {
         let _ = dir;
         Box::new(KeyringStore)
     }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(any(test, not(any(target_os = "macos", target_os = "windows"))))]
     {
         Box::new(FileSecretStore::new(dir))
     }
@@ -335,5 +342,18 @@ mod tests {
             assert!(!(data.contains("sk-secret") && m & 0o077 != 0),
                 "secret sat in mode {m:o} inode (create_new should refuse an existing tmp)");
         }
+    }
+
+    #[test]
+    fn store_for_in_tests_stays_inside_dir_on_every_platform() {
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let d = std::env::temp_dir().join(format!("pf-store-for-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let store = store_for(&d);
+        store.set("llm:guard", "sk-guard-value").unwrap();
+        assert_eq!(store.get("llm:guard").unwrap().as_deref(), Some("sk-guard-value"));
+        assert!(fs::read_dir(&d).unwrap().next().is_some(), "secret must be written under the test dir");
+        store.delete("llm:guard").unwrap();
+        let _ = fs::remove_dir_all(&d);
     }
 }
