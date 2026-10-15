@@ -582,8 +582,17 @@ pub async fn restore_delete_pre(app: AppHandle, name: String) -> Result<(), Stri
 /// User gives up on the pending restore, whatever state it is in (staged,
 /// pending confirmation, stuck, or an unreadable marker). Puts old files back
 /// where they were moved, clears the marker, and allows a fresh restore.
-pub fn abandon_restore(dir: &Path) -> Result<(), String> {
-    let _guard = OP_LOCK.blocking_lock();
+pub async fn abandon_restore(dir: &Path) -> Result<(), String> {
+    let _guard = OP_LOCK.lock().await;
+    // Rollback moves files and finish() deletes the staging tree: keep both off
+    // the async worker, with the lock held for the whole undo.
+    let dir = dir.to_path_buf();
+    tauri::async_runtime::spawn_blocking(move || abandon_locked(&dir))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn abandon_locked(dir: &Path) -> Result<(), String> {
     match read_marker(dir) {
         None => {}
         Some(Ok(marker)) => {
@@ -606,8 +615,8 @@ pub fn abandon_restore(dir: &Path) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn restore_abandon(app: AppHandle) -> Result<(), String> {
-    abandon_restore(&app_config_dir(&app)?)
+pub async fn restore_abandon(app: AppHandle) -> Result<(), String> {
+    abandon_restore(&app_config_dir(&app)?).await
 }
 
 #[cfg(test)]
@@ -853,7 +862,7 @@ mod tests {
         m.stage = Stage::Swapping;
         m.attempts = MAX_ATTEMPTS + 1;
         write_marker(&live, &m).unwrap();
-        abandon_restore(&live).unwrap();
+        tauri::async_runtime::block_on(abandon_restore(&live)).unwrap();
         assert_original(&live);
         assert!(!live.join(MARKER).exists());
         stage(&live, &zip).expect("a new restore can be started");
@@ -864,7 +873,7 @@ mod tests {
         let (live, zip) = setup("abandon-pending");
         stage(&live, &zip).unwrap();
         assert_eq!(apply_pending_restore_at(&live, now_ms() + STALE_MS + 1), RestoreStatus::PendingConfirm);
-        abandon_restore(&live).unwrap();
+        tauri::async_runtime::block_on(abandon_restore(&live)).unwrap();
         assert_original(&live);
         assert!(!live.join(MARKER).exists() && !live.join(STAGING).exists());
         stage(&live, &zip).unwrap();
@@ -876,7 +885,7 @@ mod tests {
         fs::write(live.join(MARKER), b"{not json").unwrap();
         assert!(matches!(apply_pending_restore_at(&live, now_ms()), RestoreStatus::Stuck { .. }));
         assert!(stage(&live, &zip).is_err());
-        abandon_restore(&live).unwrap();
+        tauri::async_runtime::block_on(abandon_restore(&live)).unwrap();
         assert_original(&live);
         stage(&live, &zip).unwrap();
     }
@@ -923,7 +932,7 @@ mod tests {
         write_marker(&live, &m).unwrap();
         fs::create_dir(live.join(&m.pre)).unwrap();
         lose_old_db(&live);
-        assert!(abandon_restore(&live).is_err());
+        assert!(tauri::async_runtime::block_on(abandon_restore(&live)).is_err());
         assert!(read_marker(&live).is_some() && !live.join(DB).exists());
     }
 
@@ -937,7 +946,7 @@ mod tests {
         fs::copy(live.join(DB), old.join(DB)).unwrap();
         fs::rename(live.join(DB), new.join(DB)).unwrap();
         fs::write(live.join(MARKER), b"{not json").unwrap();
-        abandon_restore(&live).unwrap();
+        tauri::async_runtime::block_on(abandon_restore(&live)).unwrap();
         assert!(live.join(DB).exists() && !new.join(DB).exists() && old.join(DB).exists());
         assert!(read_marker(&live).is_none());
     }
@@ -948,7 +957,7 @@ mod tests {
         fs::create_dir(live.join("pre-restore-300")).unwrap();
         fs::remove_file(live.join(DB)).unwrap();
         fs::write(live.join(MARKER), b"{not json").unwrap();
-        assert!(abandon_restore(&live).is_err());
+        assert!(tauri::async_runtime::block_on(abandon_restore(&live)).is_err());
         assert!(live.join(MARKER).exists() && !live.join(DB).exists());
     }
 
@@ -1031,7 +1040,7 @@ mod tests {
     fn abandon_after_preview_cancel_leaves_everything_as_before() {
         let (live, zip) = setup("preview-cancel");
         stage(&live, &zip).unwrap();
-        abandon_restore(&live).unwrap();
+        tauri::async_runtime::block_on(abandon_restore(&live)).unwrap();
         assert_original(&live);
         assert!(!live.join(MARKER).exists());
         assert!(!live.join(STAGING).exists());
@@ -1172,10 +1181,25 @@ mod tests {
     }
 
     #[test]
+    fn abandon_does_not_block_its_thread_while_restore_holds_lock() {
+        let (live, zip) = setup("p8-abandon-nonblock");
+        stage(&live, &zip).unwrap();
+        let guard = OP_LOCK.blocking_lock();
+        let waited = tauri::async_runtime::block_on(async {
+            tokio::time::timeout(std::time::Duration::from_millis(100), abandon_restore(&live)).await
+        });
+        assert!(waited.is_err(), "must still be waiting for the lock");
+        assert!(live.join(MARKER).exists(), "nothing undone while waiting");
+        drop(guard);
+        tauri::async_runtime::block_on(abandon_restore(&live)).unwrap();
+        assert!(!live.join(MARKER).exists());
+    }
+
+    #[test]
     fn abandon_and_commit_wait_for_lock() {
         let (live, _) = setup("p3-lock-ops");
         let l = live.clone();
-        assert_waits_for_lock(move || { let _ = abandon_restore(&l); });
+        assert_waits_for_lock(move || { let _ = tauri::async_runtime::block_on(abandon_restore(&l)); });
         assert_waits_for_lock(move || { let _ = commit_preview(&live); });
     }
 }
