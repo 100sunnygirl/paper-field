@@ -10,8 +10,9 @@ vi.mock("../lib/util", async (orig) => ({ ...(await orig<object>()), isTauri: ()
 import { PreRestoreList } from "./PreRestoreList";
 import { deleteConfirmText, type PreDir } from "../lib/preRestore";
 
-const a: PreDir = { name: "pre-restore-200", path: "/d/pre-restore-200", createdMs: 200, bytes: 4096, hasDb: true };
-const b: PreDir = { name: "pre-restore-100", path: "/d/pre-restore-100", createdMs: 100, bytes: 2048, hasDb: false };
+const a: PreDir = { name: "pre-restore-200", path: "/d/pre-restore-200", createdMs: 200, bytes: 4096, hasDb: true, orphans: false };
+const b: PreDir = { name: "pre-restore-100", path: "/d/pre-restore-100", createdMs: 100, bytes: 2048, hasDb: false, orphans: false };
+const orphan: PreDir = { name: ".restore-orphans-300", path: "/d/.restore-orphans-300", createdMs: 300, bytes: 10, hasDb: false, orphans: true };
 
 beforeEach(() => {
   invoke.mockReset();
@@ -52,5 +53,16 @@ describe("PreRestoreList", () => {
     expect(deleteConfirmText(a, [a, b])).toContain("这是唯一一份可回滚的原数据");
     expect(deleteConfirmText(b, [a, b])).not.toContain("唯一一份");
     expect(deleteConfirmText(b, [a, b])).toContain("此操作不可撤销");
+  });
+
+  it("labels orphan sidecars and keeps the newest marker on rollback copies", async () => {
+    listing([orphan, a, b]);
+    render(<PreRestoreList />);
+    expect(await screen.findByText(/临时文件/)).toBeTruthy();
+    const rows = screen.getAllByRole("listitem");
+    expect(rows[0].textContent).not.toContain("最近一次");
+    expect(rows[1].textContent).toContain("最近一次");
+    expect(deleteConfirmText(orphan, [orphan, a, b])).toContain("恢复时移开的临时文件");
+    expect(deleteConfirmText(orphan, [orphan, a, b])).not.toContain("唯一一份");
   });
 });
