@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { repo } from "../lib/repo";
 import { useField } from "../store";
@@ -220,5 +220,49 @@ describe("EditPaperDialog · 作者编辑", () => {
     await waitFor(() => expect(useField.getState().saveAuthors).toHaveBeenCalledTimes(1));
     const saved = vi.mocked(useField.getState().saveAuthors).mock.calls[0]![0];
     expect(saved[0].affiliation).toBe("MIT");
+  });
+});
+
+describe("EditPaperDialog · 按打开快照保存（M7）", () => {
+  it("只改标题时，后台补上的摘要不进入保存载荷", async () => {
+    const detail = fakeDetail({ abstract: "", fieldSources: {} });
+    openWith(detail);
+    render(<EditPaperDialog />);
+    fireEvent.change(screen.getByLabelText("英文标题"), { target: { value: "User Title" } });
+
+    act(() => {
+      useField.setState({
+        paper: { ...detail, abstract: "filled by llm", fieldSources: { abstract: "llm" } },
+      });
+    });
+
+    expect(screen.getByLabelText("英文标题")).toHaveValue("User Title");
+    expect(screen.getByLabelText("摘要")).toHaveValue("filled by llm");
+    fireEvent.click(screen.getByRole("button", { name: "保存论文信息" }));
+    await waitFor(() => expect(useField.getState().savePaperPatch).toHaveBeenCalledTimes(1));
+    const patch = vi.mocked(useField.getState().savePaperPatch).mock.calls[0]![0];
+    expect(patch).toEqual({ title: "User Title" });
+    expect(patch).not.toHaveProperty("abstract");
+    expect(useField.getState().saveAuthors).not.toHaveBeenCalled();
+  });
+
+  it("刷新保留已改标题和脏标记，未改的摘要跟随库", async () => {
+    const detail = fakeDetail({ abstract: "" });
+    openWith(detail);
+    const { container } = render(<EditPaperDialog />);
+    fireEvent.change(screen.getByLabelText("英文标题"), { target: { value: "Dirty Title" } });
+
+    act(() => {
+      useField.setState({
+        paper: { ...detail, abstract: "library abstract", updatedAt: "2024-06-01T00:00:00.000Z" },
+      });
+    });
+
+    expect(screen.getByLabelText("英文标题")).toHaveValue("Dirty Title");
+    expect(screen.getByLabelText("摘要")).toHaveValue("library abstract");
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(useField.getState().dialog).toBe("edit-paper");
+    expect(container.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(useField.getState().flash).toMatchObject({ tone: "warn" });
   });
 });
