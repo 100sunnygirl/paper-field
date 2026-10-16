@@ -67,12 +67,13 @@ class SqlJsEngine implements SqlEngine {
   }
 }
 
-class TauriEngine implements SqlEngine {
+export class TauriEngine implements SqlEngine {
   constructor(private db: import("@tauri-apps/plugin-sql").default) {}
 
   async execute(sql: string, params: unknown[] = []): Promise<number> {
-    const changed = await this.db.execute(sql, params);
-    return typeof changed === "number" ? changed : 0;
+    // plugin-sql 返回 { rowsAffected, lastInsertId }，不是数字；条件写入全靠这个行数判定。
+    const result = await this.db.execute(sql, params);
+    return Number(result?.rowsAffected ?? 0);
   }
 
   async select<T>(sql: string, params: unknown[] = []): Promise<T[]> {
