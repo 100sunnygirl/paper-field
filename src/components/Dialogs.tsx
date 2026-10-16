@@ -410,6 +410,43 @@ export function DomainDialog() {
   );
 }
 
+/**
+ * 论文对话框的目标：打开时锁定的那篇（dialogPaperId）。通常就是当前论文；万一选中变了，
+ * 就按 id 单独读出这篇，绝不改用别的论文。目标已被删除时 missing 为 true。
+ */
+function useDialogPaper(): { paper: PaperDetail | null; missing: boolean } {
+  const dialogPaperId = useField((s) => s.dialogPaperId);
+  const current = useField((s) => s.paper);
+  const [loaded, setLoaded] = useState<{ id: string; paper: PaperDetail | null } | null>(null);
+  const matches = Boolean(dialogPaperId) && current?.id === dialogPaperId;
+  useEffect(() => {
+    if (!dialogPaperId || matches) return;
+    let alive = true;
+    void repo.getPaper(dialogPaperId).then((paper) => {
+      if (alive) setLoaded({ id: dialogPaperId, paper });
+    });
+    return () => {
+      alive = false;
+    };
+  }, [dialogPaperId, matches]);
+  if (!dialogPaperId) return { paper: null, missing: false };
+  if (matches) return { paper: current, missing: false };
+  if (loaded?.id === dialogPaperId) return { paper: loaded.paper, missing: loaded.paper === null };
+  return { paper: null, missing: false };
+}
+
+/** 目标论文已被删除：关掉对话框并说明，不把操作转到别的论文上。 */
+function useCloseWhenMissing(open: boolean, missing: boolean) {
+  const closeDialog = useField((s) => s.closeDialog);
+  const setFlash = useField((s) => s.setFlash);
+  useEffect(() => {
+    if (open && missing) {
+      closeDialog();
+      setFlash({ tone: "warn", text: "这篇论文已不存在，对话框已关闭。" });
+    }
+  }, [open, missing, closeDialog, setFlash]);
+}
+
 export function DomainPickerDialog() {
   const dialog = useField((s) => s.dialog);
   const closeDialog = useField((s) => s.closeDialog);
@@ -418,6 +455,7 @@ export function DomainPickerDialog() {
   const selectDomain = useField((s) => s.selectDomain);
   const movePaper = useField((s) => s.movePaper);
   const openDialog = useField((s) => s.openDialog);
+  const dialogPaperId = useField((s) => s.dialogPaperId);
   const moving = dialog === "move-paper";
   const open = dialog === "pick-domain" || moving;
 
@@ -451,7 +489,7 @@ export function DomainPickerDialog() {
           type="button"
           className={`ef-domain-option ${domain.id === selectedDomainId ? "is-current" : ""}`}
           onClick={() => {
-            if (moving) void movePaper(domain.id);
+            if (moving) void movePaper(domain.id, dialogPaperId ?? undefined);
             else void selectDomain(domain.id);
           }}
         >
@@ -475,12 +513,25 @@ export function DomainPickerDialog() {
 export function DeletePaperDialog() {
   const dialog = useField((s) => s.dialog);
   const closeDialog = useField((s) => s.closeDialog);
-  const paper = useField((s) => s.paper);
   const deletePaper = useField((s) => s.deletePaper);
+  const { paper, missing } = useDialogPaper();
+  const open = dialog === "delete-paper";
+  const [busy, setBusy] = useState(false);
+  useCloseWhenMissing(open, missing);
+
+  async function confirm() {
+    if (!paper || busy) return;
+    setBusy(true);
+    try {
+      await deletePaper(paper.id);
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
     <Dialog
-      open={dialog === "delete-paper"}
+      open={open && Boolean(paper)}
       title="删除这篇论文？"
       onClose={closeDialog}
       danger
@@ -489,7 +540,7 @@ export function DeletePaperDialog() {
           <Button type="button" onClick={closeDialog}>
             取消
           </Button>
-          <Button type="button" className="ef-btn-danger-solid" onClick={() => void deletePaper()}>
+          <Button type="button" className="ef-btn-danger-solid" disabled={busy} onClick={() => void confirm()}>
             确认删除
           </Button>
         </>
@@ -507,8 +558,20 @@ export function DeletePaperDialog() {
 export function DeleteCheckedPapersDialog() {
   const dialog = useField((s) => s.dialog);
   const closeDialog = useField((s) => s.closeDialog);
-  const checkedPaperIds = useField((s) => s.checkedPaperIds);
+  // 打开时冻结的那批：确认期间后台刷新改动勾选集也不影响要删的论文与数量。
+  const checkedPaperIds = useField((s) => s.dialogPaperIds);
   const deleteCheckedPapers = useField((s) => s.deleteCheckedPapers);
+  const [busy, setBusy] = useState(false);
+
+  async function confirm() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await deleteCheckedPapers();
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
     <Dialog
@@ -521,11 +584,7 @@ export function DeleteCheckedPapersDialog() {
           <Button type="button" onClick={closeDialog}>
             取消
           </Button>
-          <Button
-            type="button"
-            className="ef-btn-danger-solid"
-            onClick={() => void deleteCheckedPapers()}
-          >
+          <Button type="button" className="ef-btn-danger-solid" disabled={busy} onClick={() => void confirm()}>
             确认删除
           </Button>
         </>
@@ -543,6 +602,17 @@ export function ConfirmNotesDialog() {
   const closeDialog = useField((s) => s.closeDialog);
   const pendingDraftJob = useField((s) => s.pendingDraftJob);
   const runDraftNotes = useField((s) => s.runDraftNotes);
+  const [busy, setBusy] = useState(false);
+
+  async function overwrite() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await runDraftNotes(pendingDraftJob ?? undefined, true);
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
     <Dialog
@@ -554,17 +624,13 @@ export function ConfirmNotesDialog() {
           <Button type="button" onClick={closeDialog}>
             保留我的笔记
           </Button>
-          <Button
-            variant="primary"
-            type="button"
-            onClick={() => void runDraftNotes(pendingDraftJob ?? undefined, true)}
-          >
+          <Button variant="primary" type="button" disabled={busy} onClick={() => void overwrite()}>
             用 AI 草稿覆盖
           </Button>
         </>
       }
     >
-      <p>你已经修改过笔记，AI 不会静默覆盖。确认后五个笔记板块都会替换为 AI 草稿。</p>
+      <p>你已经修改过笔记，AI 不会静默覆盖。确认后五个笔记板块都会替换为 AI 草稿；起草期间你再改的块会保留你的内容。</p>
     </Dialog>
   );
 }
@@ -573,9 +639,10 @@ export function ConfirmNotesDialog() {
 export function ConfirmMetaDialog() {
   const dialog = useField((s) => s.dialog);
   const closeDialog = useField((s) => s.closeDialog);
-  const paper = useField((s) => s.paper);
   const runPrepareMeta = useField((s) => s.runPrepareMeta);
+  const { paper, missing } = useDialogPaper();
   const open = dialog === "confirm-meta" && Boolean(paper);
+  useCloseWhenMissing(dialog === "confirm-meta", missing);
 
   function run(overwrite: boolean) {
     closeDialog();
@@ -599,8 +666,8 @@ export function ConfirmMetaDialog() {
       }
     >
       <p>
-        你已经手动修改过论文信息，AI 不会静默覆盖。文献库先写、模型只补仍空字段。
-        「保留我的修改」只补全空白字段；「用 AI 结果覆盖」会覆盖你修改过的字段。
+        你已经手动修改过论文信息，AI 不会静默覆盖。文献库查到的值优先，模型只补仍空的字段，
+        也不会替换文献库的值。「保留我的修改」只补全空白字段；「用 AI 结果覆盖」会覆盖你修改过的字段。
       </p>
     </Dialog>
   );
@@ -609,13 +676,15 @@ export function ConfirmMetaDialog() {
 export function EditPaperDialog() {
   const dialog = useField((s) => s.dialog);
   const closeDialog = useField((s) => s.closeDialog);
-  const paper = useField((s) => s.paper);
   const savePaperPatch = useField((s) => s.savePaperPatch);
   const saveAuthors = useField((s) => s.saveAuthors);
   const setFlash = useField((s) => s.setFlash);
+  // 打开时锁定的那篇：之后搜索或后台刷新改了选中，也只会保存到这篇。
+  const { paper, missing } = useDialogPaper();
   const open = dialog === "edit-paper" && Boolean(paper);
   const [metaDirty, setMetaDirty] = useState(false);
   const [crewDirty, setCrewDirty] = useState(false);
+  useCloseWhenMissing(dialog === "edit-paper", missing);
 
   useEffect(() => {
     if (!open) {
@@ -641,7 +710,8 @@ export function EditPaperDialog() {
       vetoClose={vetoClose}
       className="is-wide"
       footer={
-        <Button type="button" onClick={closeDialog}>
+        // 「完成」与 Esc 走同一道未保存检查，不再静默丢弃修改。
+        <Button type="button" onClick={() => (vetoClose() ? undefined : closeDialog())}>
           完成
         </Button>
       }
@@ -649,12 +719,18 @@ export function EditPaperDialog() {
       {paper ? (
         <>
           <MetaEditor
+            key={paper.id}
             paper={paper}
             onDirtyChange={setMetaDirty}
-            onSave={(patch) => void savePaperPatch(patch)}
+            onSave={(patch) => savePaperPatch(paper.id, patch)}
           />
           <h3 className="ef-dialog-section">作者</h3>
-          <CrewEditor authors={paper.authors} onDirtyChange={setCrewDirty} onSave={(next) => void saveAuthors(next)} />
+          <CrewEditor
+            key={`crew-${paper.id}`}
+            authors={paper.authors}
+            onDirtyChange={setCrewDirty}
+            onSave={(next) => saveAuthors(paper.id, next)}
+          />
         </>
       ) : null}
     </Dialog>
@@ -699,9 +775,10 @@ function MetaEditor({
     codeUrl?: string | null;
     projectPage?: string | null;
     tags?: string[];
-  }) => void;
+  }) => Promise<void> | void;
 }) {
   const [draft, setDraft] = useState(() => metaDraftOf(paper));
+  const [saving, setSaving] = useState(false);
   const dirtyRef = useRef(new Set<MetaDraftKey>());
   const [dirty, setDirty] = useState(false);
 
@@ -780,8 +857,8 @@ function MetaEditor({
       <Button
         variant="primary"
         type="button"
-        disabled={yearInvalid}
-        onClick={() => {
+        disabled={yearInvalid || saving}
+        onClick={async () => {
           if (dirtyRef.current.size === 0) return;
           const dirtyFields = dirtyRef.current;
           const patch: Parameters<typeof onSave>[0] = {};
@@ -803,7 +880,17 @@ function MetaEditor({
               .map((t) => t.trim())
               .filter(Boolean);
           }
-          onSave(patch);
+          setSaving(true);
+          try {
+            await onSave(patch);
+            // 保存成功才清掉 dirty：之后 Esc / 完成不再误报「尚未保存」。
+            dirtyRef.current.clear();
+            setDirty(false);
+          } catch {
+            // 失败时保留输入与 dirty，store 已经给出错误通知。
+          } finally {
+            setSaving(false);
+          }
         }}
       >
         保存论文信息
@@ -819,7 +906,7 @@ function CrewEditor({
 }: {
   authors: Author[];
   onDirtyChange?: (dirty: boolean) => void;
-  onSave: (authors: Author[]) => void;
+  onSave: (authors: Author[]) => Promise<void> | void;
 }) {
   const [draft, setDraft] = useState(authors);
   const [editing, setEditing] = useState(false);
@@ -935,9 +1022,15 @@ function CrewEditor({
         <Button
           variant="primary"
           type="button"
-          onClick={() => {
+          onClick={async () => {
             if (!authorsDirtyRef.current) return;
-            onSave(draft.filter((a) => a.name.trim()));
+            try {
+              await onSave(draft.filter((a) => a.name.trim()));
+              authorsDirtyRef.current = false;
+              setAuthorsDirty(false);
+            } catch {
+              // 失败时保留编辑中的作者。
+            }
           }}
         >
           保存作者

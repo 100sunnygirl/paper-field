@@ -67,6 +67,20 @@ describe("retry failed imports", () => {
     expect(getToasts().some((t) => t.text.includes("磁盘已满"))).toBe(false);
   });
 
+  it("retry imports into the domain the failed import targeted, even after switching domains", async () => {
+    importLocalPdfs.mockImplementation(async () => {
+      throw new Error("坏文件");
+    });
+    await useField.getState().importPdfs(["/x/bad.pdf"]);
+    useField.setState({ selectedDomainId: "d-2" } as never);
+    importLocalPdfs.mockReset();
+    importLocalPdfs.mockImplementation(async (_d: string, [p]: string[]) => ({ created: [{ id: p }], skipped: [] }));
+    render(createElement(Toasts));
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    await vi.waitFor(() => expect(importLocalPdfs).toHaveBeenCalledTimes(1));
+    expect(importLocalPdfs).toHaveBeenCalledWith("d-1", ["/x/bad.pdf"]);
+  });
+
   it("several failures label the button with the count", async () => {
     importLocalPdfs.mockImplementation(async () => {
       throw new Error("坏文件");

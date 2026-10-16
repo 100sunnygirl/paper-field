@@ -72,10 +72,11 @@ function fakeDetail(overrides: Partial<PaperDetail> = {}): PaperDetail {
 function openWith(paper: PaperDetail) {
   useField.setState({
     dialog: "edit-paper",
+    dialogPaperId: paper.id,
     paper,
     selectedPaperId: paper.id,
-    savePaperPatch: vi.fn(async (_patch: Parameters<typeof repo.updatePaper>[1]) => undefined),
-    saveAuthors: vi.fn(async (_authors: PaperDetail["authors"]) => undefined),
+    savePaperPatch: vi.fn(async (_id: string, _patch: Parameters<typeof repo.updatePaper>[1]) => undefined),
+    saveAuthors: vi.fn(async (_id: string, _authors: PaperDetail["authors"]) => undefined),
   });
 }
 
@@ -118,7 +119,7 @@ describe("EditPaperDialog · 年份校验（F9：NaN 不落库）", () => {
     expect(save).toBeEnabled();
     fireEvent.click(save);
     await waitFor(() => expect(useField.getState().savePaperPatch).toHaveBeenCalledTimes(1));
-    expect(vi.mocked(useField.getState().savePaperPatch).mock.calls[0]![0]).toMatchObject({ year: 2024 });
+    expect(vi.mocked(useField.getState().savePaperPatch).mock.calls[0]![1]).toMatchObject({ year: 2024 });
   });
 
   it("年份清空保存为 null（允许留空）", async () => {
@@ -127,7 +128,7 @@ describe("EditPaperDialog · 年份校验（F9：NaN 不落库）", () => {
     fireEvent.change(screen.getByLabelText("年份"), { target: { value: "" } });
     fireEvent.click(screen.getByRole("button", { name: "保存论文信息" }));
     await waitFor(() => expect(useField.getState().savePaperPatch).toHaveBeenCalled());
-    expect(vi.mocked(useField.getState().savePaperPatch).mock.calls[0]![0]).toMatchObject({ year: null });
+    expect(vi.mocked(useField.getState().savePaperPatch).mock.calls[0]![1]).toMatchObject({ year: null });
   });
 });
 
@@ -190,16 +191,18 @@ describe("EditPaperDialog · dirty 关闭否决（F8）", () => {
 
   it("保存后 dirty 解除：Esc 一次即关闭（不再否决）", async () => {
     const detail = fakeDetail();
-    const savePaperPatch = vi.fn(async (_patch: Parameters<typeof repo.updatePaper>[1]) => undefined);
+    const savePaperPatch = vi.fn(async (_id: string, _patch: Parameters<typeof repo.updatePaper>[1]) => undefined);
     // 模拟保存成功后 store.refresh 带回新 paper 的闭环。
-    useField.setState({ dialog: "edit-paper", paper: detail, selectedPaperId: detail.id, savePaperPatch });
+    useField.setState({ dialog: "edit-paper", dialogPaperId: detail.id, paper: detail, selectedPaperId: detail.id, savePaperPatch });
     render(<EditPaperDialog />);
     fireEvent.change(screen.getByLabelText("英文标题"), { target: { value: "Saved Title" } });
     fireEvent.click(screen.getByRole("button", { name: "保存论文信息" }));
     await waitFor(() => expect(savePaperPatch).toHaveBeenCalledTimes(1));
-    // store 层保存后 paper 未变（mock 未刷新），组件仍 dirty —— 由第二次放行语义关闭。
-    fireEvent.keyDown(document, { key: "Escape" });
-    expect(useField.getState().dialog).toBe("edit-paper");
+    // 保存成功即清掉 dirty：一次 Esc 就关闭，不再误报「尚未保存」。
+    // 让保存完成后的状态更新落地
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
     fireEvent.keyDown(document, { key: "Escape" });
     await waitFor(() => expect(useField.getState().dialog).toBeNull());
   });
@@ -218,16 +221,16 @@ describe("EditPaperDialog · 作者编辑", () => {
     fireEvent.change(inputs[0], { target: { value: "MIT" } });
     fireEvent.click(screen.getByRole("button", { name: "保存作者" }));
     await waitFor(() => expect(useField.getState().saveAuthors).toHaveBeenCalledTimes(1));
-    const saved = vi.mocked(useField.getState().saveAuthors).mock.calls[0]![0];
+    const saved = vi.mocked(useField.getState().saveAuthors).mock.calls[0]![1];
     expect(saved[0].affiliation).toBe("MIT");
   });
 });
 
 describe("ConfirmMetaDialog · 覆盖顺序", () => {
-  it("说明文献库先写、模型只补仍空字段", () => {
-    useField.setState({ dialog: "confirm-meta", paper: fakeDetail(), selectedPaperId: "paper-1" });
+  it("说明文献库查到的值优先，模型只补仍空的字段", () => {
+    useField.setState({ dialog: "confirm-meta", dialogPaperId: "paper-1", paper: fakeDetail(), selectedPaperId: "paper-1" });
     render(<ConfirmMetaDialog />);
-    expect(screen.getByRole("dialog").textContent).toContain("文献库先写、模型只补仍空字段");
+    expect(screen.getByRole("dialog").textContent).toContain("文献库查到的值优先，模型只补仍空的字段");
   });
 });
 
@@ -248,7 +251,7 @@ describe("EditPaperDialog · 按打开快照保存（M7）", () => {
     expect(screen.getByLabelText("摘要")).toHaveValue("filled by llm");
     fireEvent.click(screen.getByRole("button", { name: "保存论文信息" }));
     await waitFor(() => expect(useField.getState().savePaperPatch).toHaveBeenCalledTimes(1));
-    const patch = vi.mocked(useField.getState().savePaperPatch).mock.calls[0]![0];
+    const patch = vi.mocked(useField.getState().savePaperPatch).mock.calls[0]![1];
     expect(patch).toEqual({ title: "User Title" });
     expect(patch).not.toHaveProperty("abstract");
     expect(useField.getState().saveAuthors).not.toHaveBeenCalled();
@@ -272,5 +275,31 @@ describe("EditPaperDialog · 按打开快照保存（M7）", () => {
     expect(useField.getState().dialog).toBe("edit-paper");
     expect(container.querySelector('[role="dialog"]')).not.toBeNull();
     expect(useField.getState().flash).toMatchObject({ tone: "warn" });
+  });
+});
+
+describe("EditPaperDialog · 目标锁定与「完成」", () => {
+  it("「完成」走未保存检查：有未保存修改时不直接关闭", () => {
+    openWith(fakeDetail());
+    render(<EditPaperDialog />);
+    fireEvent.change(screen.getByLabelText("英文标题"), { target: { value: "改了没存" } });
+    fireEvent.click(screen.getByRole("button", { name: "完成" }));
+    expect(useField.getState().dialog).toBe("edit-paper");
+    expect(useField.getState().flash?.text).toContain("论文信息尚未保存");
+  });
+
+  it("打开后选中换成另一篇：保存仍写到打开时的那篇", async () => {
+    const a = fakeDetail({ id: "paper-a", title: "A" });
+    openWith(a);
+    render(<EditPaperDialog />);
+    fireEvent.change(screen.getByLabelText("英文标题"), { target: { value: "A 的新标题" } });
+    // 后台刷新把选中改成 B（对话框目标仍是 A）
+    vi.spyOn(repo, "getPaper").mockResolvedValue(a);
+    act(() => useField.setState({ selectedPaperId: "paper-b", paper: fakeDetail({ id: "paper-b", title: "B" }) }));
+    await waitFor(() => expect(screen.getByLabelText("英文标题")).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText("英文标题"), { target: { value: "A 的新标题" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存论文信息" }));
+    await waitFor(() => expect(useField.getState().savePaperPatch).toHaveBeenCalled());
+    expect(vi.mocked(useField.getState().savePaperPatch).mock.calls[0]![0]).toBe("paper-a");
   });
 });

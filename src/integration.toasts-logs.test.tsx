@@ -832,18 +832,18 @@ describe("持久化异常 × 通知层互不破坏（Tauri 分支）", () => {
 // ---------- 回归：两项改动未破坏的既有行为 ----------
 
 describe("既有行为回归基线", () => {
-  it("未保存笔记拦截模式切换：warn 通知 + warn 日志，mode 不变", async () => {
-    useField.setState({ mode: "field", unsavedNote: true });
+  it("笔记草稿不拦截模式切换：不弹警告，草稿保留", async () => {
+    useField.setState({ mode: "field" });
+    useField.getState().setNoteDraft("p-1", "summary", "草稿");
 
     await act(async () => {
       await useField.getState().setMode("archive");
     });
 
-    expect(useField.getState().mode).toBe("field");
-    expect(useField.getState().flash).toMatchObject({ tone: "warn", text: "请先保存或取消正在编辑的笔记。" });
-    expect(getEntries()).toContainEqual(
-      expect.objectContaining({ level: "warn", scope: "ui", message: "请先保存或取消正在编辑的笔记。" }),
-    );
+    expect(useField.getState().mode).toBe("archive");
+    expect(useField.getState().drafts["p-1"]?.summary).toBe("草稿");
+    expect(getToasts().some((t) => t.text.includes("请先保存"))).toBe(false);
+    useField.getState().setNoteDraft("p-1", "summary", null);
   });
 
   it("LogPanel 的「复制」提示也走通知链：留 ok 日志且面板无需重挂载即可见", async () => {

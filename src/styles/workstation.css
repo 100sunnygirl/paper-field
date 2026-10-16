@@ -1260,6 +1260,15 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   line-height: 1.4;
   margin-bottom: 18px;
 }
+.ef-row-draft {
+  color: var(--pf-danger);
+}
+.ef-out-of-list {
+  margin: -8px 0 16px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
+  line-height: 1.5;
+}
 .ef-category-rule {
   width: 24px;
   height: 1px;

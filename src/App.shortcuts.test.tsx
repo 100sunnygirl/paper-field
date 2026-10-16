@@ -61,19 +61,20 @@ beforeEach(() => {
   for (const key of Object.keys(menuHandlers)) delete menuHandlers[key];
 });
 
+// ⌘R / Ctrl+R 的默认行为（WebView2 下是整页重载）总是被拦下：fireEvent 返回 false。
 describe("requestMarkRead", () => {
   it("does not mark read from a textarea, a dialog, or contenteditable", async () => {
     await readyApp();
     const textarea = document.createElement("textarea");
     document.body.appendChild(textarea);
     textarea.focus();
-    expect(pressRead(textarea, "meta")).toBe(true);
-    expect(pressRead(textarea, "ctrl")).toBe(true);
+    expect(pressRead(textarea, "meta")).toBe(false);
+    expect(pressRead(textarea, "ctrl")).toBe(false);
 
     textarea.blur();
     act(() => useField.setState({ dialog: "paper" }));
-    expect(pressRead(document.body, "meta")).toBe(true);
-    expect(pressRead(document.body, "ctrl")).toBe(true);
+    expect(pressRead(document.body, "meta")).toBe(false);
+    expect(pressRead(document.body, "ctrl")).toBe(false);
 
     act(() => useField.setState({ dialog: null }));
     const editable = document.createElement("div");
@@ -81,8 +82,8 @@ describe("requestMarkRead", () => {
     editable.tabIndex = 0;
     document.body.appendChild(editable);
     editable.focus();
-    expect(pressRead(editable, "meta")).toBe(true);
-    expect(pressRead(editable, "ctrl")).toBe(true);
+    expect(pressRead(editable, "meta")).toBe(false);
+    expect(pressRead(editable, "ctrl")).toBe(false);
 
     expect(repo.setReadingStatus).not.toHaveBeenCalled();
   });
@@ -92,11 +93,11 @@ describe("requestMarkRead", () => {
     const input = document.createElement("input");
     document.body.appendChild(input);
     input.focus();
-    expect(pressRead(input, "meta")).toBe(true);
+    expect(pressRead(input, "meta")).toBe(false);
     const select = document.createElement("select");
     document.body.appendChild(select);
     select.focus();
-    expect(pressRead(select, "ctrl")).toBe(true);
+    expect(pressRead(select, "ctrl")).toBe(false);
     expect(repo.setReadingStatus).not.toHaveBeenCalled();
   });
 
@@ -111,12 +112,20 @@ describe("requestMarkRead", () => {
     expect(repo.setReadingStatus).not.toHaveBeenCalled();
   });
 
-  it("does not preventDefault or mark read when no paper is selected", async () => {
+  it("still suppresses the reload but marks nothing when no paper is open", async () => {
     await readyApp();
-    act(() => useField.setState({ selectedPaperId: null }));
+    act(() => useField.setState({ selectedPaperId: null, paper: null }));
     (document.body as HTMLElement).focus();
-    expect(pressRead(document.body, "meta")).toBe(true);
-    expect(pressRead(document.body, "ctrl")).toBe(true);
+    expect(pressRead(document.body, "meta")).toBe(false);
+    expect(pressRead(document.body, "ctrl")).toBe(false);
+    expect(repo.setReadingStatus).not.toHaveBeenCalled();
+  });
+
+  it("does nothing on the settings page", async () => {
+    await readyApp();
+    act(() => useField.setState({ mode: "system" }));
+    (document.body as HTMLElement).focus();
+    expect(pressRead(document.body, "meta")).toBe(false);
     expect(repo.setReadingStatus).not.toHaveBeenCalled();
   });
 

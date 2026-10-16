@@ -25,48 +25,37 @@ function NoteEditor({
   kind,
   index,
   paper,
-  editing,
   onStart,
-  onStop,
 }: {
   kind: NoteKind;
   index: number;
   paper: PaperDetail;
-  editing: boolean;
   onStart: () => void;
-  onStop: () => void;
 }) {
   const saveNote = useField((s) => s.saveNote);
-  const setUnsavedNote = useField((s) => s.setUnsavedNote);
+  const setNoteDraft = useField((s) => s.setNoteDraft);
+  // 草稿存在 store 里（按论文、按块）：切换论文、搜索、后台刷新都不会丢，切回来编辑框还在。
+  const draft = useField((s) => s.drafts[paper.id]?.[kind]);
+  const editing = draft !== undefined;
   const block = paper.notes[kind];
-  const [value, setValue] = useState(block.content);
+  const value = editing ? draft : block.content;
   const [saving, setSaving] = useState(false);
   const [failed, setFailed] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
-    if (!editing) {
-      setValue(block.content);
-      setFailed(false);
-    }
-  }, [block.content, paper.id, kind, editing]);
-
-  useEffect(() => {
-    if (editing) {
-      setUnsavedNote(true);
-      textareaRef.current?.focus();
-    }
-  }, [editing, setUnsavedNote]);
+    if (editing) textareaRef.current?.focus();
+    else setFailed(false);
+  }, [editing]);
 
   const label = NOTE_LABELS[kind];
 
   async function commit() {
+    if (saving) return;
     setSaving(true);
     setFailed(false);
     try {
-      await saveNote(kind, value);
-      setUnsavedNote(false);
-      onStop();
+      await saveNote(paper.id, kind, value);
     } catch {
       setFailed(true);
     } finally {
@@ -75,10 +64,8 @@ function NoteEditor({
   }
 
   function cancel() {
-    setValue(block.content);
     setFailed(false);
-    setUnsavedNote(false);
-    onStop();
+    setNoteDraft(paper.id, kind, null);
   }
 
   return (
@@ -104,7 +91,7 @@ function NoteEditor({
           <textarea
             ref={textareaRef}
             value={value}
-            onChange={(e) => setValue(e.target.value)}
+            onChange={(e) => setNoteDraft(paper.id, kind, e.target.value)}
             aria-label={`${label.zh}内容`}
           />
           <div className="ef-edit-actions">
@@ -163,7 +150,7 @@ function ContextPanel({
           <select
             aria-label="修改阅读状态"
             value={paper.readingStatus}
-            onChange={(e) => void setReadingStatus(e.target.value as ReadingStatus)}
+            onChange={(e) => void setReadingStatus(e.target.value as ReadingStatus, paper.id)}
           >
             {(Object.keys(READING_STATUS_LABELS) as ReadingStatus[]).map((status) => (
               <option key={status} value={status}>
@@ -219,7 +206,7 @@ function ContextPanel({
           <span>开源状态</span>
           <select
             value={paper.codeOpenSource}
-            onChange={(e) => void savePaperPatch({ codeOpenSource: e.target.value as OpenSource })}
+            onChange={(e) => void savePaperPatch(paper.id, { codeOpenSource: e.target.value as OpenSource })}
             aria-label="开源状态"
           >
             <option value="unknown">未知</option>
@@ -348,7 +335,7 @@ function ContextPanel({
             onClick={() => {
               // AI 不会静默覆盖：手动改过的论文信息先经确认对话框选择保留或覆盖。
               if (paper.userMetaTouched) {
-                openDialog("confirm-meta");
+                openDialog("confirm-meta", paper.id);
                 return;
               }
               void runPrepareMeta(paper.id, false);
@@ -421,16 +408,17 @@ export function ReadingStage({
   const mode = useField((s) => s.mode);
   const search = useField((s) => s.search);
   const openDialog = useField((s) => s.openDialog);
-  const unsavedNote = useField((s) => s.unsavedNote);
+  const setNoteDraft = useField((s) => s.setNoteDraft);
   const setFlash = useField((s) => s.setFlash);
-  const [editingKind, setEditingKind] = useState<NoteKind | null>(null);
+  const papers = useField((s) => s.papers);
+  const archive = useField((s) => s.archive);
+  const intake = useField((s) => s.intake);
   const [menuOpen, setMenuOpen] = useState(false);
   const [activeSection, setActiveSection] = useState("abstract");
   const scrollRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    setEditingKind(null);
     setMenuOpen(false);
     setActiveSection("abstract");
   }, [paper?.id]);
@@ -497,11 +485,11 @@ export function ReadingStage({
   }
 
   function startEdit(kind: NoteKind) {
-    if (unsavedNote && editingKind && editingKind !== kind) {
-      setFlash({ tone: "warn", text: "请先保存或取消正在编辑的笔记。" });
-      return;
+    if (!paper) return;
+    // 已有草稿就接着编辑；没有则以当前内容开一份草稿。
+    if (useField.getState().drafts[paper.id]?.[kind] === undefined) {
+      setNoteDraft(paper.id, kind, paper.notes[kind].content);
     }
-    setEditingKind(kind);
     requestAnimationFrame(() => jump(`note-${kind}`));
   }
 
@@ -548,6 +536,9 @@ export function ReadingStage({
 
   const title = paper.titleZh || paper.title;
   const english = paper.titleZh ? paper.title : "";
+  // 选中的论文只是被搜索或筛选挡在列表外时仍保持打开（不自动跳到别的论文），这里说明一下。
+  const visibleList = mode === "archive" ? archive : mode === "intake" ? intake : papers;
+  const outOfList = mode !== "system" && !visibleList.some((item) => item.id === paper.id);
   const readingStatusLabel = READING_STATUS_LABELS[paper.readingStatus];
   const notesWritten = NOTE_DISPLAY_ORDER.filter((kind) => paper.notes[kind].content.trim()).length;
   const fulltextStatus = paper.parsedMarkdown.trim()
@@ -634,7 +625,7 @@ export function ReadingStage({
         ) : (
           <span className="ef-pdf-missing ef-pdf-action">
             这篇论文还没有 PDF。
-            <Button type="button" variant="text" onClick={() => openDialog("edit-paper")}>
+            <Button type="button" variant="text" onClick={() => openDialog("edit-paper", paper.id)}>
               编辑论文信息
             </Button>
           </span>
@@ -659,7 +650,7 @@ export function ReadingStage({
               type="button"
               onClick={() => {
                 setMenuOpen(false);
-                openDialog("edit-paper");
+                openDialog("edit-paper", paper.id);
               }}
             >
               <Icon name="edit" />
@@ -669,7 +660,7 @@ export function ReadingStage({
               type="button"
               onClick={() => {
                 setMenuOpen(false);
-                openDialog("move-paper");
+                openDialog("move-paper", paper.id);
               }}
             >
               <Icon name="inbox" />
@@ -680,7 +671,7 @@ export function ReadingStage({
               className="danger"
               onClick={() => {
                 setMenuOpen(false);
-                openDialog("delete-paper");
+                openDialog("delete-paper", paper.id);
               }}
             >
               <Icon name="trash" />
@@ -699,6 +690,11 @@ export function ReadingStage({
               <i className="ef-category-rule" aria-hidden="true" />
               <span>{readingStatusLabel}</span>
             </div>
+            {outOfList ? (
+              <p className="ef-out-of-list" role="note">
+                这篇论文不在当前列表中（搜索或筛选条件不匹配），仍可继续阅读与编辑。
+              </p>
+            ) : null}
             <h1 id="paper-title" className="ef-read-title" tabIndex={-1}>
               {title}
             </h1>
@@ -734,9 +730,7 @@ export function ReadingStage({
                 kind={kind}
                 index={index}
                 paper={paper}
-                editing={editingKind === kind}
                 onStart={() => startEdit(kind)}
-                onStop={() => setEditingKind(null)}
               />
             ))}
             <details className="ef-fulltext" id="fulltext">

@@ -27,13 +27,19 @@ function typingTarget(target: EventTarget | null): boolean {
   return target.isContentEditable || Boolean(target.closest("[contenteditable]"));
 }
 
-/** ⌘R / Ctrl+R and the mark-read menu. Typing, an open dialog, or no paper leaves the key alone. */
+/**
+ * ⌘R / Ctrl+R and the mark-read menu. Typing, an open dialog, the settings page, or no
+ * visible paper leaves the paper alone. The key's default (webview reload on Windows)
+ * is always suppressed: a reload would drop unsaved work and orphan running jobs.
+ */
 export function requestMarkRead(event?: { preventDefault: () => void; target: EventTarget | null }) {
-  const target = event?.target ?? (typeof document !== "undefined" ? document.activeElement : null);
-  if (typingTarget(target) || useField.getState().dialog) return;
-  if (!useField.getState().selectedPaperId) return;
   event?.preventDefault();
-  void useField.getState().markRead();
+  const target = event?.target ?? (typeof document !== "undefined" ? document.activeElement : null);
+  const state = useField.getState();
+  if (typingTarget(target) || state.dialog || state.mode === "system") return;
+  const paperId = state.paper?.id ?? state.selectedPaperId;
+  if (!paperId) return;
+  void state.markRead(paperId);
 }
 import { setPersistFailureHandler } from "./lib/engine";
 import { notify } from "./toasts";
@@ -121,14 +127,16 @@ export default function App() {
       }
       if (meta && event.key.toLowerCase() === "n") {
         event.preventDefault();
-        openDialog("paper");
+        // 不替换已经打开的对话框（编辑中的论文信息会被直接丢掉）。
+        if (!dialog) openDialog("paper");
         return;
       }
       if (meta && event.key.toLowerCase() === "r") {
         requestMarkRead(event);
         return;
       }
-      if (typing || dialog) return;
+      // 设置页没有论文列表，资料抽屉打开时也不在背后切换论文：方向键交还给页面滚动。
+      if (typing || dialog || mode === "system" || contextOpen) return;
       if (event.key === "ArrowDown") {
         event.preventDefault();
         void navigatePapers(1);
@@ -140,26 +148,34 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [closeDialog, dialog, mode, navigatePapers, openDialog, setJobsOpen, setMode]);
+  }, [closeDialog, contextOpen, dialog, mode, navigatePapers, openDialog, setJobsOpen, setMode]);
 
   useEffect(() => {
     if (!isTauri()) return;
+    // listen 是异步注册：清理先于注册完成时（StrictMode 的二次挂载）要在完成后立即注销，
+    // 否则会留下一个永远不移除的监听器，菜单动作触发两次。
     let unlisten: (() => void) | undefined;
+    let disposed = false;
     void import("@tauri-apps/api/event").then(({ listen }) => {
       void listen<string>("menu://action", (event) => {
         const id = event.payload;
-        if (id === "new-paper") openDialog("paper");
-        if (id === "new-domain") openDialog("domain");
+        const busy = Boolean(useField.getState().dialog);
+        if (id === "new-paper" && !busy) openDialog("paper");
+        if (id === "new-domain" && !busy) openDialog("domain");
         if (id === "mark-read") requestMarkRead();
         if (id === "mode-field") void setMode("field");
         if (id === "mode-archive") void setMode("archive");
         if (id === "mode-intake") void setMode("intake");
         if (id === "mode-system") void setMode("system");
       }).then((fn) => {
-        unlisten = fn;
+        if (disposed) fn();
+        else unlisten = fn;
       });
     });
-    return () => unlisten?.();
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
   }, [openDialog, setMode]);
 
   const domain = domains.find((d) => d.id === selectedDomainId) ?? null;

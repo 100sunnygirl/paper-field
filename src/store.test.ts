@@ -131,16 +131,24 @@ describe("navigatePapers（缺陷 9：未选中时的首末落点）", () => {
     expect(useField.getState().selectedPaperId).toBe("x");
   });
 
-  it("有未保存笔记时导航被拦并提示", async () => {
+  it("有笔记草稿时导航不再被拦：草稿按论文保留，切回来还在", async () => {
+    vi.mocked(repo.getPaper).mockImplementation(async (id: string) => detailOf(id as string));
     useField.setState({
       mode: "field",
       papers: [listItem("a"), listItem("b")],
-      selectedPaperId: null,
-      unsavedNote: true,
+      selectedPaperId: "a",
     });
+    useField.getState().setNoteDraft("a", "summary", "写了一半");
     await useField.getState().navigatePapers(1);
-    expect(useField.getState().selectedPaperId).toBeNull();
-    expect(useField.getState().flash).toMatchObject({ tone: "warn", text: "请先保存或取消正在编辑的笔记。" });
+    expect(useField.getState().selectedPaperId).toBe("b");
+    expect(useField.getState().drafts.a?.summary).toBe("写了一半");
+    useField.getState().setNoteDraft("a", "summary", null);
+  });
+
+  it("设置页里方向键不切换论文", async () => {
+    useField.setState({ mode: "system", papers: [listItem("a"), listItem("b")], selectedPaperId: "a" });
+    await useField.getState().navigatePapers(1);
+    expect(useField.getState().selectedPaperId).toBe("a");
   });
 
   it("空列表时不动作", async () => {
@@ -174,12 +182,48 @@ describe("refresh 在三种模式下的搜索接线", () => {
     expect(repo.listIntake).toHaveBeenCalledWith("");
   });
 
-  it("选中论文不在新列表时回落到首篇", async () => {
-    vi.mocked(repo.getPaper).mockImplementation(async (id: string) => detailOf(id as string));
+  it("选中论文已被删除时回落到首篇", async () => {
+    vi.mocked(repo.getPaper).mockImplementation(async (id: string) => (id === "gone" ? null : detailOf(id as string)));
     vi.mocked(repo.listPapers).mockResolvedValue([listItem("a"), listItem("b")]);
     useField.setState({ mode: "field", selectedDomainId: "d-1", selectedPaperId: "gone" });
     await useField.getState().refresh();
     expect(useField.getState().selectedPaperId).toBe("a");
+  });
+
+  it("选中论文只是不在搜索结果里：保持选中，不自动跳到别的论文", async () => {
+    vi.mocked(repo.getPaper).mockImplementation(async (id: string) => detailOf(id as string));
+    vi.mocked(repo.listPapers).mockResolvedValue([listItem("a"), listItem("b")]);
+    useField.setState({ mode: "field", selectedDomainId: "d-1", selectedPaperId: "c" });
+    await useField.getState().refresh();
+    expect(useField.getState().selectedPaperId).toBe("c");
+    expect(useField.getState().paper?.id).toBe("c");
+  });
+
+  it("切换模式（用户导航）时选中不在新列表里才改选首篇", async () => {
+    vi.mocked(repo.getPaper).mockImplementation(async (id: string) => detailOf(id as string));
+    vi.mocked(repo.listArchive).mockResolvedValue([listItem("r1")]);
+    useField.setState({ mode: "field", selectedDomainId: "d-1", selectedPaperId: "c" });
+    await useField.getState().setMode("archive");
+    expect(useField.getState().selectedPaperId).toBe("r1");
+  });
+
+  it("刷新期间用户改选：刷新结束不把选中改回去", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vi.mocked(repo.getPaper).mockImplementation(async (id: string) => detailOf(id as string));
+    vi.mocked(repo.listPapers).mockImplementation(async () => {
+      await gate;
+      return [listItem("a"), listItem("b")];
+    });
+    useField.setState({ mode: "field", selectedDomainId: "d-1", selectedPaperId: "a" });
+    const refreshing = useField.getState().refresh();
+    await useField.getState().selectPaper("b");
+    release();
+    await refreshing;
+    expect(useField.getState().selectedPaperId).toBe("b");
+    expect(useField.getState().paper?.id).toBe("b");
   });
 });
 
@@ -235,8 +279,8 @@ describe("批量选择与批量删除（batchMode / deleteCheckedPapers）", () 
       checkedPaperIds: ["a", "b"],
       papers: [listItem("a"), listItem("b")],
       selectedPaperId: "a",
-      unsavedNote: true,
     });
+    useField.getState().setNoteDraft("a", "summary", "草稿");
 
     await useField.getState().deleteCheckedPapers();
 
@@ -245,7 +289,8 @@ describe("批量选择与批量删除（batchMode / deleteCheckedPapers）", () 
     expect(state.batchMode).toBe(false);
     expect(state.checkedPaperIds).toEqual([]);
     expect(state.selectedPaperId).toBeNull();
-    expect(state.unsavedNote).toBe(false);
+    // 被删论文的草稿一并清掉
+    expect(state.drafts.a).toBeUndefined();
     expect(state.flash).toMatchObject({ tone: "ok" });
     expect(state.flash?.text).toContain("已删除 2 篇论文");
   });
