@@ -1,22 +1,31 @@
 //! Two-phase library restore.
 //!
 //! Phase 1 (`restore_library_backup`, app running): unpack the zip into
-//! `.restore-staging/`, check the staged database (`integrity_check`,
-//! `user_version`), then write the `.restore-in-progress` marker with the full
-//! replacement plan. No live file is touched; the frontend then relaunches.
+//! `.restore-staging/` (checked against `manifest.json` when present), check
+//! the staged database (`integrity_check`, `user_version`) and switch it to
+//! WAL, then write the `.restore-in-progress` marker with the full replacement
+//! plan. No live file is touched; the frontend then relaunches.
 //!
 //! Phase 2 (`apply_pending_restore`, startup, before the frontend opens the
-//! database): move live files into `pre-restore-<ts>/`, move staged files into
-//! place (database last), delete the marker, then delete the staging dir.
+//! database): move whatever is at each destination now (for the database also
+//! its -wal/-shm/-journal) into `pre-restore-<ts>/`, move staged files into
+//! place (database last), rewrite the marker as `Done`, then delete marker and
+//! staging dir. A `Done` marker that survives (e.g. a Windows sharing
+//! violation) only means cleanup on the next launch, never a rollback.
 //!
 //! Marker rule: the marker is written before every step that touches a live
 //! file. If the marker cannot be written, no live file is touched and the app
 //! starts with `RestoreStatus::Stuck`. The only exception is putting the old
 //! database back once the attempt limit is exceeded, which only moves data
 //! towards a safer state and is idempotent.
+//!
+//! Rollback never deletes a live file: whatever has to make room goes to
+//! `quarantine-<ts>/`. At startup it also refuses (Stuck) to displace a file
+//! that is no longer the untouched staged copy, so user work is never overwritten.
 
+use std::collections::HashSet;
 use std::fs::{self, File};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -26,7 +35,7 @@ use tauri::AppHandle;
 use zip::ZipArchive;
 
 use crate::app_config_dir;
-use crate::backup::safe_entry_name;
+use crate::backup::{safe_entry_name, MANIFEST};
 use crate::secrets::scrub_json_secrets;
 
 pub const SCHEMA_VERSION: i64 = 6; // keep in sync with src/lib/schema.ts:9
@@ -34,9 +43,14 @@ const MARKER: &str = ".restore-in-progress";
 const STAGING: &str = ".restore-staging";
 const DB: &str = "paper-field.db";
 const NO_DB: &str = "找不到原来的数据库，恢复标记已保留，请打开原数据目录手动处理";
-const SIDECARS: [&str; 2] = ["paper-field.db-wal", "paper-field.db-shm"];
+const MARKER_STUCK: &str = "无法清除恢复标记，请退出应用后删除数据目录中的 .restore-in-progress";
+const SIDECARS: [&str; 3] = ["paper-field.db-wal", "paper-field.db-shm", "paper-field.db-journal"];
 const MAX_ATTEMPTS: u32 = 2;
 const STALE_MS: u128 = 10 * 60 * 1000;
+/// Sanity cap on what one backup may unpack to (zip bombs).
+const MAX_UNPACKED: u64 = 8 << 30;
+/// Settings and the manifest are read into memory.
+const MAX_SMALL_ENTRY: u64 = 16 << 20;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -45,15 +59,24 @@ pub enum Stage {
     Previewed,
     Staged,
     Swapping,
+    /// Swap or rollback finished; a leftover marker only means cleanup.
+    Done,
 }
 
 /// One replacement. Paths are relative: `src` to staging, `dest` to the data
-/// dir, `backup` to the pre-restore dir (`None` = dest did not exist).
+/// dir, `backup` to the pre-restore dir (`None` = dest did not exist at stage
+/// time; the swap itself backs up whatever exists by then).
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PlanItem {
     pub src: Option<String>,
     pub dest: String,
     pub backup: Option<String>,
+    /// Staged file's size and mtime (a rename keeps both): rollback only
+    /// displaces a dest that still matches. Absent in older markers.
+    #[serde(default)]
+    pub size: Option<u64>,
+    #[serde(default)]
+    pub mtime_ns: Option<u128>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -91,7 +114,22 @@ fn now_ms() -> u128 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Simulates a locked marker (Windows sharing violation): how many more
+    /// marker writes succeed, and whether removing it fails.
+    static MARKER_FAULT: std::cell::Cell<(u32, bool)> = const { std::cell::Cell::new((u32::MAX, false)) };
+}
+
 fn write_marker(dir: &Path, marker: &Marker) -> Result<(), String> {
+    #[cfg(test)]
+    {
+        let (left, keep) = MARKER_FAULT.with(|f| f.get());
+        if left == 0 {
+            return Err("marker locked".into());
+        }
+        MARKER_FAULT.with(|f| f.set((left - 1, keep)));
+    }
     let json = serde_json::to_vec_pretty(marker).map_err(|e| e.to_string())?;
     crate::io_util::atomic_write(&dir.join(MARKER), &json)
 }
@@ -99,6 +137,44 @@ fn write_marker(dir: &Path, marker: &Marker) -> Result<(), String> {
 fn read_marker(dir: &Path) -> Option<Result<Marker, String>> {
     let raw = fs::read(dir.join(MARKER)).ok()?;
     Some(serde_json::from_slice(&raw).map_err(|e| e.to_string()))
+}
+
+fn remove_marker(dir: &Path) {
+    #[cfg(test)]
+    if MARKER_FAULT.with(|f| f.get().1) {
+        return;
+    }
+    let _ = fs::remove_file(dir.join(MARKER));
+}
+
+fn done_marker(dir: &Path) -> bool {
+    matches!(read_marker(dir), Some(Ok(m)) if m.stage == Stage::Done)
+}
+
+/// A marker that still needs handling (even an unreadable one); `Done` does not.
+fn pending_marker(dir: &Path) -> bool {
+    dir.join(MARKER).exists() && !done_marker(dir)
+}
+
+/// Exists, without following symlinks.
+fn present(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok()
+}
+
+fn is_empty_dir(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|m| m.is_dir()) && fs::read_dir(path).is_ok_and(|mut rd| rd.next().is_none())
+}
+
+/// Size and mtime (ns since epoch).
+fn file_stamp(path: &Path) -> Option<(u64, u128)> {
+    let meta = fs::symlink_metadata(path).ok()?;
+    let mtime = meta.modified().ok()?.duration_since(UNIX_EPOCH).ok()?.as_nanos();
+    Some((meta.len(), mtime))
+}
+
+/// The database's -wal/-shm/-journal present right now.
+fn live_sidecars(dir: &Path) -> Vec<&'static str> {
+    SIDECARS.iter().copied().filter(|s| present(&dir.join(s))).collect()
 }
 
 fn move_file(from: &Path, to: &Path) -> Result<(), String> {
@@ -130,11 +206,62 @@ fn map_entry(name: &str) -> Option<String> {
     }
 }
 
+/// Duplicate check key: `library/a.pdf` and `library\A.pdf` are one file on Windows/macOS.
+fn fold_name(name: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    name.replace('\\', "/").nfc().collect::<String>().to_lowercase()
+}
+
+/// Streams one entry, refusing more bytes than its header declares.
+fn copy_entry(entry: &mut impl Read, declared: u64, out: &mut impl Write, name: &str) -> Result<(), String> {
+    let copied = std::io::copy(&mut entry.by_ref().take(declared.saturating_add(1)), out)
+        .map_err(|e| format!("读取备份中的 {name} 失败：{e}"))?;
+    if copied > declared {
+        return Err(format!("备份中的 {name} 实际大小超过记录，已拒绝"));
+    }
+    Ok(())
+}
+
+fn read_small(entry: &mut impl Read, declared: u64, name: &str) -> Result<Vec<u8>, String> {
+    if declared > MAX_SMALL_ENTRY {
+        return Err(format!("备份中的 {name} 过大，已拒绝"));
+    }
+    let mut bytes = Vec::new();
+    copy_entry(entry, declared, &mut bytes, name)?;
+    Ok(bytes)
+}
+
+/// `create_new`: two entries can never end up in one staged file.
+fn create_staged(path: &Path) -> Result<File, String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|e| format!("写入暂存文件失败：{e}"))
+}
+
+fn manifest_pdfs(bytes: &[u8]) -> Result<u64, String> {
+    serde_json::from_slice::<serde_json::Value>(bytes)
+        .ok()
+        .and_then(|v| v.get("pdfs")?.as_u64())
+        .ok_or_else(|| "备份清单 manifest.json 已损坏".to_string())
+}
+
 /// Unpacks `src` into `staging` and returns the relative dest paths written.
 fn unpack(src: &Path, staging: &Path) -> Result<Vec<String>, String> {
+    unpack_capped(src, staging, MAX_UNPACKED)
+}
+
+fn unpack_capped(src: &Path, staging: &Path, cap: u64) -> Result<Vec<String>, String> {
     let file = File::open(src).map_err(|e| format!("无法打开备份：{e}"))?;
     let mut archive = ZipArchive::new(file).map_err(|e| format!("备份不是有效的 zip：{e}"))?;
     let mut written = Vec::new();
+    let mut seen = HashSet::new();
+    let mut expected_pdfs = None;
+    let mut total = 0u64;
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index).map_err(|e| e.to_string())?;
         let Some(name) = entry.enclosed_name().map(|p| p.to_string_lossy().replace('\\', "/")) else {
@@ -143,17 +270,42 @@ fn unpack(src: &Path, staging: &Path) -> Result<Vec<String>, String> {
         if safe_entry_name(&name).is_none() {
             return Err(format!("备份包含不安全路径：{name}"));
         }
-        let Some(dest) = map_entry(&name) else { continue };
-        let mut bytes = Vec::new();
-        entry.read_to_end(&mut bytes).map_err(|e| e.to_string())?;
-        if name.starts_with("settings/") {
-            bytes = scrub_json_secrets(&String::from_utf8_lossy(&bytes)).into_bytes();
+        let dest = map_entry(&name);
+        if dest.is_none() && name != MANIFEST {
+            continue;
         }
-        crate::io_util::atomic_write(&staging.join(&dest), &bytes)?;
+        if !seen.insert(fold_name(dest.as_deref().unwrap_or(MANIFEST))) {
+            return Err(format!("备份中有重复的文件：{name}"));
+        }
+        let declared = entry.size();
+        total = total.saturating_add(declared);
+        if total > cap {
+            return Err("备份解压后过大，已拒绝".into());
+        }
+        let Some(dest) = dest else {
+            expected_pdfs = Some(manifest_pdfs(&read_small(&mut entry, declared, &name)?)?);
+            continue;
+        };
+        let mut out = create_staged(&staging.join(&dest))?;
+        if name.starts_with("settings/") {
+            let bytes = read_small(&mut entry, declared, &name)?;
+            let scrubbed = scrub_json_secrets(&String::from_utf8_lossy(&bytes));
+            out.write_all(scrubbed.as_bytes()).map_err(|e| format!("写入暂存文件失败：{e}"))?;
+        } else {
+            copy_entry(&mut entry, declared, &mut out, &name)?;
+        }
+        out.sync_all().map_err(|e| format!("写入暂存文件失败：{e}"))?;
         written.push(dest);
     }
     if !written.iter().any(|d| d == DB) {
         return Err("备份里没有 paper-field.db，不是本应用的备份".into());
+    }
+    // Backups without a manifest come from older versions: accepted as before.
+    if let Some(expected) = expected_pdfs {
+        let pdfs = written.iter().filter(|d| d.starts_with("library/")).count() as u64;
+        if pdfs != expected {
+            return Err(format!("备份与清单不符：清单记录 {expected} 个 PDF，实际有 {pdfs} 个，备份可能不完整，已拒绝恢复"));
+        }
     }
     Ok(written)
 }
@@ -214,21 +366,44 @@ pub async fn check_staged_db(db: &Path) -> Result<(i64, Option<String>), String>
     result
 }
 
-/// Builds the plan: everything except the database first, then the old
-/// database sidecars (removed, nothing replaces them), then the database.
-fn build_plan(dir: &Path, staged: &[String]) -> Vec<PlanItem> {
-    let item = |src: Option<String>, dest: &str| PlanItem {
-        src,
-        dest: dest.to_string(),
-        backup: dir.join(dest).exists().then(|| dest.to_string()),
+/// `VACUUM INTO` writes a rollback-journal database; the live one runs in WAL.
+async fn enable_wal(db: &Path) -> Result<(), String> {
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use sqlx::Row;
+    let options = SqliteConnectOptions::new().filename(db).create_if_missing(false);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .map_err(|e| format!("备份中的数据库无法打开：{e}"))?;
+    let result = match sqlx::query("PRAGMA journal_mode=WAL").fetch_one(&pool).await {
+        Ok(row) => match row.try_get::<String, _>(0) {
+            Ok(mode) if mode.eq_ignore_ascii_case("wal") => Ok(()),
+            Ok(mode) => Err(format!("备份中的数据库无法切换到 WAL 模式（{mode}）")),
+            Err(e) => Err(format!("备份中的数据库无法切换到 WAL 模式：{e}")),
+        },
+        Err(e) => Err(format!("备份中的数据库无法切换到 WAL 模式：{e}")),
     };
-    let mut plan: Vec<PlanItem> = staged.iter().filter(|d| *d != DB).map(|d| item(Some(d.clone()), d)).collect();
-    for sidecar in SIDECARS {
-        if dir.join(sidecar).exists() {
-            plan.push(item(None, sidecar));
+    // Closing the last connection checkpoints and removes -wal/-shm.
+    pool.close().await;
+    result
+}
+
+/// Builds the plan: everything except the database first, then the database.
+/// Records each staged file's size and mtime; sidecars are found at swap time.
+fn build_plan(dir: &Path, staging: &Path, staged: &[String]) -> Vec<PlanItem> {
+    let item = |dest: &str| {
+        let stamp = file_stamp(&staging.join(dest));
+        PlanItem {
+            src: Some(dest.to_string()),
+            dest: dest.to_string(),
+            backup: present(&dir.join(dest)).then(|| dest.to_string()),
+            size: stamp.map(|s| s.0),
+            mtime_ns: stamp.map(|s| s.1),
         }
-    }
-    plan.push(item(Some(DB.into()), DB));
+    };
+    let mut plan: Vec<PlanItem> = staged.iter().filter(|d| *d != DB).map(|d| item(d)).collect();
+    plan.push(item(DB));
     plan
 }
 
@@ -241,6 +416,9 @@ async fn remove_dir_off_thread(path: PathBuf) -> std::io::Result<()> {
 
 pub async fn stage_restore(dir: &Path, src: &Path) -> Result<BackupSummary, String> {
     let _guard = OP_LOCK.lock().await;
+    if done_marker(dir) {
+        finish(dir);
+    }
     if dir.join(MARKER).exists() {
         return Err("上一次恢复还没处理完，请先重启应用".into());
     }
@@ -250,6 +428,7 @@ pub async fn stage_restore(dir: &Path, src: &Path) -> Result<BackupSummary, Stri
     let result = async {
         let staged = unpack(src, &staging)?;
         let (papers, latest_updated_at) = check_staged_db(&staging.join(DB)).await?;
+        enable_wal(&staging.join(DB)).await?;
         let summary = BackupSummary {
             papers,
             latest_updated_at,
@@ -261,7 +440,7 @@ pub async fn stage_restore(dir: &Path, src: &Path) -> Result<BackupSummary, Stri
             created_ms: now_ms(),
             attempts: 0,
             pre: format!("pre-restore-{}", now_ms()),
-            plan: build_plan(dir, &staged),
+            plan: build_plan(dir, &staging, &staged),
             summary: Some(summary.clone()),
         };
         write_marker(dir, &marker)?;
@@ -280,27 +459,102 @@ pub async fn restore_library_backup(app: AppHandle, src: String) -> Result<Backu
     stage_restore(&app_config_dir(&app)?, Path::new(&src)).await
 }
 
+/// Where the swap puts `item`'s old file inside the pre-restore dir.
+fn saved_path(pre: &Path, item: &PlanItem) -> PathBuf {
+    pre.join(item.backup.as_deref().unwrap_or(&item.dest))
+}
+
+/// `dest` is still exactly the staged file the swap moved in. For the database
+/// any -wal/-shm/-journal means it has been opened since. Old markers carry no
+/// record, so nothing they moved counts as untouched.
+fn untouched(dir: &Path, item: &PlanItem) -> bool {
+    let (Some(size), Some(mtime)) = (item.size, item.mtime_ns) else { return false };
+    if item.dest == DB && !live_sidecars(dir).is_empty() {
+        return false;
+    }
+    file_stamp(&dir.join(&item.dest)) == Some((size, mtime))
+}
+
+/// `quarantine-<ms>/`, created on first use: rollback moves live files here
+/// (same relative path) instead of deleting them.
+#[derive(Default)]
+struct Quarantine(Option<PathBuf>);
+
+impl Quarantine {
+    fn take(&mut self, dir: &Path, rel: &str) -> Result<(), String> {
+        if self.0.is_none() {
+            let mut ms = now_ms();
+            loop {
+                let root = dir.join(format!("quarantine-{ms}"));
+                match fs::create_dir(&root) {
+                    Ok(()) => {
+                        self.0 = Some(root);
+                        break;
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => ms += 1,
+                    Err(e) => return Err(format!("无法创建隔离目录：{e}")),
+                }
+            }
+        }
+        let root = self.0.as_ref().expect("created above");
+        move_file(&dir.join(rel), &root.join(rel))
+    }
+}
+
 /// Undo by looking at what is actually on disk for each item; safe to repeat.
-fn rollback(dir: &Path, marker: &Marker) -> Result<(), String> {
+/// Never deletes: whatever must make room goes to quarantine. With `verify`
+/// (a Swapping marker found at startup, files may have been used since) it
+/// refuses, before moving anything, to displace a dest that is not the
+/// untouched staged file. Without it (swap failed in this launch, or the user
+/// abandons) such files are quarantined too.
+fn rollback(dir: &Path, marker: &Marker, verify: bool) -> Result<(), String> {
     let pre = dir.join(&marker.pre);
     let staging = dir.join(STAGING);
+    // Staging is kept while a non-Done marker exists, so "gone from staging" = moved in.
+    let moved_in = |item: &PlanItem| item.src.as_ref().is_some_and(|s| !present(&staging.join(s)));
+    if verify {
+        for item in &marker.plan {
+            if present(&saved_path(&pre, item)) && moved_in(item) && present(&dir.join(&item.dest)) && !untouched(dir, item) {
+                return Err(format!("{} 在恢复后被改动过，不自动回滚", item.dest));
+            }
+        }
+    }
+    let mut quarantine = Quarantine::default();
     for item in marker.plan.iter().rev() {
         let dest = dir.join(&item.dest);
-        match &item.backup {
-            Some(backup) => {
-                let saved = pre.join(backup);
-                if saved.exists() {
-                    if dest.exists() {
-                        fs::remove_file(&dest).map_err(|e| e.to_string())?;
-                    }
-                    move_file(&saved, &dest)?;
-                }
-                // not in pre/: the old file was never moved, leave it alone
+        let is_db = item.dest == DB;
+        let saved = saved_path(&pre, item);
+        let displace = if present(&saved) {
+            true
+        } else {
+            // Nothing to bring back: only a file the restore created goes. A dest that
+            // is not the staged copy is the original after an earlier rollback, or
+            // user work; old markers fall back to their plan when the user abandons.
+            moved_in(item) && (untouched(dir, item) || !verify && item.size.is_none() && item.backup.is_none())
+        };
+        if displace {
+            if present(&dest) {
+                quarantine.take(dir, &item.dest)?;
             }
-            None => {
-                let still_staged = item.src.as_ref().is_some_and(|s| staging.join(s).exists());
-                if !still_staged && dest.exists() {
-                    fs::remove_file(&dest).map_err(|e| e.to_string())?;
+            if is_db {
+                // they belong to the database just moved away, or to none
+                for s in live_sidecars(dir) {
+                    quarantine.take(dir, s)?;
+                }
+            }
+            if present(&saved) {
+                move_file(&saved, &dest)?;
+            }
+        }
+        if is_db {
+            // old database first, then its sidecars (same order ensure_db uses)
+            for s in SIDECARS {
+                let old = pre.join(s);
+                if present(&old) {
+                    if present(&dir.join(s)) {
+                        quarantine.take(dir, s)?;
+                    }
+                    move_file(&old, &dir.join(s))?;
                 }
             }
         }
@@ -308,15 +562,21 @@ fn rollback(dir: &Path, marker: &Marker) -> Result<(), String> {
     Ok(())
 }
 
+/// Backs up whatever exists at each dest right now (the plan is frozen at stage
+/// time; files may have appeared since), then moves the staged file in.
 fn swap(dir: &Path, marker: &Marker) -> Result<(), String> {
     let pre = dir.join(&marker.pre);
     let staging = dir.join(STAGING);
     for item in &marker.plan {
         let dest = dir.join(&item.dest);
-        if let Some(backup) = &item.backup {
-            if dest.exists() {
-                move_file(&dest, &pre.join(backup))?;
+        if item.dest == DB {
+            // sidecars first: a crash in between never leaves the old WAL live without its db
+            for s in live_sidecars(dir) {
+                move_file(&dir.join(s), &pre.join(s))?;
             }
+        }
+        if present(&dest) {
+            move_file(&dest, &saved_path(&pre, item))?;
         }
         if let Some(src) = &item.src {
             move_file(&staging.join(src), &dest)?;
@@ -325,10 +585,23 @@ fn swap(dir: &Path, marker: &Marker) -> Result<(), String> {
     Ok(())
 }
 
+/// Marker first, then staging; staging stays while a non-Done marker survives,
+/// since rollback reads "still staged" as "never moved in".
 fn finish(dir: &Path) {
-    // marker first: a crash after this leaves only a harmless staging dir
-    let _ = fs::remove_file(dir.join(MARKER));
-    let _ = fs::remove_dir_all(dir.join(STAGING));
+    remove_marker(dir);
+    if !pending_marker(dir) {
+        let _ = fs::remove_dir_all(dir.join(STAGING));
+    }
+}
+
+/// Terminal step: record `Done` before cleaning up, so a marker that cannot be
+/// deleted never leads to a rollback. False only when the marker can neither be
+/// rewritten nor removed.
+fn conclude(dir: &Path, marker: &mut Marker) -> bool {
+    marker.stage = Stage::Done;
+    let recorded = write_marker(dir, marker).is_ok();
+    finish(dir);
+    recorded || !dir.join(MARKER).exists()
 }
 
 /// Over the attempt limit: make sure a database exists, without writing the marker.
@@ -337,9 +610,11 @@ fn give_up(dir: &Path, marker: &Marker) -> RestoreStatus {
     RestoreStatus::Stuck { pre: abs(dir, &marker.pre), db_available }
 }
 
-/// Old database expected after rollback: the plan moved one aside.
-fn expects_db(marker: &Marker) -> bool {
+/// Old database expected after rollback: the plan saw one, or the swap moved
+/// one aside. Check before rolling back.
+fn expects_db(dir: &Path, marker: &Marker) -> bool {
     marker.plan.iter().any(|i| i.dest == DB && i.backup.is_some())
+        || !marker.pre.is_empty() && present(&dir.join(&marker.pre).join(DB))
 }
 
 fn pre_dirs(dir: &Path) -> Vec<PathBuf> {
@@ -409,40 +684,60 @@ pub fn apply_pending_restore_at(dir: &Path, now: u128) -> RestoreStatus {
             return RestoreStatus::Stuck { pre: String::new(), db_available: dir.join(DB).exists() };
         }
     };
-    if marker.stage == Stage::Previewed {
+    match marker.stage {
+        // Finished earlier, only the marker could not be deleted: clean up, never
+        // roll back. The launch that wrote it already reported the outcome.
+        Stage::Done => {
+            finish(dir);
+            return RestoreStatus::None;
+        }
         // The app quit or crashed while the confirm dialog was open: nothing was
         // moved yet, so dropping the marker and staging is a complete undo.
-        finish(dir);
-        return RestoreStatus::None;
-    }
-    if marker.stage == Stage::Staged && now.saturating_sub(marker.created_ms) > STALE_MS {
-        return RestoreStatus::PendingConfirm;
+        Stage::Previewed => {
+            finish(dir);
+            return RestoreStatus::None;
+        }
+        Stage::Staged if now.saturating_sub(marker.created_ms) > STALE_MS => {
+            return RestoreStatus::PendingConfirm;
+        }
+        _ => {}
     }
     marker.attempts += 1;
     if marker.attempts > MAX_ATTEMPTS {
         return give_up(dir, &marker);
     }
     let stuck = |m: &Marker| RestoreStatus::Stuck { pre: abs(dir, &m.pre), db_available: dir.join(DB).exists() };
+    let mut verify = true;
     if marker.stage == Stage::Staged {
-        if fs::create_dir(dir.join(&marker.pre)).is_err() {
+        let pre = dir.join(&marker.pre);
+        // A crash between creating pre/ and writing Swapping leaves it empty: reuse it.
+        if fs::create_dir(&pre).is_err() && !is_empty_dir(&pre) {
             return stuck(&marker);
         }
         marker.stage = Stage::Swapping;
         if write_marker(dir, &marker).is_err() {
-            let _ = fs::remove_dir(dir.join(&marker.pre));
+            let _ = fs::remove_dir(&pre);
             return stuck(&marker);
         }
         if swap(dir, &marker).is_ok() {
-            finish(dir);
-            return RestoreStatus::Restored { pre: abs(dir, &marker.pre), summary: marker.summary.clone() };
+            let (pre, summary) = (abs(dir, &marker.pre), marker.summary.clone());
+            if conclude(dir, &mut marker) {
+                return RestoreStatus::Restored { pre, summary };
+            }
+            // Still says Swapping: the next launch rolls back, so keep the UI closed.
+            return stuck(&marker);
         }
+        // Everything here was moved by this launch and never opened.
+        verify = false;
     } else if write_marker(dir, &marker).is_err() {
         return stuck(&marker);
     }
-    match rollback(dir, &marker) {
-        Ok(()) if expects_db(&marker) && !ensure_db(dir, Some(&marker.pre)) => stuck(&marker),
+    let need_db = expects_db(dir, &marker);
+    match rollback(dir, &marker, verify) {
+        Ok(()) if need_db && !ensure_db(dir, Some(&marker.pre)) => stuck(&marker),
         Ok(()) => {
-            finish(dir);
+            // A marker left at Swapping is fine here: rolling back again is a no-op.
+            conclude(dir, &mut marker);
             RestoreStatus::RolledBack { pre: abs(dir, &marker.pre) }
         }
         Err(_) => stuck(&marker),
@@ -532,7 +827,7 @@ fn tree_bytes(path: &Path) -> u64 {
 }
 
 pub fn list_pre(dir: &Path) -> (Vec<PreDir>, bool) {
-    let busy = dir.join(MARKER).exists();
+    let busy = pending_marker(dir);
     let mut out: Vec<PreDir> = fs::read_dir(dir)
         .map(|rd| {
             rd.flatten()
@@ -561,8 +856,8 @@ pub async fn delete_pre(dir: &Path, name: &str) -> Result<(), String> {
     if pre_name_ms(name).is_none() {
         return Err("不是原数据副本目录".into());
     }
-    // Any marker (even unreadable) means some pre dir may still be a rollback source.
-    if dir.join(MARKER).exists() {
+    // Any marker but a Done one (even unreadable) means some pre dir may still be a rollback source.
+    if pending_marker(dir) {
         return Err(PRE_BUSY.into());
     }
     let target = dir.join(name);
@@ -621,13 +916,19 @@ pub async fn abandon_restore(dir: &Path) -> Result<(), String> {
 }
 
 fn abandon_locked(dir: &Path) -> Result<(), String> {
-    match read_marker(dir) {
-        None => {}
+    let marker = match read_marker(dir) {
+        None => None,
+        // The user's explicit choice: files changed since the swap are not
+        // refused but quarantined like the rest; nothing is deleted.
         Some(Ok(marker)) => {
-            rollback(dir, &marker)?;
-            if expects_db(&marker) && !ensure_db(dir, Some(&marker.pre)) {
-                return Err(NO_DB.into());
+            if marker.stage != Stage::Done {
+                let need_db = expects_db(dir, &marker);
+                rollback(dir, &marker, false)?;
+                if need_db && !ensure_db(dir, Some(&marker.pre)) {
+                    return Err(NO_DB.into());
+                }
             }
+            Some(marker)
         }
         // Unreadable marker: no plan. Bring back the newest moved-aside database
         // if the live one is gone; with no pre-restore-* dir nothing was moved.
@@ -635,9 +936,17 @@ fn abandon_locked(dir: &Path) -> Result<(), String> {
             if !ensure_db(dir, None) && !pre_dirs(dir).is_empty() {
                 return Err(NO_DB.into());
             }
+            Some(Marker { stage: Stage::Done, created_ms: now_ms(), attempts: 0, pre: String::new(), plan: Vec::new(), summary: None })
         }
+    };
+    match marker {
+        Some(mut marker) => {
+            if !conclude(dir, &mut marker) {
+                return Err(MARKER_STUCK.into());
+            }
+        }
+        None => finish(dir),
     }
-    finish(dir);
     *STATUS.lock().unwrap_or_else(|e| e.into_inner()) = Some(RestoreStatus::None);
     Ok(())
 }
@@ -1316,5 +1625,322 @@ mod tests {
         assert_ne!(walker, caller, "size walk must not run on the caller");
         assert_eq!(list.dirs, list_pre(&live).0);
         assert!(!list.busy);
+    }
+
+    /// `(marker writes that still succeed, removal fails)` for this test thread.
+    fn marker_fault(left: u32, keep: bool) {
+        MARKER_FAULT.with(|f| f.set((left, keep)));
+    }
+
+    fn add_rows(path: &Path, n: i64) {
+        tauri::async_runtime::block_on(async {
+            let o = SqliteConnectOptions::new().filename(path);
+            let p = SqlitePoolOptions::new().max_connections(1).connect_with(o).await.unwrap();
+            for _ in 0..n {
+                sqlx::query("INSERT INTO papers DEFAULT VALUES").execute(&p).await.unwrap();
+            }
+            p.close().await;
+        });
+    }
+
+    fn quarantines(live: &Path) -> Vec<PathBuf> {
+        fs::read_dir(live).unwrap().flatten().map(|e| e.path())
+            .filter(|p| p.file_name().unwrap().to_string_lossy().starts_with("quarantine-")).collect()
+    }
+
+    fn is_wal(db: &Path) -> bool {
+        let header = fs::read(db).unwrap();
+        header[18] == 2 && header[19] == 2
+    }
+
+    /// Fully swapped, but the marker could neither become Done nor be deleted.
+    fn swapped_with_stuck_marker(n: &str) -> (PathBuf, PathBuf) {
+        let (live, zip) = setup(n);
+        stage(&live, &zip).unwrap();
+        marker_fault(1, true);
+        let status = apply_pending_restore_at(&live, now_ms());
+        marker_fault(u32::MAX, false);
+        assert!(matches!(status, RestoreStatus::Stuck { db_available: true, .. }), "{status:?}");
+        let m = read_marker(&live).unwrap().unwrap();
+        assert_eq!(m.stage, Stage::Swapping);
+        // not rows(): a read-only open of the WAL db could leave sidecars behind
+        assert!(m.plan.iter().all(|i| untouched(&live, i)), "swap itself went through");
+        assert!(live.join(STAGING).exists(), "staging kept while the marker says Swapping");
+        (live, zip)
+    }
+
+    #[test]
+    fn surviving_done_marker_is_cleaned_up_and_never_rolled_back() {
+        let (live, zip) = setup("p104-done");
+        stage(&live, &zip).unwrap();
+        marker_fault(u32::MAX, true); // marker can be rewritten but not deleted
+        assert!(matches!(apply_pending_restore_at(&live, now_ms()), RestoreStatus::Restored { .. }));
+        marker_fault(u32::MAX, false);
+        assert_eq!(read_marker(&live).unwrap().unwrap().stage, Stage::Done);
+        assert!(!live.join(STAGING).exists());
+        assert!(!list_pre(&live).1, "a Done marker does not block pre-restore cleanup");
+        // the user works on the restored library before the next launch
+        add_rows(&live.join(DB), 5);
+        assert_eq!(apply_pending_restore_at(&live, now_ms()), RestoreStatus::None);
+        assert_eq!(rows(&live.join(DB)), 12, "edits survive");
+        assert_eq!(fs::read_to_string(live.join("library/shared.pdf")).unwrap(), "new");
+        assert!(!live.join(MARKER).exists() && quarantines(&live).is_empty());
+    }
+
+    #[test]
+    fn done_marker_does_not_block_new_restore_or_abandon() {
+        let (live, zip) = setup("p104-done-ops");
+        stage(&live, &zip).unwrap();
+        marker_fault(u32::MAX, true);
+        assert!(matches!(apply_pending_restore_at(&live, now_ms()), RestoreStatus::Restored { .. }));
+        marker_fault(u32::MAX, false);
+        let pre = list_pre(&live).0[0].name.clone();
+        tauri::async_runtime::block_on(delete_pre(&live, &pre)).expect("Done marker: no rollback source left");
+        tauri::async_runtime::block_on(abandon_restore(&live)).unwrap();
+        assert!(!live.join(MARKER).exists());
+        assert_eq!(rows(&live.join(DB)), 7, "abandoning a finished restore undoes nothing");
+        assert!(quarantines(&live).is_empty());
+        // a Done marker left behind again: a new restore just cleans it up
+        let done = Marker { stage: Stage::Done, created_ms: 1, attempts: 1, pre: "pre-restore-1".into(), plan: vec![], summary: None };
+        write_marker(&live, &done).unwrap();
+        stage_summary(&live, &zip).expect("a Done marker is only cleanup");
+        assert_eq!(read_marker(&live).unwrap().unwrap().stage, Stage::Previewed);
+    }
+
+    #[test]
+    fn marker_that_cannot_be_finalised_is_stuck_then_rolls_back_into_quarantine() {
+        let (live, _) = swapped_with_stuck_marker("p104-stuck");
+        let status = apply_pending_restore_at(&live, now_ms());
+        assert!(matches!(status, RestoreStatus::RolledBack { .. }), "{status:?}");
+        assert_original(&live);
+        assert!(!live.join(MARKER).exists());
+        let q = quarantines(&live);
+        assert_eq!(q.len(), 1);
+        assert_eq!(fs::read_to_string(q[0].join("library/new.pdf")).unwrap(), "new-only");
+        assert_eq!(fs::read_to_string(q[0].join("library/shared.pdf")).unwrap(), "new");
+        assert_eq!(rows(&q[0].join(DB)), 7, "restored db kept, not deleted");
+    }
+
+    #[test]
+    fn startup_refuses_to_roll_back_files_changed_since_swap() {
+        let (live, _) = swapped_with_stuck_marker("p104-edited-pdf");
+        fs::write(live.join("library/shared.pdf"), "user edit").unwrap();
+        let status = apply_pending_restore_at(&live, now_ms());
+        assert!(matches!(status, RestoreStatus::Stuck { db_available: true, .. }), "{status:?}");
+        assert_eq!(fs::read_to_string(live.join("library/shared.pdf")).unwrap(), "user edit");
+        assert_eq!(rows(&live.join(DB)), 7, "nothing rolled back halfway");
+        assert!(quarantines(&live).is_empty());
+
+        let (live, _) = swapped_with_stuck_marker("p104-edited-db");
+        add_rows(&live.join(DB), 2);
+        let status = apply_pending_restore_at(&live, now_ms());
+        assert!(matches!(status, RestoreStatus::Stuck { .. }), "{status:?}");
+        assert_eq!(rows(&live.join(DB)), 9);
+        // the user gives up explicitly: old files back, their edits quarantined
+        tauri::async_runtime::block_on(abandon_restore(&live)).unwrap();
+        assert_original(&live);
+        let q = quarantines(&live);
+        assert_eq!(rows(&q[0].join(DB)), 9);
+        assert!(!live.join(MARKER).exists());
+    }
+
+    #[test]
+    fn old_marker_without_stamps_is_not_rolled_back_automatically() {
+        let (live, _) = swapped_with_stuck_marker("p104-old-marker");
+        let mut m = read_marker(&live).unwrap().unwrap();
+        for item in &mut m.plan {
+            (item.size, item.mtime_ns) = (None, None);
+        }
+        write_marker(&live, &m).unwrap();
+        let status = apply_pending_restore_at(&live, now_ms());
+        assert!(matches!(status, RestoreStatus::Stuck { .. }), "{status:?}");
+        assert_eq!(rows(&live.join(DB)), 7);
+        assert!(quarantines(&live).is_empty());
+        tauri::async_runtime::block_on(abandon_restore(&live)).unwrap();
+        assert_original(&live);
+    }
+
+    #[test]
+    fn old_marker_formats_still_parse() {
+        let json = r#"{"stage":"swapping","created_ms":1,"attempts":1,"pre":"pre-restore-1",
+            "plan":[{"src":null,"dest":"paper-field.db-wal","backup":"paper-field.db-wal"},
+                    {"src":"paper-field.db","dest":"paper-field.db","backup":"paper-field.db"}]}"#;
+        let m: Marker = serde_json::from_str(json).unwrap();
+        assert!(m.plan.iter().all(|i| i.size.is_none() && i.mtime_ns.is_none()));
+        let done: Marker = serde_json::from_str(&json.replace("swapping", "done")).unwrap();
+        assert_eq!(done.stage, Stage::Done);
+    }
+
+    #[test]
+    fn rollback_after_swap_failure_quarantines_what_it_moved_in() {
+        let (live, zip) = setup("p104-swapfail");
+        stage(&live, &zip).unwrap();
+        fs::remove_file(live.join(STAGING).join("library/shared.pdf")).unwrap();
+        let status = apply_pending_restore_at(&live, now_ms());
+        assert!(matches!(status, RestoreStatus::RolledBack { .. }), "{status:?}");
+        assert_original(&live);
+        assert_eq!(fs::read_to_string(quarantines(&live)[0].join("library/new.pdf")).unwrap(), "new-only");
+    }
+
+    #[test]
+    fn swap_moves_sidecars_present_at_that_moment_including_journal() {
+        let (live, zip) = setup("p205-sidecars");
+        let old_db = fs::read(live.join(DB)).unwrap();
+        stage(&live, &zip).unwrap();
+        // appear after staging, so no plan lists them
+        for s in SIDECARS {
+            fs::write(live.join(s), s).unwrap();
+        }
+        assert!(read_marker(&live).unwrap().unwrap().plan.iter().all(|i| i.dest == DB || !i.dest.starts_with(DB)));
+        marker_fault(1, true);
+        assert!(matches!(apply_pending_restore_at(&live, now_ms()), RestoreStatus::Stuck { .. }));
+        marker_fault(u32::MAX, false);
+        let pre = live.join(&read_marker(&live).unwrap().unwrap().pre);
+        for s in SIDECARS {
+            assert!(!live.join(s).exists(), "{s} moved aside with the old db");
+            assert_eq!(fs::read_to_string(pre.join(s)).unwrap(), s);
+        }
+        assert!(matches!(apply_pending_restore_at(&live, now_ms()), RestoreStatus::RolledBack { .. }));
+        assert_eq!(fs::read(live.join(DB)).unwrap(), old_db);
+        for s in SIDECARS {
+            assert_eq!(fs::read_to_string(live.join(s)).unwrap(), s, "{s} back with its db");
+        }
+        assert!(quarantines(&live)[0].join(DB).exists());
+    }
+
+    #[test]
+    fn restored_db_has_no_foreign_sidecars_and_is_wal() {
+        let (live, zip) = setup("p205-wal");
+        stage(&live, &zip).unwrap();
+        let staged = live.join(STAGING).join(DB);
+        assert!(is_wal(&staged), "staged db switched to WAL");
+        assert!(SIDECARS.iter().all(|s| !live.join(STAGING).join(s).exists()), "closed cleanly");
+        fs::write(live.join("paper-field.db-journal"), b"hot journal of the old db").unwrap();
+        fs::write(live.join("paper-field.db-wal"), b"old wal").unwrap();
+        assert!(matches!(apply_pending_restore_at(&live, now_ms()), RestoreStatus::Restored { .. }));
+        assert!(live_sidecars(&live).is_empty());
+        assert!(is_wal(&live.join(DB)));
+        assert_eq!(rows(&live.join(DB)), 7);
+        let pre = &pre_dirs(&live)[0];
+        assert!(pre.join("paper-field.db-journal").exists() && pre.join("paper-field.db-wal").exists());
+    }
+
+    #[test]
+    fn files_created_while_pending_are_backed_up_before_replacing() {
+        let (live, zip) = setup("restore-late-files");
+        fs::remove_file(live.join(DB)).unwrap();
+        stage(&live, &zip).unwrap();
+        assert!(read_marker(&live).unwrap().unwrap().plan.iter().all(|i| i.dest != DB || i.backup.is_none()));
+        // both appear after the plan was frozen
+        fs::write(live.join("library/new.pdf"), "made later").unwrap();
+        make_db(&live.join(DB), 4, 3);
+        assert!(matches!(apply_pending_restore_at(&live, now_ms()), RestoreStatus::Restored { .. }));
+        let pre = &pre_dirs(&live)[0];
+        assert_eq!(fs::read_to_string(pre.join("library/new.pdf")).unwrap(), "made later");
+        assert_eq!(rows(&pre.join(DB)), 3);
+        assert_eq!(rows(&live.join(DB)), 7);
+    }
+
+    #[test]
+    fn empty_pre_dir_left_by_a_crash_is_reused() {
+        let (live, zip) = setup("restore-empty-pre");
+        stage(&live, &zip).unwrap();
+        let m = read_marker(&live).unwrap().unwrap();
+        fs::create_dir(live.join(&m.pre)).unwrap();
+        assert!(matches!(apply_pending_restore_at(&live, now_ms()), RestoreStatus::Restored { .. }));
+        assert_eq!(rows(&live.join(DB)), 7);
+
+        let (live, zip) = setup("restore-full-pre");
+        stage(&live, &zip).unwrap();
+        let m = read_marker(&live).unwrap().unwrap();
+        fs::create_dir(live.join(&m.pre)).unwrap();
+        fs::write(live.join(&m.pre).join("x"), "x").unwrap();
+        assert!(matches!(apply_pending_restore_at(&live, now_ms()), RestoreStatus::Stuck { .. }));
+        assert_original(&live);
+    }
+
+    fn zip_of(path: &Path, entries: &[(&str, &[u8])]) {
+        let mut z = zip::ZipWriter::new(File::create(path).unwrap());
+        let o = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        for (name, body) in entries {
+            z.start_file(*name, o).unwrap();
+            z.write_all(body).unwrap();
+        }
+        z.finish().unwrap();
+    }
+
+    #[test]
+    fn duplicate_destinations_are_rejected() {
+        let (live, _) = setup("restore-dups");
+        let db = fs::read(live.parent().unwrap().join("src.db")).unwrap();
+        let zip = live.parent().unwrap().join("dup.zip");
+        for (a, b) in [("library/a.pdf", "library\\a.pdf"), ("library/a.pdf", "library/A.PDF"), ("library/é.pdf", "library/e\u{301}.pdf")] {
+            zip_of(&zip, &[(DB, &db), (a, b"one"), (b, b"two")]);
+            let err = stage(&live, &zip).unwrap_err();
+            assert!(err.contains("重复"), "{a} / {b}: {err}");
+            assert!(!live.join(MARKER).exists());
+        }
+        assert_original(&live);
+    }
+
+    /// Rewrites the declared size of `name` in its local and central headers.
+    fn patch_declared_size(zip: &mut [u8], name: &str, size: u32) {
+        let mut patched = 0;
+        for i in 0..zip.len().saturating_sub(46) {
+            let (len_at, name_at, size_at) = match zip[i..i + 4] {
+                [0x50, 0x4b, 0x03, 0x04] => (26, 30, 22),
+                [0x50, 0x4b, 0x01, 0x02] => (28, 46, 24),
+                _ => continue,
+            };
+            let len = u16::from_le_bytes([zip[i + len_at], zip[i + len_at + 1]]) as usize;
+            if zip.get(i + name_at..i + name_at + len) == Some(name.as_bytes()) {
+                zip[i + size_at..i + size_at + 4].copy_from_slice(&size.to_le_bytes());
+                patched += 1;
+            }
+        }
+        assert_eq!(patched, 2);
+    }
+
+    #[test]
+    fn entries_larger_than_declared_or_over_the_cap_are_rejected() {
+        let (live, _) = setup("restore-bomb");
+        let db = fs::read(live.parent().unwrap().join("src.db")).unwrap();
+        let zip = live.parent().unwrap().join("bomb.zip");
+        zip_of(&zip, &[(DB, &db), ("library/big.pdf", &vec![b'A'; 100_000])]);
+        let mut bytes = fs::read(&zip).unwrap();
+        patch_declared_size(&mut bytes, "library/big.pdf", 10);
+        fs::write(&zip, &bytes).unwrap();
+        let err = stage(&live, &zip).unwrap_err();
+        assert!(err.contains("超过记录"), "{err}");
+        assert!(!live.join(MARKER).exists() && !live.join(STAGING).exists());
+
+        let honest = live.parent().unwrap().join("honest.zip");
+        zip_of(&honest, &[(DB, &db), ("library/big.pdf", &vec![b'A'; 100_000])]);
+        let staging = live.parent().unwrap().join("cap-staging");
+        let err = unpack_capped(&honest, &staging, 50_000).unwrap_err();
+        assert!(err.contains("过大"), "{err}");
+        let staging = live.parent().unwrap().join("cap-staging-ok");
+        assert_eq!(unpack_capped(&honest, &staging, 10 << 20).unwrap().len(), 2);
+        assert_eq!(fs::read(staging.join("library/big.pdf")).unwrap().len(), 100_000);
+    }
+
+    #[test]
+    fn manifest_pdf_count_must_match_and_is_never_extracted() {
+        let (live, _) = setup("restore-manifest");
+        let db = fs::read(live.parent().unwrap().join("src.db")).unwrap();
+        let zip = live.parent().unwrap().join("m.zip");
+        zip_of(&zip, &[(DB, &db), ("library/a.pdf", b"a"), (MANIFEST, br#"{"format":1,"pdfs":2}"#)]);
+        let err = stage(&live, &zip).unwrap_err();
+        assert!(err.contains("清单记录 2 个 PDF") && err.contains("实际有 1 个"), "{err}");
+        assert!(!live.join(MARKER).exists());
+
+        zip_of(&zip, &[(DB, &db), ("library/a.pdf", b"a"), (MANIFEST, b"not json")]);
+        assert!(stage(&live, &zip).unwrap_err().contains("manifest"));
+
+        zip_of(&zip, &[(DB, &db), ("library/a.pdf", b"a"), (MANIFEST, br#"{"format":1,"pdfs":1}"#)]);
+        assert_eq!(stage_summary(&live, &zip).unwrap().pdfs, 1);
+        assert!(!live.join(STAGING).join(MANIFEST).exists());
+        let m = read_marker(&live).unwrap().unwrap();
+        assert!(m.plan.iter().all(|i| !i.dest.contains(MANIFEST)));
     }
 }
