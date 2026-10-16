@@ -117,8 +117,8 @@ impl FileSecretStore {
         if !self.path.exists() {
             return Ok(HashMap::new());
         }
-        let raw = fs::read_to_string(&self.path).map_err(|err| err.to_string())?;
-        serde_json::from_str(&raw).map_err(|err| format!("密钥文件无法解析：{err}"))
+        let raw = fs::read_to_string(&self.path).map_err(|err| format!("secrets.json 无法读取：{err}"))?;
+        serde_json::from_str(&raw).map_err(|err| format!("secrets.json 无法解析：{err}"))
     }
 
     fn save(&self, map: &HashMap<String, String>) -> Result<(), String> {

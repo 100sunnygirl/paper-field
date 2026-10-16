@@ -587,11 +587,47 @@ describe("SystemView · 设置读取失败提示", () => {
   });
 
   it("MinerU 与文献库读取失败时各显示一条 alert，含默认值说明与错误原文", () => {
-    useField.setState({ settingsLoadError: { mineru: "MinerU 设置无法解析", biblio: "文献库设置无法解析" } });
+    useField.setState({
+      settingsLoadError: { mineru: "MinerU 设置无法解析", biblio: "文献库设置无法解析", llm: null, secrets: null },
+    });
     render(<SystemView />);
     const alerts = screen.getAllByRole("alert").map((a) => a.textContent ?? "");
     expect(alerts.some((t) => t.includes("MinerU设置文件无法读取") && t.includes("下面显示的是默认值") && t.includes("MinerU 设置无法解析"))).toBe(true);
     expect(alerts.some((t) => t.includes("文献库设置文件无法读取") && t.includes("文献库设置无法解析"))).toBe(true);
+  });
+
+  it("AI 设置和密钥文件读失败时在 AI 区域显示原文件未改写", () => {
+    useField.setState({
+      settingsLoadError: {
+        mineru: null,
+        biblio: null,
+        llm: "llm-settings.json 无法读取：无法解析。原文件未改写。",
+        secrets: "secrets.json 无法读取：无法解析。原文件未改写。",
+      },
+      settings: {
+        version: 2,
+        usage: {},
+        providers: [
+          {
+            id: "p1",
+            presetId: "deepseek",
+            label: "DeepSeek",
+            baseUrl: "https://api.deepseek.com/v1",
+            model: "deepseek-chat",
+            enabled: true,
+            hasKey: false,
+            keyState: "unreadable",
+            requiresKey: true,
+          },
+        ],
+      },
+    });
+    render(<SystemView />);
+    expect(screen.getByText(/llm-settings.json/)).toBeInTheDocument();
+    expect(screen.getByText(/secrets.json/)).toBeInTheDocument();
+    expect(screen.getAllByText(/原文件未改写/).length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText(/API Key（读取失败/)).toBeInTheDocument();
+    expect(screen.queryByText(/尚未配置/)).toBeNull();
   });
 
   it("没有读取错误时不显示该 alert", () => {

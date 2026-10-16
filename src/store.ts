@@ -27,7 +27,7 @@ import { safeHttpUrl, withDefaultScheme } from "./lib/urls";
 import { DRAFT_NOTES_SYSTEM, PREPARE_META_SYSTEM, draftNotesUserPrompt, normalizeMeta, normalizeNotes, prepareMetaUserPrompt } from "./lib/prompts";
 import { redactSecrets } from "./lib/redact";
 import { repo } from "./lib/repo";
-import { cancelChat, completeChat, hasUsableProvider, loadSettings, saveSettings, type LlmSaveInput } from "./lib/settings";
+import { cancelChat, completeChat, hasUsableProvider, loadSettings, readLlmSettings, saveSettings, type LlmSaveInput } from "./lib/settings";
 import { log } from "./lib/logger";
 import { dismissAll, notify, type ToastAction } from "./toasts";
 import type {
@@ -80,7 +80,7 @@ interface FieldState {
   mineru: MineruSettingsV2;
   biblio: BiblioStatus;
   /** Settings files that exist but failed to load; the page shows defaults plus this error. */
-  settingsLoadError: { mineru: string | null; biblio: string | null };
+  settingsLoadError: { mineru: string | null; biblio: string | null; llm: string | null; secrets: string | null };
   /** Quiet lookup hints for one paper. The dossier shows them only when that paper is open. */
   lookupHint: { paperId: string; notices: LookupResult["notices"] } | null;
   mineruHealth: ProviderHealth[];
@@ -212,7 +212,7 @@ export const useField = create<FieldState>((set, get) => ({
   settings: { version: 2, providers: [], usage: {} },
   mineru: DEFAULT_MINERU,
   biblio: DEFAULT_BIBLIO,
-  settingsLoadError: { mineru: null, biblio: null },
+  settingsLoadError: { mineru: null, biblio: null, llm: null, secrets: null },
   lookupHint: null,
   mineruHealth: [],
   effectiveProvider: null,
@@ -272,18 +272,26 @@ export const useField = create<FieldState>((set, get) => ({
   init: async () => {
     try {
       await repo.init();
-      const settingsLoadError: { mineru: string | null; biblio: string | null } = { mineru: null, biblio: null };
+      const settingsLoadError: { mineru: string | null; biblio: string | null; llm: string | null; secrets: string | null } = {
+        mineru: null,
+        biblio: null,
+        llm: null,
+        secrets: null,
+      };
       const fallback = <T,>(key: "mineru" | "biblio", value: T) => (err: unknown): T => {
         settingsLoadError[key] = err instanceof Error ? err.message : String(err);
         log.error(key === "mineru" ? "mineru" : "store", key === "mineru" ? "MinerU 设置读取失败，已显示默认值" : "文献库设置读取失败，已显示默认值", err);
         return value;
       };
-      const [domains, settings, mineru, biblio] = await Promise.all([
+      const [domains, llmLoaded, mineru, biblio] = await Promise.all([
         repo.listDomains(),
-        loadSettings(),
+        readLlmSettings(),
         loadMineruSettings().catch(fallback("mineru", DEFAULT_MINERU)),
         loadBiblioSettings().catch(fallback("biblio", DEFAULT_BIBLIO)),
       ]);
+      const settings = llmLoaded.settings;
+      settingsLoadError.llm = llmLoaded.llmError;
+      settingsLoadError.secrets = llmLoaded.secretsError;
       const selectedDomainId = domains[0]?.id ?? null;
       set({ domains, selectedDomainId, settings, mineru, biblio, settingsLoadError, ready: true, error: null });
       await get().refresh();
