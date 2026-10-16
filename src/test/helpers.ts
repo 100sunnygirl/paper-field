@@ -1,5 +1,5 @@
 import initSqlJs from "sql.js";
-import { applySchema, type SqlEngine } from "../lib/engine";
+import { applySchema, SqlJsEngine, type SqlEngine } from "../lib/engine";
 
 /**
  * node 环境下的内存引擎：sql.js 的 Node 构建自动经 fs 定位 wasm，
@@ -10,28 +10,7 @@ import { applySchema, type SqlEngine } from "../lib/engine";
 export async function makeTestEngine(): Promise<TestEngineHandle> {
   const SQL = await initSqlJs();
   const db = new SQL.Database();
-  const engine: SqlEngine = {
-    async execute(sql: string, params: unknown[] = []): Promise<number> {
-      db.run(sql, params as (string | number | null | Uint8Array)[]);
-      return db.getRowsModified();
-    },
-    snapshot(): Uint8Array {
-      return db.export();
-    },
-    async select<T>(sql: string, params: unknown[] = []): Promise<T[]> {
-      const stmt = db.prepare(sql);
-      try {
-        stmt.bind(params as (string | number | null | Uint8Array)[]);
-        const rows: T[] = [];
-        while (stmt.step()) {
-          rows.push(stmt.getAsObject() as T);
-        }
-        return rows;
-      } finally {
-        stmt.free();
-      }
-    },
-  };
+  const engine = new SqlJsEngine(db, { persist: false });
   await applySchema(engine);
   return {
     engine,

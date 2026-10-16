@@ -1,4 +1,4 @@
-import type { SqlEngine } from "./engine";
+import type { BatchStep, SqlEngine } from "./engine";
 
 /**
  * Ordered schema versions. `PRAGMA user_version` is the only migration cursor.
@@ -6,7 +6,7 @@ import type { SqlEngine } from "./engine";
  * `CREATE TRIGGER IF NOT EXISTS` is not used for the final bodies: an existing
  * database would otherwise keep a stale trigger forever.
  */
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 export const DOMAIN_CASCADE_SQL = `CREATE TRIGGER pf_domain_cascade
     AFTER DELETE ON domains
@@ -27,8 +27,8 @@ export const PAPER_CASCADE_SQL = `CREATE TRIGGER pf_paper_cascade
 /**
  * One UPDATE of papers.author_replace rewrites that paper's authors.
  * The trigger body runs inside the same statement, so a failure rolls the
- * delete and the inserts back together. plugin-sql does not keep a transaction
- * open across statements, and sql.js rejects INSERT/DELETE inside a CTE.
+ * delete and the inserts back together even outside a batch (sql.js rejects
+ * INSERT/DELETE inside a CTE, so the work cannot be one plain statement).
  * A global authors row is reused only when affiliation and lab are both set
  * and match. Blank affiliation never collapses two same-name coauthors.
  */
@@ -198,30 +198,43 @@ async function columnExists(engine: SqlEngine, table: string, name: string): Pro
   return rows.length > 0;
 }
 
-async function addColumn(engine: SqlEngine, table: string, name: string, definition: string): Promise<void> {
-  if (await columnExists(engine, table, name)) return;
-  await engine.execute(`ALTER TABLE ${table} ADD COLUMN ${definition}`);
+async function addColumn(engine: SqlEngine, table: string, name: string, definition: string): Promise<BatchStep[]> {
+  if (await columnExists(engine, table, name)) return [];
+  return [{ sql: `ALTER TABLE ${table} ADD COLUMN ${definition}` }];
 }
 
-async function migrateV1(engine: SqlEngine): Promise<void> {
-  for (const statement of BASE_TABLES) {
-    await engine.execute(statement);
+/*
+ * 每一版迁移分两段：先只读地规划出要执行的语句，再把这些语句与
+ * `PRAGMA user_version = N` 放进同一个 batch（同一个事务）。中途崩溃时整版回滚，
+ * 版本号不变，下次启动从头重跑这一版，不会出现「跑了一半、版本号没写」的库。
+ */
+
+async function migrateV1(engine: SqlEngine): Promise<BatchStep[]> {
+  // 新库由 CREATE TABLE 直接带齐这些列；只有老库才需要逐列补。
+  const legacy = await tableExists(engine, "papers");
+  const steps: BatchStep[] = BASE_TABLES.map((sql) => ({ sql }));
+  if (legacy) {
+    for (const [name, definition] of V1_PAPER_COLUMNS) {
+      steps.push(...(await addColumn(engine, "papers", name, definition)));
+    }
   }
-  for (const [name, definition] of V1_PAPER_COLUMNS) {
-    await addColumn(engine, "papers", name, definition);
-  }
-  await engine.execute("DROP TRIGGER IF EXISTS pf_domain_cascade");
-  await engine.execute("DROP TRIGGER IF EXISTS pf_paper_cascade");
-  await engine.execute(DOMAIN_CASCADE_SQL);
-  await engine.execute(PAPER_CASCADE_SQL);
+  steps.push(
+    { sql: "DROP TRIGGER IF EXISTS pf_domain_cascade" },
+    { sql: "DROP TRIGGER IF EXISTS pf_paper_cascade" },
+    { sql: DOMAIN_CASCADE_SQL },
+    { sql: PAPER_CASCADE_SQL },
+  );
+  return steps;
 }
 
-async function migrateV2(engine: SqlEngine): Promise<void> {
-  await addColumn(engine, "papers", "field_sources", "field_sources TEXT NOT NULL DEFAULT '{}'");
-  await addColumn(engine, "papers", "meta_confidence", "meta_confidence REAL");
-  await addColumn(engine, "papers", "meta_rev", "meta_rev INTEGER NOT NULL DEFAULT 0");
-  await addColumn(engine, "papers", "pdf_original_path", "pdf_original_path TEXT");
-  await backfillFieldSources(engine);
+async function migrateV2(engine: SqlEngine): Promise<BatchStep[]> {
+  return [
+    ...(await addColumn(engine, "papers", "field_sources", "field_sources TEXT NOT NULL DEFAULT '{}'")),
+    ...(await addColumn(engine, "papers", "meta_confidence", "meta_confidence REAL")),
+    ...(await addColumn(engine, "papers", "meta_rev", "meta_rev INTEGER NOT NULL DEFAULT 0")),
+    ...(await addColumn(engine, "papers", "pdf_original_path", "pdf_original_path TEXT")),
+    ...(await backfillFieldSources(engine)),
+  ];
 }
 
 interface LegacyPaperSourceRow {
@@ -240,15 +253,18 @@ interface LegacyPaperSourceRow {
   tags: string | null;
   labs: string | null;
   user_meta_touched: number | null;
+  author_count: number | null;
 }
 
 /** Existing non-empty fields become user-owned or model-owned so the first lookup does not clobber a library. */
-async function backfillFieldSources(engine: SqlEngine): Promise<void> {
+async function backfillFieldSources(engine: SqlEngine): Promise<BatchStep[]> {
   const rows = await engine.select<LegacyPaperSourceRow>(
     `SELECT id, title, title_zh, abstract, year, venue, doi, arxiv_id, pdf_url, code_url,
-            code_open_source, project_page, tags, labs, user_meta_touched
+            code_open_source, project_page, tags, labs, user_meta_touched,
+            (SELECT COUNT(*) FROM paper_authors pa WHERE pa.paper_id = papers.id) AS author_count
        FROM papers`,
   );
+  const steps: BatchStep[] = [];
   for (const row of rows) {
     const src = row.user_meta_touched ? "user" : "llm";
     const sources: Record<string, string> = {};
@@ -265,15 +281,12 @@ async function backfillFieldSources(engine: SqlEngine): Promise<void> {
     if (row.code_open_source && row.code_open_source !== "unknown") sources.codeOpenSource = src;
     if (row.tags && row.tags !== "[]") sources.tags = src;
     if (row.labs && row.labs !== "[]") sources.labs = src;
-    const authors = await engine.select<{ c: number }>(
-      "SELECT COUNT(*) AS c FROM paper_authors WHERE paper_id = ?",
-      [row.id],
-    );
-    if (Number(authors[0]?.c ?? 0) > 0) sources.authors = src;
+    if (Number(row.author_count ?? 0) > 0) sources.authors = src;
     if (Object.keys(sources).length) {
-      await engine.execute("UPDATE papers SET field_sources = ? WHERE id = ?", [JSON.stringify(sources), row.id]);
+      steps.push({ sql: "UPDATE papers SET field_sources = ? WHERE id = ?", params: [JSON.stringify(sources), row.id] });
     }
   }
+  return steps;
 }
 
 /**
@@ -282,39 +295,48 @@ async function backfillFieldSources(engine: SqlEngine): Promise<void> {
  * is the key; global author reuse happens only in the write path.
  * Triggers are replaced again so a later edit of their bodies reaches existing databases.
  */
-async function migrateV3(engine: SqlEngine): Promise<void> {
-  // Triggers reference paper_authors. Drop them before the table is rebuilt,
-  // or SQLite refuses the DROP with "no such table: paper_authors".
-  await engine.execute("DROP TRIGGER IF EXISTS pf_domain_cascade");
-  await engine.execute("DROP TRIGGER IF EXISTS pf_paper_cascade");
-  const tables = await engine.select<{ name: string }>(
-    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'paper_authors'",
-  );
-  if (tables.length) {
-    await engine.execute("DROP TABLE IF EXISTS paper_authors_next");
-    await engine.execute(
-      `CREATE TABLE paper_authors_next (
+async function migrateV3(engine: SqlEngine): Promise<BatchStep[]> {
+  // Triggers reference paper_authors. Drop them all before the table is rebuilt,
+  // or SQLite refuses the DROP / RENAME with "no such table: paper_authors".
+  const steps: BatchStep[] = [
+    { sql: "DROP TRIGGER IF EXISTS pf_domain_cascade" },
+    { sql: "DROP TRIGGER IF EXISTS pf_paper_cascade" },
+    { sql: "DROP TRIGGER IF EXISTS pf_author_replace" },
+  ];
+  const hasLinks = await tableExists(engine, "paper_authors");
+  const hasNext = await tableExists(engine, "paper_authors_next");
+  if (hasLinks) {
+    steps.push(
+      { sql: "DROP TABLE IF EXISTS paper_authors_next" },
+      {
+        sql: `CREATE TABLE paper_authors_next (
         paper_id TEXT NOT NULL,
         author_id TEXT NOT NULL,
         sort_order INTEGER NOT NULL,
         is_corresponding INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (paper_id, sort_order)
       )`,
-    );
-    await engine.execute(
-      `INSERT INTO paper_authors_next (paper_id, author_id, sort_order, is_corresponding)
+      },
+      {
+        sql: `INSERT INTO paper_authors_next (paper_id, author_id, sort_order, is_corresponding)
        SELECT paper_id, author_id,
               ROW_NUMBER() OVER (PARTITION BY paper_id ORDER BY sort_order, author_id) - 1,
               is_corresponding
          FROM paper_authors`,
+      },
+      { sql: "DROP TABLE paper_authors" },
+      { sql: "ALTER TABLE paper_authors_next RENAME TO paper_authors" },
     );
-    await engine.execute("DROP TABLE paper_authors");
-    await engine.execute("ALTER TABLE paper_authors_next RENAME TO paper_authors");
+  } else if (hasNext) {
+    // 旧版本非事务迁移在 DROP 与 RENAME 之间崩溃留下的库：把重建好的表接回来。
+    steps.push({ sql: "ALTER TABLE paper_authors_next RENAME TO paper_authors" });
   }
-  await engine.execute(DOMAIN_CASCADE_SQL);
-  await engine.execute(PAPER_CASCADE_SQL);
-  await addColumn(engine, "papers", "author_replace", "author_replace TEXT");
-  await engine.execute(`CREATE TABLE IF NOT EXISTS pf_author_stage (
+  steps.push(
+    { sql: DOMAIN_CASCADE_SQL },
+    { sql: PAPER_CASCADE_SQL },
+    ...(await addColumn(engine, "papers", "author_replace", "author_replace TEXT")),
+    {
+      sql: `CREATE TABLE IF NOT EXISTS pf_author_stage (
     paper_id TEXT NOT NULL,
     ord INTEGER NOT NULL,
     new_id TEXT NOT NULL,
@@ -323,26 +345,65 @@ async function migrateV3(engine: SqlEngine): Promise<void> {
     lab TEXT,
     corresponding INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (paper_id, ord)
-  )`);
-  await engine.execute("DROP TRIGGER IF EXISTS pf_author_replace");
-  await engine.execute(AUTHOR_REPLACE_SQL);
+  )`,
+    },
+    { sql: AUTHOR_REPLACE_SQL },
+  );
+  return steps;
 }
 
-async function migrateV4(engine: SqlEngine): Promise<void> {
-  await addColumn(engine, "papers", "field_providers", "field_providers TEXT NOT NULL DEFAULT '{}'");
+async function migrateV4(engine: SqlEngine): Promise<BatchStep[]> {
+  return addColumn(engine, "papers", "field_providers", "field_providers TEXT NOT NULL DEFAULT '{}'");
 }
 
 /** Nullable credential fingerprint. One ADD COLUMN; no backfill, no table rebuild. */
-async function migrateV5(engine: SqlEngine): Promise<void> {
-  await addColumn(engine, "papers", "mineru_cred_fingerprint", "mineru_cred_fingerprint TEXT");
+async function migrateV5(engine: SqlEngine): Promise<BatchStep[]> {
+  return addColumn(engine, "papers", "mineru_cred_fingerprint", "mineru_cred_fingerprint TEXT");
 }
 
-const MIGRATIONS: Array<{ version: number; up: (engine: SqlEngine) => Promise<void> }> = [
+function pdfStem(path: string | null): string {
+  const base = (path ?? "").split(/[/\\]/).pop() ?? "";
+  return base.replace(/\.pdf$/i, "").trim();
+}
+
+/**
+ * - notes.rev：笔记版本号，AI 回写按块比对，请求期间用户改过的块不被覆盖。
+ * - papers.mineru_job_id：解析状态的所有者（哪一次运行），旧的一轮写入不再生效。
+ * - 文件名标题改记 `file` 来源，文献库与模型都可以替换它。
+ * - 有 PDF 却从未提交过解析的论文记为 pending，批量入口能看到它们。
+ */
+async function migrateV6(engine: SqlEngine): Promise<BatchStep[]> {
+  const steps: BatchStep[] = [
+    ...(await addColumn(engine, "notes", "rev", "rev INTEGER NOT NULL DEFAULT 0")),
+    ...(await addColumn(engine, "papers", "mineru_job_id", "mineru_job_id TEXT")),
+    {
+      sql: `UPDATE papers SET mineru_status = 'pending'
+             WHERE mineru_status IS NULL AND pdf_path IS NOT NULL AND pdf_path != ''`,
+    },
+  ];
+  const rows = await engine.select<{ id: string; title: string; pdf_path: string | null; pdf_original_path: string | null }>(
+    `SELECT id, title, pdf_path, pdf_original_path FROM papers
+      WHERE json_extract(field_sources, '$.title') = 'llm' AND pdf_path IS NOT NULL`,
+  );
+  for (const row of rows) {
+    const title = row.title.trim();
+    if (title && (title === pdfStem(row.pdf_path) || title === pdfStem(row.pdf_original_path))) {
+      steps.push({
+        sql: "UPDATE papers SET field_sources = json_set(field_sources, '$.title', 'file') WHERE id = ?",
+        params: [row.id],
+      });
+    }
+  }
+  return steps;
+}
+
+const MIGRATIONS: Array<{ version: number; up: (engine: SqlEngine) => Promise<BatchStep[]> }> = [
   { version: 1, up: migrateV1 },
   { version: 2, up: migrateV2 },
   { version: 3, up: migrateV3 },
   { version: 4, up: migrateV4 },
   { version: 5, up: migrateV5 },
+  { version: 6, up: migrateV6 },
 ];
 
 export async function userVersion(engine: SqlEngine): Promise<number> {
@@ -358,11 +419,11 @@ export async function tableExists(engine: SqlEngine, name: string): Promise<bool
   return rows.length > 0;
 }
 
-/** Run every migration newer than `fromVersion`, then stamp user_version. */
+/** Run every migration newer than `fromVersion`; each version and its user_version stamp commit together. */
 export async function runMigrations(engine: SqlEngine, fromVersion: number): Promise<void> {
   for (const migration of MIGRATIONS) {
     if (migration.version <= fromVersion) continue;
-    await migration.up(engine);
-    await engine.execute(`PRAGMA user_version = ${migration.version}`);
+    const steps = await migration.up(engine);
+    await engine.batch([...steps, { sql: `PRAGMA user_version = ${migration.version}` }]);
   }
 }

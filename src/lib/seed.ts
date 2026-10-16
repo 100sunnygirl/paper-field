@@ -1,4 +1,4 @@
-import type { SqlEngine } from "./engine";
+import type { BatchStep, SqlEngine } from "./engine";
 import { NOTE_KINDS } from "./types";
 
 const DOMAIN_MM = "11111111-1111-4111-8111-111111111111";
@@ -7,8 +7,8 @@ const PAPER_LLAVA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1";
 const PAPER_CLIP = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2";
 const PAPER_INSTRUCT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3";
 
-async function note(
-  engine: SqlEngine,
+function note(
+  steps: BatchStep[],
   paperId: string,
   kind: string,
   content: string,
@@ -16,11 +16,11 @@ async function note(
   edited: number,
   at: string,
 ) {
-  await engine.execute(
-    `INSERT INTO notes (id, paper_id, kind, content, source, user_edited, revised_at)
+  steps.push({
+    sql: `INSERT INTO notes (id, paper_id, kind, content, source, user_edited, revised_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [`note-${paperId}-${kind}`, paperId, kind, content, source, edited, at],
-  );
+    params: [`note-${paperId}-${kind}`, paperId, kind, content, source, edited, at],
+  });
 }
 
 export async function seedIfEmpty(engine: SqlEngine): Promise<void> {
@@ -30,24 +30,30 @@ export async function seedIfEmpty(engine: SqlEngine): Promise<void> {
     "SELECT COUNT(*) AS c FROM app_meta WHERE key = 'seeded'",
   );
   if (Number(meta[0]?.c ?? 0) > 0) return;
-  await engine.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES ('seeded', ?)", [
-    new Date().toISOString(),
-  ]);
+  const marker: BatchStep = {
+    sql: "INSERT OR REPLACE INTO app_meta (key, value) VALUES ('seeded', ?)",
+    params: [new Date().toISOString()],
+  };
 
   const rows = await engine.select<{ c: number }>("SELECT COUNT(*) AS c FROM domains");
-  if (Number(rows[0]?.c ?? 0) > 0) return;
+  if (Number(rows[0]?.c ?? 0) > 0) {
+    await engine.batch([marker]);
+    return;
+  }
+  // 标记与演示数据同一个事务：中途崩溃时两者都不落库，下次启动完整重来。
+  const steps: BatchStep[] = [marker];
 
   const at = "2024-11-02T09:00:00.000Z";
 
-  await engine.execute(
-    `INSERT INTO domains (id, name, code, summary, sort_order, created_at) VALUES
+  steps.push({
+    sql: `INSERT INTO domains (id, name, code, summary, sort_order, created_at) VALUES
       (?, '多模态', 'MM-01', '视觉-语言对齐、指令微调与开源多模态基座。', 1, ?),
       (?, '指令对齐', 'AL-02', '人类反馈、宪法式对齐与可跟随指令的语言模型。', 2, ?)`,
-    [DOMAIN_MM, at, DOMAIN_AL, at],
-  );
+    params: [DOMAIN_MM, at, DOMAIN_AL, at],
+  });
 
-  await engine.execute(
-    `INSERT INTO papers (
+  steps.push({
+    sql: `INSERT INTO papers (
       id, domain_id, title, title_zh, abstract, year, venue, doi, arxiv_id, pdf_url,
       code_url, code_open_source, project_page, reading_status, read_at, llm_prepared_at,
       notes_drafted_by_llm, user_notes_touched, tags, labs, created_at, updated_at
@@ -61,7 +67,7 @@ export async function seedIfEmpty(engine: SqlEngine): Promise<void> {
     (?, ?, ?, ?, ?, 2022, 'NeurIPS', '10.48550/arXiv.2203.02155', '2203.02155',
      'https://arxiv.org/pdf/2203.02155', NULL, 'closed',
      NULL, 'unread', NULL, NULL, 0, 0, ?, ?, ?, ?)`,
-    [
+    params: [
       PAPER_LLAVA,
       DOMAIN_MM,
       "Visual Instruction Tuning",
@@ -93,7 +99,7 @@ export async function seedIfEmpty(engine: SqlEngine): Promise<void> {
       at,
       at,
     ],
-  );
+  });
 
   const authors: Array<[string, string, string | null, string | null]> = [
     ["au-liu", "Haotian Liu", "University of Wisconsin–Madison", "Liu Lab"],
@@ -108,11 +114,11 @@ export async function seedIfEmpty(engine: SqlEngine): Promise<void> {
     ["au-jiang", "Xu Jiang", "OpenAI", "OpenAI"],
   ];
   for (const [id, name, affiliation, lab] of authors) {
-    await engine.execute(
-      `INSERT INTO authors (id, name, name_zh, affiliation, lab, homepage, orcid)
+    steps.push({
+      sql: `INSERT INTO authors (id, name, name_zh, affiliation, lab, homepage, orcid)
        VALUES (?, ?, NULL, ?, ?, NULL, NULL)`,
-      [id, name, affiliation, lab],
-    );
+      params: [id, name, affiliation, lab],
+    });
   }
 
   const links: Array<[string, string, number, number]> = [
@@ -128,15 +134,15 @@ export async function seedIfEmpty(engine: SqlEngine): Promise<void> {
     [PAPER_INSTRUCT, "au-jiang", 2, 0],
   ];
   for (const [paperId, authorId, order, corresponding] of links) {
-    await engine.execute(
-      `INSERT INTO paper_authors (paper_id, author_id, sort_order, is_corresponding)
+    steps.push({
+      sql: `INSERT INTO paper_authors (paper_id, author_id, sort_order, is_corresponding)
        VALUES (?, ?, ?, ?)`,
-      [paperId, authorId, order, corresponding],
-    );
+      params: [paperId, authorId, order, corresponding],
+    });
   }
 
-  await note(
-    engine,
+  note(
+    steps,
     PAPER_LLAVA,
     "remarks",
     "开源权重与数据配方都相对完整，适合作为多模态指令微调的对照基线。",
@@ -144,8 +150,8 @@ export async function seedIfEmpty(engine: SqlEngine): Promise<void> {
     1,
     at,
   );
-  await note(
-    engine,
+  note(
+    steps,
     PAPER_LLAVA,
     "summary",
     "用投影层把 CLIP 视觉特征接到 Vicuna，再用 GPT-4 合成的图文指令数据做端到端微调，让语言模型能围绕图像回答与推理。",
@@ -153,8 +159,8 @@ export async function seedIfEmpty(engine: SqlEngine): Promise<void> {
     1,
     at,
   );
-  await note(
-    engine,
+  note(
+    steps,
     PAPER_LLAVA,
     "highlights",
     "- 视觉编码器冻结、只训投影与 LLM，训练成本可控。\n- 公开模型、代码与视觉指令数据。\n- 对话式视觉问答，而不是单标签分类。",
@@ -162,8 +168,8 @@ export async function seedIfEmpty(engine: SqlEngine): Promise<void> {
     1,
     at,
   );
-  await note(
-    engine,
+  note(
+    steps,
     PAPER_LLAVA,
     "weaknesses",
     "- 指令数据依赖 GPT-4，分布与评测可能循环。\n- 细粒度定位、OCR 仍弱于专用模型。",
@@ -171,8 +177,8 @@ export async function seedIfEmpty(engine: SqlEngine): Promise<void> {
     1,
     at,
   );
-  await note(
-    engine,
+  note(
+    steps,
     PAPER_LLAVA,
     "implications",
     "后续工作多沿「冻结视觉骨干 + 轻量对齐 + 公开指令数据」展开。开源状态明确，适合作为领域内对照单元。",
@@ -183,11 +189,12 @@ export async function seedIfEmpty(engine: SqlEngine): Promise<void> {
 
   for (const paperId of [PAPER_CLIP, PAPER_INSTRUCT]) {
     for (const kind of NOTE_KINDS) {
-      await engine.execute(
-        `INSERT INTO notes (id, paper_id, kind, content, source, user_edited, revised_at)
+      steps.push({
+        sql: `INSERT INTO notes (id, paper_id, kind, content, source, user_edited, revised_at)
          VALUES (?, ?, ?, '', 'manual', 0, ?)`,
-        [`note-${paperId}-${kind}`, paperId, kind, at],
-      );
+        params: [`note-${paperId}-${kind}`, paperId, kind, at],
+      });
     }
   }
+  await engine.batch(steps);
 }

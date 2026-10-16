@@ -1,6 +1,7 @@
 mod appdir;
 mod backup;
 mod biblio;
+mod db;
 mod io_util;
 mod llm;
 mod lookup;
@@ -225,10 +226,10 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_sql::Builder::default().build())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(navigation_plugin())
+        .manage(db::Db::default())
         .manage(llm::LlmState::new())
         .manage(mineru::MineruCredBook::default())
         .setup(|app| {
@@ -241,6 +242,10 @@ pub fn run() {
             let _ = app.emit("menu://action", id);
         })
         .invoke_handler(tauri::generate_handler![
+            db::db_select,
+            db::db_execute,
+            db::db_batch,
+            db::db_close,
             llm::llm_settings,
             llm::save_llm_settings,
             llm::llm_test,
@@ -275,8 +280,14 @@ pub fn run() {
             appdir::appdir_migration_notices,
             import_pdf_to_library
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Paper Field");
+        .build(tauri::generate_context!())
+        .expect("error while running Paper Field")
+        .run(|app, event| {
+            // 退出前关闭连接池：最后一个连接关闭时 SQLite 做检查点，不留 -wal。
+            if let tauri::RunEvent::Exit = event {
+                tauri::async_runtime::block_on(app.state::<db::Db>().close());
+            }
+        });
 }
 
 #[cfg(test)]

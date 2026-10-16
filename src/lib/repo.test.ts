@@ -453,6 +453,7 @@ describe("作者替换与 meta_rev（M4-P4）", () => {
     let paperUpdateDone = false;
     let bumped = false;
     const wrapped: SqlEngine = {
+      batch: (steps) => inner.batch(steps),
       execute: (sql, params) => {
         if (/SET\s+title = \?/.test(sql) && /meta_rev = \?/.test(sql)) paperUpdateDone = true;
         return inner.execute(sql, params);

@@ -2,7 +2,7 @@
 //!
 //! `com.paperfield.app` ends in `.app`, which macOS treats as an application
 //! bundle. The identifier is now `com.paperfield.notes`, so Tauri's config and
-//! data directories move with it. This runs before `tauri-plugin-sql` opens
+//! data directories move with it. This runs before the database layer (`db.rs`) opens
 //! `paper-field.db`: if the new directory is missing or empty and the old one
 //! exists, its contents are copied (never moved, never over an existing file).
 //! That copy includes later files in the same directory: `library/`,
@@ -314,7 +314,7 @@ pub fn appdir_migration_notices() -> Vec<DirMigrationNotice> {
 }
 
 pub fn migrate_on_startup<R: Runtime>(app: &AppHandle<R>) {
-    // These are the directories tauri-plugin-sql and the settings files use
+    // These are the directories the database layer and the settings files use
     // (`app_config_dir` is `config_dir/<identifier>`). The formula below covers
     // the same locations if path resolution is unavailable during plugin setup.
     let mut targets = Vec::new();

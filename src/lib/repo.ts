@@ -1,4 +1,4 @@
-import { getEngine, type SqlEngine } from "./engine";
+import { getEngine, type BatchStep } from "./engine";
 import { planPreparedMeta } from "./mergeMeta";
 import { seedIfEmpty } from "./seed";
 import type {
@@ -221,6 +221,7 @@ function domainCodeOf(raw: string, sortOrder: number): string {
 
 function asMineruStatus(value: string | null): MineruStatus | null {
   if (
+    value === "pending" ||
     value === "queued" ||
     value === "submitted" ||
     value === "parsing" ||
@@ -293,13 +294,12 @@ async function adoptPdf(source: string): Promise<{ libraryPath: string; original
   return invoke<{ libraryPath: string; originalPath: string }>("import_pdf_to_library", { source });
 }
 
-async function emptyNotes(engine: SqlEngine, paperId: string, at: string): Promise<void> {  for (const kind of NOTE_KINDS) {
-    await engine.execute(
-      `INSERT OR IGNORE INTO notes (id, paper_id, kind, content, source, user_edited, revised_at)
+function emptyNoteSteps(paperId: string, at: string): BatchStep[] {
+  return NOTE_KINDS.map((kind) => ({
+    sql: `INSERT OR IGNORE INTO notes (id, paper_id, kind, content, source, user_edited, revised_at)
        VALUES (?, ?, ?, '', 'manual', 0, ?)`,
-      [uid(), paperId, kind, at],
-    );
-  }
+    params: [uid(), paperId, kind, at],
+  }));
 }
 
 export const repo = {
@@ -572,12 +572,14 @@ export const repo = {
     const at = nowIso();
     const pdfPath = input.pdfPath?.trim() || null;
     const explicitTitle = input.title?.trim() || "";
-    const title = explicitTitle || (pdfPath ? titleFromPdf(pdfPath) : "") || "未命名论文";
+    // 文件名标题取用户原来的文件名（文库副本带时间戳前缀），来源记 file：文献库与模型都可以替换它。
+    const fileTitle = pdfPath ? titleFromPdf(input.pdfOriginalPath?.trim() || pdfPath) : "";
+    const title = explicitTitle || fileTitle || "未命名论文";
     const arxivId = input.arxivId?.trim() || null;
     const doi = input.doi?.trim() || null;
     const sources: FieldSources = {};
     if (explicitTitle || input.userOwned) sources.title = "user";
-    else if (pdfPath) sources.title = "llm";
+    else if (fileTitle) sources.title = "file";
     if (arxivId) sources.arxivId = "user";
     if (doi) sources.doi = "user";
     const userMetaTouched = Boolean(explicitTitle || input.userOwned || arxivId || doi);
@@ -606,7 +608,8 @@ export const repo = {
       fieldSources: sources,
       metaConfidence: null,
       metaRev: userMetaTouched ? 1 : 0,
-      mineruStatus: null,
+      // 有 PDF 即待解析：没有可用解析源时也能在批量入口里看到它。
+      mineruStatus: pdfPath ? "pending" : null,
       mineruParseId: null,
       mineruDocRef: null,
       mineruError: null,
@@ -618,29 +621,34 @@ export const repo = {
       createdAt: at,
       updatedAt: at,
     };
-    await engine.execute(
-      `INSERT INTO papers (
+    // 论文与五块空笔记一起提交：不会留下没有笔记行的论文。
+    await engine.batch([
+      {
+        sql: `INSERT INTO papers (
         id, domain_id, title, title_zh, abstract, year, venue, doi, arxiv_id, pdf_url, pdf_path,
         code_url, code_open_source, project_page, reading_status, read_at, llm_prepared_at,
         notes_drafted_by_llm, user_notes_touched, user_meta_touched, mineru_parse_ids, tags, labs,
-        field_sources, meta_rev, pdf_original_path, created_at, updated_at
-      ) VALUES (?, ?, ?, NULL, '', NULL, NULL, ?, ?, NULL, ?, NULL, 'unknown', NULL, 'unread', NULL, NULL, 0, 0, ?, '[]', '[]', '[]', ?, ?, ?, ?, ?)`,
-      [
-        paper.id,
-        paper.domainId,
-        paper.title,
-        paper.doi,
-        paper.arxivId,
-        paper.pdfPath,
-        userMetaTouched ? 1 : 0,
-        JSON.stringify(sources),
-        paper.metaRev,
-        paper.pdfOriginalPath,
-        at,
-        at,
-      ],
-    );
-    await emptyNotes(engine, paper.id, at);
+        field_sources, meta_rev, pdf_original_path, mineru_status, created_at, updated_at
+      ) VALUES (?, ?, ?, NULL, '', NULL, NULL, ?, ?, NULL, ?, NULL, 'unknown', NULL, 'unread', NULL, NULL, 0, 0, ?, '[]', '[]', '[]', ?, ?, ?, ?, ?, ?)`,
+        params: [
+          paper.id,
+          paper.domainId,
+          paper.title,
+          paper.doi,
+          paper.arxivId,
+          paper.pdfPath,
+          userMetaTouched ? 1 : 0,
+          JSON.stringify(sources),
+          paper.metaRev,
+          paper.pdfOriginalPath,
+          paper.mineruStatus,
+          at,
+          at,
+        ],
+        expect: "one",
+      },
+      ...emptyNoteSteps(paper.id, at),
+    ]);
     return paper;
   },
 
@@ -747,13 +755,16 @@ export const repo = {
   async deletePapers(ids: string[]): Promise<void> {
     // 同 deletePaper（触发器级联），按 500 个分块：一条 IN (…) 的绑定参数
     // 不能超过 SQLite 的变量上限，整库勾选删除时单语句会炸。
+    // 各块在同一个事务里：中途失败时一篇都不删，「数据未改动」的提示才成立。
     if (!ids.length) return;
     const engine = await getEngine();
+    const steps: BatchStep[] = [];
     for (let i = 0; i < ids.length; i += 500) {
       const chunk = ids.slice(i, i + 500);
       const placeholders = chunk.map(() => "?").join(", ");
-      await engine.execute(`DELETE FROM papers WHERE id IN (${placeholders})`, chunk);
+      steps.push({ sql: `DELETE FROM papers WHERE id IN (${placeholders})`, params: chunk });
     }
+    await engine.batch(steps);
   },
 
   async replaceAuthors(
@@ -805,27 +816,27 @@ export const repo = {
       "SELECT * FROM notes WHERE paper_id = ? AND kind = ?",
       [paperId, kind],
     );
+    const steps: BatchStep[] = [];
     if (existing[0]) {
-      await engine.execute(
-        `UPDATE notes SET content = ?, source = CASE WHEN ? = 'llm' AND user_edited = 0 THEN 'llm' ELSE source END,
-           user_edited = ?, revised_at = ? WHERE id = ?`,
-        [content, source, markUserEdited ? 1 : existing[0].user_edited, at, existing[0].id],
-      );
+      steps.push({
+        sql: `UPDATE notes SET content = ?, source = CASE WHEN ? = 'llm' AND user_edited = 0 THEN 'llm' ELSE source END,
+           user_edited = ?, rev = rev + 1, revised_at = ? WHERE id = ?`,
+        params: [content, source, markUserEdited ? 1 : existing[0].user_edited, at, existing[0].id],
+        expect: "one",
+      });
     } else {
-      await engine.execute(
-        `INSERT INTO notes (id, paper_id, kind, content, source, user_edited, revised_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [uid(), paperId, kind, content, source, markUserEdited ? 1 : 0, at],
-      );
+      steps.push({
+        sql: `INSERT INTO notes (id, paper_id, kind, content, source, user_edited, rev, revised_at)
+         VALUES (?, ?, ?, ?, ?, ?, 1, ?)`,
+        params: [uid(), paperId, kind, content, source, markUserEdited ? 1 : 0, at],
+      });
     }
-    if (markUserEdited) {
-      await engine.execute(
-        "UPDATE papers SET user_notes_touched = 1, updated_at = ? WHERE id = ?",
-        [at, paperId],
-      );
-    } else {
-      await engine.execute("UPDATE papers SET updated_at = ? WHERE id = ?", [at, paperId]);
-    }
+    steps.push(
+      markUserEdited
+        ? { sql: "UPDATE papers SET user_notes_touched = 1, updated_at = ? WHERE id = ?", params: [at, paperId] }
+        : { sql: "UPDATE papers SET updated_at = ? WHERE id = ?", params: [at, paperId] },
+    );
+    await engine.batch(steps);
   },
 
   async applyPreparedMeta(
@@ -1150,12 +1161,14 @@ export const repo = {
   async saveParsedMarkdown(id: string, markdown: string): Promise<void> {
     const engine = await getEngine();
     const at = nowIso();
-    await engine.execute(
-      `INSERT INTO paper_parse (paper_id, markdown, updated_at) VALUES (?, ?, ?)
+    await engine.batch([
+      {
+        sql: `INSERT INTO paper_parse (paper_id, markdown, updated_at) VALUES (?, ?, ?)
        ON CONFLICT(paper_id) DO UPDATE SET markdown = excluded.markdown, updated_at = excluded.updated_at`,
-      [id, markdown, at],
-    );
-    await engine.execute("UPDATE papers SET updated_at = ? WHERE id = ?", [at, id]);
+        params: [id, markdown, at],
+      },
+      { sql: "UPDATE papers SET updated_at = ? WHERE id = ?", params: [at, id] },
+    ]);
   },
 
   async listPendingMineru(): Promise<string[]> {

@@ -2,7 +2,7 @@
 import initSqlJs from "sql.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeTestEngine, type TestEngineHandle } from "../test/helpers";
-import { applySchema, clearPremigrationBackup, premigrationBackup, type SqlEngine } from "./engine";
+import { applySchema, clearPremigrationBackup, premigrationBackup, SqlJsEngine, type SqlEngine } from "./engine";
 import { clear as clearLog, getEntries, log } from "./logger";
 import { redactSecrets } from "./redact";
 import { repo } from "./repo";
@@ -67,7 +67,8 @@ describe("著录合并：只补空白，飞行中的手改不被覆盖", () => {
       domainId: domain.id,
       pdfPath: "/Users/reader/Downloads/Attention Is All You Need.pdf",
     });
-    expect(paper.fieldSources?.title).toBe("llm");
+    expect(paper.title).toBe("Attention Is All You Need");
+    expect(paper.fieldSources?.title).toBe("file");
     expect(paper.userMetaTouched).toBe(false);
     expect(paper.metaRev ?? 0).toBe(0);
     await repo.updatePaper(paper.id, { venue: "手填期刊" }, true);
@@ -79,8 +80,8 @@ describe("著录合并：只补空白，飞行中的手改不被覆盖", () => {
     });
 
     const detail = (await repo.getPaper(paper.id))!;
-    expect(detail.title).toBe(paper.title);
-    expect(detail.fieldSources?.title).toBe("llm");
+    expect(detail.title).toBe(meta({}).title);
+    expect(detail.fieldSources?.title).toBe("api");
     expect(detail.venue).toBe("手填期刊");
     expect(detail.fieldSources?.venue).toBe("user");
     expect(detail.abstract).toBe("API abstract");
@@ -285,24 +286,7 @@ describe("旧库迁移", () => {
     clearPremigrationBackup();
     const SQL = await initSqlJs();
     const db = new SQL.Database();
-    const engine: SqlEngine = {
-      async execute(sql: string, params: unknown[] = []) {
-        db.run(sql, params as (string | number | null | Uint8Array)[]);
-        return db.getRowsModified();
-      },
-      snapshot: () => db.export(),
-      async select<T>(sql: string, params: unknown[] = []) {
-        const stmt = db.prepare(sql);
-        try {
-          stmt.bind(params as (string | number | null | Uint8Array)[]);
-          const rows: T[] = [];
-          while (stmt.step()) rows.push(stmt.getAsObject() as T);
-          return rows;
-        } finally {
-          stmt.free();
-        }
-      },
-    };
+    const engine: SqlEngine = new SqlJsEngine(db, { persist: false });
 
     db.run(`CREATE TABLE papers (
       id TEXT PRIMARY KEY,
