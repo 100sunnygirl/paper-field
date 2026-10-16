@@ -5,6 +5,7 @@
 //!   （doclib short_id 与官方 API batch_id 属不同命名空间，中途换源只能重新提交）；
 //! - 跨源切换的唯一入口是 `mineru_submit(provider=None)`：按 order 逐源探测并提交，
 //!   失败自动试下一源，全部失败返回聚合中文错误。
+#![deny(clippy::string_slice)]
 
 use std::collections::HashMap;
 use std::fs;
