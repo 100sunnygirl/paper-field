@@ -130,11 +130,13 @@ pub fn migrate_dir(old_dir: &Path, new_dir: &Path) -> Result<MigrationStatus, St
     if marker_exists(new_dir)? {
         return Ok(MigrationStatus::AlreadyMigrated);
     }
-    if dir_has_user_data(new_dir)? {
-        return Ok(MigrationStatus::AlreadyHasData);
-    }
+    // 没有旧目录（全新安装）就没有可迁移的东西，也就谈不上「没有覆盖」：先判断来源，
+    // 否则新目录一有数据，每次启动都会提示一条不存在的旧目录。
     if !old_dir.is_dir() || dir_entries(old_dir)?.is_empty() {
         return Ok(MigrationStatus::NoSource);
+    }
+    if dir_has_user_data(new_dir)? {
+        return Ok(MigrationStatus::AlreadyHasData);
     }
 
     let staging = staging_path(new_dir);
@@ -628,6 +630,22 @@ mod tests {
         assert_eq!(fs::read(data_new.join("note.txt")).unwrap(), b"x");
         assert_eq!(fs::read(data_old.join("note.txt")).unwrap(), b"x");
         assert!(data_old.is_dir());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn fresh_install_with_data_and_no_old_directory_is_no_source() {
+        let root = scratch();
+        let config_new = root.join("config").join(NEW_IDENTIFIER);
+        fs::create_dir_all(&config_new).unwrap();
+        fs::write(config_new.join("paper-field.db"), b"db").unwrap();
+        fs::write(config_new.join("app.lock"), b"").unwrap();
+
+        assert_eq!(
+            migrate_dir(&legacy_sibling(&config_new), &config_new).unwrap(),
+            MigrationStatus::NoSource
+        );
+        assert_eq!(fs::read(config_new.join("paper-field.db")).unwrap(), b"db");
         let _ = fs::remove_dir_all(&root);
     }
 

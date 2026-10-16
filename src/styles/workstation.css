@@ -445,6 +445,35 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
     "status status";
 }
 .ef-shell.is-focus .ef-nav { display: none; }
+/* 启动通知（恢复结果、目录迁移）浮在 dock 下方，不占网格：直接作为 .ef-shell 的子元素
+   会被当成网格项塞进第一格，把整个工作台挤变形。 */
+.ef-shell > .restore-notice,
+.ef-shell > .migration-notices {
+  position: absolute;
+  top: calc(var(--pf-dock-height) + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(720px, calc(100% - 32px));
+  z-index: var(--pf-z-toast);
+  background: var(--pf-surface);
+  color: var(--pf-body);
+  border: 1px solid var(--pf-ink);
+  border-left: 4px solid var(--pf-signal);
+  border-radius: var(--pf-radius);
+  box-shadow: var(--pf-elev-2);
+  font-size: var(--pf-fs-ui);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.ef-shell > .migration-notices {
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+.ef-shell > .migration-notices p { margin: 0; }
+.ef-shell > .restore-notice + .migration-notices { top: calc(var(--pf-dock-height) + 96px); }
 .ef-shell.is-focus .ef-read { grid-area: read; }
 /* Focus mode hides the side columns; the article keeps the same 760px measure. */
 .ef-shell.is-focus .ef-read,
