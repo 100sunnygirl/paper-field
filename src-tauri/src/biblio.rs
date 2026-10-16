@@ -116,6 +116,8 @@ pub fn biblio_settings(app: AppHandle) -> Result<BiblioStatus, String> {
 pub fn save_biblio_settings(app: AppHandle, input: BiblioSaveInput) -> Result<BiblioStatus, String> {
     let dir = crate::app_config_dir(&app)?;
     let store = secrets::store_for(&dir);
+    // 换了 Key 或邮箱就重新试 OpenAlex，不沿用旧的「额度已用完」
+    lookup_run::reset_openalex_latch();
     save_settings_from(&dir, store.as_ref(), &input, &lookup_run::budget_snapshot())
 }
 

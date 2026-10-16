@@ -1,5 +1,6 @@
 //! Bibliographic lookup parsers. Network order, rate limits, and credentials live in lookup_run.
 //! A miss, 429, or mismatch is not fatal: the command still returns whatever later sources found.
+#![deny(clippy::string_slice)]
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -56,6 +57,7 @@ pub struct TitleQuery {
 }
 
 impl TitleQuery {
+    #[cfg(test)]
     pub fn title_only(title: &str) -> Self {
         Self {
             title: title.to_string(),
@@ -103,13 +105,35 @@ pub fn titles_match(query: &TitleQuery, hit: &LookupHit) -> Option<f64> {
         return None;
     }
     if left == right {
-        return Some(1.0);
+        // 精确相等也要佐证：PDF 文件名来的 untitled / main 会撞上随便一条记录
+        let trusted =
+            same_ids || corroborated(query, hit) || distinctive_title(&query.title, &left);
+        return trusted.then_some(1.0);
     }
     let score = fuzzy_title_score(&left, &right)?;
     if !corroborated(query, hit) {
         return None;
     }
     Some(score)
+}
+
+/// 标题本身够长才算独特：拉丁文 ≥4 个词或 ≥24 个字符，中日韩 ≥8 个字。
+fn distinctive_title(raw: &str, normalized: &str) -> bool {
+    let chars = normalized.chars().count();
+    if normalized.chars().any(is_cjk_script) {
+        return chars >= 8;
+    }
+    let words = raw
+        .nfkc()
+        .collect::<String>()
+        .split(|ch: char| !ch.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .count();
+    words >= 4 || chars >= 24
+}
+
+fn is_cjk_script(ch: char) -> bool {
+    is_cjk(ch) || matches!(ch, '\u{3040}'..='\u{30FF}' | '\u{AC00}'..='\u{D7AF}')
 }
 
 fn fuzzy_title_score(left: &str, right: &str) -> Option<f64> {
@@ -191,8 +215,10 @@ fn normalized_levenshtein(left: &str, right: &str) -> f64 {
 }
 
 fn identifiers_conflict(query: &TitleQuery, hit: &LookupHit) -> bool {
-    if let (Some(want), Some(got)) = (norm_doi(query.doi.as_deref()), norm_doi(hit.doi.as_deref()))
-    {
+    if let (Some(want), Some(got)) = (
+        parsed_doi(query.doi.as_deref()),
+        parsed_doi(hit.doi.as_deref()),
+    ) {
         if want != got {
             return true;
         }
@@ -209,7 +235,10 @@ fn identifiers_conflict(query: &TitleQuery, hit: &LookupHit) -> bool {
 }
 
 fn identifiers_match(query: &TitleQuery, hit: &LookupHit) -> bool {
-    let doi_match = match (norm_doi(query.doi.as_deref()), norm_doi(hit.doi.as_deref())) {
+    let doi_match = match (
+        parsed_doi(query.doi.as_deref()),
+        parsed_doi(hit.doi.as_deref()),
+    ) {
         (Some(want), Some(got)) => want == got,
         _ => false,
     };
@@ -223,17 +252,14 @@ fn identifiers_match(query: &TitleQuery, hit: &LookupHit) -> bool {
     doi_match || arxiv_match
 }
 
-fn norm_doi(value: Option<&str>) -> Option<String> {
-    value
-        .and_then(normalize_doi)
-        .map(|doi| doi.to_ascii_lowercase())
+fn parsed_doi(value: Option<&str>) -> Option<Doi> {
+    value.and_then(Doi::parse)
 }
 
-fn canonical_arxiv(doi: Option<&str>, arxiv_id: Option<&str>) -> Option<String> {
+fn canonical_arxiv(doi: Option<&str>, arxiv_id: Option<&str>) -> Option<ArxivId> {
     arxiv_id
-        .and_then(normalize_arxiv_id)
-        .or_else(|| doi.and_then(arxiv_id_from_doi))
-        .map(|id| id.to_ascii_lowercase())
+        .and_then(ArxivId::parse)
+        .or_else(|| parsed_doi(doi).as_ref().and_then(ArxivId::from_doi))
 }
 
 fn years_conflict(query: Option<i32>, candidate: Option<i32>, ids_match: bool) -> bool {
@@ -324,37 +350,149 @@ fn is_cjk(ch: char) -> bool {
     matches!(ch, '\u{3400}'..='\u{9FFF}' | '\u{F900}'..='\u{FAFF}')
 }
 
-pub fn normalize_arxiv_id(value: &str) -> Option<String> {
-    let mut id = value.trim();
-    if id.len() > 6 && id[..6].eq_ignore_ascii_case("arxiv:") {
-        id = id[6..].trim();
-    }
-    let lower = id.to_ascii_lowercase();
-    if let Some(index) = lower.find("arxiv.org/abs/") {
-        id = id[index + "arxiv.org/abs/".len()..].trim();
-    } else if let Some(index) = lower.find("arxiv.org/pdf/") {
-        id = id[index + "arxiv.org/pdf/".len()..].trim();
-    }
-    id = id.trim_end_matches(".pdf");
-    let versionless = strip_arxiv_version(id);
-    if is_new_arxiv(versionless) || is_old_arxiv(versionless) {
-        Some(versionless.to_string())
+/// 两端去掉空白（含全角空格 U+3000、不换行空格 U+00A0）和零宽字符。
+fn trim_id(raw: &str) -> &str {
+    raw.trim_matches(|ch: char| ch.is_whitespace() || matches!(ch, '\u{200b}' | '\u{feff}'))
+}
+
+/// 忽略 ASCII 大小写去前缀。用 get 取片段：落在多字节字符中间时返回 None，不会 panic。
+fn strip_prefix_ci<'a>(value: &'a str, prefix: &str) -> Option<&'a str> {
+    let head = value.get(..prefix.len())?;
+    if head.eq_ignore_ascii_case(prefix) {
+        value.get(prefix.len()..)
     } else {
         None
     }
+}
+
+fn strip_suffix_ci<'a>(value: &'a str, suffix: &str) -> Option<&'a str> {
+    let at = value.len().checked_sub(suffix.len())?;
+    let tail = value.get(at..)?;
+    if tail.eq_ignore_ascii_case(suffix) {
+        value.get(..at)
+    } else {
+        None
+    }
+}
+
+/// `doi:` / `arXiv：` 这类标签：名字忽略大小写，冒号可以是全角，前后可有空格。
+fn strip_label<'a>(value: &'a str, label: &str) -> Option<&'a str> {
+    let rest = strip_prefix_ci(value, label)?.trim_start();
+    let rest = rest.strip_prefix(':').or_else(|| rest.strip_prefix('：'))?;
+    Some(rest.trim_start())
+}
+
+/// 去掉可选的 http(s):// 和 www. 后，以某个 `host/` 开头时返回其后的路径。
+fn strip_host<'a>(value: &'a str, hosts: &[&str]) -> Option<&'a str> {
+    let rest = strip_prefix_ci(value, "https://")
+        .or_else(|| strip_prefix_ci(value, "http://"))
+        .unwrap_or(value);
+    let rest = strip_prefix_ci(rest, "www.").unwrap_or(rest);
+    hosts.iter().find_map(|host| strip_prefix_ci(rest, host))
+}
+
+/// 去掉版本号的 arXiv id：新式 `2401.01234` 或旧式 `hep-th/9901001`。按原样保存，比较时忽略大小写。
+#[derive(Clone, Debug)]
+pub struct ArxivId(String);
+
+impl ArxivId {
+    /// 接受 `arXiv:`（冒号可全角）、arxiv.org 的 abs/pdf 链接、`.pdf` 结尾和 vN 版本号；任何输入都不会 panic。
+    pub fn parse(raw: &str) -> Option<Self> {
+        // NFKC 把全角冒号、全角数字、U+3000 折成 ASCII
+        let folded: String = raw.nfkc().collect();
+        let mut id = trim_id(&folded);
+        if let Some(rest) = strip_label(id, "arxiv") {
+            id = rest;
+        }
+        if let Some(path) = strip_host(id, &["arxiv.org/", "export.arxiv.org/"]) {
+            let rest = strip_prefix_ci(path, "abs/").or_else(|| strip_prefix_ci(path, "pdf/"))?;
+            id = rest
+                .split(['?', '#'])
+                .next()
+                .unwrap_or("")
+                .trim_end_matches('/');
+        }
+        let id = strip_suffix_ci(id, ".pdf").unwrap_or(id);
+        let id = strip_arxiv_version(id);
+        (is_new_arxiv(id) || is_old_arxiv(id)).then(|| Self(id.to_string()))
+    }
+
+    /// `10.48550/arXiv.1706.03762` 是 arXiv 自己登记的 DOI，Crossref 查不到。
+    pub fn from_doi(doi: &Doi) -> Option<Self> {
+        Self::parse(strip_prefix_ci(doi.as_str(), "10.48550/arxiv.")?)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl PartialEq for ArxivId {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.eq_ignore_ascii_case(&other.0)
+    }
+}
+
+/// 以 `10.` 开头、含 `/`、不含空白的 DOI。后缀按原样保存，比较时忽略大小写。
+#[derive(Clone, Debug)]
+pub struct Doi(String);
+
+impl Doi {
+    /// 接受 `doi:` 标签和 doi.org / dx.doi.org / www.doi.org 链接（有无协议、大小写都行）。
+    pub fn parse(raw: &str) -> Option<Self> {
+        let mut doi = trim_id(raw);
+        if let Some(rest) = strip_label(doi, "doi") {
+            doi = rest;
+        }
+        if let Some(rest) = strip_host(doi, &["doi.org/", "dx.doi.org/"]) {
+            doi = rest;
+        }
+        let (registrant, suffix) = doi.split_once('/')?;
+        let valid = registrant
+            .strip_prefix("10.")
+            .is_some_and(|code| !code.is_empty())
+            && !suffix.is_empty()
+            && !doi.chars().any(char::is_whitespace);
+        valid.then(|| Self(doi.to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_string(self) -> String {
+        self.0
+    }
+}
+
+impl PartialEq for Doi {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.eq_ignore_ascii_case(&other.0)
+    }
+}
+
+pub fn normalize_arxiv_id(value: &str) -> Option<String> {
+    ArxivId::parse(value).map(ArxivId::into_string)
 }
 
 fn strip_arxiv_version(id: &str) -> &str {
     let Some(index) = id.rfind(['v', 'V']) else {
         return id;
     };
-    if index == 0
-        || !id[index + 1..].chars().all(|ch| ch.is_ascii_digit())
-        || id[index + 1..].is_empty()
-    {
-        return id;
+    match (id.get(..index), id.get(index + 1..)) {
+        (Some(head), Some(digits))
+            if !head.is_empty()
+                && !digits.is_empty()
+                && digits.chars().all(|ch| ch.is_ascii_digit()) =>
+        {
+            head
+        }
+        _ => id,
     }
-    &id[..index]
 }
 
 fn is_new_arxiv(id: &str) -> bool {
@@ -381,69 +519,108 @@ fn is_old_arxiv(id: &str) -> bool {
 }
 
 pub fn normalize_doi(value: &str) -> Option<String> {
-    let mut doi = value.trim();
-    for prefix in [
-        "https://doi.org/",
-        "http://doi.org/",
-        "https://dx.doi.org/",
-        "http://dx.doi.org/",
-    ] {
-        if let Some(rest) = doi.strip_prefix(prefix) {
-            doi = rest;
-        }
-    }
-    if doi.len() > 4 && doi.starts_with("10.") && !doi.chars().any(|ch| ch.is_whitespace()) {
-        Some(doi.to_string())
-    } else {
-        None
-    }
-}
-
-/// `10.48550/arXiv.1706.03762` is an arXiv id, not a Crossref work. Crossref 404s these.
-pub fn arxiv_id_from_doi(value: &str) -> Option<String> {
-    let doi = normalize_doi(value)?;
-    let lower = doi.to_ascii_lowercase();
-    let rest = lower.strip_prefix("10.48550/arxiv.")?;
-    if rest.is_empty() {
-        return None;
-    }
-    let original = &doi[doi.len() - rest.len()..];
-    normalize_arxiv_id(original)
+    Doi::parse(value).map(Doi::into_string)
 }
 
 fn is_http_url(value: &str) -> bool {
-    let lower = value.trim().to_ascii_lowercase();
-    (lower.starts_with("https://") || lower.starts_with("http://"))
-        && !lower[8.min(lower.len())..].is_empty()
+    let value = value.trim();
+    strip_prefix_ci(value, "https://")
+        .or_else(|| strip_prefix_ci(value, "http://"))
+        .is_some_and(|rest| !rest.is_empty())
 }
 
 fn clean_text(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// 单遍解码，`&amp;lt;` 只解一层得到 `&lt;`；不认识的实体原样保留。
 fn decode_entities(value: &str) -> String {
-    value
-        .replace("&amp;", "&")
-        .replace("&lt;", "")
-        .replace("&gt;", "")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&apos;", "'")
-}
-
-fn strip_tags(value: &str) -> String {
-    let mut out = String::new();
-    let mut in_tag = false;
-    for ch in value.chars() {
-        if ch == '<' {
-            in_tag = true;
-        } else if ch == '>' {
-            in_tag = false;
-        } else if !in_tag {
-            out.push(ch);
+    let mut out = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some((before, after)) = rest.split_once('&') {
+        out.push_str(before);
+        let decoded = after
+            .split_once(';')
+            .filter(|(name, _)| name.len() <= 10)
+            .and_then(|(name, tail)| entity_char(name).map(|ch| (ch, tail)));
+        match decoded {
+            Some((ch, tail)) => {
+                out.push(ch);
+                rest = tail;
+            }
+            None => {
+                out.push('&');
+                rest = after;
+            }
         }
     }
-    clean_text(&decode_entities(&out).replace(['<', '>'], ""))
+    out.push_str(rest);
+    out
+}
+
+fn entity_char(name: &str) -> Option<char> {
+    match name {
+        "amp" => Some('&'),
+        "lt" => Some('<'),
+        "gt" => Some('>'),
+        "quot" => Some('"'),
+        "apos" => Some('\''),
+        "nbsp" => Some(' '),
+        _ => {
+            let code = name.strip_prefix('#')?;
+            let value = match code.strip_prefix(['x', 'X']) {
+                Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+                None => code.parse::<u32>().ok()?,
+            };
+            char::from_u32(value).filter(|ch| !ch.is_control() || ch.is_whitespace())
+        }
+    }
+}
+
+/// `<` 后面紧跟字母、`/`、`!`、`?` 且后文有 `>` 才算标签，`p < 0.05` 原样保留。
+/// 段落类标签换成空格，行内标签（`<i>`、`<sub>`）直接去掉。
+fn remove_tags(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some((before, after)) = rest.split_once('<') {
+        out.push_str(before);
+        let opens_tag = after
+            .chars()
+            .next()
+            .is_some_and(|ch| ch.is_ascii_alphabetic() || matches!(ch, '/' | '!' | '?'));
+        match after.split_once('>').filter(|_| opens_tag) {
+            Some((tag, tail)) => {
+                if is_block_tag(tag) {
+                    out.push(' ');
+                }
+                rest = tail;
+            }
+            None => {
+                out.push('<');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+fn is_block_tag(tag: &str) -> bool {
+    let name = tag
+        .trim_start_matches('/')
+        .split(|ch: char| ch.is_whitespace() || ch == '/')
+        .next()
+        .unwrap_or("");
+    let local = name.rsplit(':').next().unwrap_or(name).to_ascii_lowercase();
+    matches!(
+        local.as_str(),
+        "p" | "br" | "div" | "li" | "title" | "sec" | "list-item" | "tr" | "td"
+    )
+}
+
+/// 先去标签再解实体：`&lt;` 解出来的 `<` 留在正文里，不会再被当成标签删掉。
+fn strip_tags(value: &str) -> String {
+    clean_text(&decode_entities(&remove_tags(value)))
 }
 
 fn finish(mut hit: LookupHit) -> LookupHit {
@@ -486,15 +663,15 @@ fn xml_blocks(xml: &str, tag: &str) -> Vec<String> {
     let close = format!("</{tag}>");
     let mut blocks = Vec::new();
     let mut rest = xml;
-    while let Some(start) = rest.find(&open) {
-        let after = &rest[start..];
-        let Some(content_at) = after.find('>') else {
+    while let Some((_, after)) = rest.split_once(open.as_str()) {
+        let Some((_, body)) = after.split_once('>') else {
             break;
         };
-        let body = &after[content_at + 1..];
-        let Some(end) = body.find(&close) else { break };
-        blocks.push(body[..end].to_string());
-        rest = &body[end + close.len()..];
+        let Some((inner, tail)) = body.split_once(close.as_str()) else {
+            break;
+        };
+        blocks.push(inner.to_string());
+        rest = tail;
     }
     blocks
 }
@@ -506,7 +683,27 @@ fn xml_text(block: &str, tag: &str) -> Option<String> {
         .map(|text| strip_tags(&text))
 }
 
+/// arXiv 出错时仍回 200：唯一一条 entry 的 id 指向 /api/errors，标题是 Error，作者是 arXiv api core。
+pub fn is_arxiv_error_feed(xml: &str) -> bool {
+    let Some(entry) = xml_blocks(xml, "entry").into_iter().next() else {
+        return false;
+    };
+    let id = xml_text(&entry, "id").unwrap_or_default();
+    if id.to_ascii_lowercase().contains("/api/errors") {
+        return true;
+    }
+    let title = xml_text(&entry, "title").unwrap_or_default();
+    title.eq_ignore_ascii_case("error")
+        && xml_blocks(&entry, "author").iter().any(|author| {
+            xml_text(author, "name").is_some_and(|name| name.eq_ignore_ascii_case("arxiv api core"))
+        })
+}
+
+/// `arxiv_id` 取自响应里的 `<id>`，调用方拿它和请求的 id 比对。错误条目不算命中。
 pub fn parse_arxiv_atom(xml: &str) -> Option<LookupHit> {
+    if is_arxiv_error_feed(xml) {
+        return None;
+    }
     let entry = xml_blocks(xml, "entry").into_iter().next()?;
     let title = xml_text(&entry, "title").filter(|title| !title.is_empty())?;
     let summary = xml_text(&entry, "summary").unwrap_or_default();
@@ -566,11 +763,12 @@ pub fn parse_crossref(body: &str) -> Result<Option<LookupHit>, String> {
     if message.is_null() {
         return Ok(None);
     }
+    // Crossref 标题带行内标记，如 `Structure of <i>E. coli</i>`
     let title = message["title"]
         .as_array()
         .and_then(|items| items.first())
         .and_then(Value::as_str)
-        .map(clean_text)
+        .map(strip_tags)
         .filter(|title| !title.is_empty());
     let Some(title) = title else { return Ok(None) };
     let year = message["published"]["date-parts"][0][0]
@@ -702,47 +900,9 @@ pub fn parse_openalex(body: &str, query: &TitleQuery) -> Result<Option<LookupHit
     };
     let mut best: Option<LookupHit> = None;
     for result in results {
-        let Some(title) = result["display_name"].as_str().map(clean_text) else {
+        let Some(hit) = openalex_hit(result) else {
             continue;
         };
-        let mut authors = Vec::new();
-        if let Some(list) = result["authorships"].as_array() {
-            for authorship in list {
-                let Some(name) = authorship["author"]["display_name"].as_str() else {
-                    continue;
-                };
-                let affiliation = authorship["institutions"]
-                    .as_array()
-                    .and_then(|items| items.first())
-                    .and_then(|item| item["display_name"].as_str())
-                    .map(|text| text.to_string());
-                authors.push(LookupAuthor {
-                    name: name.to_string(),
-                    affiliation,
-                });
-            }
-        }
-        let pdf_url = result["primary_location"]["pdf_url"]
-            .as_str()
-            .or_else(|| result["open_access"]["oa_url"].as_str())
-            .filter(|url| is_http_url(url))
-            .map(|url| url.to_string());
-        let hit = finish(LookupHit {
-            title,
-            r#abstract: inverted_abstract(&result["abstract_inverted_index"]),
-            year: result["publication_year"].as_i64().map(|year| year as i32),
-            venue: result["primary_location"]["source"]["display_name"]
-                .as_str()
-                .map(clean_text)
-                .filter(|text| !text.is_empty()),
-            doi: result["doi"].as_str().and_then(normalize_doi),
-            arxiv_id: None,
-            pdf_url,
-            authors,
-            confidence: 0.0,
-            source_name: "openalex".into(),
-            providers: HashMap::new(),
-        });
         let Some(hit) = scored(query, hit) else {
             continue;
         };
@@ -757,15 +917,62 @@ pub fn parse_openalex(body: &str, query: &TitleQuery) -> Result<Option<LookupHit
     Ok(best)
 }
 
+fn openalex_hit(result: &Value) -> Option<LookupHit> {
+    // display_name 和 Crossref 一样会带 <i>、<sub> 之类的标记
+    let title = result["display_name"].as_str().map(strip_tags)?;
+    let mut authors = Vec::new();
+    if let Some(list) = result["authorships"].as_array() {
+        for authorship in list {
+            let Some(name) = authorship["author"]["display_name"].as_str() else {
+                continue;
+            };
+            let affiliation = authorship["institutions"]
+                .as_array()
+                .and_then(|items| items.first())
+                .and_then(|item| item["display_name"].as_str())
+                .map(|text| text.to_string());
+            authors.push(LookupAuthor {
+                name: name.to_string(),
+                affiliation,
+            });
+        }
+    }
+    let pdf_url = result["primary_location"]["pdf_url"]
+        .as_str()
+        .or_else(|| result["open_access"]["oa_url"].as_str())
+        .filter(|url| is_http_url(url))
+        .map(|url| url.to_string());
+    Some(finish(LookupHit {
+        title,
+        r#abstract: inverted_abstract(&result["abstract_inverted_index"]),
+        year: result["publication_year"].as_i64().map(|year| year as i32),
+        venue: result["primary_location"]["source"]["display_name"]
+            .as_str()
+            .map(clean_text)
+            .filter(|text| !text.is_empty()),
+        doi: result["doi"].as_str().and_then(normalize_doi),
+        arxiv_id: None,
+        pdf_url,
+        authors,
+        confidence: 0.0,
+        source_name: "openalex".into(),
+        providers: HashMap::new(),
+    }))
+}
+
+/// 按 id 取回的单条记录不比标题，由调用方用 DOI / arXiv id 核对。
+fn by_identifier(hit: Option<LookupHit>) -> Option<LookupHit> {
+    hit.filter(|item| !normalize_title(&item.title).is_empty())
+        .map(|mut item| {
+            item.confidence = 1.0;
+            item
+        })
+}
+
 pub fn parse_openalex_single(body: &str) -> Result<Option<LookupHit>, String> {
     let value: Value =
         serde_json::from_str(body).map_err(|err| format!("OpenAlex 响应无法解析：{err}"))?;
-    if value["display_name"].as_str().is_none() {
-        return Ok(None);
-    }
-    let title = value["display_name"].as_str().unwrap_or("").to_string();
-    let wrapped = serde_json::json!({ "results": [value] });
-    parse_openalex(&wrapped.to_string(), &TitleQuery::title_only(&title))
+    Ok(by_identifier(openalex_hit(&value)))
 }
 
 pub fn parse_semantic_scholar(body: &str, query: &TitleQuery) -> Result<Option<LookupHit>, String> {
@@ -776,49 +983,9 @@ pub fn parse_semantic_scholar(body: &str, query: &TitleQuery) -> Result<Option<L
     };
     let mut best: Option<LookupHit> = None;
     for result in results {
-        let Some(title) = result["title"].as_str().map(clean_text) else {
+        let Some(hit) = s2_hit(result) else {
             continue;
         };
-        let mut authors = Vec::new();
-        if let Some(list) = result["authors"].as_array() {
-            for author in list {
-                let Some(name) = author["name"].as_str() else {
-                    continue;
-                };
-                let affiliation = author["affiliations"]
-                    .as_array()
-                    .and_then(|items| items.first())
-                    .and_then(Value::as_str)
-                    .map(|text| text.to_string());
-                authors.push(LookupAuthor {
-                    name: name.to_string(),
-                    affiliation,
-                });
-            }
-        }
-        let hit = finish(LookupHit {
-            title,
-            r#abstract: clean_text(result["abstract"].as_str().unwrap_or("")),
-            year: result["year"].as_i64().map(|year| year as i32),
-            venue: result["venue"]
-                .as_str()
-                .map(clean_text)
-                .filter(|text| !text.is_empty()),
-            doi: result["externalIds"]["DOI"]
-                .as_str()
-                .and_then(normalize_doi),
-            arxiv_id: result["externalIds"]["ArXiv"]
-                .as_str()
-                .and_then(normalize_arxiv_id),
-            pdf_url: result["openAccessPdf"]["url"]
-                .as_str()
-                .filter(|url| is_http_url(url))
-                .map(|url| url.to_string()),
-            authors,
-            confidence: 0.0,
-            source_name: "semanticscholar".into(),
-            providers: HashMap::new(),
-        });
         let Some(hit) = scored(query, hit) else {
             continue;
         };
@@ -833,18 +1000,54 @@ pub fn parse_semantic_scholar(body: &str, query: &TitleQuery) -> Result<Option<L
     Ok(best)
 }
 
+fn s2_hit(result: &Value) -> Option<LookupHit> {
+    let title = result["title"].as_str().map(clean_text)?;
+    let mut authors = Vec::new();
+    if let Some(list) = result["authors"].as_array() {
+        for author in list {
+            let Some(name) = author["name"].as_str() else {
+                continue;
+            };
+            let affiliation = author["affiliations"]
+                .as_array()
+                .and_then(|items| items.first())
+                .and_then(Value::as_str)
+                .map(|text| text.to_string());
+            authors.push(LookupAuthor {
+                name: name.to_string(),
+                affiliation,
+            });
+        }
+    }
+    Some(finish(LookupHit {
+        title,
+        r#abstract: clean_text(result["abstract"].as_str().unwrap_or("")),
+        year: result["year"].as_i64().map(|year| year as i32),
+        venue: result["venue"]
+            .as_str()
+            .map(clean_text)
+            .filter(|text| !text.is_empty()),
+        doi: result["externalIds"]["DOI"]
+            .as_str()
+            .and_then(normalize_doi),
+        arxiv_id: result["externalIds"]["ArXiv"]
+            .as_str()
+            .and_then(normalize_arxiv_id),
+        pdf_url: result["openAccessPdf"]["url"]
+            .as_str()
+            .filter(|url| is_http_url(url))
+            .map(|url| url.to_string()),
+        authors,
+        confidence: 0.0,
+        source_name: "semanticscholar".into(),
+        providers: HashMap::new(),
+    }))
+}
+
 pub fn parse_s2_paper(body: &str) -> Result<Option<LookupHit>, String> {
     let value: Value = serde_json::from_str(body)
         .map_err(|err| format!("Semantic Scholar 响应无法解析：{err}"))?;
-    let Some(title) = value["title"]
-        .as_str()
-        .map(clean_text)
-        .filter(|title| !title.is_empty())
-    else {
-        return Ok(None);
-    };
-    let wrapped = serde_json::json!({ "data": [value] });
-    parse_semantic_scholar(&wrapped.to_string(), &TitleQuery::title_only(&title))
+    Ok(by_identifier(s2_hit(&value)))
 }
 
 /// `/paper/search/match` returns `{ "data": [ paper, ... ] }`. A bare paper object is accepted too.
@@ -1059,6 +1262,7 @@ pub async fn url_reachable(url: &str) -> bool {
     probe_url(url).await == Reach::Reachable
 }
 
+/// `force` 为 true 时（「刷新链接」）跳过缓存读取，查到的新结果照常写回。旧调用不传就是 false。
 #[tauri::command]
 pub async fn lookup_paper(
     app: tauri::AppHandle,
@@ -1067,18 +1271,37 @@ pub async fn lookup_paper(
     title: Option<String>,
     year: Option<i32>,
     authors: Option<Vec<String>>,
+    force: Option<bool>,
 ) -> Result<crate::lookup_run::LookupOutcome, String> {
-    let auth = crate::biblio::load_auth(&app)?;
-    let names = authors.unwrap_or_default();
-    Ok(crate::lookup_run::lookup_live(
-        &auth,
-        arxiv_id.as_deref(),
-        doi.as_deref(),
-        title.as_deref(),
-        year,
-        &names,
-    )
-    .await)
+    contain_panic(async move {
+        // 凭据读不出来不该让查询整个失败：按未配置查，并留一条说明
+        let (auth, notice) = crate::lookup_run::auth_or_anonymous(crate::biblio::load_auth(&app));
+        let names = authors.unwrap_or_default();
+        let mut outcome = crate::lookup_run::lookup_live(
+            &auth,
+            arxiv_id.as_deref(),
+            doi.as_deref(),
+            title.as_deref(),
+            year,
+            &names,
+            force.unwrap_or(false),
+        )
+        .await;
+        if let Some(notice) = notice {
+            outcome.notices.insert(0, notice);
+        }
+        outcome
+    })
+    .await
+}
+
+/// 查询放进独立任务：里面 panic 只让这次调用返回错误，不会挂住或拖垮命令。
+async fn contain_panic<T: Send + 'static>(
+    work: impl std::future::Future<Output = T> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn(work)
+        .await
+        .map_err(|_| "文献库查询内部错误".to_string())
 }
 
 #[tauri::command]
@@ -1089,6 +1312,11 @@ pub async fn verify_url(url: String) -> Result<Reach, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn arxiv_id_from_doi(value: &str) -> Option<String> {
+        let doi = Doi::parse(value)?;
+        ArxivId::from_doi(&doi).map(ArxivId::into_string)
+    }
 
     #[test]
     fn parses_recorded_arxiv_atom() {
@@ -1476,6 +1704,314 @@ mod tests {
             .unwrap()
             .expect("id paper");
         assert_eq!(direct.arxiv_id.as_deref(), Some("1706.03762"));
+    }
+
+    #[test]
+    fn arxiv_id_parse_accepts_labels_urls_and_versions() {
+        for (raw, want) in [
+            ("2401.01234", "2401.01234"),
+            ("  2401.01234v3 ", "2401.01234"),
+            ("arXiv：2401.01234", "2401.01234"),
+            ("\u{3000}arXiv：2401.01234\u{a0}", "2401.01234"),
+            ("ARXIV: 2401.01234v2", "2401.01234"),
+            ("arxiv：  2401.01234", "2401.01234"),
+            ("２４０１.０１２３４", "2401.01234"),
+            ("https://arxiv.org/abs/2401.01234v2", "2401.01234"),
+            ("HTTP://WWW.ARXIV.ORG/PDF/2401.01234V1.PDF", "2401.01234"),
+            ("http://arxiv.org/pdf/2401.01234.pdf", "2401.01234"),
+            ("arxiv.org/abs/2401.01234?context=cs", "2401.01234"),
+            ("https://arxiv.org/abs/hep-th/9901001v2", "hep-th/9901001"),
+            ("hep-th/9901001", "hep-th/9901001"),
+            ("solv-int/9901001", "solv-int/9901001"),
+            ("math.AG/0601001v1", "math.AG/0601001"),
+        ] {
+            assert_eq!(
+                ArxivId::parse(raw).as_ref().map(ArxivId::as_str),
+                Some(want),
+                "{raw:?}"
+            );
+        }
+        for raw in [
+            "",
+            "arXiv:",
+            "arXiv：",
+            "2401.1",
+            "v2",
+            "1234/5678",
+            "2401.01234 extra",
+            "https://example.org/abs/2401.01234",
+            "http://arxiv.org/api/errors#incorrect_id_format_for_2401.0123",
+            "doi:10.1000/x",
+        ] {
+            assert!(ArxivId::parse(raw).is_none(), "{raw:?}");
+        }
+        assert_eq!(
+            ArxivId::parse("HEP-TH/9901001"),
+            ArxivId::parse("hep-th/9901001")
+        );
+        assert_eq!(
+            normalize_arxiv_id("arXiv：2401.01234").as_deref(),
+            Some("2401.01234")
+        );
+    }
+
+    #[test]
+    fn doi_parse_accepts_labels_and_resolver_urls() {
+        for raw in [
+            "10.1000/ABC",
+            "doi:10.1000/ABC",
+            "DOI: 10.1000/ABC",
+            "doi：10.1000/ABC",
+            "https://doi.org/10.1000/ABC",
+            "http://dx.doi.org/10.1000/ABC",
+            "https://www.doi.org/10.1000/ABC",
+            "HTTPS://DOI.ORG/10.1000/ABC",
+            "doi.org/10.1000/ABC",
+            " \u{3000}10.1000/ABC\u{a0}",
+        ] {
+            assert_eq!(
+                Doi::parse(raw).as_ref().map(Doi::as_str),
+                Some("10.1000/ABC"),
+                "{raw:?}"
+            );
+        }
+        for raw in [
+            "",
+            "10.1000",
+            "10./abc",
+            "11.1000/abc",
+            "10.1000/",
+            "10.1000/a b",
+            "doi:",
+            "https://doi.org/",
+            "https://example.org/10.1000/abc",
+        ] {
+            assert!(Doi::parse(raw).is_none(), "{raw:?}");
+        }
+        // 后缀原样保存，比较忽略大小写
+        assert_eq!(Doi::parse("10.1000/ABC"), Doi::parse("doi:10.1000/abc"));
+        let query = asked(
+            "Attention Is All You Need",
+            None,
+            &[],
+            Some("10.1000/ABC"),
+            None,
+        );
+        let hit = sample(
+            "Attention Is All You Need",
+            None,
+            &[],
+            Some("https://doi.org/10.1000/abc"),
+            None,
+        );
+        assert!(!identifiers_conflict(&query, &hit));
+        assert!(identifiers_match(&query, &hit));
+    }
+
+    fn exercise(input: &str) {
+        let _ = ArxivId::parse(input);
+        let _ = Doi::parse(input);
+        let _ = arxiv_id_from_doi(input);
+        let _ = is_http_url(input);
+        let _ = strip_tags(input);
+        let _ = parse_arxiv_atom(input);
+        let _ = is_arxiv_error_feed(input);
+        let _ = distinctive_title(input, &normalize_title(input));
+    }
+
+    #[test]
+    fn identifier_and_text_parsers_never_panic_on_multibyte_input() {
+        let pieces = [
+            "arXiv",
+            "arxiv:",
+            "ARXIV：",
+            "：",
+            ":",
+            " ",
+            "\u{3000}",
+            "\u{a0}",
+            "\u{200b}",
+            "é",
+            "中",
+            "😀",
+            "ａ",
+            "２",
+            "\u{301}",
+            "2401.01234",
+            "hep-th/9901001",
+            "v",
+            "V2",
+            ".pdf",
+            "/",
+            "?",
+            "https://",
+            "http://",
+            "www.",
+            "arxiv.org/abs/",
+            "arxiv.org/pdf/",
+            "doi:",
+            "DOI：",
+            "doi.org/",
+            "dx.",
+            "10.",
+            "10.1000/",
+            "&",
+            "&lt;",
+            "&#x1F600;",
+            "&#",
+            ";",
+            "<",
+            ">",
+            "<i>",
+            "</",
+            "<entry>",
+            "</entry>",
+            "<id>",
+            "</id>",
+        ];
+        let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = move || {
+            seed = seed
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (seed >> 33) as usize
+        };
+        for _ in 0..3000 {
+            let mut input = String::new();
+            for _ in 0..next() % 8 {
+                input.push_str(pieces[next() % pieces.len()]);
+            }
+            exercise(&input);
+            for (at, _) in input.char_indices() {
+                exercise(input.get(..at).unwrap_or(""));
+                exercise(input.get(at..).unwrap_or(""));
+            }
+        }
+        // 原来按字节切 id[..6]，全角冒号正好跨过第 6 字节
+        for ascii in 0..8 {
+            for wide in ['：', '中', '😀', '\u{3000}'] {
+                let input = format!(
+                    "{}{wide}2401.01234",
+                    "arxiv:".get(..ascii).unwrap_or("arxiv:")
+                );
+                exercise(&input);
+            }
+        }
+    }
+
+    #[test]
+    fn http_url_check_is_boundary_safe() {
+        assert!(is_http_url("http://x"));
+        assert!(is_http_url(" HTTPS://arxiv.org/pdf/1 "));
+        assert!(!is_http_url("https://"));
+        assert!(!is_http_url("ftp://example.org"));
+        assert!(!is_http_url("javascript:alert(1)"));
+        assert!(!is_http_url("ｈttps://中文"));
+    }
+
+    #[test]
+    fn generic_exact_titles_need_corroboration_or_length() {
+        for generic in ["untitled", "Introduction", "main", "fulltext", "Full Text"] {
+            let record = sample(generic, Some(2015), &["Jane Doe"], None, None);
+            assert!(
+                titles_match(&TitleQuery::title_only(generic), &record).is_none(),
+                "{generic}"
+            );
+            assert_eq!(
+                titles_match(&asked(generic, Some(2015), &[], None, None), &record),
+                Some(1.0),
+                "{generic}"
+            );
+            assert_eq!(
+                titles_match(&asked(generic, None, &["J. Doe"], None, None), &record),
+                Some(1.0),
+                "{generic}"
+            );
+        }
+        let exact = |title: &str| {
+            titles_match(
+                &TitleQuery::title_only(title),
+                &sample(title, None, &[], None, None),
+            )
+        };
+        assert_eq!(exact("Deep Residual Learning Networks"), Some(1.0));
+        assert_eq!(exact("Electroencephalographic Characterization"), Some(1.0));
+        assert!(exact("Deep Residual Learning").is_none());
+        assert!(exact("注意力机制研究").is_none());
+        assert_eq!(exact("注意力机制研究综述"), Some(1.0));
+        // 同一个 DOI 本身就是佐证
+        assert_eq!(
+            titles_match(
+                &asked("Main", None, &[], Some("10.1000/x"), None),
+                &sample("main", None, &[], Some("10.1000/X"), None)
+            ),
+            Some(1.0)
+        );
+    }
+
+    #[test]
+    fn markup_is_stripped_before_entities_are_decoded() {
+        let body = r#"{"message":{"title":["Structure of <i>E. coli</i> &amp; CO<sub>2</sub>"],"abstract":"<jats:title>Abstract</jats:title><jats:p>Significant at p &lt; 0.05 and x &gt; 1; raw x < y kept; &amp;lt; stays escaped.</jats:p>","DOI":"10.1000/x"}}"#;
+        let hit = parse_crossref(body).unwrap().expect("crossref hit");
+        assert_eq!(hit.title, "Structure of E. coli & CO2");
+        assert_eq!(
+            hit.r#abstract,
+            "Abstract Significant at p < 0.05 and x > 1; raw x < y kept; &lt; stays escaped."
+        );
+        let openalex = r#"{"results":[{"display_name":"Structure of <i>E. coli</i> membranes in vivo","publication_year":2020}]}"#;
+        let hit = parse_openalex(
+            openalex,
+            &TitleQuery::title_only("Structure of E. coli membranes in vivo"),
+        )
+        .unwrap()
+        .expect("openalex hit");
+        assert_eq!(hit.title, "Structure of E. coli membranes in vivo");
+        let xml = "<entry><id>http://arxiv.org/abs/2401.01234v1</id><title>Bounds for p &lt; 0.05</title><summary>We show x &lt;i&gt; y.</summary></entry>";
+        let hit = parse_arxiv_atom(xml).expect("arxiv hit");
+        assert_eq!(hit.title, "Bounds for p < 0.05");
+        assert_eq!(hit.r#abstract, "We show x <i> y.");
+        assert_eq!(strip_tags("p&lt;0.05"), "p<0.05");
+        assert_eq!(strip_tags("&#x3B1;-helix &#946; &#0;"), "α-helix β &#0;");
+        assert_eq!(strip_tags("AT&T &unknown; & more"), "AT&T &unknown; & more");
+    }
+
+    #[test]
+    fn arxiv_error_entries_are_not_hits() {
+        let by_id = r#"<feed><entry><id>http://arxiv.org/api/errors#incorrect_id_format_for_2401.0123</id><title>Error</title><summary>incorrect id format for 2401.0123</summary><author><name>arXiv api core</name></author></entry></feed>"#;
+        assert!(is_arxiv_error_feed(by_id));
+        assert!(parse_arxiv_atom(by_id).is_none());
+        let by_title = r#"<feed><entry><id>http://arxiv.org/abs/2401.01234v1</id><title>error</title><author><name>arXiv API Core</name></author></entry></feed>"#;
+        assert!(is_arxiv_error_feed(by_title));
+        assert!(parse_arxiv_atom(by_title).is_none());
+        let real = r#"<feed><entry><id>http://arxiv.org/abs/2401.01234v1</id><title>Error</title><author><name>Jane Doe</name></author></entry></feed>"#;
+        assert!(!is_arxiv_error_feed(real));
+        assert_eq!(
+            parse_arxiv_atom(real).unwrap().arxiv_id.as_deref(),
+            Some("2401.01234")
+        );
+    }
+
+    #[test]
+    fn id_lookups_keep_short_titles() {
+        // 按 DOI / arXiv id 取回的单条记录不比标题，短标题也留着，由 accepts_ids 核对
+        let openalex = r#"{"display_name":"Graphene","doi":"https://doi.org/10.1000/g"}"#;
+        let hit = parse_openalex_single(openalex).unwrap().expect("openalex");
+        assert_eq!(hit.title, "Graphene");
+        assert_eq!(hit.confidence, 1.0);
+        let s2 = r#"{"title":"Main","externalIds":{"ArXiv":"2401.01234"}}"#;
+        assert_eq!(parse_s2_paper(s2).unwrap().expect("s2").title, "Main");
+    }
+
+    #[tokio::test]
+    async fn a_panicking_lookup_becomes_an_error() {
+        let failed: Result<(), String> = contain_panic(async {
+            if true {
+                panic!("boom");
+            }
+        })
+        .await;
+        assert_eq!(failed, Err("文献库查询内部错误".to_string()));
+        assert_eq!(contain_panic(async { 7 }).await, Ok(7));
     }
 
     // ---- Tester #6 repro: verify_url must not reach internal addresses ----
