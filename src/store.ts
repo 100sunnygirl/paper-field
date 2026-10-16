@@ -240,6 +240,11 @@ export const useField = create<FieldState>((set, get) => ({
     // 不建作业也不改论文的解析状态；实况这边立即记为已取消，面板与状态条同步出列。
     cancelMineruPaper(paperId);
     endBatchItem(batchId, paperId, "cancelled");
+    // 出列必须落库：只打内存标记的话，重启或保存 MinerU 设置后会被 resumeMineru 重新提交。
+    void repo
+      .setMineruState(paperId, { status: "cancelled" })
+      .then(() => get().refresh())
+      .catch((err) => log.error("mineru", "移出队列写库失败", err));
   },
 
   stopMineruBatch: async (batchId) => {
@@ -866,7 +871,7 @@ export const useField = create<FieldState>((set, get) => ({
     await get().refresh();
     await runJob(job.id, id, DRAFT_NOTES_SYSTEM, prompt, async (raw) => {
       const notes = normalizeNotes(extractJson(raw));
-      await repo.applyDraftedNotes(id, notes, true);
+      await repo.applyDraftedNotes(id, notes, overwrite);
     });
   },
 

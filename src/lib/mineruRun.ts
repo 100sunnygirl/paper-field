@@ -336,6 +336,26 @@ async function processOne(host: Host, paperId: string, force: boolean): Promise<
 /** 连续失败达到该值即熔断剩余批次：解析源大概率繁忙或不可用，继续只会逐篇耗时超时。 */
 const CONSECUTIVE_FAIL_LIMIT = 3;
 
+export const PAUSED_ERROR = "连续失败已暂停，可在 INTAKE 页重试";
+
+/**
+ * 熔断后剩余的论文写成 error（带暂停原因），让「重试解析失败」能看到它们；
+ * 已出列的不计数，也不改已经结束的论文。返回真正被暂停的篇数。
+ */
+async function pauseRemaining(paperIds: string[]): Promise<number> {
+  let paused = 0;
+  for (const paperId of paperIds) {
+    if (cancelled.has(paperId)) continue;
+    const paper = await repo.getPaper(paperId);
+    if (!paper?.pdfPath) continue;
+    const status = paper.mineruStatus;
+    if (status !== null && status !== "queued" && status !== "submitted" && status !== "parsing") continue;
+    await repo.setMineruState(paperId, { status: "error", error: PAUSED_ERROR });
+    paused += 1;
+  }
+  return paused;
+}
+
 export async function runMineruBatch(
   host: Host,
   paperIds: string[],
@@ -358,12 +378,13 @@ export async function runMineruBatch(
     let fail = 0;
     let consecutiveFails = 0;
     let pausedCount = 0;
-    for (const paperId of paperIds) {
+    for (const [index, paperId] of paperIds.entries()) {
       if (consecutiveFails >= CONSECUTIVE_FAIL_LIMIT) {
-        pausedCount = paperIds.length - ok - fail;
+        pausedCount = await pauseRemaining(paperIds.slice(index));
         break;
       }
-      // 作业面板「移出队列」的论文：轮到时直接出列，不读库、不在面板上闪一下「处理中」。
+      // 作业面板「移出队列」的论文：轮到时直接出列，不在面板上闪一下「处理中」；
+      // 库里状态在出列时已写成 cancelled，重启或保存设置后不会被自动重新提交。
       if (cancelled.has(paperId)) {
         cancelled.delete(paperId);
         endBatchItem(id, paperId, "cancelled");

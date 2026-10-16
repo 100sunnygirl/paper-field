@@ -511,13 +511,20 @@ describe("笔记与草稿", () => {
     expect(detail.userNotesTouched).toBe(true);
   });
 
-  it("applyDraftedNotes：用户改过笔记且不覆盖时抛 NOTES_TOUCHED", async () => {
+  it("applyDraftedNotes：不覆盖时保留用户改过的块，只写未改过的块", async () => {
     const domainId = await makeDomain();
     const paper = await repo.createPaper({ domainId });
     await repo.updateNote(paper.id, "summary", "我改过的笔记");
-    await expect(
-      repo.applyDraftedNotes(paper.id, { remarks: "", summary: "", highlights: "", weaknesses: "", implications: "" }, false),
-    ).rejects.toThrow("NOTES_TOUCHED");
+    await repo.applyDraftedNotes(
+      paper.id,
+      { remarks: "r", summary: "s", highlights: "h", weaknesses: "w", implications: "i" },
+      false,
+    );
+    const detail = (await repo.getPaper(paper.id))!;
+    expect(detail.notes.summary.content).toBe("我改过的笔记");
+    expect(detail.notes.summary.source).toBe("manual");
+    expect(detail.notes.highlights.content).toBe("h");
+    expect(detail.notes.highlights.source).toBe("llm");
   });
 
   it("applyDraftedNotes(overwrite=true)：写入五块 AI 笔记并标记来源", async () => {

@@ -910,9 +910,7 @@ export const repo = {
     const engine = await getEngine();
     const paper = await engine.select<PaperRow>("SELECT * FROM papers WHERE id = ?", [paperId]);
     if (!paper[0]) throw new Error("论文不存在");
-    if (paper[0].user_notes_touched && !overwrite) {
-      throw new Error("NOTES_TOUCHED");
-    }
+    // 不覆盖时逐块跳过用户改过的笔记：请求进行中用户保存的块也在此被保留。
     const blocks = await engine.select<NoteRow>("SELECT * FROM notes WHERE paper_id = ?", [paperId]);
     for (const kind of NOTE_KINDS) {
       const block = blocks.find((row) => row.kind === kind);
