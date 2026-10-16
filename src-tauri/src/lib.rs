@@ -272,6 +272,7 @@ pub fn run() {
             restore::restore_list_pre,
             restore::restore_delete_pre,
             restore::restore_abandon,
+            appdir::appdir_migration_notices,
             import_pdf_to_library
         ])
         .run(tauri::generate_context!())

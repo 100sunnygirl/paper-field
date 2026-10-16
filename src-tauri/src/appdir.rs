@@ -13,7 +13,9 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
+use serde::Serialize;
 use tauri::{AppHandle, Manager, Runtime};
 
 pub const OLD_IDENTIFIER: &str = "com.paperfield.app";
@@ -243,6 +245,13 @@ fn copy_tree(src: &Path, dest: &Path) -> Result<u64, String> {
         fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     }
     fs::copy(src, dest).map_err(|err| format!("复制 {} 失败：{err}", src.display()))?;
+    // A copied secrets file must not keep a looser mode from the old directory.
+    #[cfg(unix)]
+    if dest.file_name().is_some_and(|name| name == "secrets.json") {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(dest, fs::Permissions::from_mode(0o600))
+            .map_err(|err| format!("收紧 {} 的权限失败：{err}", dest.display()))?;
+    }
     Ok(1)
 }
 
@@ -274,6 +283,36 @@ pub fn migration_plugin<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
         .build()
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DirMigrationNotice {
+    pub kind: String,
+    pub old_path: String,
+    pub new_path: String,
+}
+
+fn notice_slot() -> &'static Mutex<Vec<DirMigrationNotice>> {
+    static NOTICES: OnceLock<Mutex<Vec<DirMigrationNotice>>> = OnceLock::new();
+    NOTICES.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+pub fn migration_notices() -> Vec<DirMigrationNotice> {
+    notice_slot()
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+        .clone()
+}
+
+fn set_migration_notices(notices: Vec<DirMigrationNotice>) {
+    *notice_slot().lock().unwrap_or_else(|err| err.into_inner()) = notices;
+}
+
+/// Notices for directories that already had data, so startup did not copy over them.
+#[tauri::command]
+pub fn appdir_migration_notices() -> Vec<DirMigrationNotice> {
+    migration_notices()
+}
+
 pub fn migrate_on_startup<R: Runtime>(app: &AppHandle<R>) {
     // These are the directories tauri-plugin-sql and the settings files use
     // (`app_config_dir` is `config_dir/<identifier>`). The formula below covers
@@ -285,22 +324,30 @@ pub fn migrate_on_startup<R: Runtime>(app: &AppHandle<R>) {
         ("local", app.path().app_local_data_dir()),
     ] {
         match path {
-            Ok(path) => targets.push(path),
+            Ok(path) => targets.push((label.to_string(), path)),
             Err(err) => eprintln!("[paper-field] 无法解析应用{label}目录：{err}"),
         }
     }
     if let Ok(home) = app.path().home_dir() {
         let env = SupportEnv::from_process(home);
-        for kind in [SupportKind::Config, SupportKind::Data, SupportKind::Local] {
-            targets.push(support_dir(current_os(), &env, NEW_IDENTIFIER, kind));
+        for (label, kind) in [
+            ("config", SupportKind::Config),
+            ("data", SupportKind::Data),
+            ("local", SupportKind::Local),
+        ] {
+            targets.push((
+                label.to_string(),
+                support_dir(current_os(), &env, NEW_IDENTIFIER, kind),
+            ));
         }
     }
     apply_migrations(&targets);
 }
 
-fn apply_migrations(new_dirs: &[PathBuf]) {
+fn apply_migrations(targets: &[(String, PathBuf)]) {
     let mut seen = HashSet::new();
-    for new_dir in new_dirs {
+    let mut notices = Vec::new();
+    for (kind, new_dir) in targets {
         let key = new_dir.to_string_lossy().to_string();
         if !seen.insert(key) {
             continue;
@@ -314,6 +361,13 @@ fn apply_migrations(new_dirs: &[PathBuf]) {
                     new_dir.display()
                 );
             }
+            Ok(MigrationStatus::AlreadyHasData) => {
+                notices.push(DirMigrationNotice {
+                    kind: kind.clone(),
+                    old_path: old_dir.display().to_string(),
+                    new_path: new_dir.display().to_string(),
+                });
+            }
             Ok(_) => {}
             Err(err) => eprintln!(
                 "[paper-field] 应用数据目录迁移失败（{} → {}）：{err}",
@@ -322,6 +376,7 @@ fn apply_migrations(new_dirs: &[PathBuf]) {
             ),
         }
     }
+    set_migration_notices(notices);
 }
 
 #[cfg(test)]
@@ -498,6 +553,72 @@ mod tests {
         assert_eq!(fs::read(new_dir.join("secrets.json")).unwrap(), br#"{"llm:p":"sk-old"}"#);
         assert_eq!(fs::read(old.join("secrets.json")).unwrap(), br#"{"llm:p":"sk-old"}"#);
         assert!(new_dir.join(MARKER_NAME).is_file());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copied_secrets_json_is_mode_0600_and_the_old_dir_stays() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = scratch();
+        let old = root.join("old");
+        let new_dir = root.join("new");
+        fs::create_dir_all(&old).unwrap();
+        fs::write(old.join("secrets.json"), br#"{"llm:p":"sk-old"}"#).unwrap();
+        fs::set_permissions(old.join("secrets.json"), fs::Permissions::from_mode(0o644)).unwrap();
+        fs::write(new_dir.join("keep.txt"), b"stay").unwrap_or_else(|_| {
+            fs::create_dir_all(&new_dir).unwrap();
+            fs::write(new_dir.join("keep.txt"), b"stay").unwrap();
+        });
+        // The new directory already has a file, so this copy must not run.
+        assert_eq!(
+            migrate_dir(&old, &new_dir).unwrap(),
+            MigrationStatus::AlreadyHasData
+        );
+        assert!(!new_dir.join("secrets.json").exists());
+        assert_eq!(fs::read(new_dir.join("keep.txt")).unwrap(), b"stay");
+        assert_eq!(fs::read(old.join("secrets.json")).unwrap(), br#"{"llm:p":"sk-old"}"#);
+        let _ = fs::remove_dir_all(&new_dir);
+
+        let status = migrate_dir(&old, &new_dir).unwrap();
+        assert!(matches!(status, MigrationStatus::Copied { .. }));
+        let mode = fs::metadata(new_dir.join("secrets.json")).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert_eq!(fs::read(new_dir.join("secrets.json")).unwrap(), br#"{"llm:p":"sk-old"}"#);
+        assert_eq!(fs::read(old.join("secrets.json")).unwrap(), br#"{"llm:p":"sk-old"}"#);
+        assert!(old.is_dir());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn already_has_data_is_a_notice_and_a_copy_is_not() {
+        let root = scratch();
+        let config_new = root.join("config").join(NEW_IDENTIFIER);
+        let config_old = root.join("config").join(OLD_IDENTIFIER);
+        fs::create_dir_all(&config_new).unwrap();
+        fs::create_dir_all(&config_old).unwrap();
+        fs::write(config_new.join("paper-field.db"), b"new").unwrap();
+        fs::write(config_old.join("paper-field.db"), b"old").unwrap();
+
+        let data_new = root.join("data").join(NEW_IDENTIFIER);
+        let data_old = root.join("data").join(OLD_IDENTIFIER);
+        fs::create_dir_all(&data_old).unwrap();
+        fs::write(data_old.join("note.txt"), b"x").unwrap();
+
+        apply_migrations(&[
+            ("config".into(), config_new.clone()),
+            ("data".into(), data_new.clone()),
+        ]);
+        let notices = migration_notices();
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].kind, "config");
+        assert_eq!(notices[0].old_path, config_old.display().to_string());
+        assert_eq!(notices[0].new_path, config_new.display().to_string());
+        assert_eq!(fs::read(config_new.join("paper-field.db")).unwrap(), b"new");
+        assert!(!config_new.join("paper-field.db.bak").exists());
+        assert_eq!(fs::read(data_new.join("note.txt")).unwrap(), b"x");
+        assert_eq!(fs::read(data_old.join("note.txt")).unwrap(), b"x");
+        assert!(data_old.is_dir());
         let _ = fs::remove_dir_all(&root);
     }
 
