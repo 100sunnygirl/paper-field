@@ -135,12 +135,12 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
       {mode === "intake" ? (
         <div className="ef-nav-head">
           <div className="ef-overline">
-            <span>全部领域 · 未读完</span>
+            <span>全部领域 · 未手动标为已读</span>
           </div>
           <div className="ef-domain-picker">
             <h2>入库</h2>
           </div>
-          <p className="ef-nav-sum">尚未读完的论文，以及 MinerU 解析和 AI 补全作业。</p>
+          <p className="ef-nav-sum">未手动标为已读的论文，以及 MinerU 解析和 AI 补全作业。</p>
           {failedParseCount ? (
             <div className="ef-job-row">
               <span className="status-error">解析失败 · {failedParseCount} 篇</span>
