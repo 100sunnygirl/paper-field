@@ -7,7 +7,7 @@
 //! 也无法借 SQL 在磁盘上写出任意文件。
 
 use std::ffi::{c_char, c_int, c_void, CStr};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::ptr;
 use std::time::Duration;
 
@@ -36,6 +36,9 @@ impl Db {
         let mut guard = self.pools.lock().await;
         if let Some(pools) = guard.as_ref() {
             return Ok(pools.clone());
+        }
+        if !crate::instance::held() {
+            return Err(DbError::sql("另一个 Paper Field 正在使用这个文库，请先关闭它再打开"));
         }
         if matches!(crate::restore::restore_status(), crate::restore::RestoreStatus::Stuck { .. }) {
             return Err(DbError::sql("上一次恢复没有完成，为保护数据暂不打开文库"));
@@ -410,17 +413,12 @@ pub async fn db_close(db: State<'_, Db>) -> Result<(), DbError> {
     Ok(())
 }
 
-/// 数据库文件路径（供启动阶段的路径规范化等一次性任务使用）。
-pub fn database_path(config_dir: &Path) -> PathBuf {
-    config_dir.join(DB_FILE)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
 
-    async fn pools(name: &str) -> (PathBuf, Pools) {
+    async fn pools(name: &str) -> (std::path::PathBuf, Pools) {
         let dir = crate::test_util::unique_temp_dir(&format!("pf-db-{name}"));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join(DB_FILE);

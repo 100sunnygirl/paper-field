@@ -589,6 +589,18 @@ export const repo = {
     return rows.map((row) => row.path);
   },
 
+  /**
+   * 手动添加时选的本地 PDF 同样复制进文库（库里存相对名，原路径记在 pdf_original_path），
+   * 这样它也进备份、也参与去重。已在库中时报错，不重复建档。
+   */
+  async adoptManualPdf(path: string): Promise<{ libraryPath: string; originalPath: string }> {
+    const known = new Set(await this.pdfPaths());
+    if (known.has(path)) throw new Error("这个 PDF 已在库中");
+    const adopted = await adoptPdf(path);
+    if (known.has(adopted.originalPath)) throw new Error("这个 PDF 已在库中");
+    return adopted;
+  },
+
   async importLocalPdfs(
     domainId: string,
     paths: string[],

@@ -275,8 +275,17 @@ pub fn migration_plugin<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
         .setup(|app, _api| {
             migrate_on_startup(app);
             if let Ok(dir) = app.path().app_config_dir() {
-                crate::backup::cleanup_backup_snapshots(&dir);
-                crate::restore::apply_pending_restore(&dir);
+                // 跨进程互斥：拿不到锁说明另一个进程正在使用这个文库，恢复与路径改写都不做，
+                // 数据库层也拒绝打开（见 db.rs），避免两个进程同时改写同一份数据。
+                if crate::instance::acquire(&dir) {
+                    crate::backup::cleanup_backup_snapshots(&dir);
+                    crate::restore::apply_pending_restore(&dir);
+                    if let Err(err) = crate::library::relativize_database(&dir) {
+                        eprintln!("[paper-field] 改写文库 PDF 路径失败：{err}");
+                    }
+                } else {
+                    eprintln!("[paper-field] 另一个 Paper Field 正在使用 {}", dir.display());
+                }
             }
             Ok(())
         })

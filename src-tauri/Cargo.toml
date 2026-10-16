@@ -19,6 +19,7 @@ tauri-plugin-store = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-process = "2"
 tauri-plugin-updater = "2"
+tauri-plugin-single-instance = "2"
 dunce = "1"
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
@@ -42,7 +43,8 @@ keyring = { version = "3", default-features = false, features = ["windows-native
 codegen-units = 1
 lto = true
 opt-level = 3
-panic = "abort"
+# unwind：单个命令里的 panic 只让这次调用失败（命令侧会转成错误），不再直接结束整个进程。
+panic = "unwind"
 strip = true
 
 [target.'cfg(unix)'.dependencies]

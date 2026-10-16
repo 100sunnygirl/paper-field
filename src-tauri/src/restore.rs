@@ -454,9 +454,14 @@ pub async fn stage_restore(dir: &Path, src: &Path) -> Result<BackupSummary, Stri
     result
 }
 
+/// 弹出打开对话框选备份 zip 并暂存；用户取消时返回 None。路径只来自系统对话框。
 #[tauri::command]
-pub async fn restore_library_backup(app: AppHandle, src: String) -> Result<BackupSummary, String> {
-    stage_restore(&app_config_dir(&app)?, Path::new(&src)).await
+pub async fn restore_library_backup(app: AppHandle) -> Result<Option<BackupSummary>, String> {
+    let kind = crate::platform::PickKind::OpenFile { filter: ("Zip", &["zip"]) };
+    let Some(src) = crate::platform::pick_path(&app, "恢复文库", kind).await? else {
+        return Ok(None);
+    };
+    stage_restore(&app_config_dir(&app)?, &src).await.map(Some)
 }
 
 /// Where the swap puts `item`'s old file inside the pre-restore dir.

@@ -92,9 +92,19 @@ fn add_scrubbed_settings(zip: &mut ZipWriter<File>, options: SimpleFileOptions, 
     Ok(true)
 }
 
+/// 弹出保存对话框后写备份；用户取消时返回 None。路径只来自系统对话框。
 #[tauri::command]
-pub async fn create_library_backup(app: AppHandle, dest: String) -> Result<(), String> {
-    backup_at(config_dir(&app)?, dest).await
+pub async fn create_library_backup(app: AppHandle) -> Result<Option<String>, String> {
+    let kind = crate::platform::PickKind::SaveFile {
+        default_name: "paper-field-backup.zip",
+        filter: ("Zip", &["zip"]),
+    };
+    let Some(dest) = crate::platform::pick_path(&app, "备份文库", kind).await? else {
+        return Ok(None);
+    };
+    let dest = dest.to_string_lossy().to_string();
+    backup_at(config_dir(&app)?, dest.clone()).await?;
+    Ok(Some(dest))
 }
 
 /// Holds the restore lock so an abandon can't move files back into

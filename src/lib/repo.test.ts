@@ -917,3 +917,14 @@ describe("列级写入与条件写入", () => {
     expect(detail.notes.highlights.source).toBe("llm");
   });
 });
+
+describe("手动添加的 PDF 进文库", () => {
+  it("已在库中的 PDF 不重复建档", async () => {
+    const domainId = await makeDomain();
+    await repo.createPaper({ domainId, pdfPath: "library/1-a.pdf", pdfOriginalPath: "/home/u/a.pdf" });
+    await expect(repo.adoptManualPdf("/home/u/a.pdf")).rejects.toThrow("已在库中");
+    await expect(repo.adoptManualPdf("library/1-a.pdf")).rejects.toThrow("已在库中");
+    // 浏览器预览没有文库目录：原样返回
+    expect(await repo.adoptManualPdf("/home/u/b.pdf")).toEqual({ libraryPath: "/home/u/b.pdf", originalPath: "/home/u/b.pdf" });
+  });
+});

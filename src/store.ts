@@ -590,10 +590,12 @@ export const useField = create<FieldState>((set, get) => ({
       // 全角冒号、doi.org 链接等写法在入库前规整；认不出的保留原文，查询端会安全地忽略。
       const arxivId = input.arxivId?.trim() ? normalizeArxivId(input.arxivId) ?? input.arxivId.trim() : input.arxivId;
       const doi = input.doi?.trim() ? normalizeDoi(input.doi) ?? input.doi.trim() : input.doi;
+      const pdf = input.pdfPath?.trim() ? await repo.adoptManualPdf(input.pdfPath.trim()) : null;
       const paper = await repo.createPaper({
         domainId,
         title,
-        pdfPath: input.pdfPath,
+        pdfPath: pdf?.libraryPath,
+        pdfOriginalPath: pdf?.originalPath,
         arxivId,
         doi,
         userOwned: true,

@@ -2,7 +2,39 @@ use std::path::Path;
 
 use tauri::path::BaseDirectory;
 use tauri::{AppHandle, Manager};
+use tauri_plugin_dialog::{DialogExt, FilePath};
 use tauri_plugin_opener::OpenerExt;
+
+/// 读写文件的对话框都在 Rust 侧弹出：命令只用用户在系统对话框里选的路径，
+/// 不再接受渲染进程传来的任意路径（页面被注入脚本时也无法借备份 / 导出写到别处）。
+pub(crate) enum PickKind<'a> {
+    SaveFile { default_name: &'a str, filter: (&'a str, &'a [&'a str]) },
+    OpenFile { filter: (&'a str, &'a [&'a str]) },
+    Folder,
+}
+
+pub(crate) async fn pick_path(app: &AppHandle, title: &str, kind: PickKind<'_>) -> Result<Option<std::path::PathBuf>, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel::<Option<FilePath>>();
+    let builder = app.dialog().file().set_title(title);
+    match kind {
+        PickKind::SaveFile { default_name, filter } => builder
+            .set_file_name(default_name)
+            .add_filter(filter.0, filter.1)
+            .save_file(move |path| {
+                let _ = tx.send(path);
+            }),
+        PickKind::OpenFile { filter } => builder.add_filter(filter.0, filter.1).pick_file(move |path| {
+            let _ = tx.send(path);
+        }),
+        PickKind::Folder => builder.pick_folder(move |path| {
+            let _ = tx.send(path);
+        }),
+    }
+    match rx.await.map_err(|_| "对话框已关闭".to_string())? {
+        Some(path) => path.into_path().map(Some).map_err(|err| err.to_string()),
+        None => Ok(None),
+    }
+}
 
 pub(crate) fn home_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     app.path()

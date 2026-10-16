@@ -2,7 +2,9 @@ mod appdir;
 mod backup;
 mod biblio;
 mod db;
+mod instance;
 mod io_util;
+mod library;
 mod llm;
 mod lookup;
 mod lookup_run;
@@ -88,8 +90,13 @@ fn import_pdf_locked(config: &std::path::Path, source: &str) -> Result<ImportedP
         .map(|duration| duration.as_millis())
         .unwrap_or(0);
     let dest = copy_into_library(&library, &canon, &format!("{millis}-{stem}"))?;
+    let file_name = dest
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "复制 PDF 到文库失败：文件名无效".to_string())?;
     Ok(ImportedPdf {
-        library_path: dest.to_string_lossy().to_string(),
+        // 文库内只存相对名：换机恢复、数据目录搬家后链接仍有效（见 library.rs）。
+        library_path: library::stored_name(file_name),
         original_path: canon.to_string_lossy().to_string(),
     })
 }
@@ -119,11 +126,18 @@ fn copy_into_library(library: &std::path::Path, src: &std::path::Path, base: &st
     Err("复制 PDF 到文库失败：同名文件过多".into())
 }
 
+/// 弹出选择文件夹对话框后导出；用户取消时返回 None。根目录只来自系统对话框。
 #[tauri::command]
-async fn export_files(root: String, files: Vec<ExportFile>) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || export_files_at(root, files))
+async fn export_files(app: tauri::AppHandle, files: Vec<ExportFile>) -> Result<Option<String>, String> {
+    let Some(root) = platform::pick_path(&app, "导出领域笔记", platform::PickKind::Folder).await? else {
+        return Ok(None);
+    };
+    let root = root.to_string_lossy().to_string();
+    let target = root.clone();
+    tauri::async_runtime::spawn_blocking(move || export_files_at(target, files))
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())??;
+    Ok(Some(root))
 }
 
 fn export_files_at(root: String, files: Vec<ExportFile>) -> Result<(), String> {
@@ -221,7 +235,15 @@ fn navigation_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        // Copy com.paperfield.app → com.paperfield.notes before SQL preloads the database.
+        // 必须最先注册：第二次启动只把已有窗口带到前台然后退出，不跑任何启动任务。
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
+        // Copy com.paperfield.app → com.paperfield.notes before the database layer opens it.
         .plugin(appdir::migration_plugin())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
@@ -433,7 +455,8 @@ mod import_tests {
         assert!(!d.join("cfg").join("library").exists(), "nothing written while waiting");
         drop(guard);
         let got = h.join().unwrap().unwrap();
-        assert_eq!(fs::read(&got.library_path).unwrap(), b"%PDF x");
+        assert!(got.library_path.starts_with("library/"), "stored relative: {}", got.library_path);
+        assert_eq!(fs::read(crate::library::resolve(&d.join("cfg"), &got.library_path)).unwrap(), b"%PDF x");
     }
 
     #[test]
