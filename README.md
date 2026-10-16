@@ -83,13 +83,15 @@ Without a key, add papers and edit every field by hand. Sample domains (多模�
 
 **文献库著录**：不配置也能查。系统页「文献库」里的联系邮箱、OpenAlex Key、Semantic Scholar Key 都是可选项，只改变请求走公共池还是礼貌池 / 个人额度，不改变查哪些库、按什么顺序查。联系邮箱只发给 Crossref（`mailto` 和 User-Agent），不会发给 OpenAlex。两个 Key 进系统钥匙串（Linux 上是 `secrets.json`），不会写进设置 JSON。
 
-查询顺序固定：有 arXiv id 时先问 arXiv，再用 Semantic Scholar 补 DOI 和期刊；有 DOI 时先问 Crossref，再问 OpenAlex 的单条 DOI（这条不占搜索额度）；只有标题时先问 OpenAlex 搜索，再问 Semantic Scholar 的标题匹配，最后问 Crossref。标题 Jaccard 低于 0.82 就丢掉。返回的 DOI 或 arXiv id 必须和请求的一致，对不上就记一笔原因并继续下一个来源，不会因为 429、403 或断网停掉整次查询。全部落空之后才把仍然空白的字段交给模型。来源徽章会写成「数据库 · Crossref」这样的具体库名。某个库因为没配置而失败时，结果旁边有一行说明，并链到设置里的文献库。
+查询顺序固定：有 arXiv id 时先问 arXiv，再用 Semantic Scholar 补 DOI 和期刊；有 DOI 时先问 Crossref，再问 OpenAlex 的单条 DOI（这条不占搜索额度）；只有标题时先问 OpenAlex 搜索，再问 Semantic Scholar 的标题匹配，最后问 Crossref。标题先做 NFKC、大小写和标点归一；归一后完全相同时，还要有相同标识符、年份相差不超过一年、前两位作者姓氏重合，或标题本身够独特（拉丁文 ≥4 个词或 ≥24 个字符、中日韩 ≥8 个字）之一佐证；不完全相同时，字符 3-gram Dice 与归一化编辑距离要一个 ≥0.90、另一个 ≥0.70，长度比 ≥0.85，并且必须有年份或作者佐证。标识符或年份冲突的候选直接丢掉。返回的 DOI 或 arXiv id 必须和请求的一致，对不上就记一笔原因并继续下一个来源，不会因为 429、403 或断网停掉整次查询。全部落空之后才把仍然空白的字段交给模型。来源徽章会写成「数据库 · Crossref」这样的具体库名。某个库因为没配置而失败时，结果旁边有一行说明，并链到设置里的文献库。
 
-文献库查到的值会替换此前由模型填上的字段（包括旧库里迁移时标成「模型」的字段）。你手改过的字段仍然保留，除非在确认对话框里选择覆盖。同一次查询不会用一个文献库的值换掉另一个文献库已经写下的值；「刷新链接」会重新查询并允许文献库之间更新。标题对不上时仍由模型按原来的「模型」徽章补全，不另加待核实标记。
+文献库查到的值会替换此前由模型填上的字段（包括旧库里迁移时标成「模型」的字段），也会替换导入 PDF 时从文件名取的临时标题（来源记为 `file`）。你手改过的字段仍然保留，除非在确认对话框里选择覆盖；请求发出后你又改过的字段，即使选了覆盖也不动。模型不写 DOI、arXiv id 和年份，也不会覆盖文献库写下的值。普通补全不会用一个文献库的值换掉另一个文献库已经写下的值；「刷新链接」跳过本地缓存重新查询，并允许文献库之间更新。值没有变化的字段不改来源徽章。标题对不上时仍由模型按原来的「模型」徽章补全，不另加待核实标记。
 
-手动添加时只要填了 arXiv 或 DOI，即使没有 PDF 也会查一次。同一篇论文的查询结果会在本地缓存约一天。代码链接和项目页写入前做 HTTP HEAD/GET，打不开就丢掉。档案侧栏的「刷新链接」只做这次查询，不调用模型。
+手动添加时只要填了 arXiv 或 DOI，即使没有 PDF 也会查一次。同一篇论文的查询结果会在本地缓存约一天。代码链接和项目页写入后再做 HTTP HEAD/GET 校验：只有明确的 404/410 或无效地址才会被清掉，超时、限流等不确定结果保留原值；校验期间你改过的链接不会被动。手动填写的链接不校验。档案侧栏的「刷新链接」只做这次查询，不调用模型。
 
-**备份与恢复**：系统页「数据导出」旁有「备份」和「恢复」。备份是一个 zip：`paper-field.db`、文库里的 PDF、以及不含密钥的设置 JSON。恢复前会先把当前数据库复制为 `paper-field.db.pre-restore-<时间>`，确认后才替换。导入 PDF 时桌面版把文件复制进应用支持目录的 `library/`，原路径留在 `pdf_original_path`。
+**备份与恢复**：系统页「数据导出」旁有「备份」和「恢复」，保存 / 打开对话框由桌面端原生弹出。备份是一个 zip：`paper-field.db`、文库里的 PDF、不含密钥的设置 JSON，以及最后写入的 `manifest.json`（先写 `.partial` 再改名，半截的备份不会冒充完整文件）。恢复分两步：先把 zip 解到 `.restore-staging/`，对照清单核对条目、检查数据库完整性和版本，写好恢复标记后重启；下次启动、打开数据库之前，才把现有的数据库（连同 `-wal`/`-shm`）、PDF 和设置整体移进 `pre-restore-<时间>/` 目录，再换上新文件。中途失败会按标记回滚；回滚不删任何文件，挡路的文件移进 `quarantine-<时间>/`。
+
+导入 PDF 时桌面版把文件复制进应用支持目录的 `library/`，数据库里只记相对路径 `library/<文件名>`（原路径留在 `pdf_original_path`），整个数据目录搬到另一台电脑或从备份恢复后仍能打开 PDF；旧库里指向 `library/` 的绝对路径会在启动时自动改写为相对路径。
 
 ## MinerU 解析源 / MinerU providers
 
@@ -105,7 +107,7 @@ Windows notes: local doclib access requires a curl build with `--unix-socket` su
 
 - **回退顺序**：卡片上方的顺序 chips 可 ↑↓ 调整，保存/导入按该顺序取第一个探测通过的源；「当前生效」一行始终显示实际使用的来源，全部失败时逐条列出失败原因。
 - **自动补全**：解析完成后若已配置 AI Key，会自动补全元数据；AI 只填空白字段，从不覆盖你手动改过的内容（`overwrite=false` 语义）。
-- **解析档位 / 页码范围**：仅作用于本地与 SSH 的 doclib API；官方 API 用「模型版本」替代档位，页码范围非 `all` 时按页提交。
+- **解析档位 / 页码范围**：档位仅作用于本地与 SSH 的 doclib API，官方 API 用「模型版本」替代；页码范围非 `all` 时，官方 API 随同一次提交带上 `page_ranges`。
 
 ### 官方 API 限额与错误码
 
@@ -119,7 +121,7 @@ Windows notes: local doclib access requires a curl build with `--unix-socket` su
 | -60018 | 当日 1000 页额度已用尽 |
 | -60012 | 任务不存在（正常情况下仅探测连接时出现） |
 
-**Token 存储位置**：桌面端只存于应用配置目录的 `mineru-settings.json`，界面上永不回显（只显示「已保存」），也不会写入 `tauri-plugin-store`。需要删除时用官方 API 卡片上的「清除已保存的 Token…」。
+**Token 存储位置**：桌面端存进系统钥匙串（macOS Keychain / Windows Credential Manager；Linux 为权限 0600 的 `secrets.json`），`mineru-settings.json` 只留非密钥配置。界面上永不回显（只显示「已保存」），也不会写入 `tauri-plugin-store`。需要删除时用官方 API 卡片上的「清除已保存的 Token…」。
 
 ### 解析恢复语义（同源原则）
 
@@ -286,17 +288,15 @@ xattr -dr com.apple.quarantine "/Applications/Paper Field.app"
 
 ## Security notes
 
-`tauri.conf.json` 的 `csp` 目前保持 `null`：XSS 主防线在前端 DOMPurify 消毒层（笔记与解析全文渲染前均经 `renderMarkdown` 消毒），贸然收紧 CSP 需要在 `tauri dev` 下逐一验证 HMR 与 IPC 通道后才可落地。候选收紧值（ws 仅开发期需要）：
+`tauri.conf.json` 设了 `csp`（发布版）和 `devCsp`（开发期，多放行 HMR 用的 `ws://127.0.0.1:43173`）：脚本只许本地加 `wasm-unsafe-eval`，图片只许本地 / `data:` / `blob:` / `asset:`，网络只许 IPC，`object-src 'none'`、`frame-ancestors 'none'`。前端 DOMPurify 消毒层仍是第一道防线（笔记与解析全文渲染前均经 `renderMarkdown` 消毒）。
 
-```
-default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ipc: http://ipc.localhost ws://127.0.0.1:43173
-```
+数据库只经 Rust 侧的 `db_select` / `db_execute` / `db_batch` 命令访问：读连接只读且由 SQLite authorizer 限定为 SELECT 和白名单 PRAGMA，每次调用只许一条语句，`ATTACH` / `DETACH` / `VACUUM` 一律拒绝。前端不再持有 `tauri-plugin-sql` 权限。同一数据目录只允许一个应用实例：第二次启动会把已打开的窗口提到前面然后退出，数据目录里的 `app.lock` 也挡住其他进程同时写库。
 
 敏感信息存储：LLM API Key 与 MinerU Token 在 macOS 写入 Keychain、在 Windows 写入 Credential Manager（Linux 开发环境写入权限 0600 的 `secrets.json`）。`llm-settings.json` / `mineru-settings.json` 只留非密钥配置；首次启动会把旧文件里的明文 Key 迁出，并清掉文件本身和 `.v1.bak` 里的 `sk-` / Bearer 片段。界面不回显，且各自提供「清除已保存的…」入口。作业错误和运行日志会打掉 `sk-` 与 `Bearer` 片段。旧版本镜像进 `tauri-plugin-store` 的明文 Key 会在下次保存时被自动删除。外链只接受 `http`/`https`，由系统浏览器打开。
 
 ## Tests / 测试
 
-三项门禁与逐文件覆盖说明见 [docs/TEST_REPORT.md](docs/TEST_REPORT.md)：
+三项门禁与逐文件覆盖说明见 [docs/测试报告.md](docs/测试报告.md)：
 
 ```bash
 npm test                                                   # 前端 vitest
@@ -314,9 +314,11 @@ cargo test --manifest-path src-tauri/Cargo.toml
 
 ## Data
 
-SQLite schema: `domains`, `papers`, `authors`, `paper_authors`, `notes`, `llm_jobs`. `papers.mineru_provider` records which MinerU source parsed each paper (本地 CLI / SSH 远程 / 官方 API). `papers.field_sources` records per-field provenance (`api` 数据库 / `llm` 模型 / `user` 手动). `PRAGMA user_version` is the migration cursor (currently 4). On an existing library the app copies the database aside (`paper-field.db.premigrate-<时间>`, or IndexedDB `paper-field.db.premigrate` in the browser) before applying ordered migrations, then backfills non-empty fields so the first lookup does not clobber them. A corrupt settings file is left untouched; it is not treated as a v1 migration.
+SQLite schema: `domains`, `papers`, `paper_parse`, `authors`, `paper_authors`, `notes`, `llm_jobs`, `app_meta`. `papers.mineru_provider` records which MinerU source parsed each paper (本地 CLI / SSH 远程 / 官方 API); `papers.mineru_job_id` records which parse job currently owns it, so a cancelled or superseded job can no longer write its result. `papers.field_sources` records per-field provenance (`api` 数据库 / `llm` 模型 / `user` 手动 / `file` 文件名). `papers.meta_rev` and `notes.rev` are bumped on every edit; AI results are written with a conditional update against the revision seen when the request started. `PRAGMA user_version` is the migration cursor (currently 6). On an existing library the app copies the database aside (`paper-field.db.premigrate-<时间>`, or IndexedDB `paper-field.db.premigrate` in the browser) before applying ordered migrations; each migration version runs in one transaction together with its `user_version` bump, so an interrupted upgrade leaves the previous version intact. A corrupt settings file is left untouched; it is not treated as a v1 migration.
 
-`prepareMeta` writes structured JSON onto the paper and authors. It does **not** change `reading_status`. Bibliographic lookup runs first and marks filled fields `api`. The model only fills fields still empty (`titleZh`, tags, labs, code-link guess) and those are marked `llm`. The default is fill-empty-only. 「用 AI 结果覆盖」 is the only path that passes `overwrite=true`, and a field edited while that request was in flight is still kept. `draftNotes` will not silently overwrite notes you already edited; an explicit overwrite marks the blocks `llm`.
+`prepareMeta` writes structured JSON onto the paper and authors. It does **not** change `reading_status`. Bibliographic lookup runs first and marks filled fields `api`; library values replace earlier `llm` and `file` values. The model only fills fields that are still empty or hold the filename title (`titleZh`, tags, labs, code-link guess), never identifiers (DOI / arXiv / year), and those are marked `llm`. Only changed columns are written, in one transaction with the job's `done` state. 「用 AI 结果覆盖」 is the only path that passes `overwrite=true`, and a field edited while that request was in flight is still kept. `draftNotes` will not silently overwrite notes you already edited; an explicit overwrite marks the blocks `llm`.
+
+Unsaved note edits are kept per paper as drafts (also in `localStorage`), so switching papers or restarting does not lose them; papers with a draft show a marker in the list. Dialogs and AI actions are bound to the paper they were opened for, not to whatever is selected when they finish.
 
 ## Phase-2 backlog
 
