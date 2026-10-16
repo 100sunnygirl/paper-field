@@ -29,7 +29,7 @@ use crate::app_config_dir;
 use crate::backup::safe_entry_name;
 use crate::secrets::scrub_json_secrets;
 
-pub const SCHEMA_VERSION: i64 = 4; // keep in sync with src/lib/schema.ts:9
+pub const SCHEMA_VERSION: i64 = 5; // keep in sync with src/lib/schema.ts:9
 const MARKER: &str = ".restore-in-progress";
 const STAGING: &str = ".restore-staging";
 const DB: &str = "paper-field.db";

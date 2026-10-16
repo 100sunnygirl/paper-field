@@ -63,6 +63,7 @@ interface PaperRow {
   mineru_error: string | null;
   mineru_parse_ids: string | null;
   mineru_provider?: string | null;
+  mineru_cred_fingerprint?: string | null;
   tags: string;
   labs: string;
   field_sources?: string | null;
@@ -198,6 +199,7 @@ function mapPaper(row: PaperRow): Paper {
     // 旧库存的是数字数组，官方 API 时代统一归一为字符串（doclib 数字 id 字符串化）。
     mineruParseIds: parseJsonArray<string>(row.mineru_parse_ids, []).map((id) => String(id)),
     mineruProvider: row.mineru_provider ?? null,
+    mineruCredFingerprint: row.mineru_cred_fingerprint ?? null,
     tags: parseJsonArray<string>(row.tags, []),
     labs: parseJsonArray<Lab>(row.labs, []),
     createdAt: row.created_at,
@@ -609,6 +611,7 @@ export const repo = {
       mineruError: null,
       mineruParseIds: [],
       mineruProvider: null,
+      mineruCredFingerprint: null,
       tags: [],
       labs: [],
       createdAt: at,
@@ -1103,6 +1106,7 @@ export const repo = {
       error?: string | null;
       parseIds?: string[];
       provider?: string | null;
+      credFingerprint?: string | null;
     },
   ): Promise<void> {
     const engine = await getEngine();
@@ -1110,7 +1114,7 @@ export const repo = {
     if (!rows[0]) return;
     const prev = mapPaper(rows[0]);
     await engine.execute(
-      `UPDATE papers SET mineru_status = ?, mineru_parse_id = ?, mineru_doc_ref = ?, mineru_error = ?, mineru_parse_ids = ?, mineru_provider = ?, updated_at = ? WHERE id = ?`,
+      `UPDATE papers SET mineru_status = ?, mineru_parse_id = ?, mineru_doc_ref = ?, mineru_error = ?, mineru_parse_ids = ?, mineru_provider = ?, mineru_cred_fingerprint = ?, updated_at = ? WHERE id = ?`,
       [
         patch.status === undefined ? prev.mineruStatus : patch.status,
         patch.parseId === undefined ? prev.mineruParseId : patch.parseId,
@@ -1118,6 +1122,7 @@ export const repo = {
         patch.error === undefined ? prev.mineruError : patch.error,
         JSON.stringify(patch.parseIds === undefined ? prev.mineruParseIds : patch.parseIds),
         patch.provider === undefined ? (rows[0].mineru_provider ?? null) : patch.provider,
+        patch.credFingerprint === undefined ? (rows[0].mineru_cred_fingerprint ?? null) : patch.credFingerprint,
         nowIso(),
         id,
       ],

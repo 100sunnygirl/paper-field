@@ -32,6 +32,7 @@ function intakeItem(id: string, mineruStatus: PaperListItem["mineruStatus"]): Pa
     mineruError: null,
     mineruParseIds: [],
     mineruProvider: null,
+    mineruCredFingerprint: null,
     tags: [],
     labs: [],
     createdAt: "2024-01-01T00:00:00.000Z",

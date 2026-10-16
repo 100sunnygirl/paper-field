@@ -348,13 +348,20 @@ describe("旧库迁移", () => {
     expect(await userVersion(engine)).toBe(SCHEMA_VERSION);
     const cols = await engine.select<{ name: string }>("PRAGMA table_info(papers)");
     const names = cols.map((col) => col.name);
-    for (const col of ["mineru_provider", "field_sources", "field_providers", "meta_confidence", "meta_rev", "pdf_original_path"]) {
+    for (const col of ["mineru_provider", "field_sources", "field_providers", "meta_confidence", "meta_rev", "pdf_original_path", "mineru_cred_fingerprint"]) {
       expect(names).toContain(col);
     }
     const pk = await engine.select<{ sql: string }>(
       "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'paper_authors'",
     );
     expect(pk[0]?.sql).toContain("PRIMARY KEY (paper_id, sort_order)");
+    expect(pk[0]?.sql).not.toContain("paper_authors_next");
+    const fingerprints = await engine.select<{ id: string; mineru_cred_fingerprint: string | null }>(
+      "SELECT id, mineru_cred_fingerprint FROM papers ORDER BY id",
+    );
+    for (const row of fingerprints) {
+      expect(row.mineru_cred_fingerprint).toBeNull();
+    }
 
     const triggers = await engine.select<{ name: string; sql: string }>(
       "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' ORDER BY name",

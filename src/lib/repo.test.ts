@@ -57,7 +57,7 @@ describe("applySchema（makeTestEngine 与生产同构建表）", () => {
     }
     const cols = await engine.select<{ name: string }>("PRAGMA table_info(papers)");
     const colNames = cols.map((row) => row.name);
-    for (const col of ["pdf_path", "user_meta_touched", "mineru_status", "mineru_provider", "mineru_parse_ids", "labs"]) {
+    for (const col of ["pdf_path", "user_meta_touched", "mineru_status", "mineru_provider", "mineru_parse_ids", "labs", "mineru_cred_fingerprint"]) {
       expect(colNames).toContain(col);
     }
     const indexes = await engine.select<{ name: string }>(
@@ -528,6 +528,40 @@ describe("作业 CRUD 与统计", () => {
 });
 
 describe("MinerU 状态与解析文本", () => {
+  it("setMineruState 把凭据指纹和提交状态一起写入，省略时保留，新建论文为 NULL", async () => {
+    const domainId = await makeDomain();
+    const plain = "token-plain-sk-old";
+    const paper = await repo.createPaper({ domainId, pdfPath: "/tmp/attention.pdf" });
+    expect((await repo.getPaper(paper.id))!.mineruCredFingerprint).toBeNull();
+    await repo.setMineruState(paper.id, {
+      status: "submitted",
+      provider: "api",
+      docRef: "batch-1",
+      parseIds: ["1"],
+      credFingerprint: "pf-cred-v1:abc",
+    });
+    let row = (await repo.getPaper(paper.id))!;
+    expect(row.mineruStatus).toBe("submitted");
+    expect(row.mineruProvider).toBe("api");
+    expect(row.mineruDocRef).toBe("batch-1");
+    expect(row.mineruCredFingerprint).toBe("pf-cred-v1:abc");
+    expect(row.mineruCredFingerprint).not.toContain(plain);
+    const stored = await holder.engine!.select<{ mineru_cred_fingerprint: string | null }>(
+      "SELECT mineru_cred_fingerprint FROM papers WHERE id = ?",
+      [paper.id],
+    );
+    expect(stored[0]?.mineru_cred_fingerprint).toBe("pf-cred-v1:abc");
+    expect(stored[0]?.mineru_cred_fingerprint ?? "").not.toContain(plain);
+    await repo.setMineruState(paper.id, { status: "parsing" });
+    row = (await repo.getPaper(paper.id))!;
+    expect(row.mineruStatus).toBe("parsing");
+    expect(row.mineruCredFingerprint).toBe("pf-cred-v1:abc");
+    await repo.setMineruState(paper.id, { credFingerprint: null, provider: null, docRef: null, parseIds: [] });
+    row = (await repo.getPaper(paper.id))!;
+    expect(row.mineruCredFingerprint).toBeNull();
+    expect(row.mineruProvider).toBeNull();
+  });
+
   it("setMineruState patch 各字段并保留未指定字段（含 provider）", async () => {
     const domainId = await makeDomain();
     const paper = await repo.createPaper({ domainId });

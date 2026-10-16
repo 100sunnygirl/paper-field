@@ -123,6 +123,7 @@ export interface Paper {
   mineruError: string | null;
   mineruParseIds: string[];
   mineruProvider: MineruProviderKind | string | null;
+  mineruCredFingerprint: string | null;
   tags: string[];
   labs: Lab[];
   createdAt: string;
