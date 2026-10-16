@@ -306,8 +306,10 @@ pub fn run() {
         .expect("error while running Paper Field")
         .run(|app, event| {
             // 退出前关闭连接池：最后一个连接关闭时 SQLite 做检查点，不留 -wal。
+            // 再放掉文库锁：重启（恢复文库、安装更新）的新进程紧接着就要拿它。
             if let tauri::RunEvent::Exit = event {
                 tauri::async_runtime::block_on(app.state::<db::Db>().close());
+                instance::release();
             }
         });
 }

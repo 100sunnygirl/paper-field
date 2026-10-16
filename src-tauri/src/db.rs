@@ -7,7 +7,7 @@
 //! 也无法借 SQL 在磁盘上写出任意文件。
 
 use std::ffi::{c_char, c_int, c_void, CStr};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::ptr;
 use std::time::Duration;
 
@@ -22,6 +22,7 @@ pub const DB_FILE: &str = "paper-field.db";
 
 #[derive(Clone)]
 struct Pools {
+    path: PathBuf,
     reader: SqlitePool,
     writer: SqlitePool,
 }
@@ -47,6 +48,36 @@ impl Db {
         let pools = open_pools(&path).await?;
         *guard = Some(pools.clone());
         Ok(pools)
+    }
+
+    /// 结构变更（CREATE / ALTER / DROP）提交后换一批读连接。
+    ///
+    /// 早先载入过表结构的读连接不会马上察觉变更：对刚加了列的表做 `SELECT *` 时，
+    /// sqlx 按旧列数取值会越界 panic，查询静默返回空结果。旧池不主动 close：
+    /// 已经拿到它的调用照常做完，最后一个引用释放时连接随之关闭。
+    async fn refresh_reader(&self) {
+        let mut guard = self.pools.lock().await;
+        let Some(pools) = guard.as_mut() else { return };
+        match open_reader(&pools.path).await {
+            Ok(fresh) => pools.reader = fresh,
+            Err(err) => eprintln!("[paper-field] 结构变更后重建读连接失败：{err}"),
+        }
+    }
+
+    async fn execute(&self, pools: &Pools, sql: &str, params: &[Value]) -> Result<u64, DbError> {
+        let rows = execute_on(&pools.writer, sql, params).await?;
+        if changes_schema(sql) {
+            self.refresh_reader().await;
+        }
+        Ok(rows)
+    }
+
+    async fn batch(&self, pools: &Pools, steps: &[Step]) -> Result<Vec<u64>, DbError> {
+        let rows = batch_on(&pools.writer, steps).await?;
+        if steps.iter().any(|step| changes_schema(&step.sql)) {
+            self.refresh_reader().await;
+        }
+        Ok(rows)
     }
 
     /// 关闭两个连接池：最后一个连接关闭时 SQLite 会做检查点并删掉 -wal。
@@ -141,13 +172,36 @@ async fn open_pools(path: &Path) -> Result<Pools, DbError> {
         .after_connect(|conn, _| Box::pin(async move { install_authorizer(conn, Role::Writer).await }))
         .connect_with(base_options(path))
         .await?;
-    let reader = SqlitePoolOptions::new()
+    let reader = open_reader(path).await?;
+    Ok(Pools { path: path.to_path_buf(), reader, writer })
+}
+
+async fn open_reader(path: &Path) -> Result<SqlitePool, DbError> {
+    Ok(SqlitePoolOptions::new()
         .max_connections(4)
         .min_connections(0)
         .after_connect(|conn, _| Box::pin(async move { install_authorizer(conn, Role::Reader).await }))
         .connect_with(base_options(path))
-        .await?;
-    Ok(Pools { reader, writer })
+        .await?)
+}
+
+fn changes_schema(sql: &str) -> bool {
+    matches!(leading_keyword(sql).as_str(), "CREATE" | "ALTER" | "DROP")
+}
+
+/// 写连接只有一条：上一次调用若在 BEGIN 之后没能 ROLLBACK（回滚本身失败，或任务中途 panic），
+/// 它会带着未结束的事务回到池里，之后的写入都不会提交。每次写之前先收拾掉。
+async fn end_stray_transaction(conn: &mut SqliteConnection) -> Result<(), DbError> {
+    let in_transaction = {
+        let mut handle = conn.lock_handle().await?;
+        // SAFETY: 句柄在 lock_handle 期间独占且有效。
+        unsafe { ffi::sqlite3_get_autocommit(handle.as_raw_handle().as_ptr()) == 0 }
+    };
+    if in_transaction {
+        eprintln!("[paper-field] 写连接上有未结束的事务，先回滚");
+        sqlx::query("ROLLBACK").execute(&mut *conn).await?;
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -349,12 +403,14 @@ async fn select_on(pool: &SqlitePool, sql: &str, params: &[Value]) -> Result<Vec
 /// 单条写入，自动提交（PRAGMA wal_checkpoint 这类不能放进事务的语句也走这里）。
 async fn execute_on(pool: &SqlitePool, sql: &str, params: &[Value]) -> Result<u64, DbError> {
     let mut conn = pool.acquire().await?;
+    end_stray_transaction(&mut conn).await?;
     vet(&mut conn, sql, Role::Writer).await?;
     Ok(bind_all(sqlx::query(sql), params).execute(&mut *conn).await?.rows_affected())
 }
 
 async fn batch_on(pool: &SqlitePool, steps: &[Step]) -> Result<Vec<u64>, DbError> {
     let mut conn = pool.acquire().await?;
+    end_stray_transaction(&mut conn).await?;
     sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await?;
     let mut out = Vec::with_capacity(steps.len());
     for (index, step) in steps.iter().enumerate() {
@@ -397,13 +453,13 @@ pub async fn db_select(
 #[tauri::command]
 pub async fn db_execute(app: AppHandle, db: State<'_, Db>, sql: String, params: Vec<Value>) -> Result<u64, DbError> {
     let pools = db.pools(&app).await?;
-    execute_on(&pools.writer, &sql, &params).await
+    db.execute(&pools, &sql, &params).await
 }
 
 #[tauri::command]
 pub async fn db_batch(app: AppHandle, db: State<'_, Db>, steps: Vec<Step>) -> Result<Vec<u64>, DbError> {
     let pools = db.pools(&app).await?;
-    batch_on(&pools.writer, &steps).await
+    db.batch(&pools, &steps).await
 }
 
 /// 重启前（恢复文库）由前端调用；之后的访问会重新打开连接池。
@@ -546,6 +602,39 @@ mod tests {
         assert_eq!(rows[0]["v"], json!("set"));
         execute_on(&p.writer, "PRAGMA wal_checkpoint(FULL)", &[]).await.unwrap();
         execute_on(&p.writer, "PRAGMA foreign_keys = ON", &[]).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn readers_see_new_columns_after_a_schema_batch() {
+        let (_dir, p) = pools("schema").await;
+        execute_on(&p.writer, "INSERT INTO t (v) VALUES ('a')", &[]).await.unwrap();
+        let db = Db::default();
+        *db.pools.lock().await = Some(p.clone());
+        // 让读连接先载入旧表结构
+        select_on(&p.reader, "SELECT name FROM pragma_table_info('t') WHERE name = 'extra'", &[]).await.unwrap();
+        db.batch(&p, &[step("ALTER TABLE t ADD COLUMN extra TEXT NOT NULL DEFAULT 'e'", vec![], Expect::Any)])
+            .await
+            .unwrap();
+        let reader = db.pools.lock().await.as_ref().unwrap().reader.clone();
+        let rows = select_on(&reader, "SELECT * FROM t WHERE v = ?", &[json!("a")]).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["extra"], json!("e"));
+    }
+
+    #[tokio::test]
+    async fn a_stray_transaction_on_the_writer_is_rolled_back_before_the_next_write() {
+        let (_dir, p) = pools("stray").await;
+        {
+            let mut conn = p.writer.acquire().await.unwrap();
+            sqlx::query("BEGIN IMMEDIATE").execute(&mut *conn).await.unwrap();
+            sqlx::query("INSERT INTO t (v) VALUES ('lost')").execute(&mut *conn).await.unwrap();
+            // 不提交、不回滚就把连接还回池里
+        }
+        batch_on(&p.writer, &[step("INSERT INTO t (v) VALUES ('kept')", vec![], Expect::One)]).await.unwrap();
+        execute_on(&p.writer, "INSERT INTO t (v) VALUES ('also')", &[]).await.unwrap();
+        let rows = select_on(&p.reader, "SELECT v FROM t ORDER BY id", &[]).await.unwrap();
+        let values: Vec<_> = rows.iter().map(|row| row["v"].clone()).collect();
+        assert_eq!(values, vec![json!("kept"), json!("also")]);
     }
 
     #[test]

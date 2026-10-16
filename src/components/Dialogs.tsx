@@ -418,9 +418,15 @@ function useDialogPaper(): { paper: PaperDetail | null; missing: boolean } {
   const dialogPaperId = useField((s) => s.dialogPaperId);
   const current = useField((s) => s.paper);
   const [loaded, setLoaded] = useState<{ id: string; paper: PaperDetail | null } | null>(null);
+  // 上一次拿到的这篇：按 id 重读期间沿用它，编辑器不卸载，未保存的修改不丢。
+  const last = useRef<PaperDetail | null>(null);
   const matches = Boolean(dialogPaperId) && current?.id === dialogPaperId;
   useEffect(() => {
-    if (!dialogPaperId || matches) return;
+    if (!dialogPaperId || matches) {
+      // 选中回到这篇：丢掉旧的按 id 读取结果，下次改走时不会先拿到过期内容。
+      setLoaded(null);
+      return;
+    }
     let alive = true;
     void repo.getPaper(dialogPaperId).then((paper) => {
       if (alive) setLoaded({ id: dialogPaperId, paper });
@@ -430,9 +436,15 @@ function useDialogPaper(): { paper: PaperDetail | null; missing: boolean } {
     };
   }, [dialogPaperId, matches]);
   if (!dialogPaperId) return { paper: null, missing: false };
-  if (matches) return { paper: current, missing: false };
-  if (loaded?.id === dialogPaperId) return { paper: loaded.paper, missing: loaded.paper === null };
-  return { paper: null, missing: false };
+  let paper: PaperDetail | null = null;
+  let missing = false;
+  if (matches) paper = current;
+  else if (loaded?.id === dialogPaperId) {
+    paper = loaded.paper;
+    missing = loaded.paper === null;
+  } else if (last.current?.id === dialogPaperId) paper = last.current;
+  if (paper) last.current = paper;
+  return { paper, missing };
 }
 
 /** 目标论文已被删除：关掉对话框并说明，不把操作转到别的论文上。 */

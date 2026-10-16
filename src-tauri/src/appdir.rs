@@ -282,8 +282,12 @@ pub fn migration_plugin<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
                 if crate::instance::acquire(&dir) {
                     crate::backup::cleanup_backup_snapshots(&dir);
                     crate::restore::apply_pending_restore(&dir);
-                    if let Err(err) = crate::library::relativize_database(&dir) {
-                        eprintln!("[paper-field] 改写文库 PDF 路径失败：{err}");
+                    // 恢复卡住时库可能只换了一半：界面不打开它，这里也不碰（改写会让下次的回滚校验失败）。
+                    let stuck = matches!(crate::restore::restore_status(), crate::restore::RestoreStatus::Stuck { .. });
+                    if !stuck {
+                        if let Err(err) = crate::library::relativize_database(&dir) {
+                            eprintln!("[paper-field] 改写文库 PDF 路径失败：{err}");
+                        }
                     }
                 } else {
                     eprintln!("[paper-field] 另一个 Paper Field 正在使用 {}", dir.display());

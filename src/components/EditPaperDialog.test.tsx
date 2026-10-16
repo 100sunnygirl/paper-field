@@ -303,3 +303,32 @@ describe("EditPaperDialog · 目标锁定与「完成」", () => {
     expect(vi.mocked(useField.getState().savePaperPatch).mock.calls[0]![0]).toBe("paper-a");
   });
 });
+
+describe("EditPaperDialog · 选中被改走时保留未保存的修改", () => {
+  it("后台导入改了选中：对话框不闪退，已输入的标题还在，保存仍写到原来那篇", async () => {
+    const detail = fakeDetail();
+    // 按 id 重读这篇时故意慢一拍，模拟读取期间的那几帧。
+    let resolveLoad: (paper: PaperDetail) => void = () => undefined;
+    const getPaper = vi.spyOn(repo, "getPaper").mockImplementation(
+      () => new Promise<PaperDetail | null>((resolve) => (resolveLoad = resolve)),
+    );
+    openWith(detail);
+    render(<EditPaperDialog />);
+    fireEvent.change(screen.getByLabelText("英文标题"), { target: { value: "Unsaved Title" } });
+
+    const other = fakeDetail({ id: "paper-2", title: "Imported Paper" });
+    act(() => {
+      useField.setState({ paper: other, selectedPaperId: other.id });
+    });
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(screen.getByLabelText("英文标题")).toHaveValue("Unsaved Title");
+
+    await act(async () => resolveLoad(detail));
+    expect(getPaper).toHaveBeenCalledWith("paper-1");
+    expect(screen.getByLabelText("英文标题")).toHaveValue("Unsaved Title");
+    fireEvent.click(screen.getByRole("button", { name: "保存论文信息" }));
+    await waitFor(() => expect(useField.getState().savePaperPatch).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(useField.getState().savePaperPatch).mock.calls[0]![0]).toBe("paper-1");
+    getPaper.mockRestore();
+  });
+});
