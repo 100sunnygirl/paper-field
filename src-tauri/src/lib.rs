@@ -211,6 +211,12 @@ fn build_menu(app: &tauri::App) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> 
     MenuBuilder::new(app).item(&file).item(&edit).item(&view).build()
 }
 
+fn navigation_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    tauri::plugin::Builder::new("paper-field-navigation")
+        .on_navigation(|webview, url| webview.label() != "main" || platform::allow_top_level_navigation(url))
+        .build()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -222,6 +228,7 @@ pub fn run() {
         .plugin(tauri_plugin_sql::Builder::default().build())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(navigation_plugin())
         .manage(llm::LlmState::new())
         .manage(mineru::MineruCredBook::default())
         .setup(|app| {
