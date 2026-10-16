@@ -79,6 +79,16 @@ pub fn normalize_title(value: &str) -> String {
         .collect()
 }
 
+/// NFKC, drop whitespace, then lowercase. Title-only cache keys join these with U+001F.
+pub fn normalize_author_token(name: &str) -> String {
+    name.nfkc()
+        .collect::<String>()
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect::<String>()
+        .to_lowercase()
+}
+
 pub fn titles_match(query: &TitleQuery, hit: &LookupHit) -> Option<f64> {
     let left = normalize_title(&query.title);
     let right = normalize_title(&hit.title);

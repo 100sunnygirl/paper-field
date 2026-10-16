@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom">
+  <entry>
+    <id>http://arxiv.org/abs/1706.03762v1</id>
+    <published>2017-06-12T17:57:34Z</published>
+    <title>Sparse Abstract Paper</title>
+    <summary>   </summary>
+    <author>
+      <name>Ashish Vaswani</name>
+      <arxiv:affiliation>Google Brain</arxiv:affiliation>
+    </author>
+    <arxiv:doi>10.5555/3295222.3295349</arxiv:doi>
+    <arxiv:journal_ref>NeurIPS</arxiv:journal_ref>
+  </entry>
+</feed>
