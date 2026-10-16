@@ -577,9 +577,10 @@ export const repo = {
     const doi = input.doi?.trim() || null;
     const sources: FieldSources = {};
     if (explicitTitle || input.userOwned) sources.title = "user";
+    else if (pdfPath) sources.title = "llm";
     if (arxivId) sources.arxivId = "user";
     if (doi) sources.doi = "user";
-    const userMetaTouched = Object.keys(sources).length > 0;
+    const userMetaTouched = Boolean(explicitTitle || input.userOwned || arxivId || doi);
     const paper: Paper = {
       id: uid(),
       domainId: input.domainId,
@@ -764,6 +765,7 @@ export const repo = {
       isCorresponding?: boolean;
     }>,
     touchMeta = false,
+    expectedMetaRev: number | null = null,
   ): Promise<void> {
     const engine = await getEngine();
     const payload = JSON.stringify(
@@ -785,8 +787,8 @@ export const repo = {
          field_sources = CASE WHEN ? = 1
            THEN json_set(COALESCE(field_sources, '{}'), '$.authors', 'user')
            ELSE field_sources END
-       WHERE id = ?`,
-      [payload, nowIso(), touchMeta ? 1 : 0, touchMeta ? 1 : 0, touchMeta ? 1 : 0, paperId],
+       WHERE id = ? AND (? IS NULL OR meta_rev = ?)`,
+      [payload, nowIso(), touchMeta ? 1 : 0, touchMeta ? 1 : 0, touchMeta ? 1 : 0, paperId, expectedMetaRev, expectedMetaRev],
     );
   },
 
@@ -899,7 +901,7 @@ export const repo = {
       }
       const after = await engine.select<{ meta_rev: number }>("SELECT meta_rev FROM papers WHERE id = ?", [paperId]);
       if (Number(after[0]?.meta_rev ?? 0) !== (prev.metaRev ?? 0)) continue;
-      if (plan.replaceAuthors) await this.replaceAuthors(paperId, meta.authors, false);
+      if (plan.replaceAuthors) await this.replaceAuthors(paperId, meta.authors, false, prev.metaRev ?? 0);
       return;
     }
   },

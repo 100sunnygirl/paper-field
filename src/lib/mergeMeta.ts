@@ -60,20 +60,21 @@ function protectedUser(source: FieldSource | undefined, metaRev: number, started
 }
 
 /**
- * api replaces llm. api does not replace api unless this is a re-lookup or an
- * explicit overwrite. user stays protected. Unset fields (filename titles) may be filled.
+ * overwrite=false and replaceApi=false keeps user, api, and llm.
+ * replaceApi lets a link refresh replace api and llm, never user.
+ * overwrite replaces anything protectedUser did not already freeze.
  */
 function keepPrevious(
   prevSource: FieldSource | undefined,
   hasPrev: boolean,
   overwrite: boolean,
-  incoming: FieldSource,
+  _incoming: FieldSource,
   replaceApi: boolean,
 ): boolean {
   if (!hasPrev || !prevSource) return false;
-  if (prevSource === "llm" && incoming === "api") return false;
-  if (prevSource === "api" && incoming === "api") return !(overwrite || replaceApi);
-  if (prevSource === "user" || prevSource === "api" || prevSource === "llm") return !overwrite;
+  if (prevSource === "user") return !overwrite;
+  if (overwrite) return false;
+  if (prevSource === "api" || prevSource === "llm") return !replaceApi;
   return false;
 }
 

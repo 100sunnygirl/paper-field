@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { repo } from "../lib/repo";
 import { useField } from "../store";
 import type { NoteKind, PaperDetail } from "../lib/types";
-import { EditPaperDialog } from "./Dialogs";
+import { ConfirmMetaDialog, EditPaperDialog } from "./Dialogs";
 
 function noteBlock(paperId: string, kind: NoteKind, content = ""): PaperDetail["notes"][NoteKind] {
   return { id: `n-${kind}`, paperId, kind, content, source: "manual", userEdited: false, revisedAt: null };
@@ -220,6 +220,14 @@ describe("EditPaperDialog · 作者编辑", () => {
     await waitFor(() => expect(useField.getState().saveAuthors).toHaveBeenCalledTimes(1));
     const saved = vi.mocked(useField.getState().saveAuthors).mock.calls[0]![0];
     expect(saved[0].affiliation).toBe("MIT");
+  });
+});
+
+describe("ConfirmMetaDialog · 覆盖顺序", () => {
+  it("说明文献库先写、模型只补仍空字段", () => {
+    useField.setState({ dialog: "confirm-meta", paper: fakeDetail(), selectedPaperId: "paper-1" });
+    render(<ConfirmMetaDialog />);
+    expect(screen.getByRole("dialog").textContent).toContain("文献库先写、模型只补仍空字段");
   });
 });
 

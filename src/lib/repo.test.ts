@@ -442,6 +442,64 @@ describe("updatePaper / applyPreparedMeta（用户编辑锁）", () => {
   });
 });
 
+describe("作者替换与 meta_rev（M4-P4）", () => {
+  it("著录更新放行后 meta_rev 再升高时，不改 paper_authors", async () => {
+    const domainId = await makeDomain();
+    const paper = await repo.createPaper({ domainId });
+    await repo.replaceAuthors(paper.id, [{ name: "Alice", affiliation: "Old Lab" }]);
+    const before = (await repo.getPaper(paper.id))!.authors.map((author) => author.name);
+
+    const inner = holder.engine!;
+    let paperUpdateDone = false;
+    let bumped = false;
+    const wrapped: SqlEngine = {
+      execute: (sql, params) => {
+        if (/SET\s+title = \?/.test(sql) && /meta_rev = \?/.test(sql)) paperUpdateDone = true;
+        return inner.execute(sql, params);
+      },
+      select: async <T>(sql: string, params?: unknown[]): Promise<T[]> => {
+        const rows = await inner.select<T>(sql, params);
+        if (!bumped && paperUpdateDone && /SELECT meta_rev FROM papers/i.test(sql)) {
+          bumped = true;
+          await inner.execute("UPDATE papers SET meta_rev = meta_rev + 1 WHERE id = ?", [paper.id]);
+        }
+        return rows;
+      },
+    };
+    holder.engine = wrapped;
+
+    await repo.applyPreparedMeta(
+      paper.id,
+      {
+        title: "新标题",
+        titleZh: null,
+        abstract: "摘要",
+        year: 2017,
+        venue: "NeurIPS",
+        doi: null,
+        arxivId: null,
+        authors: [{ name: "Bob", affiliation: "New Lab" }],
+        labs: [],
+        codeOpenSource: "unknown",
+        codeURL: null,
+        projectPage: null,
+        pdfURL: null,
+        tags: [],
+      },
+      false,
+      { source: "llm" },
+    );
+
+    expect((await repo.getPaper(paper.id))!.authors.map((author) => author.name)).toEqual(before);
+    const links = await inner.select<{ c: number }>(
+      "SELECT COUNT(*) AS c FROM paper_authors WHERE paper_id = ?",
+      [paper.id],
+    );
+    expect(Number(links[0]?.c)).toBe(before.length);
+    expect(bumped).toBe(true);
+  });
+});
+
 describe("笔记与草稿", () => {
   it("updateNote 更新内容并置 user_notes_touched", async () => {
     const domainId = await makeDomain();

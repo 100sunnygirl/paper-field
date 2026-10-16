@@ -184,6 +184,8 @@ export function importFailureList(failed: Array<{ name: string; message: string 
   return rest > 0 ? `${shown} 等，另有 ${rest} 篇` : shown;
 }
 
+const prepareInflight = new Set<string>();
+
 export const SEARCH_DEBOUNCE_MS = 250;
 let refreshSeq = 0;
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
@@ -754,7 +756,8 @@ export const useField = create<FieldState>((set, get) => ({
 
   runPrepareMeta: async (paperId, overwrite = false, quiet = false) => {
     const id = paperId ?? get().selectedPaperId;
-    if (!id) return;
+    if (!id || prepareInflight.has(id)) return;
+    prepareInflight.add(id);
     try {
       const paper = await repo.getPaper(id);
       if (!paper) return;
@@ -788,6 +791,8 @@ export const useField = create<FieldState>((set, get) => ({
       const message = redactSecrets(errText(err));
       log.error("llm", "补全论文信息失败", message);
       if (!quiet) get().setFlash({ tone: "error", text: message });
+    } finally {
+      prepareInflight.delete(id);
     }
   },
 
