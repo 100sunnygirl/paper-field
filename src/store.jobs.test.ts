@@ -199,7 +199,9 @@ describe("作业面板的队列操作", () => {
     expect(cancelMineruPaper).toHaveBeenCalledWith("p2");
     expect(cancelMineruPaper).toHaveBeenCalledWith("p3");
     expect(getActivity().batches[0].results).toEqual({ p2: "cancelled", p3: "cancelled" });
-    expect(useField.getState().flash).toMatchObject({ tone: "ok", text: expect.stringContaining("3 篇不再处理") });
+    expect(useField.getState().flash?.text).toBe(
+      "已在本机停止解析，3 篇不再写入。远端任务不撤回，可能仍在继续，配额或页数可能已经计入。",
+    );
   });
 
   it("停止批次时当前篇尚未建作业：直接打取消标记", async () => {

@@ -1108,15 +1108,21 @@ export const repo = {
       provider?: string | null;
       credFingerprint?: string | null;
     },
-  ): Promise<void> {
+  ): Promise<boolean> {
     const engine = await getEngine();
     const rows = await engine.select<PaperRow>("SELECT * FROM papers WHERE id = ?", [id]);
-    if (!rows[0]) return;
+    if (!rows[0]) return false;
     const prev = mapPaper(rows[0]);
-    await engine.execute(
-      `UPDATE papers SET mineru_status = ?, mineru_parse_id = ?, mineru_doc_ref = ?, mineru_error = ?, mineru_parse_ids = ?, mineru_provider = ?, mineru_cred_fingerprint = ?, updated_at = ? WHERE id = ?`,
+    const nextStatus = patch.status === undefined ? prev.mineruStatus : patch.status;
+    // 取消和认领完成不得盖住已经结束的状态：只有还在排队/已提交/解析中才能写成这两态。
+    const inflightGuard =
+      nextStatus === "done" || nextStatus === "cancelled"
+        ? " AND mineru_status IN ('queued','submitted','parsing')"
+        : "";
+    const changed = await engine.execute(
+      `UPDATE papers SET mineru_status = ?, mineru_parse_id = ?, mineru_doc_ref = ?, mineru_error = ?, mineru_parse_ids = ?, mineru_provider = ?, mineru_cred_fingerprint = ?, updated_at = ? WHERE id = ?${inflightGuard}`,
       [
-        patch.status === undefined ? prev.mineruStatus : patch.status,
+        nextStatus,
         patch.parseId === undefined ? prev.mineruParseId : patch.parseId,
         patch.docRef === undefined ? prev.mineruDocRef : patch.docRef,
         patch.error === undefined ? prev.mineruError : patch.error,
@@ -1127,6 +1133,18 @@ export const repo = {
         id,
       ],
     );
+    return changed > 0;
+  },
+
+  /** 认领完成写成 done 之后发现论文已取消：只把刚刚写成 done 的作业改回 cancelled。 */
+  async revertDoneJob(id: string): Promise<boolean> {
+    const engine = await getEngine();
+    const changed = await engine.execute(
+      `UPDATE llm_jobs SET status = 'cancelled', error = 'cancelled', finished_at = ?
+        WHERE id = ? AND status = 'done'`,
+      [nowIso(), id],
+    );
+    return changed > 0;
   },
 
   async saveParsedMarkdown(id: string, markdown: string): Promise<void> {

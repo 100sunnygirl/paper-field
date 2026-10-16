@@ -562,6 +562,28 @@ describe("MinerU 状态与解析文本", () => {
     expect(row.mineruProvider).toBeNull();
   });
 
+  it("取消和认领完成只改写仍在排队、已提交或解析中的论文", async () => {
+    const domainId = await makeDomain();
+    const paper = await repo.createPaper({ domainId, pdfPath: "/tmp/attention.pdf" });
+    await repo.setMineruState(paper.id, { status: "parsing", provider: "local", docRef: "doc-1" });
+    expect(await repo.setMineruState(paper.id, { status: "cancelled" })).toBe(true);
+    expect(await repo.setMineruState(paper.id, { status: "done", error: null })).toBe(false);
+    expect((await repo.getPaper(paper.id))!.mineruStatus).toBe("cancelled");
+
+    const other = await repo.createPaper({ domainId, pdfPath: "/tmp/other.pdf" });
+    await repo.setMineruState(other.id, { status: "submitted", provider: "api", docRef: "batch-1" });
+    const job = await repo.createJob(other.id, "mineruParse", "prompt");
+    await repo.updateJob(job.id, { status: "running", startedAt: "2024-01-01T00:00:00.000Z" });
+    expect(await repo.revertDoneJob(job.id)).toBe(false);
+    expect(await repo.updateJob(job.id, { status: "done", finishedAt: "2024-01-01T00:00:01.000Z" })).toBe(true);
+    expect(await repo.setMineruState(other.id, { status: "cancelled" })).toBe(true);
+    expect(await repo.setMineruState(other.id, { status: "done", error: null })).toBe(false);
+    expect((await repo.getPaper(other.id))!.mineruStatus).toBe("cancelled");
+    expect(await repo.revertDoneJob(job.id)).toBe(true);
+    expect(await repo.jobStatus(job.id)).toBe("cancelled");
+    expect(await repo.revertDoneJob(job.id)).toBe(false);
+  });
+
   it("setMineruState patch 各字段并保留未指定字段（含 provider）", async () => {
     const domainId = await makeDomain();
     const paper = await repo.createPaper({ domainId });

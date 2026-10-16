@@ -443,6 +443,92 @@ describe("凭据指纹续跑（M6）", () => {
     expect(mineruParseStatuses).toHaveBeenCalledWith("ssh", "doc-resume", ["9"], "p-1", "pf-cred-v1:match");
     expect(host.flash).not.toHaveBeenCalledWith("error", STALE_CRED_ERROR);
   });
+
+  it("指纹匹配并继续轮询时提示继续上次未完成的解析", async () => {
+    const paper = paperState({
+      mineruStatus: "parsing",
+      mineruDocRef: "doc-resume",
+      mineruParseIds: ["9"],
+      mineruProvider: "ssh",
+      mineruCredFingerprint: "pf-cred-v1:match",
+    });
+    vi.mocked(mineruCurrentFingerprint).mockResolvedValue("pf-cred-v1:match");
+    vi.mocked(repo.listPendingMineru).mockResolvedValue(["p-1"]);
+    vi.mocked(repo.getPaper).mockResolvedValue(paper);
+    vi.mocked(mineruParseStatuses).mockResolvedValue([poll("done", { id: "9" })]);
+    vi.mocked(mineruMarkdown).mockResolvedValue("# resumed");
+    const host = makeHost(paper);
+
+    await resumeMineru(host);
+
+    expect(host.flash).toHaveBeenCalledWith("ok", "继续上次未完成的解析。");
+    expect(host.flash.mock.calls.map(([, text]) => text)).not.toContain("应用上次退出，作业中断");
+  });
+});
+
+function hang<T>() {
+  let release!: (value: T) => void;
+  const promise = new Promise<T>((resolve) => {
+    release = resolve;
+  });
+  return { promise, release };
+}
+
+describe("取消只停本机（B1）", () => {
+  beforeEach(() => {
+    resetActivity();
+  });
+
+  it("轮询返回前取消：不写全文、不标 done、不自动补全，批次计取消", async () => {
+    const paper = paperState({
+      mineruStatus: "parsing",
+      mineruDocRef: "doc-1",
+      mineruParseIds: [],
+      mineruProvider: "local",
+      mineruCredFingerprint: "pf-cred-v1:match",
+      parsedMarkdown: "# 已有全文",
+    });
+    const host = makeHost(paper);
+    const hung = hang<string>();
+    vi.mocked(mineruMarkdown).mockReturnValue(hung.promise);
+
+    const run = runMineruBatch(host, ["p-1"], false);
+    await vi.waitFor(() => expect(mineruMarkdown).toHaveBeenCalled());
+    cancelMineruPaper("p-1");
+    hung.release("# late");
+    await run;
+
+    expect(mineruSubmit).not.toHaveBeenCalled();
+    expect(repo.saveParsedMarkdown).not.toHaveBeenCalled();
+    expect(vi.mocked(repo.setMineruState).mock.lastCall?.[1]?.status).not.toBe("done");
+    expect(host.prepare).not.toHaveBeenCalled();
+    expect(getActivity().tally.done).toBe(0);
+    expect(repo.updateJob).toHaveBeenCalledWith("job-1", expect.objectContaining({ status: "cancelled" }));
+    expect(getActivity().batches[0]?.results["p-1"]).toBe("cancelled");
+  });
+
+  it("提交已完成但全文返回前取消：同样不落盘", async () => {
+    const paper = paperState({ parsedMarkdown: "# 已有全文" });
+    const host = makeHost(paper);
+    vi.mocked(mineruSubmit).mockResolvedValue(submitResult({ status: "done" }));
+    const hung = hang<string>();
+    vi.mocked(mineruMarkdown).mockReturnValue(hung.promise);
+
+    const run = runMineruBatch(host, ["p-1"], false);
+    await vi.waitFor(() => expect(mineruMarkdown).toHaveBeenCalled());
+    cancelMineruPaper("p-1");
+    hung.release("# late");
+    await run;
+
+    expect(repo.saveParsedMarkdown).not.toHaveBeenCalled();
+    const statuses = vi.mocked(repo.setMineruState).mock.calls.map(([, patch]) => patch?.status);
+    expect(statuses.at(-1)).not.toBe("done");
+    expect(statuses).not.toContain("done");
+    expect(host.prepare).not.toHaveBeenCalled();
+    expect(getActivity().tally.done).toBe(0);
+    expect(repo.updateJob).toHaveBeenCalledWith("job-1", expect.objectContaining({ status: "cancelled" }));
+    expect(getActivity().batches[0]?.results["p-1"]).toBe("cancelled");
+  });
 });
 
 describe("runMineruBatch 守卫", () => {

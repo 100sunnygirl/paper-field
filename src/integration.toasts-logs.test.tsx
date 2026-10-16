@@ -225,7 +225,7 @@ beforeEach(async () => {
   vi.mocked(repo.importLocalPdfs).mockReset();
   vi.mocked(repo.createJob).mockReset().mockResolvedValue({ id: "job-1", status: "queued" } as LlmJob);
   vi.mocked(repo.updateJob).mockReset().mockResolvedValue(true);
-  vi.mocked(repo.setMineruState).mockReset().mockResolvedValue(undefined);
+  vi.mocked(repo.setMineruState).mockReset().mockResolvedValue(true);
   vi.mocked(repo.saveParsedMarkdown).mockReset().mockResolvedValue(undefined);
   vi.mocked(repo.applyPreparedMeta).mockReset().mockResolvedValue(undefined);
   vi.mocked(repo.papersForExport).mockReset().mockResolvedValue([]);

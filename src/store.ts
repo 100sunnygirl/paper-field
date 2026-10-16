@@ -150,7 +150,7 @@ interface FieldState {
   runPrepareMeta: (paperId?: string, overwrite?: boolean, quiet?: boolean) => Promise<void>;
   runRefreshLinks: (paperId?: string) => Promise<void>;
   runDraftNotes: (paperId?: string, overwrite?: boolean) => Promise<void>;
-  cancelJob: (jobId: string) => Promise<void>;
+  cancelJob: (jobId: string, options?: { silent?: boolean }) => Promise<void>;
   saveLlmSettings: (input: LlmSaveInput) => Promise<void>;
   saveMineruSettings: (input: MineruSaveInput) => Promise<void>;
   saveBiblioSettings: (input: BiblioSaveInput) => Promise<void>;
@@ -255,14 +255,14 @@ export const useField = create<FieldState>((set, get) => ({
       );
       // 当前一篇已建作业（解析或解析后的自动补全）→ 走既有取消；尚未建作业 → 打取消标记。
       if (active.length) {
-        for (const job of active) await get().cancelJob(job.id);
+        for (const job of active) await get().cancelJob(job.id, { silent: true });
       } else {
         cancelMineruPaper(current);
       }
       stopped += 1;
     }
-    log.info("mineru", `作业面板停止解析批次：${stopped} 篇不再处理`);
-    get().setFlash({ tone: "ok", text: `已停止本批解析，${stopped} 篇不再处理。可在资料栏单独重新解析。` });
+    log.info("mineru", `作业面板停止解析批次：${stopped} 篇不再写入`);
+    get().setFlash({ tone: "ok", text: mineruStopCopy(stopped) });
   },
   openDialog: (dialog) => set({ dialog }),
   closeDialog: () => set({ dialog: null, pendingDraftJob: null }),
@@ -857,7 +857,7 @@ export const useField = create<FieldState>((set, get) => ({
     });
   },
 
-  cancelJob: async (jobId) => {
+  cancelJob: async (jobId, options) => {
     const job = get().jobs.find((item) => item.id === jobId);
     if (job?.type === "mineruParse") {
       cancelMineruPaper(job.paperId);
@@ -867,6 +867,7 @@ export const useField = create<FieldState>((set, get) => ({
         finishedAt: nowIso(),
       });
       await repo.setMineruState(job.paperId, { status: "cancelled" });
+      if (!options?.silent) get().setFlash({ tone: "ok", text: mineruStopCopy(1) });
       await get().refresh();
       return;
     }
@@ -1045,6 +1046,10 @@ function guardUnsaved(get: () => FieldState): boolean {
   if (!get().unsavedNote) return true;
   get().setFlash({ tone: "warn", text: "请先保存或取消正在编辑的笔记。" });
   return false;
+}
+
+function mineruStopCopy(count: number): string {
+  return `已在本机停止解析，${count} 篇不再写入。远端任务不撤回，可能仍在继续，配额或页数可能已经计入。`;
 }
 
 function errText(err: unknown): string {

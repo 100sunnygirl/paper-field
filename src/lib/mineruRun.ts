@@ -168,6 +168,51 @@ async function autoPrepare(host: Host, paperId: string): Promise<"ok" | "fail" |
   return after?.llmPreparedAt ? "ok" : "fail";
 }
 
+async function abandonParse(host: Host, jobId: string, paperId: string): Promise<"cancelled"> {
+  cancelled.delete(paperId);
+  const status = typeof repo.jobStatus === "function" ? await repo.jobStatus(jobId) : "running";
+  if (status === "done" && typeof repo.revertDoneJob === "function") {
+    await repo.revertDoneJob(jobId);
+  } else if (status !== "cancelled") {
+    await repo.updateJob(jobId, { status: "cancelled", error: "cancelled", finishedAt: nowIso() });
+  }
+  endJob(jobId, "cancelled");
+  await repo.setMineruState(paperId, { status: "cancelled" });
+  await host.refresh();
+  return "cancelled";
+}
+
+/** 短路取全文和轮询取全文共用：取消或认领失败时不写全文、不标 done、不自动补全。 */
+async function commitParseSuccess(
+  host: Host,
+  jobId: string,
+  paperId: string,
+  markdown: string,
+): Promise<"ok" | "cancelled"> {
+  const status = typeof repo.jobStatus === "function" ? await repo.jobStatus(jobId) : "running";
+  if (cancelled.has(paperId) || (status != null && status !== "running")) {
+    await abandonParse(host, jobId, paperId);
+    return "cancelled";
+  }
+  const marked = await repo.updateJob(jobId, { status: "done", finishedAt: nowIso() });
+  if (marked === false) {
+    await abandonParse(host, jobId, paperId);
+    return "cancelled";
+  }
+  const claimed = await repo.setMineruState(paperId, { status: "done", error: null });
+  if (claimed === false) {
+    if (typeof repo.revertDoneJob === "function") await repo.revertDoneJob(jobId);
+    endJob(jobId, "cancelled");
+    await host.refresh();
+    return "cancelled";
+  }
+  await repo.saveParsedMarkdown(paperId, markdown);
+  endJob(jobId, "done");
+  await host.refresh();
+  await autoPrepare(host, paperId);
+  return "ok";
+}
+
 async function processOne(host: Host, paperId: string, force: boolean): Promise<"ok" | "fail" | "cancelled" | "skip"> {
   const paper = await repo.getPaper(paperId);
   if (!paper?.pdfPath) return "skip";
@@ -238,13 +283,12 @@ async function processOne(host: Host, paperId: string, force: boolean): Promise<
           paperId,
           expectedFingerprint,
         );
-        await repo.saveParsedMarkdown(paperId, markdown);
-        await repo.setMineruState(paperId, { status: "done", error: null });
-        await repo.updateJob(job.id, { status: "done", finishedAt: nowIso() });
+        const committed = await commitParseSuccess(host, job.id, paperId, markdown);
+        if (committed === "cancelled") {
+          outcome = "cancelled";
+          return "cancelled";
+        }
         outcome = "done";
-        endJob(job.id, outcome);
-        await host.refresh();
-        await autoPrepare(host, paperId);
         return "ok";
       }
     }
@@ -260,13 +304,12 @@ async function processOne(host: Host, paperId: string, force: boolean): Promise<
       settings.pageRange,
       expectedFingerprint,
     );
-    await repo.saveParsedMarkdown(paperId, markdown);
-    await repo.setMineruState(paperId, { status: "done", error: null });
-    await repo.updateJob(job.id, { status: "done", finishedAt: nowIso() });
+    const committed = await commitParseSuccess(host, job.id, paperId, markdown);
+    if (committed === "cancelled") {
+      outcome = "cancelled";
+      return "cancelled";
+    }
     outcome = "done";
-    endJob(job.id, outcome);
-    await host.refresh();
-    await autoPrepare(host, paperId);
     return "ok";
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -380,7 +423,10 @@ export async function resumeMineru(host: Host): Promise<void> {
     await host.refresh();
     host.flash("error", STALE_CRED_ERROR);
   }
-  if (runnable.length) await runMineruBatch(host, runnable, false);
+  if (runnable.length) {
+    host.flash("ok", "继续上次未完成的解析。");
+    await runMineruBatch(host, runnable, false);
+  }
   if (host.hasKey()) await backfillMeta(host);
 }
 
