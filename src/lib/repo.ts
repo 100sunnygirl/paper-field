@@ -879,12 +879,19 @@ export const repo = {
     paperId: string,
     meta: PreparedMeta,
     overwrite = false,
-    ctx?: { startedRev?: number; source?: FieldSource; jobId?: string; replaceApi?: boolean },
-  ): Promise<void> {
+    ctx?: {
+      startedRev?: number;
+      source?: FieldSource;
+      jobId?: string;
+      replaceApi?: boolean;
+      /** 与这次写入同一个事务提交的一步（通常是作业 → done）；它的前提不成立时整批不写。 */
+      finish?: BatchStep;
+    },
+  ): Promise<"committed" | "cancelled" | "conflict"> {
     const engine = await getEngine();
     const source: "api" | "llm" = ctx?.source === "api" ? "api" : "llm";
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      if (ctx?.jobId && (await this.jobStatus(ctx.jobId)) !== "running") return;
+      if (ctx?.jobId && (await this.jobStatus(ctx.jobId)) !== "running") return "cancelled";
       const current = await engine.select<PaperRow>("SELECT * FROM papers WHERE id = ?", [paperId]);
       if (!current[0]) throw new Error("论文不存在");
       const prev = mapPaper(current[0]);
@@ -951,13 +958,16 @@ export const repo = {
           expect: "one",
         });
       }
+      if (ctx?.finish) steps.push(ctx.finish);
       try {
         await engine.batch(steps);
-        return;
+        return "committed";
       } catch (err) {
         if (!(err instanceof ConflictError)) throw err;
+        if (ctx?.finish && err.step === steps.length - 1) return "cancelled";
       }
     }
+    return "conflict";
   },
 
   /**
@@ -970,7 +980,9 @@ export const repo = {
     notes: DraftedNotes,
     overwrite: boolean,
     revs?: Partial<Record<NoteKind, number>>,
-  ): Promise<NoteKind[]> {
+    /** 与笔记同一个事务提交的一步（作业 → done）；作业已被取消时整批不写，返回 null。 */
+    finish?: BatchStep,
+  ): Promise<NoteKind[] | null> {
     const engine = await getEngine();
     const paper = await engine.select<PaperRow>("SELECT * FROM papers WHERE id = ?", [paperId]);
     if (!paper[0]) throw new Error("论文不存在");
@@ -998,7 +1010,14 @@ export const repo = {
       }
     }
     steps.push({ sql: "UPDATE papers SET notes_drafted_by_llm = 1, updated_at = ? WHERE id = ?", params: [at, paperId] });
-    const rows = await engine.batch(steps);
+    if (finish) steps.push(finish);
+    let rows: number[];
+    try {
+      rows = await engine.batch(steps);
+    } catch (err) {
+      if (finish && err instanceof ConflictError) return null;
+      throw err;
+    }
     const written = new Set(candidates.filter((_, index) => rows[index] > 0));
     return NOTE_KINDS.filter((kind) => !written.has(kind));
   },
@@ -1080,6 +1099,130 @@ export const repo = {
       ],
     );
     return changed > 0;
+  },
+
+  /**
+   * 建作业即进入 running。`claimMineru` 时同一事务里把论文的解析状态所有权交给这次作业：
+   * 之后只有它能改写解析状态，重新解析或取消收回所有权后，旧的一轮写什么都不生效。
+   */
+  async startJob(
+    paperId: string,
+    type: JobType,
+    prompt: string | null,
+    claimMineru?: { resume: boolean },
+  ): Promise<LlmJob> {
+    const engine = await getEngine();
+    const at = nowIso();
+    const job: LlmJob = {
+      id: uid(),
+      paperId,
+      type,
+      status: "running",
+      prompt,
+      resultJson: null,
+      error: null,
+      createdAt: at,
+      startedAt: at,
+      finishedAt: null,
+    };
+    const steps: BatchStep[] = [
+      {
+        sql: `INSERT INTO llm_jobs (id, paper_id, type, status, prompt, result_json, error, created_at, started_at, finished_at)
+              VALUES (?, ?, ?, 'running', ?, NULL, NULL, ?, ?, NULL)`,
+        params: [job.id, paperId, type, prompt, at, at],
+        expect: "one",
+      },
+    ];
+    if (claimMineru) {
+      steps.push({
+        sql: `UPDATE papers SET mineru_job_id = ?,
+                mineru_status = CASE WHEN ? = 1 THEN mineru_status ELSE 'queued' END,
+                mineru_error = CASE WHEN ? = 1 THEN mineru_error ELSE NULL END,
+                updated_at = ?
+              WHERE id = ?`,
+        params: [job.id, claimMineru.resume ? 1 : 0, claimMineru.resume ? 1 : 0, at, paperId],
+        expect: "one",
+      });
+    }
+    await engine.batch(steps);
+    return job;
+  },
+
+  /**
+   * 结束一个作业，并把随之落库的数据放进同一个事务：作业行只在仍是 running 时才改，
+   * 任何一步前提不成立（作业已被取消、解析所有权已被收回……）整批回滚。返回是否提交。
+   */
+  async finishJob(
+    jobId: string,
+    status: "done" | "error" | "cancelled",
+    options: { error?: string | null; resultJson?: string | null; steps?: BatchStep[] } = {},
+  ): Promise<boolean> {
+    const engine = await getEngine();
+    try {
+      await engine.batch([
+        {
+          sql: `UPDATE llm_jobs SET status = ?, error = COALESCE(?, error), result_json = COALESCE(?, result_json), finished_at = ?
+                 WHERE id = ? AND status IN ('queued', 'running')`,
+          params: [status, options.error ?? null, options.resultJson ?? null, nowIso(), jobId],
+          expect: "one",
+        },
+        ...(options.steps ?? []),
+      ]);
+      return true;
+    } catch (err) {
+      if (err instanceof ConflictError) return false;
+      throw err;
+    }
+  },
+
+  /** 这篇论文的解析状态是否仍归这次作业所有，且作业仍在运行。 */
+  async ownsMineru(paperId: string, jobId: string): Promise<boolean> {
+    const engine = await getEngine();
+    const rows = await engine.select<{ ok: number }>(
+      `SELECT 1 AS ok FROM papers p JOIN llm_jobs j ON j.id = ?
+        WHERE p.id = ? AND p.mineru_job_id = ? AND j.status = 'running'`,
+      [jobId, paperId, jobId],
+    );
+    return rows.length > 0;
+  },
+
+  /** 某篇论文仍在排队或运行的作业（删除论文前取消它们）。 */
+  async activeJobIds(paperIds: string[]): Promise<Array<{ id: string; paperId: string; type: JobType }>> {
+    if (!paperIds.length) return [];
+    const engine = await getEngine();
+    const out: Array<{ id: string; paperId: string; type: JobType }> = [];
+    for (let i = 0; i < paperIds.length; i += 400) {
+      const chunk = paperIds.slice(i, i + 400);
+      const rows = await engine.select<{ id: string; paper_id: string; type: JobType }>(
+        `SELECT id, paper_id, type FROM llm_jobs
+          WHERE status IN ('queued', 'running') AND paper_id IN (${chunk.map(() => "?").join(", ")})`,
+        chunk,
+      );
+      out.push(...rows.map((row) => ({ id: row.id, paperId: row.paper_id, type: row.type })));
+    }
+    return out;
+  },
+
+  async paperIdsInDomain(domainId: string): Promise<string[]> {
+    const engine = await getEngine();
+    const rows = await engine.select<{ id: string }>("SELECT id FROM papers WHERE domain_id = ?", [domainId]);
+    return rows.map((row) => row.id);
+  },
+
+  /** 重新解析：重置解析状态并收回所有权，旧的一轮写入不再生效。多篇在同一个事务里。 */
+  async resetMineru(paperIds: string[]): Promise<void> {
+    if (!paperIds.length) return;
+    const engine = await getEngine();
+    const at = nowIso();
+    await engine.batch(
+      paperIds.map((id) => ({
+        sql: `UPDATE papers SET mineru_status = 'queued', mineru_error = NULL, mineru_parse_id = NULL,
+                mineru_parse_ids = '[]', mineru_doc_ref = NULL, mineru_provider = NULL,
+                mineru_cred_fingerprint = NULL, mineru_job_id = NULL, updated_at = ?
+              WHERE id = ?`,
+        params: [at, id],
+      })),
+    );
   },
 
   async listJobs(limit = 40): Promise<LlmJob[]> {
@@ -1198,20 +1341,25 @@ export const repo = {
       parseIds?: string[];
       provider?: string | null;
       credFingerprint?: string | null;
+      /** 改写解析状态的所有者；null 表示收回所有权（重新解析时让旧的一轮失效）。 */
+      jobId?: string | null;
     },
+    /** 只有当前所有者（那次 MinerU 作业）才能写；缺省表示不绑定在某次运行上。 */
+    owner?: string,
   ): Promise<boolean> {
     const engine = await getEngine();
     const rows = await engine.select<PaperRow>("SELECT * FROM papers WHERE id = ?", [id]);
     if (!rows[0]) return false;
     const prev = mapPaper(rows[0]);
     const nextStatus = patch.status === undefined ? prev.mineruStatus : patch.status;
-    // 取消和认领完成不得盖住已经结束的状态：只有还在排队/已提交/解析中才能写成这两态。
+    // 取消和认领完成不得盖住已经结束的状态：只有还在等待/排队/已提交/解析中才能写成这两态。
     const inflightGuard =
       nextStatus === "done" || nextStatus === "cancelled"
-        ? " AND mineru_status IN ('queued','submitted','parsing')"
+        ? " AND mineru_status IN ('pending','queued','submitted','parsing')"
         : "";
+    const ownerGuard = owner === undefined ? "" : " AND mineru_job_id IS ?";
     const changed = await engine.execute(
-      `UPDATE papers SET mineru_status = ?, mineru_parse_id = ?, mineru_doc_ref = ?, mineru_error = ?, mineru_parse_ids = ?, mineru_provider = ?, mineru_cred_fingerprint = ?, updated_at = ? WHERE id = ?${inflightGuard}`,
+      `UPDATE papers SET mineru_status = ?, mineru_parse_id = ?, mineru_doc_ref = ?, mineru_error = ?, mineru_parse_ids = ?, mineru_provider = ?, mineru_cred_fingerprint = ?, mineru_job_id = ?, updated_at = ? WHERE id = ?${inflightGuard}${ownerGuard}`,
       [
         nextStatus,
         patch.parseId === undefined ? prev.mineruParseId : patch.parseId,
@@ -1220,8 +1368,10 @@ export const repo = {
         JSON.stringify(patch.parseIds === undefined ? prev.mineruParseIds : patch.parseIds),
         patch.provider === undefined ? (rows[0].mineru_provider ?? null) : patch.provider,
         patch.credFingerprint === undefined ? (rows[0].mineru_cred_fingerprint ?? null) : patch.credFingerprint,
+        patch.jobId === undefined ? (rows[0].mineru_job_id ?? null) : patch.jobId,
         nowIso(),
         id,
+        ...(owner === undefined ? [] : [owner]),
       ],
     );
     return changed > 0;
@@ -1262,12 +1412,12 @@ export const repo = {
     return rows.map((row) => row.id);
   },
 
-  /** 解析失败的论文（供 INTAKE 页批量重试）；跨领域，按失败时间先后排序。 */
+  /** 解析失败或从未提交过解析的论文（供 INTAKE 页批量发送）；跨领域，按时间先后排序。 */
   async listFailedMineru(): Promise<string[]> {
     const engine = await getEngine();
     const rows = await engine.select<{ id: string }>(
       `SELECT id FROM papers
-        WHERE pdf_path IS NOT NULL AND pdf_path != '' AND mineru_status = 'error'
+        WHERE pdf_path IS NOT NULL AND pdf_path != '' AND mineru_status IN ('error', 'pending')
         ORDER BY updated_at ASC`,
     );
     return rows.map((row) => row.id);

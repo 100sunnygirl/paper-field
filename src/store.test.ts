@@ -15,6 +15,8 @@ vi.mock("./lib/repo", () => ({
     listFailedMineru: vi.fn(async () => [] as string[]),
     createDomain: vi.fn(),
     setMineruState: vi.fn(async () => undefined),
+    resetMineru: vi.fn(async () => undefined),
+    activeJobIds: vi.fn(async () => []),
     deletePapers: vi.fn(async () => undefined),
   },
 }));
@@ -194,16 +196,9 @@ describe("retryFailedMineru（INTAKE 批量重试）", () => {
 
     await useField.getState().retryFailedMineru();
 
-    expect(repo.setMineruState).toHaveBeenCalledTimes(2);
-    expect(repo.setMineruState).toHaveBeenCalledWith("e1", {
-      status: "queued",
-      error: null,
-      parseId: null,
-      parseIds: [],
-      docRef: null,
-      provider: null,
-      credFingerprint: null,
-    });
+    // 一次事务重置全部（并收回解析所有权，旧的一轮写入不再生效）
+    expect(repo.resetMineru).toHaveBeenCalledTimes(1);
+    expect(repo.resetMineru).toHaveBeenCalledWith(["e1", "e2"]);
     const flash = useField.getState().flash;
     expect(flash?.tone).toBe("ok");
     expect(flash?.text).toContain("已将 2 篇重新发送到 MinerU 解析");
