@@ -41,6 +41,7 @@ import type {
   PaperDetail,
   PaperListItem,
 } from "./lib/types";
+import { NOTE_KINDS } from "./lib/types";
 import { extractJson, nowIso } from "./lib/util";
 
 const abortMap = new Map<string, AbortController>();
@@ -796,7 +797,7 @@ export const useField = create<FieldState>((set, get) => ({
       const job = await repo.createJob(id, "prepareMeta", prompt);
       await get().refresh();
       await runJob(job.id, id, PREPARE_META_SYSTEM, prompt, async (raw) => {
-        const meta = normalizeMeta(extractJson(raw), fresh.title);
+        const meta = normalizeMeta(extractJson(raw));
         await repo.applyPreparedMeta(id, meta, overwrite, { startedRev, source: "llm", jobId: job.id });
         await dropUnreachableLinks(id);
       }, quiet);
@@ -866,12 +867,21 @@ export const useField = create<FieldState>((set, get) => ({
       return;
     }
     const prompt = draftNotesUserPrompt(paper);
+    // 记下此刻每块笔记的版本号：请求期间被改过的块回写时整块跳过。
+    const revs = Object.fromEntries(NOTE_KINDS.map((kind) => [kind, paper.notes?.[kind]?.rev ?? 0])) as Record<NoteKind, number>;
     const job = await repo.createJob(id, "draftNotes", prompt);
     set({ dialog: null, pendingDraftJob: null });
     await get().refresh();
     await runJob(job.id, id, DRAFT_NOTES_SYSTEM, prompt, async (raw) => {
       const notes = normalizeNotes(extractJson(raw));
-      await repo.applyDraftedNotes(id, notes, overwrite);
+      const kept = await repo.applyDraftedNotes(id, notes, overwrite, revs);
+      const editedDuring = (kept ?? []).filter((kind) => overwrite || !paper.notes?.[kind]?.userEdited);
+      if (editedDuring.length) {
+        get().setFlash({
+          tone: "warn",
+          text: `起草期间你修改了 ${editedDuring.length} 块笔记，这些块保留你的内容，其余已写入 AI 草稿。`,
+        });
+      }
     });
   },
 
@@ -1082,26 +1092,27 @@ async function jobStillRunning(jobId: string): Promise<boolean> {
 async function dropUnreachableLinks(paperId: string): Promise<void> {
   const paper = await repo.getPaper(paperId);
   if (!paper) return;
-  const patch: { codeUrl?: string | null; projectPage?: string | null } = {};
   for (const key of ["codeUrl", "projectPage"] as const) {
     const raw = paper[key];
     if (!raw || paper.fieldSources?.[key] === "user") continue;
     // Schemeless AI links (`github.com/x`) are stored as https:// only if reachable.
     const url = withDefaultScheme(raw);
+    let next: string | null | undefined;
     // Not an http(s) URL even after completion (`localhost:3000`, `v1`): drop without probing.
     if (!safeHttpUrl(url)) {
-      patch[key] = null;
-      continue;
+      next = null;
+    } else {
+      const reach = await verifyReachable(url);
+      if (url !== raw.trim()) {
+        // A prefix we added is a guess (`v1.2` -> https://v1.2): keep it only when proven reachable.
+        next = reach === "reachable" ? url : null;
+      } else if (reach === "unreachable") {
+        next = null;
+      }
     }
-    const reach = await verifyReachable(url);
-    if (url !== raw.trim()) {
-      // A prefix we added is a guess (`v1.2` -> https://v1.2): keep it only when proven reachable.
-      patch[key] = reach === "reachable" ? url : null;
-    } else if (reach === "unreachable") {
-      patch[key] = null;
-    }
+    // 校验可能要十几秒：期间用户改过这个链接就不再动它（条件写入）。
+    if (next !== undefined && next !== raw) await repo.replaceLinkIf(paperId, key, raw, next);
   }
-  if (Object.keys(patch).length) await repo.updatePaper(paperId, patch, false);
 }
 
 async function runJob(

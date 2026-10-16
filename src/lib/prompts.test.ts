@@ -36,22 +36,36 @@ describe("extractJson 解析容错", () => {
 describe("normalizeMeta 容错", () => {
   const base = {} as PreparedMeta;
 
-  it("缺 title 回落 fallbackTitle", () => {
-    const meta = normalizeMeta({ ...base, title: "" }, "原标题");
-    expect(meta.title).toBe("原标题");
-    expect(normalizeMeta({ ...base, title: "  " }, "原标题").title).toBe("原标题");
+  it("缺 title 时保持为空，不再用当前标题兜底", () => {
+    expect(normalizeMeta({ ...base, title: "" }).title).toBe("");
+    expect(normalizeMeta({ ...base, title: "  " }).title).toBe("");
+  });
+
+  it("字段类型不对时不抛错：数字转文本，对象当空", () => {
+    const meta = normalizeMeta({
+      ...base,
+      title: "t",
+      titleZh: 42 as unknown as string,
+      venue: { a: 1 } as unknown as string,
+      authors: [{ name: 7 }] as unknown as PreparedMeta["authors"],
+      tags: [{ x: 1 }, "ok"] as unknown as string[],
+    });
+    expect(meta.titleZh).toBe("42");
+    expect(meta.venue).toBeNull();
+    expect(meta.authors.map((a) => a.name)).toEqual(["7"]);
+    expect(meta.tags).toEqual(["ok"]);
   });
 
   it("year 非数字（如字符串 “2024” 或 undefined）归 null", () => {
-    expect(normalizeMeta({ ...base, title: "t", year: "2024" } as unknown as PreparedMeta, "t").year).toBeNull();
-    expect(normalizeMeta({ ...base, title: "t", year: undefined } as unknown as PreparedMeta, "t").year).toBeNull();
-    expect(normalizeMeta({ ...base, title: "t", year: 2024 }, "t").year).toBe(2024);
+    expect(normalizeMeta({ ...base, title: "t", year: "2024" } as unknown as PreparedMeta).year).toBeNull();
+    expect(normalizeMeta({ ...base, title: "t", year: undefined } as unknown as PreparedMeta).year).toBeNull();
+    expect(normalizeMeta({ ...base, title: "t", year: 2024 }).year).toBe(2024);
   });
 
   it("非法 codeOpenSource 归 unknown，合法值透传", () => {
-    expect(normalizeMeta({ ...base, title: "t", codeOpenSource: "maybe" as never }, "t").codeOpenSource).toBe("unknown");
-    expect(normalizeMeta({ ...base, title: "t", codeOpenSource: "open" }, "t").codeOpenSource).toBe("open");
-    expect(normalizeMeta({ ...base, title: "t", codeOpenSource: "request" }, "t").codeOpenSource).toBe("request");
+    expect(normalizeMeta({ ...base, title: "t", codeOpenSource: "maybe" as never }).codeOpenSource).toBe("unknown");
+    expect(normalizeMeta({ ...base, title: "t", codeOpenSource: "open" }).codeOpenSource).toBe("open");
+    expect(normalizeMeta({ ...base, title: "t", codeOpenSource: "request" }).codeOpenSource).toBe("request");
   });
 
   it("authors/labs 非数组时归空数组，缺名字的条目被过滤", () => {
@@ -62,22 +76,20 @@ describe("normalizeMeta 容错", () => {
         authors: [{ affiliation: "MIT" }, { name: "Alice" }] as PreparedMeta["authors"],
         labs: [{ institution: "X" }, { name: "Lab" }] as unknown as PreparedMeta["labs"],
       },
-      "t",
     );
-    expect(meta.authors).toEqual([{ name: "Alice" }]);
-    expect(meta.labs).toEqual([{ name: "Lab" }]);
-    expect(normalizeMeta({ ...base, title: "t", authors: "bad" as unknown as PreparedMeta["authors"] }, "t").authors).toEqual([]);
+    expect(meta.authors.map((a) => a.name)).toEqual(["Alice"]);
+    expect(meta.labs).toEqual([{ name: "Lab", institution: "" }]);
+    expect(normalizeMeta({ ...base, title: "t", authors: "bad" as unknown as PreparedMeta["authors"] }).authors).toEqual([]);
   });
 
-  it("空串字段归 null（venue/doi/arxivId 等），tags 逐项 String 化", () => {
+  it("空串字段归 null（venue/doi/arxivId 等），tags 只收文本与数字", () => {
     const meta = normalizeMeta(
       { ...base, title: "t", venue: "", doi: "", arxivId: "", tags: [1, "b", null] as unknown as string[] },
-      "t",
     );
     expect(meta.venue).toBeNull();
     expect(meta.doi).toBeNull();
     expect(meta.arxivId).toBeNull();
-    expect(meta.tags).toEqual(["1", "b", "null"]);
+    expect(meta.tags).toEqual(["1", "b"]);
   });
 });
 

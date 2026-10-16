@@ -133,14 +133,16 @@ describe("著录合并：只补空白，飞行中的手改不被覆盖", () => {
     );
 
     const replaced = (await repo.getPaper(paper.id))!;
-    expect(replaced.title).toBe("模型标题");
-    expect(replaced.fieldSources?.title).toBe("llm");
-    expect(replaced.abstract).toBe("模型摘要");
-    expect(replaced.fieldSources?.abstract).toBe("llm");
+    expect(replaced.title).toBe("库标题");
+    expect(replaced.fieldSources?.title).toBe("api");
+    expect(replaced.fieldProviders?.title).toBe("crossref");
+    expect(replaced.abstract).toBe("库摘要");
+    expect(replaced.fieldSources?.abstract).toBe("api");
     expect(replaced.venue).toBe("手填期刊");
     expect(replaced.fieldSources?.venue).toBe("user");
     expect(replaced.fieldProviders?.venue).toBeUndefined();
 
+    // 同一次补全里另一个文献库不能换掉已写的文献库值
     await repo.applyPreparedMeta(
       paper.id,
       meta({ title: "另一库标题", fieldProviders: { title: "openalex" } }),
@@ -148,8 +150,12 @@ describe("著录合并：只补空白，飞行中的手改不被覆盖", () => {
       { source: "api" },
     );
     const kept = (await repo.getPaper(paper.id))!;
-    expect(kept.title).toBe("模型标题");
-    expect(kept.fieldSources?.title).toBe("llm");
+    expect(kept.title).toBe("库标题");
+    expect(kept.fieldProviders?.title).toBe("crossref");
+
+    // 模型也不能换掉文献库值
+    await repo.applyPreparedMeta(paper.id, meta({ title: "模型新标题" }), true, { source: "llm" });
+    expect((await repo.getPaper(paper.id))!.title).toBe("库标题");
   });
 
   it("刷新链接可以替换模型或文件名标题，不能替换用户期刊", async () => {

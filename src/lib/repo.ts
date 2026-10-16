@@ -1,4 +1,4 @@
-import { getEngine, type BatchStep } from "./engine";
+import { ConflictError, getEngine, type BatchStep } from "./engine";
 import { planPreparedMeta } from "./mergeMeta";
 import { seedIfEmpty } from "./seed";
 import type {
@@ -24,7 +24,7 @@ import type {
   ReadingStatus,
 } from "./types";
 import { NOTE_KINDS } from "./types";
-import { safeHttpUrl } from "./urls";
+import { safeHttpUrl, withDefaultScheme } from "./urls";
 import { isTauri, nowIso, parseJsonArray, uid } from "./util";
 
 interface DomainRow {
@@ -64,6 +64,7 @@ interface PaperRow {
   mineru_parse_ids: string | null;
   mineru_provider?: string | null;
   mineru_cred_fingerprint?: string | null;
+  mineru_job_id?: string | null;
   tags: string;
   labs: string;
   field_sources?: string | null;
@@ -98,6 +99,7 @@ interface NoteRow {
   content: string;
   source: "manual" | "llm";
   user_edited: number;
+  rev?: number | null;
   revised_at: string | null;
 }
 
@@ -200,6 +202,7 @@ function mapPaper(row: PaperRow): Paper {
     mineruParseIds: parseJsonArray<string>(row.mineru_parse_ids, []).map((id) => String(id)),
     mineruProvider: row.mineru_provider ?? null,
     mineruCredFingerprint: row.mineru_cred_fingerprint ?? null,
+    mineruJobId: row.mineru_job_id ?? null,
     tags: parseJsonArray<string>(row.tags, []),
     labs: parseJsonArray<Lab>(row.labs, []),
     createdAt: row.created_at,
@@ -270,14 +273,6 @@ const META_PATCH_KEYS = [
   "labs",
 ] as const;
 
-function withUserSources(prev: FieldSources, patch: Record<string, unknown>): FieldSources {
-  const next: FieldSources = { ...prev };
-  for (const key of META_PATCH_KEYS) {
-    if (patch[key] !== undefined) next[key] = "user";
-  }
-  return next;
-}
-
 function mapListItem(row: PaperRow): PaperListItem {
   return {
     ...mapPaper(row),
@@ -292,6 +287,65 @@ async function adoptPdf(source: string): Promise<{ libraryPath: string; original
   if (!isTauri()) return { libraryPath: source, originalPath: source };
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<{ libraryPath: string; originalPath: string }>("import_pdf_to_library", { source });
+}
+
+/** 元数据字段 → 列名与编码；SET 子句只由这张白名单拼出。 */
+const PAPER_COLUMNS: Record<string, { column: string; encode?: (value: unknown) => unknown }> = {
+  title: { column: "title" },
+  titleZh: { column: "title_zh" },
+  abstract: { column: "abstract" },
+  year: { column: "year" },
+  venue: { column: "venue" },
+  doi: { column: "doi" },
+  arxivId: { column: "arxiv_id" },
+  pdfUrl: { column: "pdf_url" },
+  codeUrl: { column: "code_url" },
+  codeOpenSource: { column: "code_open_source" },
+  projectPage: { column: "project_page" },
+  tags: { column: "tags", encode: (value) => JSON.stringify(value ?? []) },
+  labs: { column: "labs", encode: (value) => JSON.stringify(value ?? []) },
+  domainId: { column: "domain_id" },
+};
+
+function setColumn(sets: string[], params: unknown[], key: string, value: unknown): void {
+  const spec = PAPER_COLUMNS[key];
+  if (!spec) return;
+  sets.push(`${spec.column} = ?`);
+  params.push(spec.encode ? spec.encode(value) : value);
+}
+
+/**
+ * 逐键更新 JSON 对象列（field_sources / field_providers）：只动这次改的键，
+ * 不用快照整体覆盖，并发写入的其他键不会丢。
+ */
+function jsonPatch(column: string, set: Array<[string, string]>, remove: string[]): { sql: string; params: unknown[] } | null {
+  if (!set.length && !remove.length) return null;
+  let expr = `COALESCE(${column}, '{}')`;
+  const params: unknown[] = [];
+  if (set.length) {
+    expr = `json_set(${expr}, ${set.map(() => "?, ?").join(", ")})`;
+    for (const [key, value] of set) params.push(`$.${key}`, value);
+  }
+  if (remove.length) {
+    expr = `json_remove(${expr}, ${remove.map(() => "?").join(", ")})`;
+    params.push(...remove.map((key) => `$.${key}`));
+  }
+  return { sql: `${column} = ${expr}`, params };
+}
+
+function authorPayload(
+  authors: Array<{ name: string; affiliation?: string | null; lab?: string | null; isCorresponding?: boolean }>,
+): string {
+  return JSON.stringify(
+    authors
+      .filter((author) => author.name?.trim())
+      .map((author) => ({
+        name: author.name.trim(),
+        affiliation: author.affiliation?.trim() || "",
+        lab: author.lab?.trim() || "",
+        corresponding: author.isCorresponding ? 1 : 0,
+      })),
+  );
 }
 
 function emptyNoteSteps(paperId: string, at: string): BatchStep[] {
@@ -488,6 +542,7 @@ export const repo = {
             content: row.content,
             source: row.source,
             userEdited: Boolean(row.user_edited),
+            rev: Number(row.rev ?? 0),
             revisedAt: row.revised_at,
           }
         : {
@@ -497,6 +552,7 @@ export const repo = {
             content: "",
             source: "manual",
             userEdited: false,
+            rev: 0,
             revisedAt: null,
           };
     }
@@ -672,59 +728,36 @@ export const repo = {
     }>,
     touchMeta = false,
   ): Promise<void> {
+    // 只写 patch 里出现的列：后台写入（链接校验、解析状态）不会被这里的旧快照抹掉。
     const engine = await getEngine();
-    const current = await engine.select<PaperRow>("SELECT * FROM papers WHERE id = ?", [id]);
-    if (!current[0]) throw new Error("论文不存在");
-    const next = mapPaper(current[0]);
-    const sanitized = { ...patch };
-    if (sanitized.pdfUrl !== undefined) sanitized.pdfUrl = safeHttpUrl(sanitized.pdfUrl);
-    if (sanitized.codeUrl !== undefined) sanitized.codeUrl = safeHttpUrl(sanitized.codeUrl);
-    if (sanitized.projectPage !== undefined) sanitized.projectPage = safeHttpUrl(sanitized.projectPage);
-    const sources = touchMeta ? withUserSources(next.fieldSources ?? {}, sanitized) : (next.fieldSources ?? {});
-    const providers: FieldProviders = { ...(next.fieldProviders ?? {}) };
-    if (touchMeta) {
-      for (const key of META_PATCH_KEYS) {
-        if (sanitized[key as (typeof META_PATCH_KEYS)[number]] !== undefined) delete providers[key];
+    const sets: string[] = [];
+    const params: unknown[] = [];
+    const metaKeys: string[] = [];
+    for (const [key, raw] of Object.entries(patch)) {
+      if (raw === undefined || !PAPER_COLUMNS[key]) continue;
+      let value: unknown = raw;
+      if (key === "pdfUrl" || key === "codeUrl" || key === "projectPage") {
+        // 用户手填的 github.com/x 补上 https://；后台写入只接受完整的 http(s) 链接。
+        const text = typeof raw === "string" ? raw : "";
+        value = safeHttpUrl(touchMeta ? withDefaultScheme(text) : text);
       }
+      setColumn(sets, params, key, value);
+      if ((META_PATCH_KEYS as readonly string[]).includes(key)) metaKeys.push(key);
     }
-    const merged = {
-      ...next,
-      ...sanitized,
-      updatedAt: nowIso(),
-      userMetaTouched: touchMeta ? true : next.userMetaTouched,
-      fieldSources: sources,
-      fieldProviders: providers,
-      metaRev: touchMeta ? (next.metaRev ?? 0) + 1 : (next.metaRev ?? 0),
-    };
-    await engine.execute(
-      `UPDATE papers SET
-        domain_id = ?, title = ?, title_zh = ?, abstract = ?, year = ?, venue = ?, doi = ?,
-        arxiv_id = ?, pdf_url = ?, code_url = ?, code_open_source = ?, project_page = ?,
-        tags = ?, labs = ?, user_meta_touched = ?, field_sources = ?, field_providers = ?, meta_rev = ?, updated_at = ?
-       WHERE id = ?`,
-      [
-        merged.domainId,
-        merged.title,
-        merged.titleZh,
-        merged.abstract,
-        merged.year,
-        merged.venue,
-        merged.doi,
-        merged.arxivId,
-        merged.pdfUrl,
-        merged.codeUrl,
-        merged.codeOpenSource,
-        merged.projectPage,
-        JSON.stringify(merged.tags),
-        JSON.stringify(merged.labs),
-        merged.userMetaTouched ? 1 : 0,
-        JSON.stringify(merged.fieldSources),
-        JSON.stringify(merged.fieldProviders ?? {}),
-        merged.metaRev,
-        merged.updatedAt,
-        id,
-      ],
-    );
+    if (touchMeta && metaKeys.length) {
+      const sources = jsonPatch("field_sources", metaKeys.map((key) => [key, "user"]), [])!;
+      const providers = jsonPatch("field_providers", [], metaKeys)!;
+      sets.push(sources.sql, providers.sql, "user_meta_touched = 1", "meta_rev = meta_rev + 1");
+      params.push(...sources.params, ...providers.params);
+    }
+    sets.push("updated_at = ?");
+    params.push(nowIso(), id);
+    try {
+      await engine.batch([{ sql: `UPDATE papers SET ${sets.join(", ")} WHERE id = ?`, params, expect: "one" }]);
+    } catch (err) {
+      if (err instanceof ConflictError) throw new Error("论文不存在");
+      throw err;
+    }
   },
 
   async setReadingStatus(id: string, status: ReadingStatus): Promise<void> {
@@ -779,16 +812,6 @@ export const repo = {
     expectedMetaRev: number | null = null,
   ): Promise<void> {
     const engine = await getEngine();
-    const payload = JSON.stringify(
-      authors
-        .filter((author) => author.name?.trim())
-        .map((author) => ({
-          name: author.name.trim(),
-          affiliation: author.affiliation?.trim() || "",
-          lab: author.lab?.trim() || "",
-          corresponding: author.isCorresponding ? 1 : 0,
-        })),
-    );
     // pf_author_replace runs inside this UPDATE, so the link delete and the
     // author inserts commit or roll back with it.
     await engine.execute(
@@ -797,9 +820,22 @@ export const repo = {
          meta_rev = meta_rev + CASE WHEN ? = 1 THEN 1 ELSE 0 END,
          field_sources = CASE WHEN ? = 1
            THEN json_set(COALESCE(field_sources, '{}'), '$.authors', 'user')
-           ELSE field_sources END
+           ELSE field_sources END,
+         field_providers = CASE WHEN ? = 1
+           THEN json_remove(COALESCE(field_providers, '{}'), '$.authors')
+           ELSE field_providers END
        WHERE id = ? AND (? IS NULL OR meta_rev = ?)`,
-      [payload, nowIso(), touchMeta ? 1 : 0, touchMeta ? 1 : 0, touchMeta ? 1 : 0, paperId, expectedMetaRev, expectedMetaRev],
+      [
+        authorPayload(authors),
+        nowIso(),
+        touchMeta ? 1 : 0,
+        touchMeta ? 1 : 0,
+        touchMeta ? 1 : 0,
+        touchMeta ? 1 : 0,
+        paperId,
+        expectedMetaRev,
+        expectedMetaRev,
+      ],
     );
   },
 
@@ -846,7 +882,7 @@ export const repo = {
     ctx?: { startedRev?: number; source?: FieldSource; jobId?: string; replaceApi?: boolean },
   ): Promise<void> {
     const engine = await getEngine();
-    const source = ctx?.source ?? "llm";
+    const source: "api" | "llm" = ctx?.source === "api" ? "api" : "llm";
     for (let attempt = 0; attempt < 3; attempt += 1) {
       if (ctx?.jobId && (await this.jobStatus(ctx.jobId)) !== "running") return;
       const current = await engine.select<PaperRow>("SELECT * FROM papers WHERE id = ?", [paperId]);
@@ -871,79 +907,123 @@ export const repo = {
         ctx?.replaceApi ?? false,
       );
       const at = nowIso();
-      const changed = await engine.execute(
-        `UPDATE papers SET
-          title = ?, title_zh = ?, abstract = ?, year = ?, venue = ?, doi = ?, arxiv_id = ?,
-          pdf_url = ?, code_url = ?, code_open_source = ?, project_page = ?, tags = ?, labs = ?,
-          field_sources = ?, field_providers = ?, meta_confidence = COALESCE(?, meta_confidence),
-          llm_prepared_at = CASE WHEN ? = 'llm' THEN ? ELSE llm_prepared_at END,
-          updated_at = ?
-         WHERE id = ? AND meta_rev = ?
-           AND (? = '' OR EXISTS (SELECT 1 FROM llm_jobs WHERE id = ? AND status = 'running'))`,
-        [
-          plan.title,
-          plan.titleZh,
-          plan.abstract,
-          plan.year,
-          plan.venue,
-          plan.doi,
-          plan.arxivId,
-          plan.pdfUrl,
-          plan.codeUrl,
-          plan.codeOpenSource,
-          plan.projectPage,
-          JSON.stringify(plan.tags),
-          JSON.stringify(plan.labs),
-          JSON.stringify(plan.fieldSources),
-          JSON.stringify(plan.fieldProviders),
-          plan.confidence,
-          source,
-          at,
-          at,
-          paperId,
-          prev.metaRev ?? 0,
-          ctx?.jobId ?? "",
-          ctx?.jobId ?? "",
-        ],
-      );
-      if (!changed) {
-        if (ctx?.jobId && (await this.jobStatus(ctx.jobId)) !== "running") return;
-        continue;
+      const sets: string[] = [];
+      const params: unknown[] = [];
+      for (const field of plan.changed) {
+        if (field !== "authors") setColumn(sets, params, field, plan[field]);
       }
-      const after = await engine.select<{ meta_rev: number }>("SELECT meta_rev FROM papers WHERE id = ?", [paperId]);
-      if (Number(after[0]?.meta_rev ?? 0) !== (prev.metaRev ?? 0)) continue;
-      if (plan.replaceAuthors) await this.replaceAuthors(paperId, meta.authors, false, prev.metaRev ?? 0);
-      return;
+      const sources = jsonPatch(
+        "field_sources",
+        plan.changed.map((field) => [field, plan.fieldSources[field]!]),
+        [],
+      );
+      const providers = jsonPatch(
+        "field_providers",
+        plan.changed.filter((field) => plan.fieldProviders[field]).map((field) => [field, plan.fieldProviders[field]!]),
+        plan.changed.filter((field) => !plan.fieldProviders[field]),
+      );
+      for (const patch of [sources, providers]) {
+        if (!patch) continue;
+        sets.push(patch.sql);
+        params.push(...patch.params);
+      }
+      sets.push(
+        "meta_confidence = COALESCE(?, meta_confidence)",
+        "llm_prepared_at = CASE WHEN ? = 'llm' THEN ? ELSE llm_prepared_at END",
+        "updated_at = ?",
+      );
+      params.push(plan.confidence, source, at, at);
+      const jobId = ctx?.jobId ?? "";
+      // 字段、来源与作者在同一个事务里：meta_rev 变了（用户刚改过）或作业已取消，整批不写，重读再来。
+      const steps: BatchStep[] = [
+        {
+          sql: `UPDATE papers SET ${sets.join(", ")}
+                 WHERE id = ? AND meta_rev = ?
+                   AND (? = '' OR EXISTS (SELECT 1 FROM llm_jobs WHERE id = ? AND status = 'running'))`,
+          params: [...params, paperId, prev.metaRev ?? 0, jobId, jobId],
+          expect: "one",
+        },
+      ];
+      if (plan.replaceAuthors) {
+        steps.push({
+          sql: "UPDATE papers SET author_replace = ? WHERE id = ? AND meta_rev = ?",
+          params: [authorPayload(meta.authors), paperId, prev.metaRev ?? 0],
+          expect: "one",
+        });
+      }
+      try {
+        await engine.batch(steps);
+        return;
+      } catch (err) {
+        if (!(err instanceof ConflictError)) throw err;
+      }
     }
   },
 
-  async applyDraftedNotes(paperId: string, notes: DraftedNotes, overwrite: boolean): Promise<void> {
+  /**
+   * AI 起草的笔记逐块写入。`revs` 是作业开始（或用户确认覆盖）时每块的版本号：
+   * 请求期间被用户改过的块版本号已变，整块跳过。不覆盖时用户改过的块一律保留。
+   * 返回被保留下来的块。
+   */
+  async applyDraftedNotes(
+    paperId: string,
+    notes: DraftedNotes,
+    overwrite: boolean,
+    revs?: Partial<Record<NoteKind, number>>,
+  ): Promise<NoteKind[]> {
     const engine = await getEngine();
     const paper = await engine.select<PaperRow>("SELECT * FROM papers WHERE id = ?", [paperId]);
     if (!paper[0]) throw new Error("论文不存在");
-    // 不覆盖时逐块跳过用户改过的笔记：请求进行中用户保存的块也在此被保留。
     const blocks = await engine.select<NoteRow>("SELECT * FROM notes WHERE paper_id = ?", [paperId]);
+    const at = nowIso();
+    const steps: BatchStep[] = [];
+    const candidates: NoteKind[] = [];
     for (const kind of NOTE_KINDS) {
       const block = blocks.find((row) => row.kind === kind);
-      if (block?.user_edited && !overwrite) continue;
-      const at = nowIso();
       if (block) {
-        await engine.execute(
-          `UPDATE notes SET content = ?, source = 'llm', user_edited = 0, revised_at = ? WHERE id = ?`,
-          [notes[kind] ?? "", at, block.id],
-        );
+        if (block.user_edited && !overwrite) continue;
+        candidates.push(kind);
+        steps.push({
+          sql: `UPDATE notes SET content = ?, source = 'llm', user_edited = 0, rev = rev + 1, revised_at = ?
+                 WHERE id = ? AND rev = ? AND (user_edited = 0 OR ? = 1)`,
+          params: [notes[kind] ?? "", at, block.id, revs?.[kind] ?? Number(block.rev ?? 0), overwrite ? 1 : 0],
+        });
       } else {
-        await engine.execute(
-          `INSERT INTO notes (id, paper_id, kind, content, source, user_edited, revised_at)
-           VALUES (?, ?, ?, ?, 'llm', 0, ?)`,
-          [uid(), paperId, kind, notes[kind] ?? "", at],
-        );
+        candidates.push(kind);
+        steps.push({
+          sql: `INSERT OR IGNORE INTO notes (id, paper_id, kind, content, source, user_edited, rev, revised_at)
+                VALUES (?, ?, ?, ?, 'llm', 0, 1, ?)`,
+          params: [uid(), paperId, kind, notes[kind] ?? "", at],
+        });
       }
     }
-    await engine.execute(
-      "UPDATE papers SET notes_drafted_by_llm = 1, updated_at = ? WHERE id = ?",
-      [nowIso(), paperId],
+    steps.push({ sql: "UPDATE papers SET notes_drafted_by_llm = 1, updated_at = ? WHERE id = ?", params: [at, paperId] });
+    const rows = await engine.batch(steps);
+    const written = new Set(candidates.filter((_, index) => rows[index] > 0));
+    return NOTE_KINDS.filter((kind) => !written.has(kind));
+  },
+
+  /**
+   * 后台链接校验的条件写入：只有链接仍是检查时那个值、且不归用户时才改。
+   * 校验期间用户在编辑框里改过的链接不会被清掉或换回去。返回是否写入。
+   */
+  async replaceLinkIf(
+    paperId: string,
+    field: "codeUrl" | "projectPage",
+    expected: string | null,
+    next: string | null,
+  ): Promise<boolean> {
+    const engine = await getEngine();
+    const column = field === "codeUrl" ? "code_url" : "project_page";
+    const changed = await engine.execute(
+      `UPDATE papers SET ${column} = ?,
+         field_sources = CASE WHEN ? IS NULL THEN json_remove(COALESCE(field_sources, '{}'), ?) ELSE field_sources END,
+         field_providers = CASE WHEN ? IS NULL THEN json_remove(COALESCE(field_providers, '{}'), ?) ELSE field_providers END,
+         updated_at = ?
+       WHERE id = ? AND ${column} IS ? AND IFNULL(json_extract(field_sources, ?), '') <> 'user'`,
+      [next, next, `$.${field}`, next, `$.${field}`, nowIso(), paperId, expected, `$.${field}`],
     );
+    return changed > 0;
   },
 
   async createJob(paperId: string, type: JobType, prompt: string): Promise<LlmJob> {

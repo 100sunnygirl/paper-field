@@ -17,6 +17,7 @@ vi.mock("./lib/repo", () => ({
     jobStatus: vi.fn(async () => "running"),
     applyPreparedMeta: vi.fn(async () => undefined),
     updatePaper: vi.fn(async () => undefined),
+    replaceLinkIf: vi.fn(async () => true),
   },
 }));
 vi.mock("./lib/lookup", async (orig) => ({
@@ -29,7 +30,7 @@ vi.mock("@tauri-apps/plugin-store", () => ({ load: vi.fn() }));
 import { repo } from "./lib/repo";
 import { useField } from "./store";
 
-const updatePaper = repo.updatePaper as unknown as ReturnType<typeof vi.fn>;
+const replaceLinkIf = repo.replaceLinkIf as unknown as ReturnType<typeof vi.fn>;
 const listPapers = repo.listPapers as unknown as ReturnType<typeof vi.fn>;
 
 function paperWith(codeUrl: string | null, projectPage: string | null = null) {
@@ -37,10 +38,11 @@ function paperWith(codeUrl: string | null, projectPage: string | null = null) {
 }
 /** Final stored value for key after runRefreshLinks (undefined = untouched). */
 async function storedAfterRefresh(key: "codeUrl" | "projectPage") {
-  updatePaper.mockClear();
+  replaceLinkIf.mockClear();
   await useField.getState().runRefreshLinks("p1");
-  const patch = updatePaper.mock.calls.at(-1)?.[1] ?? {};
-  return key in patch ? patch[key] : "<kept>";
+  // 条件写入：(paperId, key, 检查时的值, 新值)
+  const call = replaceLinkIf.mock.calls.filter((c) => c[1] === key).at(-1);
+  return call ? call[3] : "<kept>";
 }
 
 beforeEach(() => {

@@ -89,6 +89,8 @@ export interface NoteBlock {
   content: string;
   source: NoteSource;
   userEdited: boolean;
+  /** 每次写入加一；AI 回写按块比对，请求期间被改过的块不覆盖。 */
+  rev?: number;
   revisedAt: string | null;
 }
 
@@ -125,6 +127,8 @@ export interface Paper {
   mineruParseIds: string[];
   mineruProvider: MineruProviderKind | string | null;
   mineruCredFingerprint: string | null;
+  /** 当前拥有解析状态的那次 MinerU 作业；其他作业的状态写入不生效。 */
+  mineruJobId?: string | null;
   tags: string[];
   labs: Lab[];
   createdAt: string;
