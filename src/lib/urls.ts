@@ -19,10 +19,15 @@ export function safeHttpUrl(value: string | null | undefined): string | null {
 const ARXIV_NEW = /^\d{4}\.\d{4,5}(v\d+)?$/;
 const ARXIV_OLD = /^[a-z-]+(\.[A-Z]{2})?\/\d{7}(v\d+)?$/;
 
+/** 全角字符（中文输入法的「：」、全角数字）与不间断空格折成半角，再去掉首尾空白。 */
+function foldWidth(value: string): string {
+  return value.normalize("NFKC").replace(/[\u00a0\u3000]/g, " ").trim();
+}
+
 export function normalizeArxivId(value: string | null | undefined): string | null {
   if (!value) return null;
-  let id = value.trim().replace(/^arxiv:/i, "");
-  id = id.replace(/^https?:\/\/arxiv\.org\/(abs|pdf)\//i, "");
+  let id = foldWidth(value).replace(/^arxiv\s*:\s*/i, "");
+  id = id.replace(/^(https?:\/\/)?(www\.)?arxiv\.org\/(abs|pdf)\//i, "");
   id = id.replace(/\.pdf$/i, "");
   if (!ARXIV_NEW.test(id) && !ARXIV_OLD.test(id)) return null;
   return id.replace(/v\d+$/i, "");
@@ -42,8 +47,9 @@ export function arxivPdfUrl(value: string | null | undefined): string | null {
 
 export function normalizeDoi(value: string | null | undefined): string | null {
   if (!value) return null;
-  let doi = value.trim();
-  doi = doi.replace(/^https?:\/\/(dx\.)?doi\.org\//i, "");
+  let doi = foldWidth(value);
+  doi = doi.replace(/^doi\s*:\s*/i, "");
+  doi = doi.replace(/^(https?:\/\/)?((dx|www)\.)?doi\.org\//i, "");
   if (!/^10\.\d{4,9}\/\S+$/.test(doi)) return null;
   if (/[\s<>"']/.test(doi)) return null;
   return doi;

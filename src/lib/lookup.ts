@@ -51,10 +51,17 @@ function asNotices(value: unknown): LookupNotice[] {
   });
 }
 
+/**
+ * 查文献库。`force`（刷新链接）跳过约一天的本地缓存。来源为「模型」的 DOI / arXiv / 年份
+ * 不作为查询键：模型从正文引用里抓到的别人的 id 会把整篇论文的著录带偏。
+ */
 export async function lookupPaper(
-  paper: Pick<PaperDetail, "title" | "arxivId" | "doi" | "year" | "authors">,
+  paper: Pick<PaperDetail, "title" | "arxivId" | "doi" | "year" | "authors"> & Partial<Pick<PaperDetail, "fieldSources">>,
+  options: { force?: boolean } = {},
 ): Promise<LookupResult> {
   if (!isTauri()) return EMPTY_LOOKUP;
+  const trusted = <T,>(field: "doi" | "arxivId" | "year", value: T): T | null =>
+    paper.fieldSources?.[field] === "llm" ? null : value;
   try {
     const { invoke } = await import("@tauri-apps/api/core");
     const outcome = await invoke<{
@@ -63,11 +70,12 @@ export async function lookupPaper(
       openalexRemainingUsd?: number | null;
       openalexLimitUsd?: number | null;
     }>("lookup_paper", {
-      arxivId: paper.arxivId,
-      doi: paper.doi,
+      arxivId: trusted("arxivId", paper.arxivId),
+      doi: trusted("doi", paper.doi),
       title: paper.title,
-      year: paper.year,
+      year: trusted("year", paper.year),
       authors: paper.authors.map((author) => author.name).filter((name) => name.trim()),
+      force: options.force === true,
     });
     const hit = outcome?.hit;
     const meta = hit?.title?.trim()

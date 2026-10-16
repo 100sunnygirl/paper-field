@@ -23,7 +23,7 @@ import { pickProviderFromHealths, providerLabel, summarizeHealths } from "./lib/
 import { backupLibrary, restoreLibrary } from "./lib/backup";
 import { DEFAULT_BIBLIO, loadBiblioSettings, saveBiblioSettings, type BiblioSaveInput, type BiblioStatus } from "./lib/biblio";
 import { filledFrom, lookupPaper, type LookupResult, verifyReachable } from "./lib/lookup";
-import { safeHttpUrl, withDefaultScheme } from "./lib/urls";
+import { normalizeArxivId, normalizeDoi, safeHttpUrl, withDefaultScheme } from "./lib/urls";
 import { DRAFT_NOTES_SYSTEM, PREPARE_META_SYSTEM, draftNotesUserPrompt, normalizeMeta, normalizeNotes, prepareMetaUserPrompt } from "./lib/prompts";
 import { redactSecrets } from "./lib/redact";
 import { repo } from "./lib/repo";
@@ -523,12 +523,15 @@ export const useField = create<FieldState>((set, get) => ({
     const title = input.title.trim();
     if (!title) throw new Error("标题必填");
     try {
+      // 全角冒号、doi.org 链接等写法在入库前规整；认不出的保留原文，查询端会安全地忽略。
+      const arxivId = input.arxivId?.trim() ? normalizeArxivId(input.arxivId) ?? input.arxivId.trim() : input.arxivId;
+      const doi = input.doi?.trim() ? normalizeDoi(input.doi) ?? input.doi.trim() : input.doi;
       const paper = await repo.createPaper({
         domainId,
         title,
         pdfPath: input.pdfPath,
-        arxivId: input.arxivId,
-        doi: input.doi,
+        arxivId,
+        doi,
         userOwned: true,
       });
       set({ dialog: null, selectedPaperId: paper.id, mode: "field" });
@@ -823,7 +826,8 @@ export const useField = create<FieldState>((set, get) => ({
     trackJob(job.id, id, "request");
     try {
       if ((await jobStillRunning(job.id)) === false) return;
-      const found = await lookupPaper(paper);
+      // 刷新链接必须真的重新查询：跳过本地缓存。
+      const found = await lookupPaper(paper, { force: true });
       rememberLookup(set, get, id, found);
       if ((await jobStillRunning(job.id)) === false) return;
       if (found.meta) {
