@@ -4,7 +4,9 @@ import {
   cancelMineruPaper,
   clearMineruCancel,
   enqueueMineruBatch,
+  resumeMineru,
   runMineruBatch,
+  STALE_CRED_ERROR,
 } from "./mineruRun";
 import { getActivity, queueBatch, resetActivity, subscribeActivity } from "./activity";
 import type { PaperDetail } from "./types";
@@ -13,6 +15,7 @@ vi.mock("./mineru", () => ({
   mineruSubmit: vi.fn(),
   mineruParseStatuses: vi.fn(),
   mineruMarkdown: vi.fn(),
+  mineruCurrentFingerprint: vi.fn(async () => "pf-cred-v1:match"),
 }));
 
 vi.mock("./repo", () => ({
@@ -28,7 +31,7 @@ vi.mock("./repo", () => ({
   },
 }));
 
-import { mineruMarkdown, mineruParseStatuses, mineruSubmit } from "./mineru";
+import { mineruCurrentFingerprint, mineruMarkdown, mineruParseStatuses, mineruSubmit } from "./mineru";
 import { repo } from "./repo";
 
 function paperState(overrides: Partial<PaperDetail> = {}): PaperDetail {
@@ -127,6 +130,8 @@ beforeEach(() => {
   vi.mocked(repo.saveParsedMarkdown).mockReset();
   vi.mocked(repo.createJob).mockClear();
   vi.mocked(repo.updateJob).mockClear();
+  vi.mocked(repo.listPendingMineru).mockResolvedValue([]);
+  vi.mocked(mineruCurrentFingerprint).mockResolvedValue("pf-cred-v1:match");
   clearMineruCancel("p-1");
 });
 
@@ -142,6 +147,7 @@ function submitResult(overrides: Partial<MineruSubmitResult> = {}): MineruSubmit
     parseIds: ["7"],
     status: "running",
     tier: "standard",
+    credFingerprint: "pf-cred-v1:match",
     ...overrides,
   };
 }
@@ -201,9 +207,9 @@ describe("processOne 提交与轮询", () => {
     await runMineruBatch(host, ["p-1"], false);
 
     // 直接取 markdown 的短路分支（!parseIds.length && provider!=='api'）不得触发。
-    expect(statuses).toHaveBeenCalledWith("api", "batch-1", []);
+    expect(statuses).toHaveBeenCalledWith("api", "batch-1", [], "p-1", "pf-cred-v1:match");
     // 轮询路径的 tier 取当前设置（同步 done 路径才用 SubmitResult.tier）。
-    expect(mineruMarkdown).toHaveBeenCalledWith("api", "batch-1", "standard", "all");
+    expect(mineruMarkdown).toHaveBeenCalledWith("api", "batch-1", "standard", "all", "p-1", "pf-cred-v1:match");
     expect(repo.saveParsedMarkdown).toHaveBeenCalledWith("p-1", "# api markdown");
     const lastState = vi.mocked(repo.setMineruState).mock.lastCall?.[1];
     expect(lastState).toMatchObject({ status: "done" });
@@ -222,7 +228,7 @@ describe("processOne 提交与轮询", () => {
     await runMineruBatch(host, ["p-1"], false);
 
     expect(mineruParseStatuses).not.toHaveBeenCalled();
-    expect(mineruMarkdown).toHaveBeenCalledWith("local", "doc-1", "standard", "all");
+    expect(mineruMarkdown).toHaveBeenCalledWith("local", "doc-1", "standard", "all", "p-1", "pf-cred-v1:match");
     expect(repo.saveParsedMarkdown).toHaveBeenCalledWith("p-1", "# fast markdown");
   });
 
@@ -235,7 +241,7 @@ describe("processOne 提交与轮询", () => {
     await runMineruBatch(host, ["p-1"], false);
 
     expect(mineruParseStatuses).not.toHaveBeenCalled();
-    expect(mineruMarkdown).toHaveBeenCalledWith("local", "doc-1", "standard", "all");
+    expect(mineruMarkdown).toHaveBeenCalledWith("local", "doc-1", "standard", "all", "p-1", "pf-cred-v1:match");
   });
 
   it("等待中的解析会先轮询再在 done 后取回（含 pending→done 一次推进）", async () => {
@@ -255,7 +261,7 @@ describe("processOne 提交与轮询", () => {
     await batch;
 
     expect(statuses).toHaveBeenCalledTimes(2);
-    expect(mineruMarkdown).toHaveBeenCalledWith("local", "doc-1", "standard", "all");
+    expect(mineruMarkdown).toHaveBeenCalledWith("local", "doc-1", "standard", "all", "p-1", "pf-cred-v1:match");
   });
 
   it("轮询报 failed 时作业与论文状态置 error", async () => {
@@ -296,6 +302,7 @@ describe("恢复仅同源（I4d）", () => {
       mineruDocRef: "doc-resume",
       mineruParseIds: ["9"],
       mineruProvider: "ssh",
+      mineruCredFingerprint: "pf-cred-v1:match",
     });
     const host = makeHost(paper);
     vi.mocked(mineruParseStatuses).mockResolvedValue([poll("done", { id: "9" })]);
@@ -304,8 +311,8 @@ describe("恢复仅同源（I4d）", () => {
     await runMineruBatch(host, ["p-1"], false);
 
     expect(mineruSubmit).not.toHaveBeenCalled();
-    expect(mineruParseStatuses).toHaveBeenCalledWith("ssh", "doc-resume", ["9"]);
-    expect(mineruMarkdown).toHaveBeenCalledWith("ssh", "doc-resume", "standard", "all");
+    expect(mineruParseStatuses).toHaveBeenCalledWith("ssh", "doc-resume", ["9"], "p-1", "pf-cred-v1:match");
+    expect(mineruMarkdown).toHaveBeenCalledWith("ssh", "doc-resume", "standard", "all", "p-1", "pf-cred-v1:match");
     expect(repo.saveParsedMarkdown).toHaveBeenCalledWith("p-1", "# resumed");
   });
 
@@ -315,6 +322,7 @@ describe("恢复仅同源（I4d）", () => {
       mineruDocRef: "doc-resume",
       mineruParseIds: ["9"],
       mineruProvider: "ssh",
+      mineruCredFingerprint: "pf-cred-v1:match",
     });
     const host = makeHost(paper);
     vi.mocked(mineruParseStatuses).mockRejectedValue(new Error("SSH 连接中断"));
@@ -333,23 +341,24 @@ describe("恢复仅同源（I4d）", () => {
     expect(lastState?.error).toContain("可点击重新解析换源重提");
   });
 
-  it("旧数据（submitted 但无 provider）只能重新提交，由后端重选源", async () => {
+  it("在途论文缺指纹时失败关闭，不自动重提", async () => {
     const paper = paperState({
       mineruStatus: "submitted",
       mineruDocRef: "doc-old",
       mineruParseIds: ["9"],
       mineruProvider: null,
+      mineruCredFingerprint: null,
     });
     const host = makeHost(paper);
-    vi.mocked(mineruSubmit).mockResolvedValue(submitResult({ provider: "api", parseIds: [], shortId: "batch-new", status: "running", tier: "pipeline" }));
-    vi.mocked(mineruParseStatuses).mockResolvedValue([poll("done", { id: "p-1" })]);
-    vi.mocked(mineruMarkdown).mockResolvedValue("# resubmitted");
 
     await runMineruBatch(host, ["p-1"], false);
 
-    // provider 省略 = 后端按 order 自动 fallback 重选源。
-    expect(mineruSubmit).toHaveBeenCalledWith("p-1", "/papers/a.pdf", false);
-    expect(mineruParseStatuses).toHaveBeenCalledWith("api", "batch-new", []);
+    expect(mineruSubmit).not.toHaveBeenCalled();
+    expect(mineruParseStatuses).not.toHaveBeenCalled();
+    expect(repo.setMineruState).toHaveBeenCalledWith("p-1", {
+      status: "error",
+      error: STALE_CRED_ERROR,
+    });
   });
 
   it("force=true 时即使可恢复也重新提交（retryMineru 跨源入口）", async () => {
@@ -367,7 +376,72 @@ describe("恢复仅同源（I4d）", () => {
     await runMineruBatch(host, ["p-1"], true);
 
     expect(mineruSubmit).toHaveBeenCalledTimes(1);
-    expect(mineruParseStatuses).toHaveBeenCalledWith("api", "batch-2", []);
+    expect(mineruParseStatuses).toHaveBeenCalledWith("api", "batch-2", [], "p-1", "pf-cred-v1:match");
+  });
+});
+
+describe("凭据指纹续跑（M6）", () => {
+  it("缺指纹的在途论文失败关闭，不轮询也不重新提交", async () => {
+    const paper = paperState({
+      mineruStatus: "parsing",
+      mineruDocRef: "doc-old",
+      mineruParseIds: ["9"],
+      mineruProvider: "api",
+      mineruCredFingerprint: null,
+    });
+    vi.mocked(repo.listPendingMineru).mockResolvedValue(["p-1"]);
+    vi.mocked(repo.getPaper).mockResolvedValue(paper);
+    const host = makeHost(paper);
+
+    await resumeMineru(host);
+
+    expect(mineruParseStatuses).not.toHaveBeenCalled();
+    expect(mineruMarkdown).not.toHaveBeenCalled();
+    expect(mineruSubmit).not.toHaveBeenCalled();
+    expect(repo.setMineruState).toHaveBeenCalledWith("p-1", { status: "error", error: STALE_CRED_ERROR });
+    expect(host.flash).toHaveBeenCalledWith("error", STALE_CRED_ERROR);
+  });
+
+  it("指纹与当前凭据不一致时不轮询、不自动重提", async () => {
+    const paper = paperState({
+      mineruStatus: "submitted",
+      mineruDocRef: "doc-old",
+      mineruParseIds: [],
+      mineruProvider: "api",
+      mineruCredFingerprint: "pf-cred-v1:old",
+    });
+    vi.mocked(mineruCurrentFingerprint).mockResolvedValue("pf-cred-v1:new");
+    vi.mocked(repo.listPendingMineru).mockResolvedValue(["p-1"]);
+    vi.mocked(repo.getPaper).mockResolvedValue(paper);
+    const host = makeHost(paper);
+
+    await resumeMineru(host);
+
+    expect(mineruParseStatuses).not.toHaveBeenCalled();
+    expect(mineruSubmit).not.toHaveBeenCalled();
+    expect(repo.setMineruState).toHaveBeenCalledWith("p-1", { status: "error", error: STALE_CRED_ERROR });
+  });
+
+  it("指纹匹配时把列值传给续跑轮询", async () => {
+    const paper = paperState({
+      mineruStatus: "submitted",
+      mineruDocRef: "doc-resume",
+      mineruParseIds: ["9"],
+      mineruProvider: "ssh",
+      mineruCredFingerprint: "pf-cred-v1:match",
+    });
+    vi.mocked(mineruCurrentFingerprint).mockResolvedValue("pf-cred-v1:match");
+    vi.mocked(repo.listPendingMineru).mockResolvedValue(["p-1"]);
+    vi.mocked(repo.getPaper).mockResolvedValue(paper);
+    vi.mocked(mineruParseStatuses).mockResolvedValue([poll("done", { id: "9" })]);
+    vi.mocked(mineruMarkdown).mockResolvedValue("# resumed");
+    const host = makeHost(paper);
+
+    await resumeMineru(host);
+
+    expect(mineruSubmit).not.toHaveBeenCalled();
+    expect(mineruParseStatuses).toHaveBeenCalledWith("ssh", "doc-resume", ["9"], "p-1", "pf-cred-v1:match");
+    expect(host.flash).not.toHaveBeenCalledWith("error", STALE_CRED_ERROR);
   });
 });
 

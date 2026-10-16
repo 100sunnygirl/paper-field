@@ -358,6 +358,7 @@ describe("导入 × MinerU 解析联动的通知触达", () => {
       parseIds: [],
       status: "done",
       tier: "standard",
+      credFingerprint: "pf-cred-v1:match",
     });
     vi.mocked(mineruMarkdown).mockResolvedValue("# 全文");
 

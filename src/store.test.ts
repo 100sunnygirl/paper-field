@@ -202,6 +202,7 @@ describe("retryFailedMineru（INTAKE 批量重试）", () => {
       parseIds: [],
       docRef: null,
       provider: null,
+      credFingerprint: null,
     });
     const flash = useField.getState().flash;
     expect(flash?.tone).toBe("ok");

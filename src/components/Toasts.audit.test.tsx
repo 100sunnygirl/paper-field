@@ -47,6 +47,7 @@ vi.mock("../lib/mineru", async (importOriginal) => ({
     parseIds: [],
     status: "done",
     tier: "standard",
+    credFingerprint: "pf-cred-v1:match",
   })),
   mineruMarkdown: vi.fn(async () => "# 解析结果\n正文。"),
 }));

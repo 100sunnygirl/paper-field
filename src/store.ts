@@ -558,6 +558,7 @@ export const useField = create<FieldState>((set, get) => ({
         parseIds: [],
         docRef: null,
         provider: null,
+        credFingerprint: null,
       });
       await get().refresh();
       get().setFlash({ tone: "ok", text: "已将这篇论文发送到 MinerU 解析。" });
@@ -595,6 +596,7 @@ export const useField = create<FieldState>((set, get) => ({
           parseIds: [],
           docRef: null,
           provider: null,
+          credFingerprint: null,
         });
       }
       await get().refresh();

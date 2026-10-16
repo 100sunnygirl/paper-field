@@ -223,6 +223,7 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
         .manage(llm::LlmState::new())
+        .manage(mineru::MineruCredBook::default())
         .setup(|app| {
             let menu = build_menu(app)?;
             app.set_menu(menu)?;
@@ -247,6 +248,7 @@ pub fn run() {
             mineru::list_pdfs,
             mineru::normalize_pdf,
             mineru::open_pdf,
+            mineru::mineru_current_fingerprint,
             mineru::mineru_submit,
             mineru::mineru_parse_statuses,
             mineru::mineru_markdown,

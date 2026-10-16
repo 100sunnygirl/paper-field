@@ -1,4 +1,5 @@
 import {
+  mineruCurrentFingerprint,
   mineruMarkdown,
   mineruParseStatuses,
   mineruSubmit,
@@ -32,6 +33,24 @@ interface Host {
 
 const cancelled = new Set<string>();
 let chain: Promise<void> = Promise.resolve();
+
+export const STALE_CRED_ERROR = "设置已变或升级缺指纹，请重新解析";
+
+async function resumeAllowed(paper: {
+  mineruStatus: string | null;
+  mineruCredFingerprint: string | null;
+  mineruProvider: string | null;
+  mineruDocRef: string | null;
+}): Promise<boolean> {
+  if (paper.mineruStatus !== "submitted" && paper.mineruStatus !== "parsing") return false;
+  if (!paper.mineruCredFingerprint || !paper.mineruProvider || !paper.mineruDocRef) return false;
+  try {
+    const current = await mineruCurrentFingerprint(paper.mineruProvider as MineruProviderKind);
+    return current === paper.mineruCredFingerprint;
+  } catch {
+    return false;
+  }
+}
 
 export function cancelMineruPaper(paperId: string): void {
   cancelled.add(paperId);
@@ -79,6 +98,7 @@ async function pollMarkdown(
   parseIds: string[],
   tier: string,
   pageRange: string,
+  expectedFingerprint: string,
 ): Promise<string> {
   const deadline = Date.now() + 45 * 60 * 1000;
   let announced = false;
@@ -93,9 +113,9 @@ async function pollMarkdown(
     // 必须先轮询 batch 状态等到 done 再取 full.md，否则会在 running 阶段过早取结果。
     if (!parseIds.length && provider !== "api") {
       trackJob(jobId, paperId, "fetch");
-      return mineruMarkdown(provider, docRef, tier, pageRange);
+      return mineruMarkdown(provider, docRef, tier, pageRange, paperId, expectedFingerprint);
     }
-    const polls = await pollStatuses(provider, docRef, parseIds);
+    const polls = await pollStatuses(provider, docRef, parseIds, paperId, expectedFingerprint);
     patchJobLive(jobId, { pages: parsePageProgress(polls.map((item) => item.progress)) });
     const waiting = polls.some((item) => item.status === "pending" || item.status === "parsing");
     const failed = polls.find((item) => item.status === "failed");
@@ -105,18 +125,24 @@ async function pollMarkdown(
     }
     if (!waiting) {
       trackJob(jobId, paperId, "fetch");
-      return mineruMarkdown(provider, docRef, tier, pageRange);
+      return mineruMarkdown(provider, docRef, tier, pageRange, paperId, expectedFingerprint);
     }
     await sleep(4000);
   }
   throw new Error("MinerU 解析超时");
 }
 
-async function pollStatuses(provider: MineruProviderKind, docRef: string, parseIds: string[]) {
+async function pollStatuses(
+  provider: MineruProviderKind,
+  docRef: string,
+  parseIds: string[],
+  paperId: string,
+  expectedFingerprint: string,
+) {
   let last: unknown = null;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
-      return await mineruParseStatuses(provider, docRef, parseIds);
+      return await mineruParseStatuses(provider, docRef, parseIds, paperId, expectedFingerprint);
     } catch (err) {
       last = err;
       await sleep(2000);
@@ -156,6 +182,14 @@ async function processOne(host: Host, paperId: string, force: boolean): Promise<
   const settings = host.mineru();
   if (!settings.configured) return "skip";
 
+  if (!force && (paper.mineruStatus === "submitted" || paper.mineruStatus === "parsing")) {
+    if (!(await resumeAllowed(paper))) {
+      await repo.setMineruState(paperId, { status: "error", error: STALE_CRED_ERROR });
+      await host.refresh();
+      return "fail";
+    }
+  }
+
   await retireActive(paperId);
   const job = await repo.createJob(paperId, "mineruParse", paper.pdfPath);
   await repo.updateJob(job.id, { status: "running", startedAt: nowIso() });
@@ -165,6 +199,7 @@ async function processOne(host: Host, paperId: string, force: boolean): Promise<
     let docRef = paper.mineruDocRef;
     let parseIds = paper.mineruParseIds;
     let provider = paper.mineruProvider as MineruProviderKind | null;
+    let expectedFingerprint = paper.mineruCredFingerprint ?? "";
     // 恢复仅同源：pending 论文必须带有提交时记录的 provider 才能续轮询；
     // 旧数据（status=submitted 但无 provider）只能重新提交，由后端按 order 重选源。
     const canResume =
@@ -182,6 +217,7 @@ async function processOne(host: Host, paperId: string, force: boolean): Promise<
       docRef = submitted.shortId;
       parseIds = submitted.parseIds;
       provider = submitted.provider;
+      expectedFingerprint = submitted.credFingerprint;
       await repo.setMineruState(paperId, {
         status: "submitted",
         parseId: parseIds[0] ?? null,
@@ -189,6 +225,7 @@ async function processOne(host: Host, paperId: string, force: boolean): Promise<
         docRef,
         provider,
         error: null,
+        credFingerprint: expectedFingerprint,
       });
       await host.refresh();
       trackJob(job.id, paperId, submitted.status === "done" ? "fetch" : "parse", { provider });
@@ -198,6 +235,8 @@ async function processOne(host: Host, paperId: string, force: boolean): Promise<
           docRef,
           submitted.tier || settings.tier,
           settings.pageRange,
+          paperId,
+          expectedFingerprint,
         );
         await repo.saveParsedMarkdown(paperId, markdown);
         await repo.setMineruState(paperId, { status: "done", error: null });
@@ -219,6 +258,7 @@ async function processOne(host: Host, paperId: string, force: boolean): Promise<
       parseIds,
       settings.tier,
       settings.pageRange,
+      expectedFingerprint,
     );
     await repo.saveParsedMarkdown(paperId, markdown);
     await repo.setMineruState(paperId, { status: "done", error: null });
@@ -323,7 +363,24 @@ export async function runMineruBatch(
 export async function resumeMineru(host: Host): Promise<void> {
   if (!host.mineru().configured) return;
   const pending = await repo.listPendingMineru();
-  if (pending.length) await runMineruBatch(host, pending, false);
+  const runnable: string[] = [];
+  let stale = 0;
+  for (const id of pending) {
+    const paper = await repo.getPaper(id);
+    if (!paper) continue;
+    const inflight = paper.mineruStatus === "submitted" || paper.mineruStatus === "parsing";
+    if (inflight && !(await resumeAllowed(paper))) {
+      await repo.setMineruState(id, { status: "error", error: STALE_CRED_ERROR });
+      stale += 1;
+      continue;
+    }
+    runnable.push(id);
+  }
+  if (stale) {
+    await host.refresh();
+    host.flash("error", STALE_CRED_ERROR);
+  }
+  if (runnable.length) await runMineruBatch(host, runnable, false);
   if (host.hasKey()) await backfillMeta(host);
 }
 
