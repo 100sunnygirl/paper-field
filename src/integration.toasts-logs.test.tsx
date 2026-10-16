@@ -135,6 +135,7 @@ function listItem(id: string): PaperListItem {
     mineruError: null,
     mineruParseIds: [],
     mineruProvider: null,
+    mineruCredFingerprint: null,
     tags: [],
     labs: [],
     createdAt: "2024-01-01T00:00:00.000Z",
@@ -224,7 +225,7 @@ beforeEach(async () => {
   vi.mocked(repo.importLocalPdfs).mockReset();
   vi.mocked(repo.createJob).mockReset().mockResolvedValue({ id: "job-1", status: "queued" } as LlmJob);
   vi.mocked(repo.updateJob).mockReset().mockResolvedValue(true);
-  vi.mocked(repo.setMineruState).mockReset().mockResolvedValue(undefined);
+  vi.mocked(repo.setMineruState).mockReset().mockResolvedValue(true);
   vi.mocked(repo.saveParsedMarkdown).mockReset().mockResolvedValue(undefined);
   vi.mocked(repo.applyPreparedMeta).mockReset().mockResolvedValue(undefined);
   vi.mocked(repo.papersForExport).mockReset().mockResolvedValue([]);
@@ -357,6 +358,7 @@ describe("导入 × MinerU 解析联动的通知触达", () => {
       parseIds: [],
       status: "done",
       tier: "standard",
+      credFingerprint: "pf-cred-v1:match",
     });
     vi.mocked(mineruMarkdown).mockResolvedValue("# 全文");
 

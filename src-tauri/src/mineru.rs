@@ -6,15 +6,18 @@
 //! - 跨源切换的唯一入口是 `mineru_submit(provider=None)`：按 order 逐源探测并提交，
 //!   失败自动试下一源，全部失败返回聚合中文错误。
 
+use std::collections::HashMap;
 use std::fs;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+use sha2::{Digest, Sha256};
+
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tauri::AppHandle;
+use tauri::{AppHandle, State};
 
 use crate::app_config_dir;
 use crate::mineru_api::ApiClient;
@@ -255,6 +258,8 @@ pub struct SubmitResult {
     pub status: String,
     /// doclib tier；api 为 model_version。
     pub tier: String,
+    /// `pf-cred-v1:` plus the SHA-256 of the submit-time credential payload.
+    pub cred_fingerprint: String,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -857,6 +862,7 @@ impl Provider {
                     parse_ids: Vec::new(),
                     status: "pending".into(),
                     tier: api.model_version().to_string(),
+                    cred_fingerprint: String::new(),
                 })
             }
         }
@@ -1151,6 +1157,7 @@ fn parse_submit_body(
         parse_ids: parse_ids(&json),
         status: json["status"].as_str().unwrap_or("pending").to_string(),
         tier: json["tier"].as_str().unwrap_or(tier_fallback).to_string(),
+        cred_fingerprint: String::new(),
     })
 }
 
@@ -1240,6 +1247,199 @@ fn canonical_pdf(path: &str) -> Result<PathBuf, String> {
     Ok(canon)
 }
 
+// ---------- 凭据指纹与进程内快照 ----------
+
+/// Submit-time credentials. May hold a token. Never serialize this to the frontend.
+#[derive(Clone, Debug)]
+pub struct CredSnapshot {
+    pub provider: String,
+    pub token: String,
+    pub host: String,
+    pub port: String,
+    pub user: String,
+    pub socket: String,
+    pub identity: String,
+    pub inbox: String,
+    pub model: String,
+    pub language: String,
+    pub enable_formula: bool,
+    pub enable_table: bool,
+}
+
+/// In-process book of the credentials used at submit. Empty after restart.
+pub struct MineruCredBook {
+    inner: Mutex<HashMap<String, CredSnapshot>>,
+}
+
+impl Default for MineruCredBook {
+    fn default() -> Self {
+        Self {
+            inner: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+impl MineruCredBook {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, CredSnapshot>> {
+        self.inner.lock().unwrap_or_else(|err| err.into_inner())
+    }
+
+    pub fn insert(&self, paper_id: &str, snap: CredSnapshot) {
+        self.lock().insert(paper_id.to_string(), snap);
+    }
+
+    pub fn get(&self, paper_id: &str) -> Option<CredSnapshot> {
+        self.lock().get(paper_id).cloned()
+    }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn cred_lines(snap: &CredSnapshot) -> [String; 10] {
+    let token_line = if snap.token.trim().is_empty() {
+        String::new()
+    } else {
+        sha256_hex(snap.token.trim().as_bytes())
+    };
+    [
+        snap.provider.clone(),
+        token_line,
+        snap.host.clone(),
+        snap.port.clone(),
+        snap.user.clone(),
+        snap.socket.clone(),
+        snap.identity.clone(),
+        snap.inbox.clone(),
+        snap.model.clone(),
+        snap.language.clone(),
+    ]
+}
+
+/// `pf-cred-v1:` + SHA-256 of the 10 lines joined by `\n`. Empty token is not hashed.
+pub fn cred_fingerprint(snap: &CredSnapshot) -> String {
+    let payload = cred_lines(snap).join("\n");
+    format!("pf-cred-v1:{}", sha256_hex(payload.as_bytes()))
+}
+
+pub fn snapshot_from_file(file: &MineruFileV2, provider: &str) -> Result<CredSnapshot, String> {
+    match provider {
+        "local" => Ok(CredSnapshot {
+            provider: "local".into(),
+            token: String::new(),
+            host: String::new(),
+            port: String::new(),
+            user: String::new(),
+            socket: file.local.socket_path.clone(),
+            identity: String::new(),
+            inbox: String::new(),
+            model: String::new(),
+            language: String::new(),
+            enable_formula: false,
+            enable_table: false,
+        }),
+        "ssh" => Ok(CredSnapshot {
+            provider: "ssh".into(),
+            token: String::new(),
+            host: file.ssh.host.clone(),
+            port: file.ssh.port.to_string(),
+            user: file.ssh.user.clone(),
+            socket: file.ssh.socket_path.clone(),
+            identity: file.ssh.identity_file.clone(),
+            inbox: file.ssh.inbox_dir.clone(),
+            model: String::new(),
+            language: String::new(),
+            enable_formula: false,
+            enable_table: false,
+        }),
+        "api" => Ok(CredSnapshot {
+            provider: "api".into(),
+            token: file.api.token.clone(),
+            host: crate::mineru_api::API_BASE
+                .trim_start_matches("https://")
+                .trim_start_matches("http://")
+                .to_string(),
+            port: String::new(),
+            user: String::new(),
+            socket: String::new(),
+            identity: String::new(),
+            inbox: String::new(),
+            model: file.api.model_version.clone(),
+            language: file.api.language.clone(),
+            enable_formula: file.api.enable_formula,
+            enable_table: file.api.enable_table,
+        }),
+        other => Err(format!("未知 MinerU 来源：{other}")),
+    }
+}
+
+/// Book snapshot wins over disk. Mismatch returns before any transport call.
+pub fn resolve_poll_creds(
+    book: &MineruCredBook,
+    paper_id: &str,
+    provider: &str,
+    expected_fingerprint: &str,
+    disk: &CredSnapshot,
+) -> Result<CredSnapshot, String> {
+    let candidate = book.get(paper_id).unwrap_or_else(|| disk.clone());
+    if candidate.provider != provider || cred_fingerprint(&candidate) != expected_fingerprint {
+        return Err("CRED_FINGERPRINT_MISMATCH".into());
+    }
+    Ok(candidate)
+}
+
+fn provider_from_snapshot(snap: &CredSnapshot, home: &Path) -> Result<Provider, String> {
+    match snap.provider.as_str() {
+        "local" => Ok(Provider::Local {
+            socket_path: expand_local_path(&snap.socket, home),
+        }),
+        "ssh" => {
+            let port = snap.port.parse::<u16>().unwrap_or_else(|_| default_ssh_port());
+            let cfg = SshCfg {
+                enabled: true,
+                host: snap.host.clone(),
+                port,
+                user: snap.user.clone(),
+                identity_file: snap.identity.clone(),
+                socket_path: snap.socket.clone(),
+                inbox_dir: snap.inbox.clone(),
+            };
+            Provider::build_ssh(&cfg, home)
+        }
+        "api" => Ok(Provider::Api(ApiClient::new(&ApiCfg {
+            token: snap.token.clone(),
+            model_version: snap.model.clone(),
+            language: snap.language.clone(),
+            enable_formula: snap.enable_formula,
+            enable_table: snap.enable_table,
+        }))),
+        other => Err(format!("未知 MinerU 来源：{other}")),
+    }
+}
+
+fn stamp_submit(book: &MineruCredBook, file: &MineruFileV2, paper_id: &str, result: &mut SubmitResult) -> Result<(), String> {
+    let snap = snapshot_from_file(file, &result.provider)?;
+    result.cred_fingerprint = cred_fingerprint(&snap);
+    book.insert(paper_id, snap);
+    Ok(())
+}
+
+/// Records the credentials a status/markdown call would send. Mismatch never pushes.
+fn record_poll(
+    book: &MineruCredBook,
+    paper_id: &str,
+    provider: &str,
+    expected_fingerprint: &str,
+    disk: &CredSnapshot,
+    log: &mut Vec<(String, String)>,
+) -> Result<(), String> {
+    let creds = resolve_poll_creds(book, paper_id, provider, expected_fingerprint, disk)?;
+    log.push((creds.token, creds.host));
+    Ok(())
+}
+
 // ---------- Tauri 命令（全部 async；settings 一律从磁盘读，token 不出网） ----------
 
 #[tauri::command]
@@ -1314,8 +1514,16 @@ pub async fn mineru_probe(app: AppHandle) -> Result<Vec<ProviderHealth>, String>
 }
 
 #[tauri::command]
+pub async fn mineru_current_fingerprint(app: AppHandle, provider: String) -> Result<String, String> {
+    let file = read_file(&app)?;
+    let snap = snapshot_from_file(&file, &provider)?;
+    Ok(cred_fingerprint(&snap))
+}
+
+#[tauri::command]
 pub async fn mineru_submit(
     app: AppHandle,
+    book: State<'_, MineruCredBook>,
     paper_id: String,
     local_path: String,
     force: bool,
@@ -1327,7 +1535,7 @@ pub async fn mineru_submit(
     if !valid_paper_id(&paper_id) {
         return Err("论文编号无效".into());
     }
-    match provider {
+    let mut result = match provider {
         Some(name) => {
             if !matches!(name.as_str(), "local" | "ssh" | "api") {
                 return Err(format!("未知 MinerU 来源：{name}"));
@@ -1335,44 +1543,56 @@ pub async fn mineru_submit(
             let target = build_provider(&file, &name, &home)?;
             target
                 .submit(&paper_id, &pdf, force, &file.tier, &file.page_range)
-                .await
+                .await?
         }
-        None => submit_with_fallback(&file, &home, &paper_id, &pdf, force).await,
-    }
+        None => submit_with_fallback(&file, &home, &paper_id, &pdf, force).await?,
+    };
+    stamp_submit(&book, &file, &paper_id, &mut result)?;
+    Ok(result)
 }
 
-/// provider 必填、不自动回退（恢复语义：doclib short_id 与 API batch_id 不同命名空间）。
+/// provider 必填、不自动回退。凭据来自提交快照，指纹不对则在传输前失败。
 #[tauri::command]
 pub async fn mineru_parse_statuses(
     app: AppHandle,
+    book: State<'_, MineruCredBook>,
+    paper_id: String,
     provider: String,
     doc_ref: String,
     parse_ids: Vec<String>,
+    expected_fingerprint: String,
 ) -> Result<Vec<ParsePoll>, String> {
     if !valid_doc_ref(&doc_ref) {
         return Err("文档编号无效".into());
     }
     let file = read_file(&app)?;
+    let disk = snapshot_from_file(&file, &provider)?;
+    let creds = resolve_poll_creds(&book, &paper_id, &provider, &expected_fingerprint, &disk)?;
     let home = platform::home_dir(&app)?;
-    let target = build_provider(&file, &provider, &home)?;
+    let target = provider_from_snapshot(&creds, &home)?;
     target.statuses(&doc_ref, &parse_ids).await
 }
 
-/// provider 必填、不自动回退（同上）。
+/// provider 必填、不自动回退。凭据来自提交快照，指纹不对则在传输前失败。
 #[tauri::command]
 pub async fn mineru_markdown(
     app: AppHandle,
+    book: State<'_, MineruCredBook>,
+    paper_id: String,
     provider: String,
     doc_ref: String,
     tier: String,
     page_range: String,
+    expected_fingerprint: String,
 ) -> Result<String, String> {
     if !valid_doc_ref(&doc_ref) {
         return Err("文档编号无效".into());
     }
     let file = read_file(&app)?;
+    let disk = snapshot_from_file(&file, &provider)?;
+    let creds = resolve_poll_creds(&book, &paper_id, &provider, &expected_fingerprint, &disk)?;
     let home = platform::home_dir(&app)?;
-    let target = build_provider(&file, &provider, &home)?;
+    let target = provider_from_snapshot(&creds, &home)?;
     target.markdown(&doc_ref, &tier, &page_range).await
 }
 
@@ -1656,6 +1876,105 @@ mod tests {
             order_candidates(&multi, &[]),
             vec!["ssh".to_string(), "api".to_string()]
         );
+    }
+
+    fn snap_api(token: &str, host: &str) -> CredSnapshot {
+        CredSnapshot {
+            provider: "api".into(),
+            token: token.into(),
+            host: host.into(),
+            port: String::new(),
+            user: String::new(),
+            socket: String::new(),
+            identity: String::new(),
+            inbox: String::new(),
+            model: "pipeline".into(),
+            language: "ch".into(),
+            enable_formula: true,
+            enable_table: true,
+        }
+    }
+
+    #[test]
+    fn cred_fingerprint_hashes_ten_lines_and_skips_empty_token() {
+        let plain = "token-plain-sk-old";
+        let api = snapshot_from_file(
+            &MineruFileV2 {
+                api: ApiCfg {
+                    token: plain.into(),
+                    model_version: "vlm".into(),
+                    language: "en".into(),
+                    enable_formula: true,
+                    enable_table: false,
+                },
+                ..default_file_v2()
+            },
+            "api",
+        )
+        .unwrap();
+        let lines = cred_lines(&api);
+        assert_eq!(lines[0], "api");
+        assert_ne!(lines[1], sha256_hex(b""));
+        assert!(!lines[1].is_empty());
+        assert_eq!(lines[2], "mineru.net");
+        assert_eq!(lines[3], "");
+        assert_eq!(lines[8], "vlm");
+        assert_eq!(lines[9], "en");
+        let printed = cred_fingerprint(&api);
+        assert!(printed.starts_with("pf-cred-v1:"));
+        assert!(!printed.contains(plain));
+        assert!(!printed.contains("token-plain-"));
+
+        let toggled = CredSnapshot {
+            enable_formula: !api.enable_formula,
+            ..api.clone()
+        };
+        assert_eq!(cred_fingerprint(&toggled), printed);
+
+        let local = snapshot_from_file(&default_file_v2(), "local").unwrap();
+        let local_lines = cred_lines(&local);
+        assert_eq!(local_lines[1], "");
+        assert_eq!(local_lines[5], default_file_v2().local.socket_path);
+        assert!(local_lines[2].is_empty() && local_lines[8].is_empty());
+
+        let mut ssh_file = default_file_v2();
+        ssh_file.ssh.host = "imac.local".into();
+        ssh_file.ssh.port = 2222;
+        ssh_file.ssh.user = "yang".into();
+        ssh_file.ssh.identity_file = "~/.ssh/id_ed25519".into();
+        ssh_file.ssh.inbox_dir = "~/mineru-inbox".into();
+        ssh_file.ssh.socket_path = "~/.mineru/doclib.sock".into();
+        let ssh = snapshot_from_file(&ssh_file, "ssh").unwrap();
+        let ssh_lines = cred_lines(&ssh);
+        assert_eq!(ssh_lines[2], "imac.local");
+        assert_eq!(ssh_lines[3], "2222");
+        assert_eq!(ssh_lines[6], "~/.ssh/id_ed25519");
+        assert_eq!(ssh_lines[7], "~/mineru-inbox");
+        assert!(ssh_lines[1].is_empty());
+    }
+
+    #[test]
+    fn live_snapshot_keeps_submit_token_and_host_after_settings_change() {
+        let old = snap_api("sk-old", "a.example");
+        let book = MineruCredBook::default();
+        book.insert("p1", old.clone());
+        let disk = snap_api("token-plain-sk-new", "b.example");
+        let mut log = Vec::new();
+        record_poll(&book, "p1", "api", &cred_fingerprint(&old), &disk, &mut log).unwrap();
+        assert_eq!(log, vec![("sk-old".into(), "a.example".into())]);
+        assert!(!log[0].0.contains("token-plain-"));
+        assert!(!log[0].0.contains("sk-new"));
+    }
+
+    #[test]
+    fn fingerprint_mismatch_does_not_touch_transport() {
+        let old = snap_api("sk-old", "a.example");
+        let disk = snap_api("token-plain-sk-new", "b.example");
+        let book = MineruCredBook::default();
+        let mut log = Vec::new();
+        let err = record_poll(&book, "p1", "api", &cred_fingerprint(&old), &disk, &mut log).unwrap_err();
+        assert_eq!(err, "CRED_FINGERPRINT_MISMATCH");
+        assert!(log.is_empty(), "new token must not reach the request");
     }
 
     #[test]

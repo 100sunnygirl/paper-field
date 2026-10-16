@@ -6,7 +6,7 @@ import type { SqlEngine } from "./engine";
  * `CREATE TRIGGER IF NOT EXISTS` is not used for the final bodies: an existing
  * database would otherwise keep a stale trigger forever.
  */
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 export const DOMAIN_CASCADE_SQL = `CREATE TRIGGER pf_domain_cascade
     AFTER DELETE ON domains
@@ -332,11 +332,17 @@ async function migrateV4(engine: SqlEngine): Promise<void> {
   await addColumn(engine, "papers", "field_providers", "field_providers TEXT NOT NULL DEFAULT '{}'");
 }
 
+/** Nullable credential fingerprint. One ADD COLUMN; no backfill, no table rebuild. */
+async function migrateV5(engine: SqlEngine): Promise<void> {
+  await addColumn(engine, "papers", "mineru_cred_fingerprint", "mineru_cred_fingerprint TEXT");
+}
+
 const MIGRATIONS: Array<{ version: number; up: (engine: SqlEngine) => Promise<void> }> = [
   { version: 1, up: migrateV1 },
   { version: 2, up: migrateV2 },
   { version: 3, up: migrateV3 },
   { version: 4, up: migrateV4 },
+  { version: 5, up: migrateV5 },
 ];
 
 export async function userVersion(engine: SqlEngine): Promise<number> {

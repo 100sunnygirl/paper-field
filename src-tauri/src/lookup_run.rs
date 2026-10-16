@@ -8,9 +8,9 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 
 use crate::lookup::{
-    arxiv_id_from_doi, normalize_arxiv_id, normalize_doi, parse_arxiv_atom, parse_crossref,
-    parse_crossref_query, parse_openalex, parse_openalex_single, parse_s2_match, parse_s2_paper,
-    urlencoding_min, LookupHit, TitleQuery,
+    arxiv_id_from_doi, normalize_arxiv_id, normalize_author_token, normalize_doi, normalize_title,
+    parse_arxiv_atom, parse_crossref, parse_crossref_query, parse_openalex, parse_openalex_single,
+    parse_s2_match, parse_s2_paper, urlencoding_min, LookupHit, TitleQuery,
 };
 
 pub const ARXIV_GAP: Duration = Duration::from_secs(3);
@@ -213,7 +213,13 @@ fn header<'a>(headers: &'a [(String, String)], name: &str) -> Option<&'a str> {
         .map(|(_, value)| value.as_str())
 }
 
-fn cache_key(arxiv_id: Option<&str>, doi: Option<&str>, title: Option<&str>) -> Option<String> {
+fn cache_key(
+    arxiv_id: Option<&str>,
+    doi: Option<&str>,
+    title: Option<&str>,
+    year: Option<i32>,
+    authors: &[String],
+) -> Option<String> {
     let from_doi = doi.and_then(arxiv_id_from_doi);
     if let Some(id) = arxiv_id.and_then(normalize_arxiv_id).or(from_doi) {
         return Some(format!("arxiv:{}", id.to_ascii_lowercase()));
@@ -222,13 +228,15 @@ fn cache_key(arxiv_id: Option<&str>, doi: Option<&str>, title: Option<&str>) -> 
         return Some(format!("doi:{}", doi.to_ascii_lowercase()));
     }
     let title = title.map(str::trim).filter(|value| !value.is_empty())?;
+    let year = year.map(|value| value.to_string()).unwrap_or_default();
+    let authors = authors
+        .iter()
+        .map(|name| normalize_author_token(name))
+        .collect::<Vec<_>>()
+        .join("\u{1f}");
     Some(format!(
-        "title:{}",
-        title
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-            .to_ascii_lowercase()
+        "title:{}|y:{year}|a:{authors}",
+        normalize_title(title)
     ))
 }
 
@@ -540,14 +548,40 @@ async fn fetch_paced<F: Fetcher, S: Sleeper>(
     }
 }
 
+fn blank_text(value: &str) -> bool {
+    value.trim().is_empty()
+}
+
+fn bibliographic_gaps(hit: &LookupHit) -> bool {
+    blank_text(&hit.r#abstract)
+        || hit.authors.is_empty()
+        || hit
+            .venue
+            .as_ref()
+            .map(|venue| blank_text(venue))
+            .unwrap_or(true)
+}
+
 fn fill_missing(base: &mut LookupHit, extra: LookupHit) {
+    if blank_text(&base.r#abstract) && !blank_text(&extra.r#abstract) {
+        base.r#abstract = extra.r#abstract;
+        if let Some(provider) = extra.providers.get("abstract") {
+            base.providers.insert("abstract".into(), provider.clone());
+        }
+    }
+    if base.authors.is_empty() && !extra.authors.is_empty() {
+        base.authors = extra.authors;
+        if let Some(provider) = extra.providers.get("authors") {
+            base.providers.insert("authors".into(), provider.clone());
+        }
+    }
     if base
         .venue
         .as_ref()
-        .map(|venue| venue.trim().is_empty())
+        .map(|venue| blank_text(venue))
         .unwrap_or(true)
     {
-        if let Some(venue) = extra.venue.filter(|venue| !venue.trim().is_empty()) {
+        if let Some(venue) = extra.venue.filter(|venue| !blank_text(venue)) {
             base.venue = Some(venue);
             if let Some(provider) = extra.providers.get("venue") {
                 base.providers.insert("venue".into(), provider.clone());
@@ -707,6 +741,50 @@ async fn search_crossref_title<F: Fetcher, S: Sleeper>(
     }
 }
 
+async fn fill_sparse_from_crossref_then_openalex<F: Fetcher, S: Sleeper>(
+    hit: &mut Option<LookupHit>,
+    title: &str,
+    year: Option<i32>,
+    authors: &[String],
+    doi: Option<String>,
+    arxiv_id: Option<String>,
+    fetch: &F,
+    sleeper: &mut S,
+    limiter: &mut Limiter,
+    budget: &mut OpenAlexBudget,
+    now: &mut Instant,
+    notices: &mut Vec<LookupNotice>,
+    email: Option<&str>,
+    polite: bool,
+    openalex_key: Option<&str>,
+) {
+    let query = TitleQuery {
+        title: title.to_string(),
+        year,
+        authors: authors.to_vec(),
+        doi,
+        arxiv_id,
+    };
+    if let Some(extra) = search_crossref_title(
+        fetch, sleeper, limiter, budget, now, notices, &query, email, polite,
+    )
+    .await
+    {
+        if let Some(base) = hit.as_mut() {
+            fill_missing(base, extra);
+        }
+    }
+    if let Some(extra) = search_openalex(
+        fetch, sleeper, limiter, budget, now, notices, &query, openalex_key,
+    )
+    .await
+    {
+        if let Some(base) = hit.as_mut() {
+            fill_missing(base, extra);
+        }
+    }
+}
+
 pub async fn execute_lookup<F: Fetcher, S: Sleeper>(
     auth: &BiblioAuth,
     arxiv_id: Option<&str>,
@@ -722,7 +800,7 @@ pub async fn execute_lookup<F: Fetcher, S: Sleeper>(
     sleeper: &mut S,
 ) -> LookupOutcome {
     let mut notices = Vec::new();
-    let key = cache_key(arxiv_id, doi, title);
+    let key = cache_key(arxiv_id, doi, title, year, authors);
     if let Some(key) = key.as_deref() {
         if let Some(hit) = cache.get(key, *now) {
             return LookupOutcome {
@@ -783,6 +861,7 @@ pub async fn execute_lookup<F: Fetcher, S: Sleeper>(
         } else {
             Duration::ZERO
         };
+        let mut s2_failed = true;
         match fetch_paced(
             fetch, sleeper, limiter, budget, now, "s2", gap, &request, false,
         )
@@ -791,6 +870,7 @@ pub async fn execute_lookup<F: Fetcher, S: Sleeper>(
             Ok(response) if !response.body.is_empty() => {
                 if let Ok(Some(parsed)) = parse_s2_paper(&response.body) {
                     if accepts_ids(&parsed, Some(&id), None) {
+                        s2_failed = false;
                         if let Some(base) = hit.as_mut() {
                             fill_missing(base, parsed);
                         } else {
@@ -809,6 +889,33 @@ pub async fn execute_lookup<F: Fetcher, S: Sleeper>(
                 );
             }
             Err(_) => {}
+        }
+        if hit.is_some() && (s2_failed || bibliographic_gaps(hit.as_ref().expect("hit"))) {
+            let fill_title = hit
+                .as_ref()
+                .map(|item| item.title.trim().to_string())
+                .filter(|title| !title.is_empty())
+                .or_else(|| want_title.clone());
+            if let Some(fill_title) = fill_title {
+                fill_sparse_from_crossref_then_openalex(
+                    &mut hit,
+                    &fill_title,
+                    year,
+                    authors,
+                    want_doi.clone(),
+                    Some(id),
+                    fetch,
+                    sleeper,
+                    limiter,
+                    budget,
+                    now,
+                    &mut notices,
+                    email,
+                    polite,
+                    openalex_key,
+                )
+                .await;
+            }
         }
     }
 
@@ -893,20 +1000,6 @@ pub async fn execute_lookup<F: Fetcher, S: Sleeper>(
                 doi: want_doi.clone(),
                 arxiv_id: want_arxiv.clone(),
             };
-            let prefer_s2 = s2_key.is_some();
-            if prefer_s2 {
-                hit = search_s2(
-                    fetch,
-                    sleeper,
-                    limiter,
-                    budget,
-                    now,
-                    &mut notices,
-                    &query,
-                    s2_key,
-                )
-                .await;
-            }
             if hit.is_none() {
                 hit = search_openalex(
                     fetch,
@@ -920,7 +1013,7 @@ pub async fn execute_lookup<F: Fetcher, S: Sleeper>(
                 )
                 .await;
             }
-            if hit.is_none() && !prefer_s2 {
+            if hit.is_none() {
                 hit = search_s2(
                     fetch,
                     sleeper,
@@ -1094,7 +1187,11 @@ mod tests {
             responses: Mutex::new(vec![
                 ok(include_str!("../fixtures/arxiv-attention.xml")),
                 status(404),
+                status(404),
+                status(404),
                 ok(include_str!("../fixtures/arxiv-attention.xml")),
+                status(404),
+                status(404),
                 status(404),
             ]),
         };
@@ -1265,6 +1362,8 @@ mod tests {
             responses: Mutex::new(vec![
                 ok(include_str!("../fixtures/arxiv-attention.xml")),
                 status(404),
+                status(404),
+                status(404),
             ]),
         };
         let auth = BiblioAuth::default();
@@ -1322,7 +1421,7 @@ mod tests {
         let xml = r#"<entry><title>T</title><summary>S</summary><id>http://arxiv.org/abs/hep-th/9901001v2</id><arxiv:journal_ref>Phys. Rev. D 60</arxiv:journal_ref><arxiv:doi>10.1103/PhysRevD.60.1</arxiv:doi></entry>"#;
         let script = Script {
             requests: Mutex::new(vec![]),
-            responses: Mutex::new(vec![ok(xml), status(404)]),
+            responses: Mutex::new(vec![ok(xml), status(404), status(404), status(404)]),
         };
         let outcome = execute_lookup(
             &BiblioAuth::default(),
@@ -1474,7 +1573,7 @@ mod tests {
             serde_json::json!({ "message": { "items": [fixture["message"].clone()] } }).to_string();
         let script = Script {
             requests: Mutex::new(vec![]),
-            responses: Mutex::new(vec![status(404), ok(r#"{"results":[]}"#), ok(&query)]),
+            responses: Mutex::new(vec![status(404), status(404), ok(&query)]),
         };
         let auth = BiblioAuth {
             email: Some("reader@example.com".into()),
@@ -1497,18 +1596,17 @@ mod tests {
         )
         .await;
         let requests = script.requests.lock().unwrap().clone();
-        assert!(requests[0].url.contains("search/match"));
-        assert!(requests[0]
-            .headers
-            .iter()
-            .any(|(key, value)| key.eq_ignore_ascii_case("x-api-key") && value == "s2-secret-key"));
-        assert!(!describe_request(&requests[0]).contains("s2-secret-key"));
+        assert!(requests[0].url.contains("api.openalex.org/works?search="));
+        assert!(requests[0].headers.iter().any(|(key, value)| {
+            key.eq_ignore_ascii_case("authorization") && value == "Bearer oa-secret-key-xyz"
+        }));
+        assert!(!describe_request(&requests[0]).contains("oa-secret-key-xyz"));
+        assert!(requests[1].url.contains("search/match"));
         assert!(requests[1]
             .headers
             .iter()
-            .any(|(key, value)| key.eq_ignore_ascii_case("authorization")
-                && value == "Bearer oa-secret-key-xyz"));
-        assert!(!describe_request(&requests[1]).contains("oa-secret-key-xyz"));
+            .any(|(key, value)| key.eq_ignore_ascii_case("x-api-key") && value == "s2-secret-key"));
+        assert!(!describe_request(&requests[1]).contains("s2-secret-key"));
         assert!(!requests[1].url.contains("mailto"));
         assert!(requests[2].url.contains("mailto=reader%40example.com"));
         assert!(!outcome
@@ -1643,10 +1741,13 @@ mod tests {
     #[tokio::test]
     async fn arxiv_doi_is_fetched_from_arxiv_not_crossref() {
         let (mut limiter, mut cache, mut budget, mut now, mut sleeper) = harness();
+        let crossref = r#"{"message":{"items":[{"title":["Attention Is All You Need"],"container-title":["NeurIPS"],"author":[{"given":"Jane","family":"Doe"}],"DOI":"10.48550/arXiv.1706.03762","abstract":"should not replace the arxiv abstract"}]}}"#;
         let script = Script {
             requests: Mutex::new(vec![]),
             responses: Mutex::new(vec![
                 ok(include_str!("../fixtures/arxiv-attention.xml")),
+                status(404),
+                ok(crossref),
                 status(404),
             ]),
         };
@@ -1675,20 +1776,35 @@ mod tests {
         assert!(urls[0].contains("export.arxiv.org/api/query"), "{urls:?}");
         assert!(urls[1].contains("ARXIV:1706.03762"), "{urls:?}");
         assert!(
-            urls.iter().all(|url| !url.contains("api.crossref.org")),
+            urls.iter().all(|url| !url.contains("/works/10.48550")),
             "{urls:?}"
         );
-        assert_eq!(outcome.hit.unwrap().source_name, "arxiv");
+        assert!(
+            urls.iter().any(|url| url.contains("query.bibliographic")),
+            "{urls:?}"
+        );
+        let hit = outcome.hit.unwrap();
+        assert_eq!(hit.source_name, "arxiv");
+        assert_eq!(hit.venue.as_deref(), Some("NeurIPS"));
+        assert!(hit.r#abstract.contains("dominant sequence"));
+        assert!(!hit.r#abstract.contains("should not replace"));
+        assert_eq!(hit.authors[0].name, "Ashish Vaswani");
     }
 
     #[tokio::test]
     async fn configured_s2_match_is_preferred_and_a_doi_conflict_falls_through() {
         let (mut limiter, mut cache, mut budget, mut now, mut sleeper) = harness();
         let impostor = r#"{"data":[{"title":"Attention Is All You Need","year":2024,"externalIds":{"DOI":"10.9999/impostor","ArXiv":"2401.00001"},"authors":[{"name":"Jane Doe"}]}]}"#;
-        let openalex = r#"{"results":[{"display_name":"Attention Is All You Need","publication_year":2017,"doi":"https://doi.org/10.5555/3295222.3295349","authorships":[{"author":{"display_name":"Ashish Vaswani"}}]}]}"#;
+        let crossref = r#"{"message":{"items":[{"title":["Attention Is All You Need"],"DOI":"10.5555/3295222.3295349","author":[{"given":"Ashish","family":"Vaswani"}],"published":{"date-parts":[[2017]]},"container-title":["NeurIPS"]}]}}"#;
         let script = Script {
             requests: Mutex::new(vec![]),
-            responses: Mutex::new(vec![status(404), status(404), ok(impostor), ok(openalex)]),
+            responses: Mutex::new(vec![
+                status(404),
+                status(404),
+                status(404),
+                ok(impostor),
+                ok(crossref),
+            ]),
         };
         let authors = vec!["Ashish Vaswani".to_string()];
         let outcome = execute_lookup(
@@ -1718,13 +1834,229 @@ mod tests {
             .collect();
         assert!(urls[0].contains("api.crossref.org/works/"), "{urls:?}");
         assert!(urls[1].contains("api.openalex.org/works/doi:"), "{urls:?}");
-        assert!(urls[2].contains("search/match"), "{urls:?}");
-        assert!(
-            urls[3].contains("api.openalex.org/works?search="),
-            "{urls:?}"
-        );
+        assert!(urls[2].contains("api.openalex.org/works?search="), "{urls:?}");
+        assert!(urls[3].contains("search/match"), "{urls:?}");
+        assert!(urls[4].contains("query.bibliographic"), "{urls:?}");
         let hit = outcome.hit.unwrap();
-        assert_eq!(hit.source_name, "openalex");
+        assert_eq!(hit.source_name, "crossref");
         assert_eq!(hit.doi.as_deref(), Some("10.5555/3295222.3295349"));
+    }
+
+    fn distinct_title_script() -> Script {
+        Script {
+            requests: Mutex::new(vec![]),
+            responses: Mutex::new(vec![
+                ok(r#"{"results":[{"display_name":"OpenAlex Distinct Title"}]}"#),
+                ok(r#"{"title":"Semantic Scholar Distinct Title"}"#),
+                ok(r#"{"message":{"items":[{"title":["Crossref Distinct Title"]}]}}"#),
+            ]),
+        }
+    }
+
+    fn title_search_urls(script: &Script) -> Vec<String> {
+        script
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|request| request.url.clone())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn title_search_order_is_openalex_then_s2_then_crossref_without_a_key() {
+        let (mut limiter, mut cache, mut budget, mut now, mut sleeper) = harness();
+        let script = distinct_title_script();
+        execute_lookup(
+            &BiblioAuth::default(),
+            None,
+            None,
+            Some("Attention Is All You Need"),
+            None,
+            &[],
+            &script,
+            &mut limiter,
+            &mut cache,
+            &mut budget,
+            &mut now,
+            &mut sleeper,
+        )
+        .await;
+        let urls = title_search_urls(&script);
+        assert!(urls[0].contains("api.openalex.org/works?search="), "{urls:?}");
+        assert!(urls[1].contains("search/match"), "{urls:?}");
+        assert!(urls[2].contains("query.bibliographic"), "{urls:?}");
+        assert!(script.requests.lock().unwrap().iter().all(|request| {
+            !request
+                .headers
+                .iter()
+                .any(|(key, _)| key.eq_ignore_ascii_case("x-api-key"))
+        }));
+    }
+
+    #[tokio::test]
+    async fn title_search_order_stays_the_same_when_an_s2_key_is_set() {
+        let (mut limiter, mut cache, mut budget, mut now, mut sleeper) = harness();
+        let script = distinct_title_script();
+        execute_lookup(
+            &BiblioAuth {
+                s2_key: Some("s2-secret-key".into()),
+                ..BiblioAuth::default()
+            },
+            None,
+            None,
+            Some("Attention Is All You Need"),
+            None,
+            &[],
+            &script,
+            &mut limiter,
+            &mut cache,
+            &mut budget,
+            &mut now,
+            &mut sleeper,
+        )
+        .await;
+        let urls = title_search_urls(&script);
+        assert!(urls[0].contains("api.openalex.org/works?search="), "{urls:?}");
+        assert!(urls[1].contains("search/match"), "{urls:?}");
+        assert!(urls[2].contains("query.bibliographic"), "{urls:?}");
+        let requests = script.requests.lock().unwrap().clone();
+        assert!(requests[1].headers.iter().any(|(key, value)| {
+            key.eq_ignore_ascii_case("x-api-key") && value == "s2-secret-key"
+        }));
+        assert!(!requests[0].headers.iter().any(|(key, _)| key.eq_ignore_ascii_case("x-api-key")));
+        assert!(!requests[2].headers.iter().any(|(key, _)| key.eq_ignore_ascii_case("x-api-key")));
+    }
+
+    #[tokio::test]
+    async fn empty_arxiv_abstract_is_filled_from_crossref_after_s2_fails() {
+        let (mut limiter, mut cache, mut budget, mut now, mut sleeper) = harness();
+        let crossref = r#"{"message":{"items":[{"title":["Sparse Abstract Paper"],"abstract":"Filled from Crossref.","container-title":["Other Venue"],"author":[{"given":"Jane","family":"Doe"}],"DOI":"10.9999/other"}]}}"#;
+        let script = Script {
+            requests: Mutex::new(vec![]),
+            responses: Mutex::new(vec![
+                ok(include_str!("../fixtures/arxiv-empty-abstract.xml")),
+                status(429),
+                ok(crossref),
+                status(404),
+            ]),
+        };
+        let outcome = execute_lookup(
+            &BiblioAuth::default(),
+            Some("1706.03762"),
+            None,
+            Some("Sparse Abstract Paper"),
+            None,
+            &[],
+            &script,
+            &mut limiter,
+            &mut cache,
+            &mut budget,
+            &mut now,
+            &mut sleeper,
+        )
+        .await;
+        let urls = title_search_urls(&script);
+        assert!(urls.iter().any(|url| url.contains("query.bibliographic")), "{urls:?}");
+        let hit = outcome.hit.unwrap();
+        assert_eq!(hit.r#abstract, "Filled from Crossref.");
+        assert_eq!(hit.authors[0].name, "Ashish Vaswani");
+        assert_eq!(hit.venue.as_deref(), Some("NeurIPS"));
+        assert_eq!(hit.doi.as_deref(), Some("10.5555/3295222.3295349"));
+    }
+
+    #[tokio::test]
+    async fn crossref_fills_empty_arxiv_authors_and_leaves_a_present_abstract() {
+        let (mut limiter, mut cache, mut budget, mut now, mut sleeper) = harness();
+        let xml = r#"<entry><title>Sparse Abstract Paper</title><summary>Kept abstract.</summary><id>http://arxiv.org/abs/1706.03762v1</id><arxiv:journal_ref>NeurIPS</arxiv:journal_ref><arxiv:doi>10.5555/3295222.3295349</arxiv:doi></entry>"#;
+        let crossref = r#"{"message":{"items":[{"title":["Sparse Abstract Paper"],"abstract":"Different abstract.","author":[{"given":"Grace","family":"Hopper"}],"container-title":["Other Venue"],"DOI":"10.9999/other"}]}}"#;
+        let script = Script {
+            requests: Mutex::new(vec![]),
+            responses: Mutex::new(vec![ok(xml), status(429), ok(crossref), status(404)]),
+        };
+        let outcome = execute_lookup(
+            &BiblioAuth::default(),
+            Some("1706.03762"),
+            None,
+            Some("Sparse Abstract Paper"),
+            None,
+            &[],
+            &script,
+            &mut limiter,
+            &mut cache,
+            &mut budget,
+            &mut now,
+            &mut sleeper,
+        )
+        .await;
+        let hit = outcome.hit.unwrap();
+        assert_eq!(hit.authors.len(), 1);
+        assert_eq!(hit.authors[0].name, "Grace Hopper");
+        assert_eq!(hit.r#abstract, "Kept abstract.");
+        assert_eq!(hit.venue.as_deref(), Some("NeurIPS"));
+    }
+
+    #[tokio::test]
+    async fn title_cache_key_includes_year_and_normalized_authors() {
+        let (mut limiter, mut cache, mut budget, mut now, mut sleeper) = harness();
+        let first = r#"{"results":[{"display_name":"Attention Is All You Need","publication_year":2017,"primary_location":{"source":{"display_name":"First Venue"}}}]}"#;
+        let second = r#"{"results":[{"display_name":"Attention Is All You Need","publication_year":2017,"primary_location":{"source":{"display_name":"Second Venue"}}}]}"#;
+        let script = Script {
+            requests: Mutex::new(vec![]),
+            responses: Mutex::new(vec![ok(first), ok(second)]),
+        };
+        let ashish = vec!["Ashish Vaswani".to_string()];
+        let grace = vec!["Grace Hopper".to_string()];
+        let first_hit = execute_lookup(
+            &BiblioAuth::default(),
+            None,
+            None,
+            Some("Attention Is All You Need"),
+            Some(2017),
+            &ashish,
+            &script,
+            &mut limiter,
+            &mut cache,
+            &mut budget,
+            &mut now,
+            &mut sleeper,
+        )
+        .await;
+        assert_eq!(first_hit.hit.unwrap().venue.as_deref(), Some("First Venue"));
+        assert_eq!(script.requests.lock().unwrap().len(), 1);
+        let second_hit = execute_lookup(
+            &BiblioAuth::default(),
+            None,
+            None,
+            Some("Attention Is All You Need"),
+            Some(2017),
+            &grace,
+            &script,
+            &mut limiter,
+            &mut cache,
+            &mut budget,
+            &mut now,
+            &mut sleeper,
+        )
+        .await;
+        assert_eq!(script.requests.lock().unwrap().len(), 2);
+        assert_eq!(second_hit.hit.unwrap().venue.as_deref(), Some("Second Venue"));
+        let again = execute_lookup(
+            &BiblioAuth::default(),
+            None,
+            None,
+            Some("Attention   Is All You Need"),
+            Some(2017),
+            &["ashish   vaswani".to_string()],
+            &script,
+            &mut limiter,
+            &mut cache,
+            &mut budget,
+            &mut now,
+            &mut sleeper,
+        )
+        .await;
+        assert_eq!(script.requests.lock().unwrap().len(), 2);
+        assert_eq!(again.hit.unwrap().venue.as_deref(), Some("First Venue"));
     }
 }

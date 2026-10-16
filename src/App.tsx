@@ -16,8 +16,25 @@ import { JobsPanel } from "./components/JobsPanel";
 import { Dock, Rail, StatusStrip } from "./components/Shell";
 import { SystemView } from "./components/SystemView";
 import { Toasts } from "./components/Toasts";
+import { MigrationNotices } from "./components/MigrationNotices";
 import { RestoreNotice } from "./components/RestoreNotice";
 import { useField } from "./store";
+
+function typingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  const tag = target.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+  return target.isContentEditable || Boolean(target.closest("[contenteditable]"));
+}
+
+/** ⌘R / Ctrl+R and the mark-read menu. Typing, an open dialog, or no paper leaves the key alone. */
+export function requestMarkRead(event?: { preventDefault: () => void; target: EventTarget | null }) {
+  const target = event?.target ?? (typeof document !== "undefined" ? document.activeElement : null);
+  if (typingTarget(target) || useField.getState().dialog) return;
+  if (!useField.getState().selectedPaperId) return;
+  event?.preventDefault();
+  void useField.getState().markRead();
+}
 import { setPersistFailureHandler } from "./lib/engine";
 import { notify } from "./toasts";
 import "./styles/workstation.css";
@@ -34,7 +51,6 @@ export default function App() {
   const navigatePapers = useField((s) => s.navigatePapers);
   const openDialog = useField((s) => s.openDialog);
   const closeDialog = useField((s) => s.closeDialog);
-  const markRead = useField((s) => s.markRead);
   const dialog = useField((s) => s.dialog);
   const setMode = useField((s) => s.setMode);
   const setJobsOpen = useField((s) => s.setJobsOpen);
@@ -109,8 +125,7 @@ export default function App() {
         return;
       }
       if (meta && event.key.toLowerCase() === "r") {
-        event.preventDefault();
-        void markRead();
+        requestMarkRead(event);
         return;
       }
       if (typing || dialog) return;
@@ -125,7 +140,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [closeDialog, dialog, markRead, mode, navigatePapers, openDialog, setJobsOpen, setMode]);
+  }, [closeDialog, dialog, mode, navigatePapers, openDialog, setJobsOpen, setMode]);
 
   useEffect(() => {
     if (!isTauri()) return;
@@ -135,7 +150,7 @@ export default function App() {
         const id = event.payload;
         if (id === "new-paper") openDialog("paper");
         if (id === "new-domain") openDialog("domain");
-        if (id === "mark-read") void markRead();
+        if (id === "mark-read") requestMarkRead();
         if (id === "mode-field") void setMode("field");
         if (id === "mode-archive") void setMode("archive");
         if (id === "mode-intake") void setMode("intake");
@@ -145,7 +160,7 @@ export default function App() {
       });
     });
     return () => unlisten?.();
-  }, [markRead, openDialog, setMode]);
+  }, [openDialog, setMode]);
 
   const domain = domains.find((d) => d.id === selectedDomainId) ?? null;
 
@@ -173,6 +188,7 @@ export default function App() {
     return (
       <div className="empty" style={{ padding: 48 }}>
         <RestoreNotice />
+        <MigrationNotices />
         <h2>存储无法打开</h2>
         <p>{error}</p>
       </div>
@@ -194,6 +210,7 @@ export default function App() {
       data-has-paper={paper && mode !== "system" ? "true" : "false"}
     >
       <RestoreNotice />
+      <MigrationNotices />
       <Rail mode={mode} />
       <Dock domain={domain} search={search} />
       {mode === "system" ? (

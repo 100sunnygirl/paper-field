@@ -27,7 +27,7 @@ import { safeHttpUrl, withDefaultScheme } from "./lib/urls";
 import { DRAFT_NOTES_SYSTEM, PREPARE_META_SYSTEM, draftNotesUserPrompt, normalizeMeta, normalizeNotes, prepareMetaUserPrompt } from "./lib/prompts";
 import { redactSecrets } from "./lib/redact";
 import { repo } from "./lib/repo";
-import { cancelChat, completeChat, hasUsableProvider, loadSettings, saveSettings, type LlmSaveInput } from "./lib/settings";
+import { cancelChat, completeChat, hasUsableProvider, loadSettings, readLlmSettings, saveSettings, type LlmSaveInput } from "./lib/settings";
 import { log } from "./lib/logger";
 import { dismissAll, notify, type ToastAction } from "./toasts";
 import type {
@@ -80,7 +80,7 @@ interface FieldState {
   mineru: MineruSettingsV2;
   biblio: BiblioStatus;
   /** Settings files that exist but failed to load; the page shows defaults plus this error. */
-  settingsLoadError: { mineru: string | null; biblio: string | null };
+  settingsLoadError: { mineru: string | null; biblio: string | null; llm: string | null; secrets: string | null };
   /** Quiet lookup hints for one paper. The dossier shows them only when that paper is open. */
   lookupHint: { paperId: string; notices: LookupResult["notices"] } | null;
   mineruHealth: ProviderHealth[];
@@ -150,7 +150,7 @@ interface FieldState {
   runPrepareMeta: (paperId?: string, overwrite?: boolean, quiet?: boolean) => Promise<void>;
   runRefreshLinks: (paperId?: string) => Promise<void>;
   runDraftNotes: (paperId?: string, overwrite?: boolean) => Promise<void>;
-  cancelJob: (jobId: string) => Promise<void>;
+  cancelJob: (jobId: string, options?: { silent?: boolean }) => Promise<void>;
   saveLlmSettings: (input: LlmSaveInput) => Promise<void>;
   saveMineruSettings: (input: MineruSaveInput) => Promise<void>;
   saveBiblioSettings: (input: BiblioSaveInput) => Promise<void>;
@@ -184,6 +184,8 @@ export function importFailureList(failed: Array<{ name: string; message: string 
   return rest > 0 ? `${shown} 等，另有 ${rest} 篇` : shown;
 }
 
+const prepareInflight = new Set<string>();
+
 export const SEARCH_DEBOUNCE_MS = 250;
 let refreshSeq = 0;
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
@@ -210,7 +212,7 @@ export const useField = create<FieldState>((set, get) => ({
   settings: { version: 2, providers: [], usage: {} },
   mineru: DEFAULT_MINERU,
   biblio: DEFAULT_BIBLIO,
-  settingsLoadError: { mineru: null, biblio: null },
+  settingsLoadError: { mineru: null, biblio: null, llm: null, secrets: null },
   lookupHint: null,
   mineruHealth: [],
   effectiveProvider: null,
@@ -255,14 +257,14 @@ export const useField = create<FieldState>((set, get) => ({
       );
       // 当前一篇已建作业（解析或解析后的自动补全）→ 走既有取消；尚未建作业 → 打取消标记。
       if (active.length) {
-        for (const job of active) await get().cancelJob(job.id);
+        for (const job of active) await get().cancelJob(job.id, { silent: true });
       } else {
         cancelMineruPaper(current);
       }
       stopped += 1;
     }
-    log.info("mineru", `作业面板停止解析批次：${stopped} 篇不再处理`);
-    get().setFlash({ tone: "ok", text: `已停止本批解析，${stopped} 篇不再处理。可在资料栏单独重新解析。` });
+    log.info("mineru", `作业面板停止解析批次：${stopped} 篇不再写入`);
+    get().setFlash({ tone: "ok", text: mineruStopCopy(stopped) });
   },
   openDialog: (dialog) => set({ dialog }),
   closeDialog: () => set({ dialog: null, pendingDraftJob: null }),
@@ -270,18 +272,26 @@ export const useField = create<FieldState>((set, get) => ({
   init: async () => {
     try {
       await repo.init();
-      const settingsLoadError: { mineru: string | null; biblio: string | null } = { mineru: null, biblio: null };
+      const settingsLoadError: { mineru: string | null; biblio: string | null; llm: string | null; secrets: string | null } = {
+        mineru: null,
+        biblio: null,
+        llm: null,
+        secrets: null,
+      };
       const fallback = <T,>(key: "mineru" | "biblio", value: T) => (err: unknown): T => {
         settingsLoadError[key] = err instanceof Error ? err.message : String(err);
         log.error(key === "mineru" ? "mineru" : "store", key === "mineru" ? "MinerU 设置读取失败，已显示默认值" : "文献库设置读取失败，已显示默认值", err);
         return value;
       };
-      const [domains, settings, mineru, biblio] = await Promise.all([
+      const [domains, llmLoaded, mineru, biblio] = await Promise.all([
         repo.listDomains(),
-        loadSettings(),
+        readLlmSettings(),
         loadMineruSettings().catch(fallback("mineru", DEFAULT_MINERU)),
         loadBiblioSettings().catch(fallback("biblio", DEFAULT_BIBLIO)),
       ]);
+      const settings = llmLoaded.settings;
+      settingsLoadError.llm = llmLoaded.llmError;
+      settingsLoadError.secrets = llmLoaded.secretsError;
       const selectedDomainId = domains[0]?.id ?? null;
       set({ domains, selectedDomainId, settings, mineru, biblio, settingsLoadError, ready: true, error: null });
       await get().refresh();
@@ -558,6 +568,7 @@ export const useField = create<FieldState>((set, get) => ({
         parseIds: [],
         docRef: null,
         provider: null,
+        credFingerprint: null,
       });
       await get().refresh();
       get().setFlash({ tone: "ok", text: "已将这篇论文发送到 MinerU 解析。" });
@@ -595,6 +606,7 @@ export const useField = create<FieldState>((set, get) => ({
           parseIds: [],
           docRef: null,
           provider: null,
+          credFingerprint: null,
         });
       }
       await get().refresh();
@@ -752,7 +764,8 @@ export const useField = create<FieldState>((set, get) => ({
 
   runPrepareMeta: async (paperId, overwrite = false, quiet = false) => {
     const id = paperId ?? get().selectedPaperId;
-    if (!id) return;
+    if (!id || prepareInflight.has(id)) return;
+    prepareInflight.add(id);
     try {
       const paper = await repo.getPaper(id);
       if (!paper) return;
@@ -786,6 +799,8 @@ export const useField = create<FieldState>((set, get) => ({
       const message = redactSecrets(errText(err));
       log.error("llm", "补全论文信息失败", message);
       if (!quiet) get().setFlash({ tone: "error", text: message });
+    } finally {
+      prepareInflight.delete(id);
     }
   },
 
@@ -855,7 +870,7 @@ export const useField = create<FieldState>((set, get) => ({
     });
   },
 
-  cancelJob: async (jobId) => {
+  cancelJob: async (jobId, options) => {
     const job = get().jobs.find((item) => item.id === jobId);
     if (job?.type === "mineruParse") {
       cancelMineruPaper(job.paperId);
@@ -865,6 +880,7 @@ export const useField = create<FieldState>((set, get) => ({
         finishedAt: nowIso(),
       });
       await repo.setMineruState(job.paperId, { status: "cancelled" });
+      if (!options?.silent) get().setFlash({ tone: "ok", text: mineruStopCopy(1) });
       await get().refresh();
       return;
     }
@@ -1043,6 +1059,10 @@ function guardUnsaved(get: () => FieldState): boolean {
   if (!get().unsavedNote) return true;
   get().setFlash({ tone: "warn", text: "请先保存或取消正在编辑的笔记。" });
   return false;
+}
+
+function mineruStopCopy(count: number): string {
+  return `已在本机停止解析，${count} 篇不再写入。远端任务不撤回，可能仍在继续，配额或页数可能已经计入。`;
 }
 
 function errText(err: unknown): string {

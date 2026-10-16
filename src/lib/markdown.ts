@@ -113,8 +113,14 @@ export function renderMarkdown(source: string): string {
 
 /** Delegated click handler for rendered markdown containers. */
 export function onMarkdownClick(event: { target: EventTarget | null; preventDefault(): void }): void {
-  const el = event.target instanceof Element ? event.target.closest(`[${REMOTE_IMG_ATTR}]`) : null;
-  if (!el) return;
+  const target = event.target instanceof Element ? event.target : null;
+  if (!target) return;
+  const remote = target.closest(`[${REMOTE_IMG_ATTR}]`);
+  const anchor = remote ? null : target.closest("a");
+  const raw = remote?.getAttribute(REMOTE_IMG_ATTR) ?? anchor?.getAttribute("href");
+  if (!raw) return;
+  const http = /^https?:/i.test(raw.trim());
+  if (!remote && !http) return;
   event.preventDefault();
-  void openExternal(el.getAttribute(REMOTE_IMG_ATTR));
+  if (safeHttpUrl(raw)) void openExternal(raw);
 }

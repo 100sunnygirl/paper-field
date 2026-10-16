@@ -174,6 +174,7 @@ function rowUsable(row: ProviderRow): boolean {
 }
 
 function keyFieldLabel(row: ProviderRow): string {
+  if (row.keyState === "unreadable") return "API Key（读取失败，不是未保存）";
   if (!row.requiresKey) return "API Key（免 Key 服务 · 可留空）";
   return row.hasKey ? "API Key（已保存 · 留空保持不变）" : "API Key（尚未配置）";
 }
@@ -188,6 +189,8 @@ function formatUsedAt(lastUsedAt: number | null | undefined): string {
 function LlmSettingsBlock() {
   const saved = useField((s) => s.settings);
   const saveLlmSettings = useField((s) => s.saveLlmSettings);
+  const llmLoadError = useField((s) => s.settingsLoadError.llm);
+  const secretsLoadError = useField((s) => s.settingsLoadError.secrets);
 
   const [rows, setRows] = useState<ProviderRow[]>(saved.providers.map(toRow));
   const [message, setMessage] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
@@ -376,6 +379,16 @@ function LlmSettingsBlock() {
           配置 OpenAI 兼容的 AI 服务，可添加多个提供商并按顺序自动回退；保存后即可使用「补全论文信息」与「起草阅读笔记」。
         </p>
       </header>
+      {llmLoadError ? (
+        <p className="ef-probe-line is-error" role="alert">
+          {llmLoadError}
+        </p>
+      ) : null}
+      {secretsLoadError ? (
+        <p className="ef-probe-line is-error" role="alert">
+          {secretsLoadError}
+        </p>
+      ) : null}
 
       <div className={`ef-statusbar ${statusTone}`} aria-live="polite">
         <span className="ef-statusbar-dot" aria-hidden="true" />

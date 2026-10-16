@@ -63,6 +63,7 @@ interface PaperRow {
   mineru_error: string | null;
   mineru_parse_ids: string | null;
   mineru_provider?: string | null;
+  mineru_cred_fingerprint?: string | null;
   tags: string;
   labs: string;
   field_sources?: string | null;
@@ -198,6 +199,7 @@ function mapPaper(row: PaperRow): Paper {
     // 旧库存的是数字数组，官方 API 时代统一归一为字符串（doclib 数字 id 字符串化）。
     mineruParseIds: parseJsonArray<string>(row.mineru_parse_ids, []).map((id) => String(id)),
     mineruProvider: row.mineru_provider ?? null,
+    mineruCredFingerprint: row.mineru_cred_fingerprint ?? null,
     tags: parseJsonArray<string>(row.tags, []),
     labs: parseJsonArray<Lab>(row.labs, []),
     createdAt: row.created_at,
@@ -575,9 +577,10 @@ export const repo = {
     const doi = input.doi?.trim() || null;
     const sources: FieldSources = {};
     if (explicitTitle || input.userOwned) sources.title = "user";
+    else if (pdfPath) sources.title = "llm";
     if (arxivId) sources.arxivId = "user";
     if (doi) sources.doi = "user";
-    const userMetaTouched = Object.keys(sources).length > 0;
+    const userMetaTouched = Boolean(explicitTitle || input.userOwned || arxivId || doi);
     const paper: Paper = {
       id: uid(),
       domainId: input.domainId,
@@ -609,6 +612,7 @@ export const repo = {
       mineruError: null,
       mineruParseIds: [],
       mineruProvider: null,
+      mineruCredFingerprint: null,
       tags: [],
       labs: [],
       createdAt: at,
@@ -761,6 +765,7 @@ export const repo = {
       isCorresponding?: boolean;
     }>,
     touchMeta = false,
+    expectedMetaRev: number | null = null,
   ): Promise<void> {
     const engine = await getEngine();
     const payload = JSON.stringify(
@@ -782,8 +787,8 @@ export const repo = {
          field_sources = CASE WHEN ? = 1
            THEN json_set(COALESCE(field_sources, '{}'), '$.authors', 'user')
            ELSE field_sources END
-       WHERE id = ?`,
-      [payload, nowIso(), touchMeta ? 1 : 0, touchMeta ? 1 : 0, touchMeta ? 1 : 0, paperId],
+       WHERE id = ? AND (? IS NULL OR meta_rev = ?)`,
+      [payload, nowIso(), touchMeta ? 1 : 0, touchMeta ? 1 : 0, touchMeta ? 1 : 0, paperId, expectedMetaRev, expectedMetaRev],
     );
   },
 
@@ -896,7 +901,7 @@ export const repo = {
       }
       const after = await engine.select<{ meta_rev: number }>("SELECT meta_rev FROM papers WHERE id = ?", [paperId]);
       if (Number(after[0]?.meta_rev ?? 0) !== (prev.metaRev ?? 0)) continue;
-      if (plan.replaceAuthors) await this.replaceAuthors(paperId, meta.authors, false);
+      if (plan.replaceAuthors) await this.replaceAuthors(paperId, meta.authors, false, prev.metaRev ?? 0);
       return;
     }
   },
@@ -1103,25 +1108,45 @@ export const repo = {
       error?: string | null;
       parseIds?: string[];
       provider?: string | null;
+      credFingerprint?: string | null;
     },
-  ): Promise<void> {
+  ): Promise<boolean> {
     const engine = await getEngine();
     const rows = await engine.select<PaperRow>("SELECT * FROM papers WHERE id = ?", [id]);
-    if (!rows[0]) return;
+    if (!rows[0]) return false;
     const prev = mapPaper(rows[0]);
-    await engine.execute(
-      `UPDATE papers SET mineru_status = ?, mineru_parse_id = ?, mineru_doc_ref = ?, mineru_error = ?, mineru_parse_ids = ?, mineru_provider = ?, updated_at = ? WHERE id = ?`,
+    const nextStatus = patch.status === undefined ? prev.mineruStatus : patch.status;
+    // 取消和认领完成不得盖住已经结束的状态：只有还在排队/已提交/解析中才能写成这两态。
+    const inflightGuard =
+      nextStatus === "done" || nextStatus === "cancelled"
+        ? " AND mineru_status IN ('queued','submitted','parsing')"
+        : "";
+    const changed = await engine.execute(
+      `UPDATE papers SET mineru_status = ?, mineru_parse_id = ?, mineru_doc_ref = ?, mineru_error = ?, mineru_parse_ids = ?, mineru_provider = ?, mineru_cred_fingerprint = ?, updated_at = ? WHERE id = ?${inflightGuard}`,
       [
-        patch.status === undefined ? prev.mineruStatus : patch.status,
+        nextStatus,
         patch.parseId === undefined ? prev.mineruParseId : patch.parseId,
         patch.docRef === undefined ? prev.mineruDocRef : patch.docRef,
         patch.error === undefined ? prev.mineruError : patch.error,
         JSON.stringify(patch.parseIds === undefined ? prev.mineruParseIds : patch.parseIds),
         patch.provider === undefined ? (rows[0].mineru_provider ?? null) : patch.provider,
+        patch.credFingerprint === undefined ? (rows[0].mineru_cred_fingerprint ?? null) : patch.credFingerprint,
         nowIso(),
         id,
       ],
     );
+    return changed > 0;
+  },
+
+  /** 认领完成写成 done 之后发现论文已取消：只把刚刚写成 done 的作业改回 cancelled。 */
+  async revertDoneJob(id: string): Promise<boolean> {
+    const engine = await getEngine();
+    const changed = await engine.execute(
+      `UPDATE llm_jobs SET status = 'cancelled', error = 'cancelled', finished_at = ?
+        WHERE id = ? AND status = 'done'`,
+      [nowIso(), id],
+    );
+    return changed > 0;
   },
 
   async saveParsedMarkdown(id: string, markdown: string): Promise<void> {

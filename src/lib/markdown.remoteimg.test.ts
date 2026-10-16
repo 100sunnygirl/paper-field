@@ -33,6 +33,19 @@ describe("remote images", () => {
     expect(openUrl).toHaveBeenCalledWith("https://example.com/a.png");
   });
 
+  it("opens an http(s) link outside the webview and ignores javascript and file", async () => {
+    const root = mount(
+      '<a href="https://example.com/paper">paper</a><a href="javascript:alert(1)">js</a><a href="file:///tmp/a.pdf">file</a>',
+    );
+    const [paper, js, file] = Array.from(root.querySelectorAll("a"));
+    expect(await click(paper)).toHaveBeenCalled();
+    expect(openUrl).toHaveBeenCalledWith("https://example.com/paper");
+    openUrl.mockClear();
+    expect(await click(js)).not.toHaveBeenCalled();
+    expect(await click(file)).not.toHaveBeenCalled();
+    expect(openUrl).not.toHaveBeenCalled();
+  });
+
   it("keeps data: and asset: images untouched", () => {
     const root = mount(renderMarkdown("![d](data:image/png;base64,AAAA) ![a](asset://localhost/x.png)"));
     const srcs = Array.from(root.querySelectorAll("img")).map((i) => i.getAttribute("src"));

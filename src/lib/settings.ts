@@ -83,6 +83,14 @@ function asProviderView(value: unknown): LlmProviderView | null {
   const id = typeof raw.id === "string" && raw.id.trim() ? raw.id : null;
   if (!id) return null;
   const presetRaw = typeof raw.presetId === "string" && raw.presetId.trim() ? raw.presetId : null;
+  const keyState =
+    raw.keyState === "present" || raw.keyState === "absent" || raw.keyState === "unreadable"
+      ? raw.keyState
+      : undefined;
+  const hasKey =
+    keyState === "unreadable"
+      ? false
+      : keyState === "present" || raw.hasKey === true || (typeof raw.apiKey === "string" && Boolean(raw.apiKey.trim()));
   return {
     id,
     presetId: presetRaw && presetById(presetRaw) ? presetRaw : null,
@@ -90,9 +98,14 @@ function asProviderView(value: unknown): LlmProviderView | null {
     baseUrl: typeof raw.baseUrl === "string" ? raw.baseUrl.trim() : "",
     model: typeof raw.model === "string" ? raw.model.trim() : "",
     enabled: raw.enabled === true,
-    hasKey: raw.hasKey === true || (typeof raw.apiKey === "string" && Boolean(raw.apiKey.trim())),
+    hasKey,
+    keyState: keyState ?? (hasKey ? "present" : "absent"),
     requiresKey: raw.requiresKey !== false,
   };
+}
+
+export function formatSettingsFileError(file: "llm-settings.json" | "secrets.json", detail: string): string {
+  return `${file} 无法读取：${detail}。原文件未改写。`;
 }
 
 function asUsage(value: unknown): LlmUsage {
@@ -161,6 +174,7 @@ function migrateV1Provider(value: Record<string, unknown>): BrowserProviderStore
     model: typeof value.model === "string" ? value.model.trim() : "",
     enabled: Boolean(baseUrl),
     hasKey: Boolean(apiKey.trim()),
+    keyState: apiKey.trim() ? "present" : "absent",
     requiresKey: preset ? preset.requiresKey : true,
     apiKey,
   };
@@ -197,11 +211,39 @@ function toPublicView(store: BrowserLlmStore): LlmSettings {
 
 // ---------- load / save ----------
 
-export async function loadSettings(): Promise<LlmSettings> {
-  if (isTauri()) {
-    return normalize(await invoke<Record<string, unknown>>("llm_settings"));
+export interface LlmSettingsRead {
+  settings: LlmSettings;
+  llmError: string | null;
+  secretsError: string | null;
+}
+
+export async function readLlmSettings(): Promise<LlmSettingsRead> {
+  if (!isTauri()) {
+    return { settings: toPublicView(readBrowserStore()), llmError: null, secretsError: null };
   }
-  return toPublicView(readBrowserStore());
+  try {
+    const raw = await invoke<Record<string, unknown>>("llm_settings");
+    const wrapped = raw.settings && typeof raw.settings === "object";
+    const settings = normalize(wrapped ? raw.settings : raw);
+    const llmDetail = wrapped && typeof raw.llmError === "string" ? raw.llmError : null;
+    const secretsDetail = wrapped && typeof raw.secretsError === "string" ? raw.secretsError : null;
+    return {
+      settings,
+      llmError: llmDetail ? formatSettingsFileError("llm-settings.json", llmDetail) : null,
+      secretsError: secretsDetail ? formatSettingsFileError("secrets.json", secretsDetail) : null,
+    };
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    return {
+      settings: { version: 2, providers: [], usage: {} },
+      llmError: formatSettingsFileError("llm-settings.json", detail),
+      secretsError: null,
+    };
+  }
+}
+
+export async function loadSettings(): Promise<LlmSettings> {
+  return (await readLlmSettings()).settings;
 }
 
 export async function saveSettings(input: LlmSaveInput): Promise<LlmSettings> {

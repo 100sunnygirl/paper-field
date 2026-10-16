@@ -1,9 +1,151 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
-use std::sync::Mutex;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::Value;
+
+/// One process-wide lock per secrets file. Two `store_for` values that point
+/// at the same path share it, so overlapping load-modify-save cannot drop a key.
+fn file_locks() -> &'static Mutex<HashMap<PathBuf, Arc<Mutex<()>>>> {
+    static FILE_LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
+    FILE_LOCKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn file_lock(path: &Path) -> Arc<Mutex<()>> {
+    let mut map = file_locks().lock().unwrap_or_else(|err| err.into_inner());
+    map.entry(path.to_path_buf())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
+}
+
+fn with_file_lock<T>(path: &Path, body: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    let lock = file_lock(path);
+    #[cfg(test)]
+    let counting = test_pause::targets(path);
+    #[cfg(test)]
+    if counting {
+        test_pause::WAITERS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+    let guard = lock.lock().unwrap_or_else(|err| err.into_inner());
+    #[cfg(test)]
+    if counting {
+        test_pause::WAITERS.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+    let result = body();
+    drop(guard);
+    result
+}
+
+#[cfg(test)]
+mod test_pause {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Condvar;
+    use std::time::{Duration, Instant};
+
+    pub static WAITERS: AtomicUsize = AtomicUsize::new(0);
+
+    struct Gate {
+        path: Mutex<Option<PathBuf>>,
+        consumed: AtomicBool,
+        entered: Mutex<bool>,
+        entered_cv: Condvar,
+        released: Mutex<bool>,
+        release_cv: Condvar,
+    }
+
+    fn gate() -> &'static Gate {
+        static GATE: OnceLock<Gate> = OnceLock::new();
+        GATE.get_or_init(|| Gate {
+            path: Mutex::new(None),
+            consumed: AtomicBool::new(false),
+            entered: Mutex::new(false),
+            entered_cv: Condvar::new(),
+            released: Mutex::new(false),
+            release_cv: Condvar::new(),
+        })
+    }
+
+    pub fn targets(path: &Path) -> bool {
+        gate()
+            .path
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .as_ref()
+            == Some(&path.to_path_buf())
+    }
+
+    pub fn arm(path: &Path) {
+        let gate = gate();
+        *gate.path.lock().unwrap_or_else(|err| err.into_inner()) = Some(path.to_path_buf());
+        gate.consumed.store(false, Ordering::SeqCst);
+        *gate.entered.lock().unwrap_or_else(|err| err.into_inner()) = false;
+        *gate.released.lock().unwrap_or_else(|err| err.into_inner()) = false;
+        WAITERS.store(0, Ordering::SeqCst);
+    }
+
+    pub fn disarm() {
+        *gate().path.lock().unwrap_or_else(|err| err.into_inner()) = None;
+    }
+
+    /// First `set` on the armed path stops after load, still holding the file lock.
+    pub fn pause_after_load(path: &Path) {
+        if !targets(path) {
+            return;
+        }
+        let gate = gate();
+        if gate.consumed.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        {
+            let mut entered = gate.entered.lock().unwrap_or_else(|err| err.into_inner());
+            *entered = true;
+            gate.entered_cv.notify_all();
+        }
+        let mut released = gate.released.lock().unwrap_or_else(|err| err.into_inner());
+        while !*released {
+            released = gate
+                .release_cv
+                .wait(released)
+                .unwrap_or_else(|err| err.into_inner());
+        }
+    }
+
+    pub fn wait_until_entered() {
+        let gate = gate();
+        let mut entered = gate.entered.lock().unwrap_or_else(|err| err.into_inner());
+        let started = Instant::now();
+        while !*entered {
+            let (next, timeout) = gate
+                .entered_cv
+                .wait_timeout(entered, Duration::from_secs(5))
+                .unwrap_or_else(|err| err.into_inner());
+            entered = next;
+            if timeout.timed_out() && !*entered {
+                panic!("set did not pause between load and save");
+            }
+            if started.elapsed() > Duration::from_secs(5) && !*entered {
+                panic!("set did not pause between load and save");
+            }
+        }
+    }
+
+    pub fn release() {
+        let gate = gate();
+        let mut released = gate.released.lock().unwrap_or_else(|err| err.into_inner());
+        *released = true;
+        gate.release_cv.notify_all();
+    }
+}
+
+#[cfg(test)]
+fn pause_after_load(path: &Path) {
+    test_pause::pause_after_load(path);
+}
+
+#[cfg(not(test))]
+fn pause_after_load(_path: &Path) {}
 
 pub trait SecretStore: Send + Sync {
     fn get(&self, account: &str) -> Result<Option<String>, String>;
@@ -117,8 +259,8 @@ impl FileSecretStore {
         if !self.path.exists() {
             return Ok(HashMap::new());
         }
-        let raw = fs::read_to_string(&self.path).map_err(|err| err.to_string())?;
-        serde_json::from_str(&raw).map_err(|err| format!("密钥文件无法解析：{err}"))
+        let raw = fs::read_to_string(&self.path).map_err(|err| format!("secrets.json 无法读取：{err}"))?;
+        serde_json::from_str(&raw).map_err(|err| format!("secrets.json 无法解析：{err}"))
     }
 
     fn save(&self, map: &HashMap<String, String>) -> Result<(), String> {
@@ -133,17 +275,20 @@ impl FileSecretStore {
 #[cfg(any(test, not(any(target_os = "macos", target_os = "windows"))))]
 impl SecretStore for FileSecretStore {
     fn get(&self, account: &str) -> Result<Option<String>, String> {
-        Ok(self.load()?.get(account).cloned())
+        with_file_lock(&self.path, || Ok(self.load()?.get(account).cloned()))
     }
 
     fn set(&self, account: &str, secret: &str) -> Result<(), String> {
-        let mut map = self.load()?;
-        if secret.is_empty() {
-            map.remove(account);
-        } else {
-            map.insert(account.to_string(), secret.to_string());
-        }
-        self.save(&map)
+        with_file_lock(&self.path, || {
+            let mut map = self.load()?;
+            pause_after_load(&self.path);
+            if secret.is_empty() {
+                map.remove(account);
+            } else {
+                map.insert(account.to_string(), secret.to_string());
+            }
+            self.save(&map)
+        })
     }
 
     fn delete(&self, account: &str) -> Result<(), String> {
@@ -342,6 +487,44 @@ mod tests {
             assert!(!(data.contains("sk-secret") && m & 0o077 != 0),
                 "secret sat in mode {m:o} inode (create_new should refuse an existing tmp)");
         }
+    }
+
+    #[test]
+    fn overlapping_sets_from_two_stores_keep_both_keys() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("pf-secret-lock-{}-{nanos}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("secrets.json");
+        test_pause::arm(&path);
+
+        let first = store_for(&dir);
+        let second = store_for(&dir);
+        let writer_a = std::thread::spawn(move || first.set("k1", "v1").unwrap());
+        test_pause::wait_until_entered();
+        let writer_b = std::thread::spawn(move || second.set("k2", "v2").unwrap());
+        let started = std::time::Instant::now();
+        while test_pause::WAITERS.load(std::sync::atomic::Ordering::SeqCst) < 1 {
+            if writer_b.is_finished() {
+                break;
+            }
+            if started.elapsed() > std::time::Duration::from_secs(5) {
+                test_pause::release();
+                panic!("second set did not reach the shared file lock");
+            }
+            std::thread::yield_now();
+        }
+        test_pause::release();
+        writer_a.join().unwrap();
+        writer_b.join().unwrap();
+
+        let check = store_for(&dir);
+        assert_eq!(check.get("k1").unwrap().as_deref(), Some("v1"));
+        assert_eq!(check.get("k2").unwrap().as_deref(), Some("v2"));
+        test_pause::disarm();
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

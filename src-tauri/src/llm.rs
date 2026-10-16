@@ -200,7 +200,17 @@ struct ProviderPublic {
     model: String,
     enabled: bool,
     has_key: bool,
+    /// present | absent | unreadable. has_key is true only for present.
+    key_state: String,
     requires_key: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LlmSettingsLoad {
+    pub settings: LlmSettingsPublic,
+    pub llm_error: Option<String>,
+    pub secrets_error: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -405,23 +415,124 @@ fn usable_providers(file: &LlmFileV2) -> Vec<ProviderCfg> {
 }
 
 fn to_public(file: &LlmFileV2, usage: HashMap<String, UsageEntry>) -> LlmSettingsPublic {
+    to_public_with_keys(file, usage, false)
+}
+
+fn to_public_with_keys(
+    file: &LlmFileV2,
+    usage: HashMap<String, UsageEntry>,
+    keys_unreadable: bool,
+) -> LlmSettingsPublic {
     LlmSettingsPublic {
         version: 2,
         providers: file
             .providers
             .iter()
-            .map(|p| ProviderPublic {
-                id: p.id.clone(),
-                preset_id: p.preset_id.clone(),
-                label: p.label.clone(),
-                base_url: p.base_url.clone(),
-                model: p.model.clone(),
-                enabled: p.enabled,
-                has_key: !p.api_key.trim().is_empty(),
-                requires_key: p.requires_key,
+            .map(|p| {
+                let present = !keys_unreadable && !p.api_key.trim().is_empty();
+                ProviderPublic {
+                    id: p.id.clone(),
+                    preset_id: p.preset_id.clone(),
+                    label: p.label.clone(),
+                    base_url: p.base_url.clone(),
+                    model: p.model.clone(),
+                    enabled: p.enabled,
+                    has_key: present,
+                    key_state: if keys_unreadable {
+                        "unreadable".into()
+                    } else if present {
+                        "present".into()
+                    } else {
+                        "absent".into()
+                    },
+                    requires_key: p.requires_key,
+                }
             })
             .collect(),
         usage,
+    }
+}
+
+struct SettingsView {
+    file: LlmFileV2,
+    llm_error: Option<String>,
+    secrets_error: Option<String>,
+    keys_unreadable: bool,
+}
+
+/// Settings screen load. A bad settings file or a bad secrets file does not rewrite either.
+fn load_settings_view(path: &Path) -> SettingsView {
+    if !path.exists() {
+        return SettingsView {
+            file: LlmFileV2::default(),
+            llm_error: None,
+            secrets_error: None,
+            keys_unreadable: false,
+        };
+    }
+    let raw = match fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(err) => {
+            return SettingsView {
+                file: LlmFileV2::default(),
+                llm_error: Some(format!("读取 LLM 设置失败：{err}")),
+                secrets_error: None,
+                keys_unreadable: false,
+            };
+        }
+    };
+    let (mut file, migrated) = match parse_settings(&raw) {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            return SettingsView {
+                file: LlmFileV2::default(),
+                llm_error: Some(err),
+                secrets_error: None,
+                keys_unreadable: false,
+            };
+        }
+    };
+    let store = store_for(path.parent().unwrap_or_else(|| Path::new(".")));
+    let mut lifted = false;
+    for provider in &mut file.providers {
+        let key = provider.api_key.trim().to_string();
+        if !key.is_empty() {
+            if let Err(err) = store.set(&llm_account(&provider.id), &key) {
+                return unreadable_view(file, err);
+            }
+            lifted = true;
+        } else {
+            match store.get(&llm_account(&provider.id)) {
+                Ok(Some(secret)) => provider.api_key = secret,
+                Ok(None) => {}
+                Err(err) => return unreadable_view(file, err),
+            }
+        }
+    }
+    if migrated || lifted {
+        if migrated {
+            let _ = write_scrubbed_backup(path, &raw);
+        }
+        file.version = 2;
+        let _ = write_public_llm(path, &file);
+    }
+    SettingsView {
+        file,
+        llm_error: None,
+        secrets_error: None,
+        keys_unreadable: false,
+    }
+}
+
+fn unreadable_view(mut file: LlmFileV2, err: String) -> SettingsView {
+    for provider in &mut file.providers {
+        provider.api_key.clear();
+    }
+    SettingsView {
+        file,
+        llm_error: None,
+        secrets_error: Some(err),
+        keys_unreadable: true,
     }
 }
 
@@ -948,9 +1059,14 @@ fn parse_model_ids(value: &Value) -> Vec<String> {
 pub async fn llm_settings(
     app: AppHandle,
     state: State<'_, LlmState>,
-) -> Result<LlmSettingsPublic, String> {
-    let file = read_file(&app)?;
-    Ok(to_public(&file, usage_snapshot(&app, &state)))
+) -> Result<LlmSettingsLoad, String> {
+    let path = settings_file(&app)?;
+    let loaded = load_settings_view(&path);
+    Ok(LlmSettingsLoad {
+        settings: to_public_with_keys(&loaded.file, usage_snapshot(&app, &state), loaded.keys_unreadable),
+        llm_error: loaded.llm_error,
+        secrets_error: loaded.secrets_error,
+    })
 }
 
 #[tauri::command]
@@ -1277,6 +1393,47 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
+    #[test]
+    fn bad_settings_json_returns_empty_providers_and_does_not_touch_secrets() {
+        let dir = temp_dir("bad-llm-json");
+        let path = dir.join("llm-settings.json");
+        let corrupt = "{";
+        fs::write(&path, corrupt).unwrap();
+        fs::write(dir.join("secrets.json"), "{").unwrap();
+        let loaded = load_settings_view(&path);
+        assert!(loaded.llm_error.unwrap().contains("无法解析"));
+        assert!(loaded.secrets_error.is_none());
+        assert!(loaded.file.providers.is_empty());
+        assert_eq!(fs::read_to_string(&path).unwrap(), corrupt);
+        assert_eq!(fs::read_to_string(dir.join("secrets.json")).unwrap(), "{");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn bad_secrets_keeps_provider_fields_and_does_not_rewrite_settings() {
+        let dir = temp_dir("bad-secrets");
+        let path = dir.join("llm-settings.json");
+        let raw = r#"{"version":2,"providers":[{"id":"p1","baseUrl":"https://api.deepseek.com/v1","model":"deepseek-chat","enabled":true,"requiresKey":true}]}"#;
+        fs::write(&path, raw).unwrap();
+        fs::write(dir.join("secrets.json"), "{").unwrap();
+        let loaded = load_settings_view(&path);
+        assert!(loaded.llm_error.is_none());
+        assert!(loaded.secrets_error.unwrap().contains("secrets.json"));
+        assert!(loaded.keys_unreadable);
+        assert_eq!(loaded.file.providers[0].base_url, "https://api.deepseek.com/v1");
+        assert_eq!(loaded.file.providers[0].model, "deepseek-chat");
+        let view = to_public_with_keys(&loaded.file, HashMap::new(), true);
+        let raw_view = serde_json::to_value(&view).unwrap();
+        assert_eq!(raw_view["providers"][0]["keyState"], "unreadable");
+        assert_eq!(raw_view["providers"][0]["hasKey"], false);
+        assert_eq!(fs::read_to_string(&path).unwrap(), raw);
+        assert_eq!(fs::read_to_string(dir.join("secrets.json")).unwrap(), "{");
+        let err = write_file_at(&path, &loaded.file).unwrap_err();
+        assert!(err.contains("secrets.json"), "{err}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), raw);
+        fs::remove_dir_all(&dir).ok();
+    }
+
     // ---------- v2 宽容解析（迁自 lib.rs settings_file_tests） ----------
 
     #[test]
@@ -1385,6 +1542,8 @@ mod tests {
         let raw = serde_json::to_value(to_public(&file, usage)).unwrap();
         assert_eq!(raw["version"], 2);
         assert!(raw["providers"][0]["hasKey"].as_bool().unwrap());
+        assert_eq!(raw["providers"][0]["keyState"], "present");
+        assert_eq!(raw["providers"][1]["keyState"], "absent");
         assert!(
             raw["providers"][0].get("apiKey").is_none(),
             "密钥字段绝不出现在公共视图"

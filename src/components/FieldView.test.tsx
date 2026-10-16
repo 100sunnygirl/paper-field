@@ -32,6 +32,7 @@ function intakeItem(id: string, mineruStatus: PaperListItem["mineruStatus"]): Pa
     mineruError: null,
     mineruParseIds: [],
     mineruProvider: null,
+    mineruCredFingerprint: null,
     tags: [],
     labs: [],
     createdAt: "2024-01-01T00:00:00.000Z",
@@ -45,6 +46,19 @@ function intakeItem(id: string, mineruStatus: PaperListItem["mineruStatus"]): Pa
 
 beforeEach(() => {
   useField.setState(useField.getInitialState(), true);
+});
+
+describe("PaperNav · 入库文案", () => {
+  it("说明以未手动标为已读起句，进度旁不再写未读完", () => {
+    useField.setState({ mode: "intake", intake: [] });
+    render(<PaperNav />);
+    expect(screen.getByRole("heading", { name: "入库" })).toBeInTheDocument();
+    const summary = document.querySelector(".ef-nav-sum");
+    expect(summary?.textContent?.startsWith("未手动标为已读")).toBe(true);
+    expect(summary?.textContent).not.toContain("尚未读完");
+    expect(screen.getByText("全部领域 · 未手动标为已读")).toBeInTheDocument();
+    expect(screen.queryByText(/未读完/)).toBeNull();
+  });
 });
 
 describe("PaperNav · INTAKE 批量重试入口", () => {

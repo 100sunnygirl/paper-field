@@ -57,6 +57,7 @@ function listItem(id: string): PaperListItem {
     mineruError: null,
     mineruParseIds: [],
     mineruProvider: null,
+    mineruCredFingerprint: null,
     tags: [],
     labs: [],
     createdAt: "2024-01-01T00:00:00.000Z",
@@ -201,6 +202,7 @@ describe("retryFailedMineru（INTAKE 批量重试）", () => {
       parseIds: [],
       docRef: null,
       provider: null,
+      credFingerprint: null,
     });
     const flash = useField.getState().flash;
     expect(flash?.tone).toBe("ok");

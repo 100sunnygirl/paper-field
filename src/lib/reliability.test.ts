@@ -67,7 +67,9 @@ describe("著录合并：只补空白，飞行中的手改不被覆盖", () => {
       domainId: domain.id,
       pdfPath: "/Users/reader/Downloads/Attention Is All You Need.pdf",
     });
-    expect(paper.fieldSources?.title).toBeUndefined();
+    expect(paper.fieldSources?.title).toBe("llm");
+    expect(paper.userMetaTouched).toBe(false);
+    expect(paper.metaRev ?? 0).toBe(0);
     await repo.updatePaper(paper.id, { venue: "手填期刊" }, true);
     const started = (await repo.getPaper(paper.id))!;
 
@@ -77,8 +79,8 @@ describe("著录合并：只补空白，飞行中的手改不被覆盖", () => {
     });
 
     const detail = (await repo.getPaper(paper.id))!;
-    expect(detail.title).toBe("API Title");
-    expect(detail.fieldSources?.title).toBe("api");
+    expect(detail.title).toBe(paper.title);
+    expect(detail.fieldSources?.title).toBe("llm");
     expect(detail.venue).toBe("手填期刊");
     expect(detail.fieldSources?.venue).toBe("user");
     expect(detail.abstract).toBe("API abstract");
@@ -130,11 +132,10 @@ describe("著录合并：只补空白，飞行中的手改不被覆盖", () => {
     );
 
     const replaced = (await repo.getPaper(paper.id))!;
-    expect(replaced.title).toBe("库标题");
-    expect(replaced.fieldSources?.title).toBe("api");
-    expect(replaced.fieldProviders?.title).toBe("crossref");
-    expect(replaced.abstract).toBe("库摘要");
-    expect(replaced.fieldSources?.abstract).toBe("api");
+    expect(replaced.title).toBe("模型标题");
+    expect(replaced.fieldSources?.title).toBe("llm");
+    expect(replaced.abstract).toBe("模型摘要");
+    expect(replaced.fieldSources?.abstract).toBe("llm");
     expect(replaced.venue).toBe("手填期刊");
     expect(replaced.fieldSources?.venue).toBe("user");
     expect(replaced.fieldProviders?.venue).toBeUndefined();
@@ -146,9 +147,20 @@ describe("著录合并：只补空白，飞行中的手改不被覆盖", () => {
       { source: "api" },
     );
     const kept = (await repo.getPaper(paper.id))!;
-    expect(kept.title).toBe("库标题");
-    expect(kept.fieldProviders?.title).toBe("crossref");
+    expect(kept.title).toBe("模型标题");
+    expect(kept.fieldSources?.title).toBe("llm");
+  });
 
+  it("刷新链接可以替换模型或文件名标题，不能替换用户期刊", async () => {
+    const domain = await repo.createDomain({ name: "多模态", code: "MM-01" });
+    const paper = await repo.createPaper({ domainId: domain.id });
+    await repo.applyPreparedMeta(
+      paper.id,
+      meta({ title: "模型标题", venue: "模型期刊", abstract: "模型摘要" }),
+      false,
+      { source: "llm" },
+    );
+    await repo.updatePaper(paper.id, { venue: "手填期刊" }, true);
     await repo.applyPreparedMeta(
       paper.id,
       meta({ title: "刷新标题", fieldProviders: { title: "openalex" } }),
@@ -161,6 +173,20 @@ describe("著录合并：只补空白，飞行中的手改不被覆盖", () => {
     expect(refreshed.fieldProviders?.title).toBe("openalex");
     expect(refreshed.venue).toBe("手填期刊");
     expect(refreshed.fieldSources?.venue).toBe("user");
+
+    const filePaper = await repo.createPaper({
+      domainId: domain.id,
+      pdfPath: "/tmp/Attention Is All You Need.pdf",
+    });
+    await repo.applyPreparedMeta(
+      filePaper.id,
+      meta({ title: "刷新文件名", fieldProviders: { title: "openalex" } }),
+      false,
+      { source: "api", replaceApi: true },
+    );
+    const refreshedFile = (await repo.getPaper(filePaper.id))!;
+    expect(refreshedFile.title).toBe("刷新文件名");
+    expect(refreshedFile.fieldSources?.title).toBe("api");
   });
 });
 
@@ -221,10 +247,7 @@ describe("笔记覆盖时来源写成模型", () => {
 describe("作业取消与写入竞态", () => {
   it("取消之后的完成写入无效，著录也不再套用", async () => {
     const domain = await repo.createDomain({ name: "多模态", code: "MM-01" });
-    const paper = await repo.createPaper({
-      domainId: domain.id,
-      pdfPath: "/papers/Attention Is All You Need.pdf",
-    });
+    const paper = await repo.createPaper({ domainId: domain.id });
     const job = await repo.createJob(paper.id, "prepareMeta", "prompt");
     expect(await repo.updateJob(job.id, { status: "running", startedAt: "2024-01-01T00:00:01.000Z" })).toBe(true);
     await repo.applyPreparedMeta(paper.id, meta({ title: "API Title" }), false, {
@@ -348,13 +371,20 @@ describe("旧库迁移", () => {
     expect(await userVersion(engine)).toBe(SCHEMA_VERSION);
     const cols = await engine.select<{ name: string }>("PRAGMA table_info(papers)");
     const names = cols.map((col) => col.name);
-    for (const col of ["mineru_provider", "field_sources", "field_providers", "meta_confidence", "meta_rev", "pdf_original_path"]) {
+    for (const col of ["mineru_provider", "field_sources", "field_providers", "meta_confidence", "meta_rev", "pdf_original_path", "mineru_cred_fingerprint"]) {
       expect(names).toContain(col);
     }
     const pk = await engine.select<{ sql: string }>(
       "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'paper_authors'",
     );
     expect(pk[0]?.sql).toContain("PRIMARY KEY (paper_id, sort_order)");
+    expect(pk[0]?.sql).not.toContain("paper_authors_next");
+    const fingerprints = await engine.select<{ id: string; mineru_cred_fingerprint: string | null }>(
+      "SELECT id, mineru_cred_fingerprint FROM papers ORDER BY id",
+    );
+    for (const row of fingerprints) {
+      expect(row.mineru_cred_fingerprint).toBeNull();
+    }
 
     const triggers = await engine.select<{ name: string; sql: string }>(
       "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' ORDER BY name",

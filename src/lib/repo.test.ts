@@ -57,7 +57,7 @@ describe("applySchema（makeTestEngine 与生产同构建表）", () => {
     }
     const cols = await engine.select<{ name: string }>("PRAGMA table_info(papers)");
     const colNames = cols.map((row) => row.name);
-    for (const col of ["pdf_path", "user_meta_touched", "mineru_status", "mineru_provider", "mineru_parse_ids", "labs"]) {
+    for (const col of ["pdf_path", "user_meta_touched", "mineru_status", "mineru_provider", "mineru_parse_ids", "labs", "mineru_cred_fingerprint"]) {
       expect(colNames).toContain(col);
     }
     const indexes = await engine.select<{ name: string }>(
@@ -442,6 +442,64 @@ describe("updatePaper / applyPreparedMeta（用户编辑锁）", () => {
   });
 });
 
+describe("作者替换与 meta_rev（M4-P4）", () => {
+  it("著录更新放行后 meta_rev 再升高时，不改 paper_authors", async () => {
+    const domainId = await makeDomain();
+    const paper = await repo.createPaper({ domainId });
+    await repo.replaceAuthors(paper.id, [{ name: "Alice", affiliation: "Old Lab" }]);
+    const before = (await repo.getPaper(paper.id))!.authors.map((author) => author.name);
+
+    const inner = holder.engine!;
+    let paperUpdateDone = false;
+    let bumped = false;
+    const wrapped: SqlEngine = {
+      execute: (sql, params) => {
+        if (/SET\s+title = \?/.test(sql) && /meta_rev = \?/.test(sql)) paperUpdateDone = true;
+        return inner.execute(sql, params);
+      },
+      select: async <T>(sql: string, params?: unknown[]): Promise<T[]> => {
+        const rows = await inner.select<T>(sql, params);
+        if (!bumped && paperUpdateDone && /SELECT meta_rev FROM papers/i.test(sql)) {
+          bumped = true;
+          await inner.execute("UPDATE papers SET meta_rev = meta_rev + 1 WHERE id = ?", [paper.id]);
+        }
+        return rows;
+      },
+    };
+    holder.engine = wrapped;
+
+    await repo.applyPreparedMeta(
+      paper.id,
+      {
+        title: "新标题",
+        titleZh: null,
+        abstract: "摘要",
+        year: 2017,
+        venue: "NeurIPS",
+        doi: null,
+        arxivId: null,
+        authors: [{ name: "Bob", affiliation: "New Lab" }],
+        labs: [],
+        codeOpenSource: "unknown",
+        codeURL: null,
+        projectPage: null,
+        pdfURL: null,
+        tags: [],
+      },
+      false,
+      { source: "llm" },
+    );
+
+    expect((await repo.getPaper(paper.id))!.authors.map((author) => author.name)).toEqual(before);
+    const links = await inner.select<{ c: number }>(
+      "SELECT COUNT(*) AS c FROM paper_authors WHERE paper_id = ?",
+      [paper.id],
+    );
+    expect(Number(links[0]?.c)).toBe(before.length);
+    expect(bumped).toBe(true);
+  });
+});
+
 describe("笔记与草稿", () => {
   it("updateNote 更新内容并置 user_notes_touched", async () => {
     const domainId = await makeDomain();
@@ -528,6 +586,62 @@ describe("作业 CRUD 与统计", () => {
 });
 
 describe("MinerU 状态与解析文本", () => {
+  it("setMineruState 把凭据指纹和提交状态一起写入，省略时保留，新建论文为 NULL", async () => {
+    const domainId = await makeDomain();
+    const plain = "token-plain-sk-old";
+    const paper = await repo.createPaper({ domainId, pdfPath: "/tmp/attention.pdf" });
+    expect((await repo.getPaper(paper.id))!.mineruCredFingerprint).toBeNull();
+    await repo.setMineruState(paper.id, {
+      status: "submitted",
+      provider: "api",
+      docRef: "batch-1",
+      parseIds: ["1"],
+      credFingerprint: "pf-cred-v1:abc",
+    });
+    let row = (await repo.getPaper(paper.id))!;
+    expect(row.mineruStatus).toBe("submitted");
+    expect(row.mineruProvider).toBe("api");
+    expect(row.mineruDocRef).toBe("batch-1");
+    expect(row.mineruCredFingerprint).toBe("pf-cred-v1:abc");
+    expect(row.mineruCredFingerprint).not.toContain(plain);
+    const stored = await holder.engine!.select<{ mineru_cred_fingerprint: string | null }>(
+      "SELECT mineru_cred_fingerprint FROM papers WHERE id = ?",
+      [paper.id],
+    );
+    expect(stored[0]?.mineru_cred_fingerprint).toBe("pf-cred-v1:abc");
+    expect(stored[0]?.mineru_cred_fingerprint ?? "").not.toContain(plain);
+    await repo.setMineruState(paper.id, { status: "parsing" });
+    row = (await repo.getPaper(paper.id))!;
+    expect(row.mineruStatus).toBe("parsing");
+    expect(row.mineruCredFingerprint).toBe("pf-cred-v1:abc");
+    await repo.setMineruState(paper.id, { credFingerprint: null, provider: null, docRef: null, parseIds: [] });
+    row = (await repo.getPaper(paper.id))!;
+    expect(row.mineruCredFingerprint).toBeNull();
+    expect(row.mineruProvider).toBeNull();
+  });
+
+  it("取消和认领完成只改写仍在排队、已提交或解析中的论文", async () => {
+    const domainId = await makeDomain();
+    const paper = await repo.createPaper({ domainId, pdfPath: "/tmp/attention.pdf" });
+    await repo.setMineruState(paper.id, { status: "parsing", provider: "local", docRef: "doc-1" });
+    expect(await repo.setMineruState(paper.id, { status: "cancelled" })).toBe(true);
+    expect(await repo.setMineruState(paper.id, { status: "done", error: null })).toBe(false);
+    expect((await repo.getPaper(paper.id))!.mineruStatus).toBe("cancelled");
+
+    const other = await repo.createPaper({ domainId, pdfPath: "/tmp/other.pdf" });
+    await repo.setMineruState(other.id, { status: "submitted", provider: "api", docRef: "batch-1" });
+    const job = await repo.createJob(other.id, "mineruParse", "prompt");
+    await repo.updateJob(job.id, { status: "running", startedAt: "2024-01-01T00:00:00.000Z" });
+    expect(await repo.revertDoneJob(job.id)).toBe(false);
+    expect(await repo.updateJob(job.id, { status: "done", finishedAt: "2024-01-01T00:00:01.000Z" })).toBe(true);
+    expect(await repo.setMineruState(other.id, { status: "cancelled" })).toBe(true);
+    expect(await repo.setMineruState(other.id, { status: "done", error: null })).toBe(false);
+    expect((await repo.getPaper(other.id))!.mineruStatus).toBe("cancelled");
+    expect(await repo.revertDoneJob(job.id)).toBe(true);
+    expect(await repo.jobStatus(job.id)).toBe("cancelled");
+    expect(await repo.revertDoneJob(job.id)).toBe(false);
+  });
+
   it("setMineruState patch 各字段并保留未指定字段（含 provider）", async () => {
     const domainId = await makeDomain();
     const paper = await repo.createPaper({ domainId });

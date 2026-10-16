@@ -70,6 +70,8 @@ export interface MineruSubmitResult {
   status: string;
   /** doclib tier；官方 API 为 model_version。 */
   tier: string;
+  /** 提交当时的凭据指纹。轮询必须原样带回。 */
+  credFingerprint: string;
 }
 
 export interface MineruParsePoll {
@@ -338,13 +340,25 @@ export async function mineruSubmit(
   });
 }
 
+export async function mineruCurrentFingerprint(provider: MineruProviderKind): Promise<string> {
+  return invoke<string>("mineru_current_fingerprint", { provider });
+}
+
 /** 恢复/轮询仅同源：provider 必填，不做自动回退（doclib short_id 与 API batch_id 命名空间不同）。 */
 export async function mineruParseStatuses(
   provider: MineruProviderKind,
   docRef: string,
   parseIds: string[],
+  paperId: string,
+  expectedFingerprint: string,
 ): Promise<MineruParsePoll[]> {
-  return invoke<MineruParsePoll[]>("mineru_parse_statuses", { provider, docRef, parseIds });
+  return invoke<MineruParsePoll[]>("mineru_parse_statuses", {
+    provider,
+    docRef,
+    parseIds,
+    paperId,
+    expectedFingerprint,
+  });
 }
 
 export async function mineruMarkdown(
@@ -352,6 +366,15 @@ export async function mineruMarkdown(
   docRef: string,
   tier: string,
   pageRange: string,
+  paperId: string,
+  expectedFingerprint: string,
 ): Promise<string> {
-  return invoke<string>("mineru_markdown", { provider, docRef, tier, pageRange });
+  return invoke<string>("mineru_markdown", {
+    provider,
+    docRef,
+    tier,
+    pageRange,
+    paperId,
+    expectedFingerprint,
+  });
 }

@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { listPdfs, normalizePdf } from "../lib/mineru";
 import { repo } from "../lib/repo";
 import type { Author, PaperDetail } from "../lib/types";
@@ -599,8 +599,8 @@ export function ConfirmMetaDialog() {
       }
     >
       <p>
-        你已经手动修改过论文信息，AI 不会静默覆盖。「保留我的修改」只补全空白字段；
-        「用 AI 结果覆盖」会覆盖你修改过的字段。
+        你已经手动修改过论文信息，AI 不会静默覆盖。文献库先写、模型只补仍空字段。
+        「保留我的修改」只补全空白字段；「用 AI 结果覆盖」会覆盖你修改过的字段。
       </p>
     </Dialog>
   );
@@ -677,6 +677,9 @@ function metaDraftOf(paper: PaperDetail) {
   };
 }
 
+type MetaDraft = ReturnType<typeof metaDraftOf>;
+type MetaDraftKey = keyof MetaDraft;
+
 function MetaEditor({
   paper,
   onSave,
@@ -699,17 +702,27 @@ function MetaEditor({
   }) => void;
 }) {
   const [draft, setDraft] = useState(() => metaDraftOf(paper));
+  const dirtyRef = useRef(new Set<MetaDraftKey>());
+  const [dirty, setDirty] = useState(false);
 
   useEffect(() => {
-    setDraft(metaDraftOf(paper));
+    const incoming = metaDraftOf(paper);
+    setDraft((prev) => {
+      const next = { ...incoming };
+      for (const key of dirtyRef.current) next[key] = prev[key];
+      return next;
+    });
   }, [paper]);
-
-  const base = metaDraftOf(paper);
-  const dirty = JSON.stringify(draft) !== JSON.stringify(base);
 
   useEffect(() => {
     onDirtyChange?.(dirty);
   }, [dirty, onDirtyChange]);
+
+  function edit(key: MetaDraftKey, value: string) {
+    dirtyRef.current.add(key);
+    setDirty(true);
+    setDraft((prev) => ({ ...prev, [key]: value }));
+  }
 
   // 年份校验：非空时必须是可解析的整数（此前 Number("abc") → NaN 会把年份写成 NaN）。
   const yearText = draft.year.trim();
@@ -719,18 +732,18 @@ function MetaEditor({
   return (
     <div>
       <Field label="英文标题">
-        <input value={draft.title} onChange={(e) => setDraft({ ...draft, title: e.target.value })} />
+        <input value={draft.title} onChange={(e) => edit("title", e.target.value)} />
       </Field>
       <Field label="中文标题">
-        <input value={draft.titleZh} onChange={(e) => setDraft({ ...draft, titleZh: e.target.value })} />
+        <input value={draft.titleZh} onChange={(e) => edit("titleZh", e.target.value)} />
       </Field>
       <Field label="摘要">
-        <textarea value={draft.abstract} onChange={(e) => setDraft({ ...draft, abstract: e.target.value })} />
+        <textarea value={draft.abstract} onChange={(e) => edit("abstract", e.target.value)} />
       </Field>
       <Field label="年份">
         <input
           value={draft.year}
-          onChange={(e) => setDraft({ ...draft, year: e.target.value })}
+          onChange={(e) => edit("year", e.target.value)}
           inputMode="numeric"
           aria-invalid={yearInvalid || undefined}
         />
@@ -741,51 +754,57 @@ function MetaEditor({
         </p>
       ) : null}
       <Field label="会议 / 期刊">
-        <input value={draft.venue} onChange={(e) => setDraft({ ...draft, venue: e.target.value })} />
+        <input value={draft.venue} onChange={(e) => edit("venue", e.target.value)} />
       </Field>
       <Field label="DOI">
-        <input value={draft.doi} onChange={(e) => setDraft({ ...draft, doi: e.target.value })} />
+        <input value={draft.doi} onChange={(e) => edit("doi", e.target.value)} />
       </Field>
       <Field label="arXiv">
-        <input value={draft.arxivId} onChange={(e) => setDraft({ ...draft, arxivId: e.target.value })} />
+        <input value={draft.arxivId} onChange={(e) => edit("arxivId", e.target.value)} />
       </Field>
       <Field label="本地 PDF">
         <input value={paper.pdfPath ?? "尚未关联本地 PDF"} readOnly />
       </Field>
       <Field label="公开 PDF 链接">
-        <input value={draft.pdfUrl} onChange={(e) => setDraft({ ...draft, pdfUrl: e.target.value })} />
+        <input value={draft.pdfUrl} onChange={(e) => edit("pdfUrl", e.target.value)} />
       </Field>
       <Field label="代码仓库">
-        <input value={draft.codeUrl} onChange={(e) => setDraft({ ...draft, codeUrl: e.target.value })} />
+        <input value={draft.codeUrl} onChange={(e) => edit("codeUrl", e.target.value)} />
       </Field>
       <Field label="项目主页">
-        <input value={draft.projectPage} onChange={(e) => setDraft({ ...draft, projectPage: e.target.value })} />
+        <input value={draft.projectPage} onChange={(e) => edit("projectPage", e.target.value)} />
       </Field>
       <Field label="标签">
-        <input value={draft.tags} onChange={(e) => setDraft({ ...draft, tags: e.target.value })} />
+        <input value={draft.tags} onChange={(e) => edit("tags", e.target.value)} />
       </Field>
       <Button
         variant="primary"
         type="button"
         disabled={yearInvalid}
-        onClick={() =>
-          onSave({
-            title: draft.title,
-            titleZh: draft.titleZh || null,
-            abstract: draft.abstract,
-            year: yearText && parsedYear !== null && Number.isFinite(parsedYear) ? parsedYear : null,
-            venue: draft.venue || null,
-            doi: draft.doi || null,
-            arxivId: draft.arxivId || null,
-            pdfUrl: draft.pdfUrl || null,
-            codeUrl: draft.codeUrl || null,
-            projectPage: draft.projectPage || null,
-            tags: draft.tags
+        onClick={() => {
+          if (dirtyRef.current.size === 0) return;
+          const dirtyFields = dirtyRef.current;
+          const patch: Parameters<typeof onSave>[0] = {};
+          if (dirtyFields.has("title")) patch.title = draft.title;
+          if (dirtyFields.has("titleZh")) patch.titleZh = draft.titleZh || null;
+          if (dirtyFields.has("abstract")) patch.abstract = draft.abstract;
+          if (dirtyFields.has("year")) {
+            patch.year = yearText && parsedYear !== null && Number.isFinite(parsedYear) ? parsedYear : null;
+          }
+          if (dirtyFields.has("venue")) patch.venue = draft.venue || null;
+          if (dirtyFields.has("doi")) patch.doi = draft.doi || null;
+          if (dirtyFields.has("arxivId")) patch.arxivId = draft.arxivId || null;
+          if (dirtyFields.has("pdfUrl")) patch.pdfUrl = draft.pdfUrl || null;
+          if (dirtyFields.has("codeUrl")) patch.codeUrl = draft.codeUrl || null;
+          if (dirtyFields.has("projectPage")) patch.projectPage = draft.projectPage || null;
+          if (dirtyFields.has("tags")) {
+            patch.tags = draft.tags
               .split(",")
               .map((t) => t.trim())
-              .filter(Boolean),
-          })
-        }
+              .filter(Boolean);
+          }
+          onSave(patch);
+        }}
       >
         保存论文信息
       </Button>
@@ -804,18 +823,24 @@ function CrewEditor({
 }) {
   const [draft, setDraft] = useState(authors);
   const [editing, setEditing] = useState(false);
+  const authorsDirtyRef = useRef(false);
+  const [authorsDirty, setAuthorsDirty] = useState(false);
 
   useEffect(() => {
+    if (authorsDirtyRef.current) return;
     setDraft(authors);
     setEditing(false);
   }, [authors]);
 
-  const crewDirty =
-    editing && (draft.length !== authors.length || JSON.stringify(draft) !== JSON.stringify(authors));
-
   useEffect(() => {
-    onDirtyChange?.(crewDirty);
-  }, [crewDirty, onDirtyChange]);
+    onDirtyChange?.(authorsDirty);
+  }, [authorsDirty, onDirtyChange]);
+
+  function editAuthors(next: Author[]) {
+    authorsDirtyRef.current = true;
+    setAuthorsDirty(true);
+    setDraft(next);
+  }
 
   if (!editing) {
     return (
@@ -847,7 +872,7 @@ function CrewEditor({
               onChange={(e) => {
                 const next = [...draft];
                 next[index] = { ...author, name: e.target.value };
-                setDraft(next);
+                editAuthors(next);
               }}
             />
           </Field>
@@ -857,7 +882,7 @@ function CrewEditor({
               onChange={(e) => {
                 const next = [...draft];
                 next[index] = { ...author, affiliation: e.target.value };
-                setDraft(next);
+                editAuthors(next);
               }}
             />
           </Field>
@@ -867,7 +892,7 @@ function CrewEditor({
               onChange={(e) => {
                 const next = [...draft];
                 next[index] = { ...author, lab: e.target.value };
-                setDraft(next);
+                editAuthors(next);
               }}
             />
           </Field>
@@ -878,7 +903,7 @@ function CrewEditor({
               onChange={(e) => {
                 const next = [...draft];
                 next[index] = { ...author, isCorresponding: e.target.checked };
-                setDraft(next);
+                editAuthors(next);
               }}
             />{" "}
             通讯作者
@@ -889,7 +914,7 @@ function CrewEditor({
         <Button
           type="button"
           onClick={() =>
-            setDraft([
+            editAuthors([
               ...draft,
               {
                 id: crypto.randomUUID(),
@@ -907,7 +932,14 @@ function CrewEditor({
         >
           添加作者
         </Button>
-        <Button variant="primary" type="button" onClick={() => onSave(draft.filter((a) => a.name.trim()))}>
+        <Button
+          variant="primary"
+          type="button"
+          onClick={() => {
+            if (!authorsDirtyRef.current) return;
+            onSave(draft.filter((a) => a.name.trim()));
+          }}
+        >
           保存作者
         </Button>
       </div>

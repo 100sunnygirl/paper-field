@@ -123,6 +123,7 @@ export interface Paper {
   mineruError: string | null;
   mineruParseIds: string[];
   mineruProvider: MineruProviderKind | string | null;
+  mineruCredFingerprint: string | null;
   tags: string[];
   labs: Lab[];
   createdAt: string;
@@ -188,8 +189,10 @@ export interface LlmProviderView {
   baseUrl: string;
   model: string;
   enabled: boolean;
-  /** 是否已保存 API Key（requiresKey=false 的本地服务可无 Key）。 */
+  /** 是否已保存 API Key（requiresKey=false 的本地服务可无 Key）。unreadable 时必须为 false。 */
   hasKey: boolean;
+  /** present 已保存，absent 未配置，unreadable 密钥文件读失败。 */
+  keyState?: "present" | "absent" | "unreadable";
   requiresKey: boolean;
 }
 
