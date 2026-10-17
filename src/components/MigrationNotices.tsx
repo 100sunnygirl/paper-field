@@ -34,6 +34,8 @@ export function MigrationNotices({ initial }: { initial?: DirMigrationNotice[] }
           {migrationNoticeText(notice)}
         </p>
       ))}
+      {/* 只是告知，不提供覆盖；收起只在本次运行内有效。 */}
+      <button type="button" onClick={() => setNotices([])}>知道了</button>
     </div>
   );
 }

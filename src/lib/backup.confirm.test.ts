@@ -8,7 +8,6 @@ vi.mock("./engine", () => ({
   getEngine: async () => ({ select: async () => [{ n: 3 }] }),
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({
-  open: async () => "/tmp/b.zip",
   ask: vi.fn(async (msg: string) => {
     calls.push(`ask:${msg}`);
     return answer;
@@ -55,5 +54,17 @@ describe("restore confirmation", () => {
     expect(restoreConfirmText(b, 10)).toContain("备份比当前少 6 篇");
     expect(restoreConfirmText(b, 4)).not.toContain("备份比当前少");
     expect(restoreConfirmText(b, null)).not.toContain("备份比当前少");
+  });
+});
+
+describe("restore cancelled in the file dialog", () => {
+  it("returns false without staging or asking", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockImplementationOnce(async (cmd: string) => {
+      calls.push(cmd);
+      return null;
+    });
+    expect(await restoreLibrary()).toBe(false);
+    expect(calls).toEqual(["restore_library_backup"]);
   });
 });

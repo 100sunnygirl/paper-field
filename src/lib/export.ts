@@ -115,11 +115,10 @@ export function browserExportFilename(domain: Pick<Domain, "code" | "name">): st
 export async function exportDomain(domain: Domain, papers: PaperDetail[]): Promise<string> {
   const files = buildDomainExport(domain, papers);
   if (isTauri()) {
-    const { open } = await import("@tauri-apps/plugin-dialog");
     const { invoke } = await import("@tauri-apps/api/core");
-    const dir = await open({ directory: true, multiple: false, title: "Export domain markdown" });
-    if (!dir || Array.isArray(dir)) throw new Error("EXPORT_CANCELLED");
-    await invoke("export_files", { root: dir, files });
+    // 选择文件夹的对话框由 Rust 侧弹出，导出根目录只来自系统对话框。
+    const dir = await invoke<string | null>("export_files", { files });
+    if (!dir) throw new Error("EXPORT_CANCELLED");
     return dir;
   }
 

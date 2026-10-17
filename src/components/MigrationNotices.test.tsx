@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 
 const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...args: unknown[]) => invoke(...args) }));
@@ -37,7 +37,19 @@ describe("MigrationNotices", () => {
     expect(lines[1].textContent).toContain("/data/old/com.paperfield.app");
     expect(lines[1].textContent).not.toContain("/cfg/old/com.paperfield.app");
     expect(invoke).toHaveBeenCalledWith("appdir_migration_notices");
-    expect(screen.queryByRole("button")).toBeNull();
+    // 只有「知道了」，没有覆盖入口。
+    expect(screen.getAllByRole("button").map((b) => b.textContent)).toEqual(["知道了"]);
+  });
+
+  it("知道了 hides the notices", async () => {
+    (window as unknown as { __TAURI_INTERNALS__: object }).__TAURI_INTERNALS__ = {};
+    invoke.mockResolvedValue([
+      { kind: "config", oldPath: "/cfg/old/com.paperfield.app", newPath: "/cfg/new/com.paperfield.notes" },
+    ]);
+    render(<MigrationNotices />);
+    await screen.findByRole("status");
+    fireEvent.click(screen.getByRole("button", { name: "知道了" }));
+    expect(screen.queryByRole("status")).toBeNull();
   });
 
   it("local data is its own line and does not offer an overwrite", async () => {
@@ -53,6 +65,6 @@ describe("MigrationNotices", () => {
     const line = await screen.findByRole("status");
     expect(line.textContent).toContain("本机数据");
     expect(line.textContent).toContain("/local/old/com.paperfield.app");
-    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.queryByRole("button", { name: /覆盖/ })).toBeNull();
   });
 });

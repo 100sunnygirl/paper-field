@@ -246,6 +246,14 @@ export async function loadSettings(): Promise<LlmSettings> {
   return (await readLlmSettings()).settings;
 }
 
+function originOf(baseUrl: string): string {
+  try {
+    return new URL(baseUrl.trim()).origin.toLowerCase();
+  } catch {
+    return baseUrl.trim().replace(/\/+$/, "").toLowerCase();
+  }
+}
+
 export async function saveSettings(input: LlmSaveInput): Promise<LlmSettings> {
   if (isTauri()) {
     // 全量替换；apiKey 三态在边界统一：null=保留已存（后端按 id 匹配旧记录）、""=清除、非空=写入。
@@ -255,8 +263,10 @@ export async function saveSettings(input: LlmSaveInput): Promise<LlmSettings> {
   const byId = new Map(prev.providers.map((provider) => [provider.id, provider]));
   const providers: BrowserProviderStore[] = input.providers.map((provider) => {
     const old = byId.get(provider.id);
-    // 三态合并：null=沿用已存 Key、""=清除、非空=写入。
-    const apiKey = provider.apiKey == null ? old?.apiKey ?? "" : provider.apiKey;
+    // 三态合并：null=沿用已存 Key、""=清除、非空=写入。沿用只限地址来源不变（与桌面端 keyOrigin 一致），
+    // 换了主机就丢弃旧 Key，免得它被发给新填的地址。
+    const sameOrigin = old ? originOf(old.baseUrl) === originOf(provider.baseUrl) : false;
+    const apiKey = provider.apiKey == null ? (sameOrigin ? old?.apiKey ?? "" : "") : provider.apiKey;
     return {
       id: provider.id,
       presetId: provider.presetId,

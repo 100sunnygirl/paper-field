@@ -83,11 +83,8 @@ afterEach(() => {
 describe("DeleteCheckedPapersDialog · 批量删除确认", () => {
   it("显示勾选数量，确认后调用批量删除、取消则关闭", () => {
     const deleteCheckedPapers = vi.fn(async () => undefined);
-    useField.setState({
-      dialog: "delete-checked",
-      checkedPaperIds: ["a", "b", "c"],
-      deleteCheckedPapers,
-    });
+    useField.setState({ checkedPaperIds: ["a", "b", "c"], deleteCheckedPapers });
+    act(() => useField.getState().openDialog("delete-checked"));
     render(<DeleteCheckedPapersDialog />);
     expect(screen.getByText("删除选中的论文？")).toBeInTheDocument();
     expect(screen.getByText(/将删除选中的/)).toBeInTheDocument();
@@ -97,15 +94,23 @@ describe("DeleteCheckedPapersDialog · 批量删除确认", () => {
     expect(useField.getState().dialog).toBeNull();
     expect(deleteCheckedPapers).not.toHaveBeenCalled();
 
-    act(() => {
-      useField.setState({ dialog: "delete-checked" });
-    });
+    act(() => useField.getState().openDialog("delete-checked"));
     fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
     expect(deleteCheckedPapers).toHaveBeenCalledTimes(1);
   });
 
+  it("打开后勾选集被后台刷新改动：对话框仍按打开时冻结的那批显示与删除", () => {
+    useField.setState({ checkedPaperIds: ["a", "b"] });
+    act(() => useField.getState().openDialog("delete-checked"));
+    render(<DeleteCheckedPapersDialog />);
+    act(() => useField.setState({ checkedPaperIds: ["a", "b", "x"] }));
+    expect(screen.getByText("2")).toBeInTheDocument();
+    expect(useField.getState().dialogPaperIds).toEqual(["a", "b"]);
+  });
+
   it("勾选为空时不渲染（防绕过工具栏直接开对话框）", () => {
-    useField.setState({ dialog: "delete-checked", checkedPaperIds: [] });
+    useField.setState({ checkedPaperIds: [] });
+    act(() => useField.getState().openDialog("delete-checked"));
     render(<DeleteCheckedPapersDialog />);
     expect(screen.queryByText("删除选中的论文？")).toBeNull();
   });

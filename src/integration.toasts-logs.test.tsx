@@ -32,8 +32,12 @@ vi.mock("./lib/repo", () => ({
     listPendingMineru: vi.fn(async () => [] as string[]),
     listReadyForMeta: vi.fn(async () => [] as string[]),
     importLocalPdfs: vi.fn(),
-    createJob: vi.fn(async () => ({ id: "job-1", status: "queued" })),
-    updateJob: vi.fn(async () => undefined),
+    startJob: vi.fn(async () => ({ id: "job-1", status: "running" })),
+    finishJob: vi.fn(async () => true),
+    jobStatus: vi.fn(async () => "running"),
+    ownsMineru: vi.fn(async () => true),
+    activeJobIds: vi.fn(async () => []),
+    paperIdsInDomain: vi.fn(async () => []),
     setMineruState: vi.fn(async () => undefined),
     saveParsedMarkdown: vi.fn(async () => undefined),
     applyPreparedMeta: vi.fn(async () => undefined),
@@ -223,11 +227,11 @@ beforeEach(async () => {
   vi.mocked(repo.listPendingMineru).mockReset().mockResolvedValue([]);
   vi.mocked(repo.listReadyForMeta).mockReset().mockResolvedValue([]);
   vi.mocked(repo.importLocalPdfs).mockReset();
-  vi.mocked(repo.createJob).mockReset().mockResolvedValue({ id: "job-1", status: "queued" } as LlmJob);
-  vi.mocked(repo.updateJob).mockReset().mockResolvedValue(true);
+  vi.mocked(repo.startJob).mockReset().mockResolvedValue({ id: "job-1", status: "running" } as LlmJob);
+  vi.mocked(repo.finishJob).mockReset().mockResolvedValue(true);
   vi.mocked(repo.setMineruState).mockReset().mockResolvedValue(true);
   vi.mocked(repo.saveParsedMarkdown).mockReset().mockResolvedValue(undefined);
-  vi.mocked(repo.applyPreparedMeta).mockReset().mockResolvedValue(undefined);
+  vi.mocked(repo.applyPreparedMeta).mockReset().mockResolvedValue("committed");
   vi.mocked(repo.papersForExport).mockReset().mockResolvedValue([]);
   vi.mocked(repo.deleteDomain).mockReset().mockResolvedValue(undefined);
   vi.mocked(repo.createDomain).mockReset();
@@ -381,7 +385,9 @@ describe("导入 × MinerU 解析联动的通知触达", () => {
     expect(messages).toContain("info/mineru/解析批次开始：共 1 篇");
     expect(messages).toContain("info/mineru/解析批次结束：成功 1 篇，失败 0 篇");
     expect(messages).toContain("info/ui/MinerU 解析完成 1 篇。阅读状态未改动。");
-    expect(repo.saveParsedMarkdown).toHaveBeenCalledWith("p-1", "# 全文");
+    // 全文、解析状态与作业 done 同一个事务提交
+    const committed = vi.mocked(repo.finishJob).mock.calls.find(([, status]) => status === "done");
+    expect(committed?.[2]?.steps?.some((step) => step.params?.includes("# 全文"))).toBe(true);
   });
 
   it("解析失败：mineru 维度 error 与用户可见 error 通知同时留痕", async () => {
@@ -402,8 +408,10 @@ describe("导入 × MinerU 解析联动的通知触达", () => {
     expect(mineruError?.message).toBe("论文解析失败（p-1）");
     expect(mineruError?.detail).toContain("Operation timed out");
     expect(uiError?.message).toBe("MinerU 解析失败 1 篇，可在资料栏重试。");
-    const lastState = vi.mocked(repo.setMineruState).mock.lastCall?.[1];
-    expect(lastState).toMatchObject({ status: "error", error: "SSH 远程：curl: (28) Operation timed out" });
+    // 作业失败与论文解析状态同一个事务落库
+    const failed = vi.mocked(repo.finishJob).mock.calls.find(([, status]) => status === "error");
+    expect(failed?.[2]).toMatchObject({ error: "SSH 远程：curl: (28) Operation timed out" });
+    expect(failed?.[2]?.steps?.[0]?.sql).toContain("mineru_status = 'error'");
   });
 
   it("导入成功但无可用解析源：warn 通知指引设置页，且不提交解析", async () => {
@@ -481,7 +489,7 @@ describe("设置保存 × MinerU 补全深链路", () => {
       usage: {},
     } as Awaited<ReturnType<typeof loadSettings>>);
     vi.mocked(repo.listReadyForMeta).mockResolvedValue(["p-9"]);
-    vi.mocked(repo.createJob).mockResolvedValue({
+    vi.mocked(repo.startJob).mockResolvedValue({
       id: "job-bf",
       paperId: "p-9",
       type: "prepareMeta",
@@ -824,18 +832,18 @@ describe("持久化异常 × 通知层互不破坏（Tauri 分支）", () => {
 // ---------- 回归：两项改动未破坏的既有行为 ----------
 
 describe("既有行为回归基线", () => {
-  it("未保存笔记拦截模式切换：warn 通知 + warn 日志，mode 不变", async () => {
-    useField.setState({ mode: "field", unsavedNote: true });
+  it("笔记草稿不拦截模式切换：不弹警告，草稿保留", async () => {
+    useField.setState({ mode: "field" });
+    useField.getState().setNoteDraft("p-1", "summary", "草稿");
 
     await act(async () => {
       await useField.getState().setMode("archive");
     });
 
-    expect(useField.getState().mode).toBe("field");
-    expect(useField.getState().flash).toMatchObject({ tone: "warn", text: "请先保存或取消正在编辑的笔记。" });
-    expect(getEntries()).toContainEqual(
-      expect.objectContaining({ level: "warn", scope: "ui", message: "请先保存或取消正在编辑的笔记。" }),
-    );
+    expect(useField.getState().mode).toBe("archive");
+    expect(useField.getState().drafts["p-1"]?.summary).toBe("草稿");
+    expect(getToasts().some((t) => t.text.includes("请先保存"))).toBe(false);
+    useField.getState().setNoteDraft("p-1", "summary", null);
   });
 
   it("LogPanel 的「复制」提示也走通知链：留 ok 日志且面板无需重挂载即可见", async () => {

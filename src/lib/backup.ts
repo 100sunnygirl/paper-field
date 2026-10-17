@@ -3,19 +3,12 @@ import { isTauri } from "./util";
 
 export async function backupLibrary(): Promise<string | null> {
   if (!isTauri()) throw new Error("DESKTOP_ONLY");
-  const { save } = await import("@tauri-apps/plugin-dialog");
   const { invoke } = await import("@tauri-apps/api/core");
-  const dest = await save({
-    title: "备份文库",
-    defaultPath: "paper-field-backup.zip",
-    filters: [{ name: "Zip", extensions: ["zip"] }],
-  });
-  if (!dest) return null;
   const { getEngine } = await import("./engine");
   const engine = await getEngine();
   await engine.execute("PRAGMA wal_checkpoint(FULL)");
-  await invoke("create_library_backup", { dest });
-  return dest;
+  // 保存对话框由 Rust 侧弹出：命令只写用户在系统对话框里选的位置。取消时返回 null。
+  return invoke<string | null>("create_library_backup");
 }
 
 /** Mirrors Rust `restore::BackupSummary`. */
@@ -58,16 +51,11 @@ async function currentPaperCount(): Promise<number | null> {
 
 export async function restoreLibrary(): Promise<boolean> {
   if (!isTauri()) throw new Error("DESKTOP_ONLY");
-  const { open, ask } = await import("@tauri-apps/plugin-dialog");
+  const { ask } = await import("@tauri-apps/plugin-dialog");
   const { invoke } = await import("@tauri-apps/api/core");
-  const picked = await open({
-    title: "恢复文库",
-    multiple: false,
-    filters: [{ name: "Zip", extensions: ["zip"] }],
-  });
-  if (!picked || Array.isArray(picked)) return false;
-  // Only stages the backup; files are swapped on next launch before the database opens.
-  const summary = await invoke<BackupSummary>("restore_library_backup", { src: picked });
+  // 打开对话框由 Rust 侧弹出；只暂存备份，文件在下次启动、数据库打开之前才替换。取消时返回 null。
+  const summary = await invoke<BackupSummary | null>("restore_library_backup");
+  if (!summary) return false;
   const confirmed = await ask(restoreConfirmText(summary, await currentPaperCount()), {
     title: "确认恢复文库",
     kind: "warning",

@@ -11,19 +11,22 @@ import {
   type ProviderHealth,
 } from "./lib/mineru";
 import {
-  backfillMeta,
-  cancelMineruPaper,
-  clearMineruCancel,
+  cancelParses,
+  dequeueFromBatch,
+  enqueueBackfill,
   enqueueMineru,
   enqueueMineruBatch,
+  forgetPapers,
   resumeMineru,
+  stopBatch,
 } from "./lib/mineruRun";
-import { endBatchItem, endJob, getActivity, trackJob, type JobOutcome } from "./lib/activity";
+import { getActivity } from "./lib/activity";
+import { cancelJob as cancelTrackedJob, jobDoneStep, runTracked } from "./lib/jobs";
 import { pickProviderFromHealths, providerLabel, summarizeHealths } from "./lib/mineruPlan";
 import { backupLibrary, restoreLibrary } from "./lib/backup";
 import { DEFAULT_BIBLIO, loadBiblioSettings, saveBiblioSettings, type BiblioSaveInput, type BiblioStatus } from "./lib/biblio";
 import { filledFrom, lookupPaper, type LookupResult, verifyReachable } from "./lib/lookup";
-import { safeHttpUrl, withDefaultScheme } from "./lib/urls";
+import { normalizeArxivId, normalizeDoi, safeHttpUrl, withDefaultScheme } from "./lib/urls";
 import { DRAFT_NOTES_SYSTEM, PREPARE_META_SYSTEM, draftNotesUserPrompt, normalizeMeta, normalizeNotes, prepareMetaUserPrompt } from "./lib/prompts";
 import { redactSecrets } from "./lib/redact";
 import { repo } from "./lib/repo";
@@ -41,9 +44,9 @@ import type {
   PaperDetail,
   PaperListItem,
 } from "./lib/types";
-import { extractJson, nowIso } from "./lib/util";
+import { NOTE_KINDS } from "./lib/types";
+import { extractJson } from "./lib/util";
 
-const abortMap = new Map<string, AbortController>();
 
 interface Flash {
   tone: "ok" | "warn" | "error";
@@ -97,8 +100,13 @@ interface FieldState {
     | "pick-domain"
     | "edit-paper"
     | null;
+  /** 对话框打开时锁定的目标论文：之后选中怎么变，对话框都只作用于它。 */
+  dialogPaperId: string | null;
+  /** delete-checked 打开时冻结的勾选集。 */
+  dialogPaperIds: string[];
   pendingDraftJob: string | null;
-  unsavedNote: boolean;
+  /** 正在编辑、尚未保存的笔记草稿，按论文分开存：切换论文不丢，切回来还在。 */
+  drafts: Record<string, Partial<Record<NoteKind, string>>>;
   loadError: string | null;
   /** 作业面板（状态条「作业」入口 / ⌘J）：非模态浮层，不拦截阅读区操作。 */
   jobsOpen: boolean;
@@ -108,8 +116,10 @@ interface FieldState {
   selectPaper: (id: string | null) => Promise<void>;
   setSearch: (value: string) => Promise<void>;
   setArchiveFilter: (value: OpenSource | "all") => Promise<void>;
-  refresh: () => Promise<void>;
-  openDialog: (dialog: FieldState["dialog"]) => void;
+  /** reselect：当前选中不在新列表里时改选第一篇（切换模式等用户导航）；平时只在论文被删时回落。 */
+  refresh: (options?: { reselect?: boolean }) => Promise<void>;
+  /** target：论文对话框的目标论文（缺省为当前论文）；delete-checked 为冻结的勾选集。 */
+  openDialog: (dialog: FieldState["dialog"], target?: string | string[]) => void;
   closeDialog: () => void;
   createDomain: (input: { name: string; code: string; summary?: string }) => Promise<void>;
   updateDomain: (input: { name: string; code: string; summary?: string }) => Promise<void>;
@@ -117,6 +127,8 @@ interface FieldState {
   importPdfs: (
     paths: string[],
     onProgress?: (done: number, total: number, current: string) => void,
+    /** 导入到哪个领域；缺省为发起时选中的领域（重试时由闭包带上原领域）。 */
+    domainId?: string,
   ) => Promise<void>;
   createManualPaper: (input: {
     title: string;
@@ -127,27 +139,28 @@ interface FieldState {
   retryMineru: (paperId: string) => Promise<void>;
   /** INTAKE 页批量重试：把全部解析失败（error）论文重新提交给 MinerU。 */
   retryFailedMineru: () => Promise<void>;
-  savePaperPatch: (patch: Parameters<typeof repo.updatePaper>[1]) => Promise<void>;
-  saveAuthors: (authors: PaperDetail["authors"]) => Promise<void>;
-  saveNote: (kind: NoteKind, content: string) => Promise<void>;
-  markRead: () => Promise<void>;
-  markReading: () => Promise<void>;
-  markUnread: () => Promise<void>;
-  setReadingStatus: (status: "unread" | "reading" | "read") => Promise<void>;
-  movePaper: (domainId: string) => Promise<void>;
-  deletePaper: () => Promise<void>;
+  savePaperPatch: (paperId: string, patch: Parameters<typeof repo.updatePaper>[1]) => Promise<void>;
+  saveAuthors: (paperId: string, authors: PaperDetail["authors"]) => Promise<void>;
+  saveNote: (paperId: string, kind: NoteKind, content: string) => Promise<void>;
+  /** 写入 / 清除（null）一块笔记草稿。 */
+  setNoteDraft: (paperId: string, kind: NoteKind, value: string | null) => void;
+  markRead: (paperId?: string) => Promise<void>;
+  markReading: (paperId?: string) => Promise<void>;
+  markUnread: (paperId?: string) => Promise<void>;
+  setReadingStatus: (status: "unread" | "reading" | "read", paperId?: string) => Promise<void>;
+  movePaper: (domainId: string, paperId?: string) => Promise<void>;
+  deletePaper: (paperId?: string) => Promise<void>;
   setBatchMode: (on: boolean) => void;
   toggleCheckedPaper: (id: string) => void;
   setCheckedPaperIds: (ids: string[]) => void;
-  /** 删除当前勾选的全部论文（先经 delete-checked 对话框确认）。 */
+  /** 删除 delete-checked 对话框打开时冻结的那批论文。 */
   deleteCheckedPapers: () => Promise<void>;
-  setUnsavedNote: (value: boolean) => void;
   setJobsOpen: (open: boolean) => void;
   /** 作业面板「移出队列」：该篇轮到时直接跳过（不提交 MinerU），解析状态保持不变。 */
   dequeueMineruPaper: (batchId: number, paperId: string) => void;
   /** 作业面板「停止批次」：取消正在解析的一篇，并把本批其余排队论文移出队列。 */
   stopMineruBatch: (batchId: number) => Promise<void>;
-  runPrepareMeta: (paperId?: string, overwrite?: boolean, quiet?: boolean) => Promise<void>;
+  runPrepareMeta: (paperId?: string, overwrite?: boolean, quiet?: boolean, options?: { llm?: boolean }) => Promise<void>;
   runRefreshLinks: (paperId?: string) => Promise<void>;
   runDraftNotes: (paperId?: string, overwrite?: boolean) => Promise<void>;
   cancelJob: (jobId: string, options?: { silent?: boolean }) => Promise<void>;
@@ -185,9 +198,41 @@ export function importFailureList(failed: Array<{ name: string; message: string 
 }
 
 const prepareInflight = new Set<string>();
+const refreshInflight = new Set<string>();
+const draftInflight = new Set<string>();
 
 export const SEARCH_DEBOUNCE_MS = 250;
 let refreshSeq = 0;
+/** 用户每次改选（点选论文、切领域、删除选中）加一；在途的 refresh 看到它变了就不改选中。 */
+let selectionEpoch = 0;
+
+const DRAFTS_KEY = "paper-field.note-drafts";
+
+/** 草稿同步存一份到 localStorage：窗口意外重载也能找回。读写失败（隐私模式等）静默忽略。 */
+function loadDrafts(): Record<string, Partial<Record<NoteKind, string>>> {
+  try {
+    const raw = typeof localStorage === "undefined" ? null : localStorage.getItem(DRAFTS_KEY);
+    const value = raw ? (JSON.parse(raw) as unknown) : null;
+    return value && typeof value === "object" ? (value as Record<string, Partial<Record<NoteKind, string>>>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function persistDrafts(drafts: Record<string, Partial<Record<NoteKind, string>>>): void {
+  try {
+    if (typeof localStorage === "undefined") return;
+    if (Object.keys(drafts).length) localStorage.setItem(DRAFTS_KEY, JSON.stringify(drafts));
+    else localStorage.removeItem(DRAFTS_KEY);
+  } catch {
+    // 存不下也不影响编辑：草稿仍在内存里。
+  }
+}
+
+/** 这篇论文有没有尚未保存的笔记草稿。 */
+export function hasDraft(state: Pick<FieldState, "drafts">, paperId: string | null | undefined): boolean {
+  return Boolean(paperId && state.drafts[paperId] && Object.keys(state.drafts[paperId]!).length);
+}
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
 let searchWaiters: { resolve: () => void; reject: (err: unknown) => void }[] = [];
 
@@ -217,8 +262,10 @@ export const useField = create<FieldState>((set, get) => ({
   mineruHealth: [],
   effectiveProvider: null,
   dialog: null,
+  dialogPaperId: null,
+  dialogPaperIds: [],
   pendingDraftJob: null,
-  unsavedNote: false,
+  drafts: loadDrafts(),
   loadError: null,
   jobsOpen: false,
 
@@ -232,42 +279,53 @@ export const useField = create<FieldState>((set, get) => ({
     if (flash) notify(flash.tone, flash.text, flash.action ? { action: flash.action } : undefined);
     else dismissAll("manual");
   },
-  setUnsavedNote: (value) => set({ unsavedNote: value }),
+  setNoteDraft: (paperId, kind, value) => {
+    const drafts = { ...get().drafts };
+    const forPaper = { ...(drafts[paperId] ?? {}) };
+    if (value === null) delete forPaper[kind];
+    else forPaper[kind] = value;
+    if (Object.keys(forPaper).length) drafts[paperId] = forPaper;
+    else delete drafts[paperId];
+    set({ drafts });
+    persistDrafts(drafts);
+  },
   setJobsOpen: (open) => set({ jobsOpen: open }),
 
   dequeueMineruPaper: (batchId, paperId) => {
-    // 复用 mineruRun 的取消集合：processOne 轮到该篇时先查取消标记、直接返回 cancelled，
-    // 不建作业也不改论文的解析状态；实况这边立即记为已取消，面板与状态条同步出列。
-    cancelMineruPaper(paperId);
-    endBatchItem(batchId, paperId, "cancelled");
+    // 只移出这一批；库里状态写成 cancelled，重启或保存 MinerU 设置后不会被重新提交。
+    void dequeueFromBatch(batchId, paperId)
+      .then(() => get().refresh())
+      .catch((err) => log.error("mineru", "移出队列写库失败", err));
   },
 
   stopMineruBatch: async (batchId) => {
-    const batch = getActivity().batches.find((item) => item.id === batchId);
-    if (!batch || batch.kind !== "mineru") return;
-    const pending = batch.paperIds.filter(
-      (id) => !batch.results[id] && id !== batch.currentPaperId,
-    );
-    for (const id of pending) get().dequeueMineruPaper(batchId, id);
-    const current = batch.currentPaperId;
-    let stopped = pending.length;
-    if (current) {
-      const active = get().jobs.filter(
-        (job) => job.paperId === current && (job.status === "queued" || job.status === "running"),
-      );
-      // 当前一篇已建作业（解析或解析后的自动补全）→ 走既有取消；尚未建作业 → 打取消标记。
-      if (active.length) {
-        for (const job of active) await get().cancelJob(job.id, { silent: true });
-      } else {
-        cancelMineruPaper(current);
-      }
-      stopped += 1;
+    const kind = getActivity().batches.find((item) => item.id === batchId)?.kind;
+    const stopped = await stopBatch(batchId);
+    await get().refresh();
+    if (!kind) return;
+    if (kind === "mineru") {
+      log.info("mineru", `作业面板停止解析批次：${stopped} 篇不再写入`);
+      get().setFlash({ tone: "ok", text: mineruStopCopy(stopped) });
+    } else {
+      log.info("llm", `作业面板停止 AI 补全批次：${stopped} 篇`);
+      get().setFlash({ tone: "ok", text: `已停止补全，${stopped} 篇不再写入。` });
     }
-    log.info("mineru", `作业面板停止解析批次：${stopped} 篇不再写入`);
-    get().setFlash({ tone: "ok", text: mineruStopCopy(stopped) });
   },
-  openDialog: (dialog) => set({ dialog }),
-  closeDialog: () => set({ dialog: null, pendingDraftJob: null }),
+  openDialog: (dialog, target) => {
+    const state = get();
+    const paperScoped =
+      dialog === "edit-paper" ||
+      dialog === "delete-paper" ||
+      dialog === "move-paper" ||
+      dialog === "confirm-meta" ||
+      dialog === "confirm-notes";
+    set({
+      dialog,
+      dialogPaperId: paperScoped ? (typeof target === "string" ? target : state.paper?.id ?? state.selectedPaperId) : null,
+      dialogPaperIds: dialog === "delete-checked" ? (Array.isArray(target) ? [...target] : [...state.checkedPaperIds]) : [],
+    });
+  },
+  closeDialog: () => set({ dialog: null, dialogPaperId: null, dialogPaperIds: [], pendingDraftJob: null }),
 
   init: async () => {
     try {
@@ -308,7 +366,7 @@ export const useField = create<FieldState>((set, get) => ({
     }
   },
 
-  refresh: async () => {
+  refresh: async (options = {}) => {
     // Only the latest refresh may write: a slow earlier one (old search term,
     // previous domain/filter) must not overwrite newer results.
     const seq = ++refreshSeq;
@@ -327,35 +385,40 @@ export const useField = create<FieldState>((set, get) => ({
       openSource: state.archiveFilter,
     });
     const intake = await repo.listIntake(state.mode === "intake" ? state.search : "");
-    const selectedPaperId =
-      state.selectedPaperId &&
-      (state.mode === "field" ? papers : state.mode === "archive" ? archive : intake).some(
-        (p) => p.id === state.selectedPaperId,
-      )
-        ? state.selectedPaperId
-        : (state.mode === "field" ? papers : state.mode === "archive" ? archive : intake)[0]?.id ??
-          null;
-    const paper = selectedPaperId ? await repo.getPaper(selectedPaperId) : null;
-    // 勾选集向当前列表裁剪：搜索词变化、切换领域/模式后，已不可见的论文不再参与批量操作。
-    const checkedPaperIds = state.checkedPaperIds.filter((id) =>
-      (state.mode === "archive" ? archive : state.mode === "intake" ? intake : papers).some(
-        (p) => p.id === id,
-      ),
-    );
+    // 选中只随用户意图变化：以「现在」的选中为准（不是开始时的快照），论文还在库里就保持，
+    // 只是不在当前筛选结果里也不改选；只有被删除、或用户导航要求重选时才回落到第一篇。
+    const epoch = selectionEpoch;
+    const now = get();
+    const list = now.mode === "archive" ? archive : now.mode === "intake" ? intake : papers;
+    let selectedPaperId = now.selectedPaperId;
+    let paper = selectedPaperId ? await repo.getPaper(selectedPaperId) : null;
+    const outOfList = Boolean(selectedPaperId) && !list.some((p) => p.id === selectedPaperId);
+    if (now.mode !== "system" && (!paper || (options.reselect && outOfList))) {
+      selectedPaperId = list[0]?.id ?? null;
+      paper = selectedPaperId ? await repo.getPaper(selectedPaperId) : null;
+    }
     if (seq !== refreshSeq) return;
+    const latest = get();
+    // 勾选集向当前列表裁剪（以现在的勾选为准，刷新期间取消的勾选不会被勾回来）。
+    const visible = latest.mode === "archive" ? archive : latest.mode === "intake" ? intake : papers;
+    const checkedPaperIds = latest.checkedPaperIds.filter((id) => visible.some((p) => p.id === id));
+    if (epoch !== selectionEpoch) {
+      // 刷新期间用户点了别的论文：列表照常更新，选中与详情以用户的选择为准。
+      set({ stats, jobs, domains, papers, archive, intake, checkedPaperIds });
+      return;
+    }
     set({ stats, jobs, domains, papers, archive, intake, selectedPaperId, paper, checkedPaperIds });
   },
 
   setMode: async (mode) => {
-    if (!guardUnsaved(get)) return;
     set({ mode });
-    await get().refresh();
+    await get().refresh({ reselect: true });
   },
 
   selectDomain: async (id) => {
-    if (!guardUnsaved(get)) return;
     try {
-      set({ selectedDomainId: id, selectedPaperId: null, paper: null, mode: "field", dialog: null });
+      selectionEpoch += 1;
+      set({ selectedDomainId: id, selectedPaperId: null, paper: null, mode: "field", dialog: null, dialogPaperId: null, dialogPaperIds: [] });
       await get().refresh();
     } catch (err) {
       get().setFlash({ tone: "error", text: `切换领域失败：${errText(err)}，数据未改动。` });
@@ -364,8 +427,11 @@ export const useField = create<FieldState>((set, get) => ({
   },
 
   selectPaper: async (id) => {
-    if (id && !guardUnsaved(get)) return;
+    // 每次选择都换一个序号：慢的旧请求与在途的 refresh 都不能把选中改回去。
+    const epoch = ++selectionEpoch;
+    set({ selectedPaperId: id });
     const paper = id ? await repo.getPaper(id) : null;
+    if (epoch !== selectionEpoch) return;
     set({ selectedPaperId: id, paper });
     if (paper && get().mode === "field") {
       set({ selectedDomainId: paper.domainId });
@@ -397,7 +463,7 @@ export const useField = create<FieldState>((set, get) => ({
 
   setArchiveFilter: async (value) => {
     set({ archiveFilter: value });
-    await get().refresh();
+    await get().refresh({ reselect: true });
   },
 
   createDomain: async (input) => {
@@ -425,6 +491,8 @@ export const useField = create<FieldState>((set, get) => ({
     const id = get().selectedDomainId;
     if (!id) return;
     try {
+      // 先取消这些论文的在途作业并移出排队，免得轮询在论文删掉后还占着队列、扣着配额。
+      await forgetPapers(await repo.paperIdsInDomain(id));
       await repo.deleteDomain(id);
       const domains = await repo.listDomains();
       set({ selectedDomainId: domains[0]?.id ?? null, dialog: null, selectedPaperId: null, paper: null });
@@ -435,8 +503,8 @@ export const useField = create<FieldState>((set, get) => ({
     }
   },
 
-  importPdfs: async (paths, onProgress) => {
-    const domainId = get().selectedDomainId;
+  importPdfs: async (paths, onProgress, targetDomainId) => {
+    const domainId = targetDomainId ?? get().selectedDomainId;
     if (!domainId) throw new Error("请先选择一个领域，再导入 PDF。");
     const unique = [...new Set(paths.map((path) => path.trim()).filter(Boolean))];
     if (!unique.length) throw new Error("请选择至少一个 PDF");
@@ -458,8 +526,10 @@ export const useField = create<FieldState>((set, get) => ({
         done += 1;
         onProgress?.(done, unique.length, name);
       }
+      // 只关导入对话框本身：长时间导入期间用户打开的其他对话框不被顺手关掉。
+      if (get().dialog === "paper") set({ dialog: null });
+      if (created[0]) selectionEpoch += 1;
       set({
-        dialog: null,
         selectedPaperId: created[0] ?? get().selectedPaperId,
         mode: "field",
       });
@@ -476,7 +546,7 @@ export const useField = create<FieldState>((set, get) => ({
             run: () => {
               const retry = failed.map((f) => f.path);
               get()
-                .importPdfs(retry)
+                .importPdfs(retry, undefined, domainId)
                 .catch((err) => get().setFlash({ tone: "error", text: `重试导入失败：${errText(err)}` }));
             },
           },
@@ -517,12 +587,17 @@ export const useField = create<FieldState>((set, get) => ({
     const title = input.title.trim();
     if (!title) throw new Error("标题必填");
     try {
+      // 全角冒号、doi.org 链接等写法在入库前规整；认不出的保留原文，查询端会安全地忽略。
+      const arxivId = input.arxivId?.trim() ? normalizeArxivId(input.arxivId) ?? input.arxivId.trim() : input.arxivId;
+      const doi = input.doi?.trim() ? normalizeDoi(input.doi) ?? input.doi.trim() : input.doi;
+      const pdf = input.pdfPath?.trim() ? await repo.adoptManualPdf(input.pdfPath.trim()) : null;
       const paper = await repo.createPaper({
         domainId,
         title,
-        pdfPath: input.pdfPath,
-        arxivId: input.arxivId,
-        doi: input.doi,
+        pdfPath: pdf?.libraryPath,
+        pdfOriginalPath: pdf?.originalPath,
+        arxivId,
+        doi,
         userOwned: true,
       });
       set({ dialog: null, selectedPaperId: paper.id, mode: "field" });
@@ -532,7 +607,7 @@ export const useField = create<FieldState>((set, get) => ({
         text: paper.pdfPath ? `已创建「${title}」，正在查询文献库并安排解析。` : `已创建「${title}」，正在查询文献库。`,
       });
       // arXiv / DOI / title lookup runs even when there is no PDF and no API key.
-      void get().runPrepareMeta(paper.id, false, true);
+      void get().runPrepareMeta(paper.id, false, true, { llm: !paper.pdfPath });
       if (paper.pdfPath) enqueueMineruBatch(mineruHost(), [paper.id], false);
     } catch (err) {
       get().setFlash({ tone: "error", text: `创建论文失败：${errText(err)}，数据未改动。` });
@@ -558,18 +633,10 @@ export const useField = create<FieldState>((set, get) => ({
       return;
     }
     try {
-      clearMineruCancel(paperId);
-      // 跨源切换唯一入口：重置 docRef/parseIds/provider 后以 provider=null 重新提交，
-      // 由后端按回退顺序重选源并更新论文记录的解析来源。
-      await repo.setMineruState(paperId, {
-        status: "queued",
-        error: null,
-        parseId: null,
-        parseIds: [],
-        docRef: null,
-        provider: null,
-        credFingerprint: null,
-      });
+      // 跨源切换唯一入口：先取消旧的一轮，再重置 docRef/parseIds/provider 并收回所有权，
+      // 以 force 重新提交，由后端按回退顺序重选源。旧的一轮之后写什么都不生效。
+      await cancelParses([paperId]);
+      await repo.resetMineru([paperId]);
       await get().refresh();
       get().setFlash({ tone: "ok", text: "已将这篇论文发送到 MinerU 解析。" });
       enqueueMineruBatch(mineruHost(), [paperId], true);
@@ -597,18 +664,8 @@ export const useField = create<FieldState>((set, get) => ({
     }
     try {
       // 与单篇重试同构：重置解析状态后重新提交；连续失败由批次熔断兜底提示。
-      for (const id of failedIds) {
-        clearMineruCancel(id);
-        await repo.setMineruState(id, {
-          status: "queued",
-          error: null,
-          parseId: null,
-          parseIds: [],
-          docRef: null,
-          provider: null,
-          credFingerprint: null,
-        });
-      }
+      await cancelParses(failedIds);
+      await repo.resetMineru(failedIds);
       await get().refresh();
       get().setFlash({ tone: "ok", text: `已将 ${failedIds.length} 篇重新发送到 MinerU 解析。` });
       enqueueMineruBatch(mineruHost(), failedIds, true);
@@ -618,11 +675,9 @@ export const useField = create<FieldState>((set, get) => ({
     }
   },
 
-  savePaperPatch: async (patch) => {
-    const id = get().selectedPaperId;
-    if (!id) return;
+  savePaperPatch: async (paperId, patch) => {
     try {
-      await repo.updatePaper(id, patch, true);
+      await repo.updatePaper(paperId, patch, true);
       await get().refresh();
     } catch (err) {
       get().setFlash({ tone: "error", text: `保存论文信息失败：${errText(err)}，数据未改动。` });
@@ -630,12 +685,10 @@ export const useField = create<FieldState>((set, get) => ({
     }
   },
 
-  saveAuthors: async (authors) => {
-    const id = get().selectedPaperId;
-    if (!id) return;
+  saveAuthors: async (paperId, authors) => {
     try {
       await repo.replaceAuthors(
-        id,
+        paperId,
         authors.map((author) => ({
           name: author.name,
           affiliation: author.affiliation,
@@ -651,11 +704,10 @@ export const useField = create<FieldState>((set, get) => ({
     }
   },
 
-  saveNote: async (kind, content) => {
-    const id = get().selectedPaperId;
-    if (!id) throw new Error("未选择论文");
+  saveNote: async (paperId, kind, content) => {
     try {
-      await repo.updateNote(id, kind, content, "manual", true);
+      await repo.updateNote(paperId, kind, content, "manual", true);
+      get().setNoteDraft(paperId, kind, null);
       await get().refresh();
       get().setFlash({ tone: "ok", text: "笔记已保存。" });
     } catch (err) {
@@ -667,20 +719,20 @@ export const useField = create<FieldState>((set, get) => ({
     }
   },
 
-  markRead: async () => {
-    await get().setReadingStatus("read");
+  markRead: async (paperId) => {
+    await get().setReadingStatus("read", paperId);
   },
 
-  markReading: async () => {
-    await get().setReadingStatus("reading");
+  markReading: async (paperId) => {
+    await get().setReadingStatus("reading", paperId);
   },
 
-  markUnread: async () => {
-    await get().setReadingStatus("unread");
+  markUnread: async (paperId) => {
+    await get().setReadingStatus("unread", paperId);
   },
 
-  setReadingStatus: async (status) => {
-    const id = get().selectedPaperId;
+  setReadingStatus: async (status, paperId) => {
+    const id = paperId ?? get().paper?.id ?? null;
     if (!id) return;
     try {
       await repo.setReadingStatus(id, status);
@@ -693,12 +745,13 @@ export const useField = create<FieldState>((set, get) => ({
     }
   },
 
-  movePaper: async (domainId) => {
-    const id = get().selectedPaperId;
+  movePaper: async (domainId, paperId) => {
+    const id = paperId ?? get().dialogPaperId ?? get().selectedPaperId;
     if (!id) return;
     try {
       await repo.updatePaper(id, { domainId });
-      set({ dialog: null, selectedDomainId: domainId, mode: "field" });
+      selectionEpoch += 1;
+      set({ dialog: null, dialogPaperId: null, selectedPaperId: id, selectedDomainId: domainId, mode: "field" });
       await get().refresh();
       const domain = get().domains.find((d) => d.id === domainId);
       get().setFlash({
@@ -711,12 +764,23 @@ export const useField = create<FieldState>((set, get) => ({
     }
   },
 
-  deletePaper: async () => {
-    const id = get().selectedPaperId;
+  deletePaper: async (paperId) => {
+    const id = paperId ?? get().dialogPaperId ?? get().selectedPaperId;
     if (!id) return;
     try {
+      await forgetPapers([id]);
       await repo.deletePaper(id);
-      set({ selectedPaperId: null, paper: null, dialog: null, unsavedNote: false });
+      const drafts = { ...get().drafts };
+      delete drafts[id];
+      persistDrafts(drafts);
+      const wasSelected = get().selectedPaperId === id;
+      if (wasSelected) selectionEpoch += 1;
+      set({
+        drafts,
+        dialog: null,
+        dialogPaperId: null,
+        ...(wasSelected ? { selectedPaperId: null, paper: null } : {}),
+      });
       await get().refresh();
       get().setFlash({ tone: "ok", text: "论文已删除。" });
     } catch (err) {
@@ -742,17 +806,25 @@ export const useField = create<FieldState>((set, get) => ({
   setCheckedPaperIds: (ids) => set({ checkedPaperIds: ids }),
 
   deleteCheckedPapers: async () => {
-    const ids = [...get().checkedPaperIds];
+    // 删的是对话框打开时冻结的那批：确认期间后台刷新改动勾选集也不影响。
+    const frozen = get().dialogPaperIds;
+    const ids = frozen.length ? [...frozen] : [...get().checkedPaperIds];
     if (!ids.length) return;
     try {
+      await forgetPapers(ids);
       await repo.deletePapers(ids);
+      const drafts = { ...get().drafts };
+      for (const id of ids) delete drafts[id];
+      persistDrafts(drafts);
+      selectionEpoch += 1;
       set({
+        drafts,
         dialog: null,
+        dialogPaperIds: [],
         batchMode: false,
         checkedPaperIds: [],
         selectedPaperId: null,
         paper: null,
-        unsavedNote: false,
       });
       await get().refresh();
       get().setFlash({ tone: "ok", text: `已删除 ${ids.length} 篇论文。` });
@@ -762,7 +834,7 @@ export const useField = create<FieldState>((set, get) => ({
     }
   },
 
-  runPrepareMeta: async (paperId, overwrite = false, quiet = false) => {
+  runPrepareMeta: async (paperId, overwrite = false, quiet = false, options) => {
     const id = paperId ?? get().selectedPaperId;
     if (!id || prepareInflight.has(id)) return;
     prepareInflight.add(id);
@@ -770,31 +842,63 @@ export const useField = create<FieldState>((set, get) => ({
       const paper = await repo.getPaper(id);
       if (!paper) return;
       const startedRev = paper.metaRev ?? 0;
-      const found = await lookupPaper(paper);
-      rememberLookup(set, get, id, found);
-      if (found.meta) {
-        await repo.applyPreparedMeta(id, found.meta, overwrite, { startedRev, source: "api" });
-      }
-      if (!hasUsableProvider(get().settings)) {
-        await dropUnreachableLinks(id);
-        await get().refresh();
-        if (!quiet && !found.meta) {
+      // 有 PDF 的手动建档只先查文献库：模型留到解析出全文之后再补，免得只凭标题补完就被标成「已补全」。
+      const useLlm = options?.llm !== false && hasUsableProvider(get().settings);
+      let foundMeta = false;
+      // 查文献库与请求模型是同一个作业：两段都能在作业面板里看到、都能取消。
+      const result = await runTracked(
+        { type: "prepareMeta", paperId: id, prompt: null, stage: "request", auto: quiet, onCancel: cancelChat },
+        async (ctx) => {
+          const found = await lookupPaper(paper);
+          await ctx.checkpoint();
+          rememberLookup(set, get, id, found);
+          foundMeta = Boolean(found.meta);
+          if (found.meta) {
+            const applied = await repo.applyPreparedMeta(id, found.meta, overwrite, {
+              startedRev,
+              source: "api",
+              jobId: ctx.jobId,
+            });
+            if (applied === "cancelled") return "cancelled";
+          }
+          if (!useLlm) {
+            await dropUnreachableLinks(id);
+            const resultJson = found.meta ? JSON.stringify({ source: "api", confidence: found.meta.confidence ?? null }) : null;
+            return (await repo.finishJob(ctx.jobId, "done", { resultJson })) ? "done" : "cancelled";
+          }
+          const fresh = (await repo.getPaper(id)) ?? paper;
+          const prompt = prepareMetaUserPrompt({
+            ...fresh,
+            filledByApi: filledFrom(fresh.fieldSources, "api"),
+          });
+          const raw = await completeChat({ jobId: ctx.jobId, system: PREPARE_META_SYSTEM, user: prompt, signal: ctx.signal });
+          await ctx.checkpoint();
+          ctx.stage("apply");
+          const meta = normalizeMeta(extractJson(raw));
+          // 模型结果与「作业 → done」同一个事务：回写那一刻被取消就整批不写。
+          const applied = await repo.applyPreparedMeta(id, meta, overwrite, {
+            startedRev,
+            source: "llm",
+            jobId: ctx.jobId,
+            finish: jobDoneStep(ctx.jobId, raw),
+          });
+          if (applied === "cancelled") return "cancelled";
+          if (applied === "conflict" && !(await repo.finishJob(ctx.jobId, "done", { resultJson: raw }))) return "cancelled";
+          await dropUnreachableLinks(id);
+          return "done";
+        },
+      );
+      await get().refresh();
+      if (result.outcome === "error") {
+        // 作业层已记「AI 作业失败」日志；这里只负责通知。
+        const message = redactSecrets(result.error ?? "补全论文信息失败");
+        if (!quiet) get().setFlash({ tone: "error", text: message });
+      } else if (result.outcome === "done" && !quiet) {
+        if (useLlm) get().setFlash({ tone: "ok", text: "AI 作业完成。阅读状态未改动。" });
+        else if (!foundMeta) {
           get().setFlash({ tone: "warn", text: "尚未配置可用的 AI 服务。可到设置页添加提供商，或继续手动录入。" });
         }
-        return;
       }
-      const fresh = (await repo.getPaper(id)) ?? paper;
-      const prompt = prepareMetaUserPrompt({
-        ...fresh,
-        filledByApi: filledFrom(fresh.fieldSources, "api"),
-      });
-      const job = await repo.createJob(id, "prepareMeta", prompt);
-      await get().refresh();
-      await runJob(job.id, id, PREPARE_META_SYSTEM, prompt, async (raw) => {
-        const meta = normalizeMeta(extractJson(raw), fresh.title);
-        await repo.applyPreparedMeta(id, meta, overwrite, { startedRev, source: "llm", jobId: job.id });
-        await dropUnreachableLinks(id);
-      }, quiet);
     } catch (err) {
       const message = redactSecrets(errText(err));
       log.error("llm", "补全论文信息失败", message);
@@ -806,92 +910,108 @@ export const useField = create<FieldState>((set, get) => ({
 
   runRefreshLinks: async (paperId) => {
     const id = paperId ?? get().selectedPaperId;
-    if (!id) return;
+    if (!id || refreshInflight.has(id)) return;
+    refreshInflight.add(id);
     const paper = await repo.getPaper(id);
-    if (!paper) return;
+    if (!paper) {
+      refreshInflight.delete(id);
+      return;
+    }
     const startedRev = paper.metaRev ?? 0;
-    const job = await repo.createJob(id, "refreshLinks", "bibliographic lookup");
-    await get().refresh();
-    const started = await repo.updateJob(job.id, { status: "running", startedAt: nowIso() });
-    if (started === false) return;
-    trackJob(job.id, id, "request");
+    let foundMeta = false;
     try {
-      if ((await jobStillRunning(job.id)) === false) return;
-      const found = await lookupPaper(paper);
-      rememberLookup(set, get, id, found);
-      if ((await jobStillRunning(job.id)) === false) return;
-      if (found.meta) {
-        await repo.applyPreparedMeta(id, found.meta, false, {
-          startedRev,
-          source: "api",
-          jobId: job.id,
-          replaceApi: true,
-        });
+      const result = await runTracked(
+        { type: "refreshLinks", paperId: id, prompt: "bibliographic lookup", stage: "request" },
+        async (ctx) => {
+          // 刷新链接必须真的重新查询：跳过本地缓存。
+          const found = await lookupPaper(paper, { force: true });
+          await ctx.checkpoint();
+          rememberLookup(set, get, id, found);
+          foundMeta = Boolean(found.meta);
+          if (found.meta) {
+            const applied = await repo.applyPreparedMeta(id, found.meta, false, {
+              startedRev,
+              source: "api",
+              jobId: ctx.jobId,
+              replaceApi: true,
+            });
+            if (applied === "cancelled") return "cancelled";
+          }
+          await dropUnreachableLinks(id);
+          const resultJson = found.meta ? JSON.stringify({ source: "api", confidence: found.meta.confidence ?? null }) : null;
+          return (await repo.finishJob(ctx.jobId, "done", { resultJson })) ? "done" : "cancelled";
+        },
+      );
+      if (result.outcome === "done") {
+        get().setFlash({ tone: "ok", text: foundMeta ? "已从文献库刷新著录。" : "文献库暂时不可用，已保留现有著录。" });
+      } else if (result.outcome === "error") {
+        get().setFlash({ tone: "error", text: redactSecrets(result.error ?? "刷新链接失败") });
       }
-      await dropUnreachableLinks(id);
-      const finished = await repo.updateJob(job.id, {
-        status: "done",
-        resultJson: found.meta ? JSON.stringify({ source: "api", confidence: found.meta.confidence ?? null }) : null,
-        finishedAt: nowIso(),
-      });
-      if (finished === false) return;
-      endJob(job.id, "done");
-      get().setFlash({ tone: "ok", text: found.meta ? "已从文献库刷新著录。" : "文献库暂时不可用，已保留现有著录。" });
     } catch (err) {
-      const message = redactSecrets(errText(err));
-      const marked = await repo.updateJob(job.id, { status: "error", error: message, finishedAt: nowIso() });
-      endJob(job.id, marked === false ? "cancelled" : "error");
-      if (marked !== false) get().setFlash({ tone: "error", text: message });
+      get().setFlash({ tone: "error", text: `刷新链接失败：${errText(err)}` });
     } finally {
+      refreshInflight.delete(id);
       await get().refresh();
     }
   },
 
   runDraftNotes: async (paperId, overwrite = false) => {
     const id = paperId ?? get().selectedPaperId;
-    if (!id) return;
+    if (!id || draftInflight.has(id)) return;
     if (!hasUsableProvider(get().settings)) {
       get().setFlash({ tone: "warn", text: "尚未配置可用的 AI 服务。可到设置页添加提供商后再起草阅读笔记。" });
       return;
     }
+    // 先占在途锁再读库：双击时第二次调用在这里就返回。
+    draftInflight.add(id);
     const paper = await repo.getPaper(id);
-    if (!paper) return;
-    if (paper.userNotesTouched && !overwrite) {
-      set({ dialog: "confirm-notes", pendingDraftJob: id });
+    if (!paper || (paper.userNotesTouched && !overwrite)) {
+      draftInflight.delete(id);
+      if (paper) set({ dialog: "confirm-notes", dialogPaperId: id, pendingDraftJob: id });
       return;
     }
+    if (get().dialog === "confirm-notes") set({ dialog: null, dialogPaperId: null, pendingDraftJob: null });
     const prompt = draftNotesUserPrompt(paper);
-    const job = await repo.createJob(id, "draftNotes", prompt);
-    set({ dialog: null, pendingDraftJob: null });
-    await get().refresh();
-    await runJob(job.id, id, DRAFT_NOTES_SYSTEM, prompt, async (raw) => {
-      const notes = normalizeNotes(extractJson(raw));
-      await repo.applyDraftedNotes(id, notes, true);
-    });
+    // 记下此刻每块笔记的版本号：请求期间被改过的块回写时整块跳过。
+    const revs = Object.fromEntries(NOTE_KINDS.map((kind) => [kind, paper.notes?.[kind]?.rev ?? 0])) as Record<NoteKind, number>;
+    try {
+      const result = await runTracked(
+        { type: "draftNotes", paperId: id, prompt, stage: "request", onCancel: cancelChat },
+        async (ctx) => {
+          await get().refresh();
+          const raw = await completeChat({ jobId: ctx.jobId, system: DRAFT_NOTES_SYSTEM, user: prompt, signal: ctx.signal });
+          await ctx.checkpoint();
+          ctx.stage("apply");
+          const notes = normalizeNotes(extractJson(raw));
+          const kept = await repo.applyDraftedNotes(id, notes, overwrite, revs, jobDoneStep(ctx.jobId, raw));
+          if (kept === null) return "cancelled";
+          const editedDuring = kept.filter((kind) => overwrite || !paper.notes?.[kind]?.userEdited);
+          if (editedDuring.length) {
+            get().setFlash({
+              tone: "warn",
+              text: `起草期间你修改了 ${editedDuring.length} 块笔记，这些块保留你的内容，其余已写入 AI 草稿。`,
+            });
+          } else {
+            get().setFlash({ tone: "ok", text: "AI 作业完成。阅读状态未改动。" });
+          }
+          return "done";
+        },
+      );
+      if (result.outcome === "error") {
+        get().setFlash({ tone: "error", text: redactSecrets(result.error ?? "起草阅读笔记失败") });
+      }
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `起草阅读笔记失败：${errText(err)}` });
+    } finally {
+      draftInflight.delete(id);
+      await get().refresh();
+    }
   },
 
   cancelJob: async (jobId, options) => {
     const job = get().jobs.find((item) => item.id === jobId);
-    if (job?.type === "mineruParse") {
-      cancelMineruPaper(job.paperId);
-      await repo.updateJob(jobId, {
-        status: "cancelled",
-        error: "cancelled",
-        finishedAt: nowIso(),
-      });
-      await repo.setMineruState(job.paperId, { status: "cancelled" });
-      if (!options?.silent) get().setFlash({ tone: "ok", text: mineruStopCopy(1) });
-      await get().refresh();
-      return;
-    }
-    abortMap.get(jobId)?.abort();
-    abortMap.delete(jobId);
-    await cancelChat(jobId);
-    await repo.updateJob(jobId, {
-      status: "cancelled",
-      error: "cancelled",
-      finishedAt: nowIso(),
-    });
+    await cancelTrackedJob(jobId, job ? { paperId: job.paperId, type: job.type } : undefined);
+    if (job?.type === "mineruParse" && !options?.silent) get().setFlash({ tone: "ok", text: mineruStopCopy(1) });
     await get().refresh();
   },
 
@@ -907,7 +1027,7 @@ export const useField = create<FieldState>((set, get) => ({
           ? "AI 服务设置已保存。"
           : "已保存提供商列表，但当前没有可用的 AI 服务：请启用并填写 API Key，或使用免 Key 的本地服务。",
       });
-      if (usable) enqueueMineru(() => backfillMeta(mineruHost()));
+      if (usable) enqueueBackfill(mineruHost());
     } catch (err) {
       get().setFlash({ tone: "error", text: `保存 AI 服务设置失败：${errText(err)}，数据未改动。` });
       throw err;
@@ -1003,7 +1123,7 @@ export const useField = create<FieldState>((set, get) => ({
   },
 
   navigatePapers: async (delta) => {
-    if (!guardUnsaved(get)) return;
+    if (get().mode === "system") return;
     const list = currentList(get());
     if (!list.length) return;
     // 未选中论文时，↓ 直接落到第 1 篇、↑ 落到最后一篇，而不是跳过第 1 篇。
@@ -1055,12 +1175,6 @@ function mineruHost() {
   };
 }
 
-function guardUnsaved(get: () => FieldState): boolean {
-  if (!get().unsavedNote) return true;
-  get().setFlash({ tone: "warn", text: "请先保存或取消正在编辑的笔记。" });
-  return false;
-}
-
 function mineruStopCopy(count: number): string {
   return `已在本机停止解析，${count} 篇不再写入。远端任务不撤回，可能仍在继续，配额或页数可能已经计入。`;
 }
@@ -1069,107 +1183,28 @@ function errText(err: unknown): string {
   return redactSecrets(err instanceof Error ? err.message : String(err));
 }
 
-async function jobStillRunning(jobId: string): Promise<boolean> {
-  if (typeof repo.jobStatus !== "function") return true;
-  return (await repo.jobStatus(jobId)) === "running";
-}
-
 async function dropUnreachableLinks(paperId: string): Promise<void> {
   const paper = await repo.getPaper(paperId);
   if (!paper) return;
-  const patch: { codeUrl?: string | null; projectPage?: string | null } = {};
   for (const key of ["codeUrl", "projectPage"] as const) {
     const raw = paper[key];
     if (!raw || paper.fieldSources?.[key] === "user") continue;
     // Schemeless AI links (`github.com/x`) are stored as https:// only if reachable.
     const url = withDefaultScheme(raw);
+    let next: string | null | undefined;
     // Not an http(s) URL even after completion (`localhost:3000`, `v1`): drop without probing.
     if (!safeHttpUrl(url)) {
-      patch[key] = null;
-      continue;
+      next = null;
+    } else {
+      const reach = await verifyReachable(url);
+      if (url !== raw.trim()) {
+        // A prefix we added is a guess (`v1.2` -> https://v1.2): keep it only when proven reachable.
+        next = reach === "reachable" ? url : null;
+      } else if (reach === "unreachable") {
+        next = null;
+      }
     }
-    const reach = await verifyReachable(url);
-    if (url !== raw.trim()) {
-      // A prefix we added is a guess (`v1.2` -> https://v1.2): keep it only when proven reachable.
-      patch[key] = reach === "reachable" ? url : null;
-    } else if (reach === "unreachable") {
-      patch[key] = null;
-    }
-  }
-  if (Object.keys(patch).length) await repo.updatePaper(paperId, patch, false);
-}
-
-async function runJob(
-  jobId: string,
-  paperId: string,
-  system: string,
-  user: string,
-  apply: (raw: string) => Promise<void>,
-  quiet = false,
-) {
-  const controller = new AbortController();
-  abortMap.set(jobId, controller);
-  log.info("llm", `AI 作业开始（${jobId}）`);
-  // 作业实况：请求模型 → 写入结果；quiet 即解析后的自动补全，面板标注「自动」。
-  trackJob(jobId, paperId, "request", { auto: quiet });
-  let outcome: JobOutcome = "error";
-  const started = await repo.updateJob(jobId, { status: "running", startedAt: nowIso() });
-  if (started === false) {
-    outcome = "cancelled";
-    return;
-  }
-  await useField.getState().refresh();
-  try {
-    const raw = await completeChat({
-      jobId,
-      system,
-      user,
-      signal: controller.signal,
-    });
-    if (controller.signal.aborted || (await jobStillRunning(jobId)) === false) {
-      outcome = "cancelled";
-      return;
-    }
-    trackJob(jobId, paperId, "apply");
-    await apply(raw);
-    if (await jobStillRunning(jobId) === false) {
-      outcome = "cancelled";
-      return;
-    }
-    const finished = await repo.updateJob(jobId, {
-      status: "done",
-      resultJson: raw,
-      finishedAt: nowIso(),
-    });
-    if (finished === false) {
-      outcome = "cancelled";
-      return;
-    }
-    outcome = "done";
-    log.info("llm", `AI 作业完成（${jobId}）`);
-    if (!quiet) {
-      useField.getState().setFlash({ tone: "ok", text: "AI 作业完成。阅读状态未改动。" });
-    }
-  } catch (err) {
-    if (controller.signal.aborted || (await jobStillRunning(jobId)) === false) {
-      outcome = "cancelled";
-      return;
-    }
-    const message = redactSecrets(err instanceof Error ? err.message : String(err));
-    log.error("llm", `AI 作业失败（${jobId}）`, message);
-    const marked = await repo.updateJob(jobId, {
-      status: "error",
-      error: message,
-      finishedAt: nowIso(),
-    });
-    if (marked === false) {
-      outcome = "cancelled";
-      return;
-    }
-    useField.getState().setFlash({ tone: "error", text: message });
-  } finally {
-    endJob(jobId, outcome);
-    abortMap.delete(jobId);
-    await useField.getState().refresh();
+    // 校验可能要十几秒：期间用户改过这个链接就不再动它（条件写入）。
+    if (next !== undefined && next !== raw) await repo.replaceLinkIf(paperId, key, raw, next);
   }
 }

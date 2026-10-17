@@ -2,7 +2,7 @@
 //!
 //! `com.paperfield.app` ends in `.app`, which macOS treats as an application
 //! bundle. The identifier is now `com.paperfield.notes`, so Tauri's config and
-//! data directories move with it. This runs before `tauri-plugin-sql` opens
+//! data directories move with it. This runs before the database layer (`db.rs`) opens
 //! `paper-field.db`: if the new directory is missing or empty and the old one
 //! exists, its contents are copied (never moved, never over an existing file).
 //! That copy includes later files in the same directory: `library/`,
@@ -130,11 +130,13 @@ pub fn migrate_dir(old_dir: &Path, new_dir: &Path) -> Result<MigrationStatus, St
     if marker_exists(new_dir)? {
         return Ok(MigrationStatus::AlreadyMigrated);
     }
-    if dir_has_user_data(new_dir)? {
-        return Ok(MigrationStatus::AlreadyHasData);
-    }
+    // 没有旧目录（全新安装）就没有可迁移的东西，也就谈不上「没有覆盖」：先判断来源，
+    // 否则新目录一有数据，每次启动都会提示一条不存在的旧目录。
     if !old_dir.is_dir() || dir_entries(old_dir)?.is_empty() {
         return Ok(MigrationStatus::NoSource);
+    }
+    if dir_has_user_data(new_dir)? {
+        return Ok(MigrationStatus::AlreadyHasData);
     }
 
     let staging = staging_path(new_dir);
@@ -275,8 +277,21 @@ pub fn migration_plugin<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
         .setup(|app, _api| {
             migrate_on_startup(app);
             if let Ok(dir) = app.path().app_config_dir() {
-                crate::backup::cleanup_backup_snapshots(&dir);
-                crate::restore::apply_pending_restore(&dir);
+                // 跨进程互斥：拿不到锁说明另一个进程正在使用这个文库，恢复与路径改写都不做，
+                // 数据库层也拒绝打开（见 db.rs），避免两个进程同时改写同一份数据。
+                if crate::instance::acquire(&dir) {
+                    crate::backup::cleanup_backup_snapshots(&dir);
+                    crate::restore::apply_pending_restore(&dir);
+                    // 恢复卡住时库可能只换了一半：界面不打开它，这里也不碰（改写会让下次的回滚校验失败）。
+                    let stuck = matches!(crate::restore::restore_status(), crate::restore::RestoreStatus::Stuck { .. });
+                    if !stuck {
+                        if let Err(err) = crate::library::relativize_database(&dir) {
+                            eprintln!("[paper-field] 改写文库 PDF 路径失败：{err}");
+                        }
+                    }
+                } else {
+                    eprintln!("[paper-field] 另一个 Paper Field 正在使用 {}", dir.display());
+                }
             }
             Ok(())
         })
@@ -314,7 +329,7 @@ pub fn appdir_migration_notices() -> Vec<DirMigrationNotice> {
 }
 
 pub fn migrate_on_startup<R: Runtime>(app: &AppHandle<R>) {
-    // These are the directories tauri-plugin-sql and the settings files use
+    // These are the directories the database layer and the settings files use
     // (`app_config_dir` is `config_dir/<identifier>`). The formula below covers
     // the same locations if path resolution is unavailable during plugin setup.
     let mut targets = Vec::new();
@@ -619,6 +634,22 @@ mod tests {
         assert_eq!(fs::read(data_new.join("note.txt")).unwrap(), b"x");
         assert_eq!(fs::read(data_old.join("note.txt")).unwrap(), b"x");
         assert!(data_old.is_dir());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn fresh_install_with_data_and_no_old_directory_is_no_source() {
+        let root = scratch();
+        let config_new = root.join("config").join(NEW_IDENTIFIER);
+        fs::create_dir_all(&config_new).unwrap();
+        fs::write(config_new.join("paper-field.db"), b"db").unwrap();
+        fs::write(config_new.join("app.lock"), b"").unwrap();
+
+        assert_eq!(
+            migrate_dir(&legacy_sibling(&config_new), &config_new).unwrap(),
+            MigrationStatus::NoSource
+        );
+        assert_eq!(fs::read(config_new.join("paper-field.db")).unwrap(), b"db");
         let _ = fs::remove_dir_all(&root);
     }
 

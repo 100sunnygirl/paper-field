@@ -10,7 +10,8 @@ export type NoteKind = (typeof NOTE_KINDS)[number];
 export type ReadingStatus = "unread" | "reading" | "read";
 export type OpenSource = "unknown" | "open" | "closed" | "request";
 export type NoteSource = "manual" | "llm";
-export type FieldSource = "api" | "llm" | "user";
+/** file：导入 PDF 时用文件名充当的标题，文献库与模型都可以替换它。 */
+export type FieldSource = "api" | "llm" | "user" | "file";
 export type MetaField =
   | "title"
   | "titleZh"
@@ -43,7 +44,7 @@ export function biblioProviderLabel(id: string | null | undefined): string | nul
 }
 export type JobType = "prepareMeta" | "draftNotes" | "refreshLinks" | "mineruParse";
 export type MineruProviderKind = "local" | "ssh" | "api";
-export type MineruStatus = "queued" | "submitted" | "parsing" | "done" | "error" | "cancelled";
+export type MineruStatus = "pending" | "queued" | "submitted" | "parsing" | "done" | "error" | "cancelled";
 export type JobStatus = "queued" | "running" | "done" | "error" | "cancelled";
 export type AppMode = "field" | "archive" | "intake" | "system";
 
@@ -88,6 +89,8 @@ export interface NoteBlock {
   content: string;
   source: NoteSource;
   userEdited: boolean;
+  /** 每次写入加一；AI 回写按块比对，请求期间被改过的块不覆盖。 */
+  rev?: number;
   revisedAt: string | null;
 }
 
@@ -124,6 +127,8 @@ export interface Paper {
   mineruParseIds: string[];
   mineruProvider: MineruProviderKind | string | null;
   mineruCredFingerprint: string | null;
+  /** 当前拥有解析状态的那次 MinerU 作业；其他作业的状态写入不生效。 */
+  mineruJobId?: string | null;
   tags: string[];
   labs: Lab[];
   createdAt: string;
@@ -271,6 +276,7 @@ export const FIELD_SOURCE_LABELS: Record<FieldSource, string> = {
   api: "数据库",
   llm: "模型",
   user: "手动",
+  file: "文件名",
 };
 
 export const OPEN_SOURCE_LABELS: Record<OpenSource, string> = {
@@ -294,6 +300,7 @@ export const MINERU_PROVIDER_LABELS: Record<string, string> = {
 };
 
 export const MINERU_STATUS_LABELS: Record<MineruStatus, string> = {
+  pending: "待解析",
   queued: "待发送",
   submitted: "已提交",
   parsing: "解析中",

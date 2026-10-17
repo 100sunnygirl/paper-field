@@ -2,6 +2,7 @@
 //!
 //! 端点路径集中为常量，便于在 batch 路径与历史 bearer 路径之间切换；
 //! 上传一律 PUT 原始字节到预签名 URL，且不设置 Content-Type。
+#![deny(clippy::string_slice)]
 
 use std::fs;
 use std::io::{Cursor, Read};
@@ -541,12 +542,14 @@ fn map_http_error(status: reqwest::StatusCode, body: &str) -> String {
     }
 }
 
-/// 解析 `{code,message}` 或 `{error:{message}}`；code 可能是数字或字符串。
+/// 解析 `{code,msg}`（v4 实际返回）、`{code,message}` 或 `{error:{message}}`；
+/// code 可能是数字或字符串。取第一个非空的说明，未收录的错误码也能带上服务端原话。
 fn parse_error_pair(body: &str) -> Option<(String, String)> {
     let value: Value = serde_json::from_str(body).ok()?;
-    let message = value["message"]
-        .as_str()
-        .or_else(|| value["error"]["message"].as_str())
+    let message = [&value["message"], &value["msg"], &value["error"]["message"]]
+        .into_iter()
+        .filter_map(Value::as_str)
+        .find(|text| !text.trim().is_empty())
         .unwrap_or("")
         .to_string();
     let code = match &value["code"] {
@@ -656,6 +659,22 @@ mod tests {
 
         assert!(parse_error_pair("not json").is_none());
         assert!(parse_error_pair(r#"{"data":{}}"#).is_none());
+    }
+
+    #[test]
+    fn parse_error_pair_reads_v4_msg_field() {
+        let body = r#"{"code":-60099,"msg":"文件格式不支持","trace_id":"t1","data":null}"#;
+        let pair = parse_error_pair(body).unwrap();
+        assert_eq!(pair, ("-60099".to_string(), "文件格式不支持".to_string()));
+        // 未收录的错误码保留服务端说明
+        assert_eq!(api_error_message(&pair.0, &pair.1), "文件格式不支持（代码 -60099）");
+        let status = reqwest::StatusCode::BAD_REQUEST;
+        assert_eq!(map_http_error(status, body), "文件格式不支持（代码 -60099）");
+        // 空 message 不遮住 msg
+        let pair = parse_error_pair(r#"{"code":"A0202","message":"","msg":"token invalid"}"#).unwrap();
+        assert_eq!(pair.1, "token invalid");
+        // 成功体 {code:0,msg:"ok"} 照常解析，调用方按 code 判断
+        assert_eq!(parse_error_pair(r#"{"code":0,"msg":"ok","data":{}}"#).unwrap().0, "0");
     }
 
     #[test]

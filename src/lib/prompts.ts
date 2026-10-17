@@ -7,7 +7,7 @@ Return ONLY valid JSON matching this schema:
   "title": "",
   "titleZh": "",
   "abstract": "",
-  "year": 2024,
+  "year": null,
   "venue": "",
   "doi": "",
   "arxivId": "",
@@ -22,6 +22,7 @@ Return ONLY valid JSON matching this schema:
 }
 Rules:
 - Bibliographic fields (title, authors, year, venue, abstract, DOI, arXiv, pdf URL) may already be filled from arXiv, Crossref, or OpenAlex. Leave those null.
+- Always output null for doi, arxivId and year: identifiers come only from the user or a bibliographic database.
 - Fill only fields that are still empty: titleZh, tags, labs, codeOpenSource, codeURL, projectPage.
 - titleZh should be a concise Chinese translation when possible, else null.
 - codeOpenSource: open if official code is public; closed if weights/code are known unreleased; request if available on request; unknown otherwise.
@@ -95,34 +96,57 @@ export function draftNotesUserPrompt(paper: PaperDetail): string {
     .join("\n");
 }
 
-export function normalizeMeta(raw: PreparedMeta, fallbackTitle: string): PreparedMeta {
+/** 模型输出类型不可信：字符串字段只收字符串（数字转成文本），其他类型一律当空。 */
+function text(value: unknown): string {
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return "";
+}
+
+/**
+ * 规整模型 JSON。不再用当前标题兜底：模型没给标题就是没给，不能借机把来源改成「模型」。
+ * DOI / arXiv / 年份照常解析，但合并时模型来源的标识符不会写入（见 mergeMeta.decide）。
+ */
+export function normalizeMeta(raw: PreparedMeta): PreparedMeta {
   const open = raw.codeOpenSource;
+  const authors = Array.isArray(raw.authors) ? raw.authors : [];
+  const labs = Array.isArray(raw.labs) ? raw.labs : [];
   return {
-    title: raw.title?.trim() || fallbackTitle,
-    titleZh: raw.titleZh?.trim() || null,
-    abstract: raw.abstract ?? "",
-    year: typeof raw.year === "number" ? raw.year : null,
-    venue: raw.venue || null,
-    doi: raw.doi || null,
-    arxivId: raw.arxivId || null,
-    authors: Array.isArray(raw.authors) ? raw.authors.filter((a) => a?.name) : [],
-    labs: Array.isArray(raw.labs) ? raw.labs.filter((l) => l?.name) : [],
+    title: text(raw.title),
+    titleZh: text(raw.titleZh) || null,
+    abstract: text(raw.abstract),
+    year: typeof raw.year === "number" && Number.isFinite(raw.year) ? Math.trunc(raw.year) : null,
+    venue: text(raw.venue) || null,
+    doi: text(raw.doi) || null,
+    arxivId: text(raw.arxivId) || null,
+    authors: authors
+      .filter((a) => a && typeof a === "object" && text(a.name))
+      .map((a) => ({
+        name: text(a.name),
+        affiliation: text(a.affiliation) || null,
+        lab: text(a.lab) || null,
+        isCorresponding: a.isCorresponding === true,
+      })),
+    labs: labs
+      .filter((l) => l && typeof l === "object" && text(l.name))
+      .map((l) => ({ name: text(l.name), institution: text(l.institution) })),
     codeOpenSource:
       open === "open" || open === "closed" || open === "request" || open === "unknown" ? open : "unknown",
-    codeURL: safeHttpUrl(raw.codeURL),
-    projectPage: safeHttpUrl(raw.projectPage),
-    pdfURL: safeHttpUrl(raw.pdfURL),
-    tags: Array.isArray(raw.tags) ? raw.tags.map(String) : [],
-    confidence: raw.confidence,
+    codeURL: safeHttpUrl(text(raw.codeURL)),
+    projectPage: safeHttpUrl(text(raw.projectPage)),
+    pdfURL: safeHttpUrl(text(raw.pdfURL)),
+    tags: Array.isArray(raw.tags) ? raw.tags.map(text).filter(Boolean) : [],
+    confidence: typeof raw.confidence === "number" && Number.isFinite(raw.confidence) ? raw.confidence : undefined,
   };
 }
 
 export function normalizeNotes(raw: DraftedNotes): DraftedNotes {
+  const note = (value: unknown) => (typeof value === "string" ? value : "");
   return {
-    remarks: raw.remarks ?? "",
-    summary: raw.summary ?? "",
-    highlights: raw.highlights ?? "",
-    weaknesses: raw.weaknesses ?? "",
-    implications: raw.implications ?? "",
+    remarks: note(raw.remarks),
+    summary: note(raw.summary),
+    highlights: note(raw.highlights),
+    weaknesses: note(raw.weaknesses),
+    implications: note(raw.implications),
   };
 }

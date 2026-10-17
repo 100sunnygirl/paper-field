@@ -1,5 +1,7 @@
 //! Zip backup of the database, the library PDFs, and non-secret settings.
 //! Restore copies the current database aside before replacing anything.
+//! The zip is written beside `dest` and renamed over it only once complete;
+//! its last entry, `manifest.json`, lets restore spot a backup missing PDFs.
 
 use std::fs::{self, File};
 use std::io::Write;
@@ -12,6 +14,8 @@ use zip::{CompressionMethod, ZipWriter};
 
 use crate::app_config_dir;
 use crate::secrets::scrub_json_secrets;
+
+pub(crate) const MANIFEST: &str = "manifest.json";
 
 fn stamp() -> String {
     SystemTime::now()
@@ -33,7 +37,7 @@ fn copy_sqlite_family(src: &Path, dest: &Path) -> Result<(), String> {
         fs::create_dir_all(parent).map_err(|err| err.to_string())?;
     }
     fs::copy(src, dest).map_err(|err| format!("复制数据库失败：{err}"))?;
-    for suffix in ["-wal", "-shm"] {
+    for suffix in ["-wal", "-shm", "-journal"] {
         let extra = PathBuf::from(format!("{}{suffix}", src.display()));
         if extra.exists() {
             let dest_extra = PathBuf::from(format!("{}{suffix}", dest.display()));
@@ -65,31 +69,42 @@ fn copy_database_aside(src: &Path) -> Result<String, String> {
     Ok(dest.display().to_string())
 }
 
-fn add_file(zip: &mut ZipWriter<File>, options: SimpleFileOptions, name: &str, path: &Path) -> Result<(), String> {
+/// Returns whether the file existed and was added.
+fn add_file(zip: &mut ZipWriter<File>, options: SimpleFileOptions, name: &str, path: &Path) -> Result<bool, String> {
     if !path.exists() {
-        return Ok(());
+        return Ok(false);
     }
     let mut file = File::open(path).map_err(|err| err.to_string())?;
     zip.start_file(name, options).map_err(|err| err.to_string())?;
     // Stream: a large PDF is never held in memory whole.
     std::io::copy(&mut file, zip).map_err(|err| err.to_string())?;
-    Ok(())
+    Ok(true)
 }
 
-fn add_scrubbed_settings(zip: &mut ZipWriter<File>, options: SimpleFileOptions, name: &str, path: &Path) -> Result<(), String> {
+fn add_scrubbed_settings(zip: &mut ZipWriter<File>, options: SimpleFileOptions, name: &str, path: &Path) -> Result<bool, String> {
     if !path.exists() {
-        return Ok(());
+        return Ok(false);
     }
     let raw = fs::read_to_string(path).map_err(|err| err.to_string())?;
     let scrubbed = scrub_json_secrets(&raw);
     zip.start_file(name, options).map_err(|err| err.to_string())?;
     zip.write_all(scrubbed.as_bytes()).map_err(|err| err.to_string())?;
-    Ok(())
+    Ok(true)
 }
 
+/// 弹出保存对话框后写备份；用户取消时返回 None。路径只来自系统对话框。
 #[tauri::command]
-pub async fn create_library_backup(app: AppHandle, dest: String) -> Result<(), String> {
-    backup_at(config_dir(&app)?, dest).await
+pub async fn create_library_backup(app: AppHandle) -> Result<Option<String>, String> {
+    let kind = crate::platform::PickKind::SaveFile {
+        default_name: "paper-field-backup.zip",
+        filter: ("Zip", &["zip"]),
+    };
+    let Some(dest) = crate::platform::pick_path(&app, "备份文库", kind).await? else {
+        return Ok(None);
+    };
+    let dest = dest.to_string_lossy().to_string();
+    backup_at(config_dir(&app)?, dest.clone()).await?;
+    Ok(Some(dest))
 }
 
 /// Holds the restore lock so an abandon can't move files back into
@@ -147,11 +162,41 @@ pub fn cleanup_backup_snapshots(dir: &Path) {
     }
 }
 
+/// `<dest>.partial` (or `.partial-<n>` if taken), created fresh beside `dest`
+/// so the final rename stays on one filesystem.
+fn create_partial(dest: &Path) -> Result<(PathBuf, File), String> {
+    let mut n = 0u32;
+    loop {
+        let mut name = dest.as_os_str().to_os_string();
+        name.push(if n == 0 { ".partial".to_string() } else { format!(".partial-{n}") });
+        let tmp = PathBuf::from(name);
+        match fs::OpenOptions::new().write(true).create_new(true).open(&tmp) {
+            Ok(file) => return Ok((tmp, file)),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists && n < 1000 => n += 1,
+            Err(err) => return Err(format!("无法创建备份：{err}")),
+        }
+    }
+}
+
+/// The previous backup at `dest` stays intact until the new one is complete
+/// and synced; on any error the partial file is removed.
 fn write_backup_zip(dir: &Path, snap: &Path, dest: &str) -> Result<(), String> {
-    let file = File::create(dest).map_err(|err| format!("无法创建备份：{err}"))?;
+    let dest = Path::new(dest);
+    let (tmp, file) = create_partial(dest)?;
+    let result = fill_backup_zip(dir, snap, file)
+        .and_then(|()| fs::rename(&tmp, dest).map_err(|err| format!("保存备份失败：{err}")));
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
+}
+
+fn fill_backup_zip(dir: &Path, snap: &Path, file: File) -> Result<(), String> {
+    // On error the writer's Drop still finishes a valid-looking zip: the caller deletes it.
     let mut zip = ZipWriter::new(file);
     let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
     add_file(&mut zip, options, "paper-field.db", snap)?;
+    let mut pdfs = 0usize;
     let library = dir.join("library");
     if library.is_dir() {
         for entry in fs::read_dir(&library).map_err(|err| err.to_string())? {
@@ -165,14 +210,36 @@ fn write_backup_zip(dir: &Path, snap: &Path, dest: &str) -> Result<(), String> {
             if name.contains("..") || name.contains('/') || name.contains('\\') {
                 continue;
             }
-            add_file(&mut zip, options, &format!("library/{name}"), &path)?;
+            if add_file(&mut zip, options, &format!("library/{name}"), &path)? {
+                pdfs += 1;
+            }
         }
     }
-    add_scrubbed_settings(&mut zip, options, "settings/llm-settings.json", &dir.join("llm-settings.json"))?;
-    add_scrubbed_settings(&mut zip, options, "settings/mineru-settings.json", &dir.join("mineru-settings.json"))?;
-    add_file(&mut zip, options, "settings/biblio-settings.json", &dir.join("biblio-settings.json"))?;
-    zip.finish().map_err(|err| format!("完成备份失败：{err}"))?;
-    Ok(())
+    let mut settings = Vec::new();
+    for (name, scrub) in [("llm-settings.json", true), ("mineru-settings.json", true), ("biblio-settings.json", false)] {
+        let (entry, path) = (format!("settings/{name}"), dir.join(name));
+        let added = if scrub {
+            add_scrubbed_settings(&mut zip, options, &entry, &path)?
+        } else {
+            add_file(&mut zip, options, &entry, &path)?
+        };
+        if added {
+            settings.push(name);
+        }
+    }
+    // Last entry, so a zip that has it got everything before it.
+    let created_ms = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+    let manifest = serde_json::json!({
+        "format": 1,
+        "appVersion": env!("CARGO_PKG_VERSION"),
+        "createdAt": created_ms,
+        "pdfs": pdfs,
+        "settings": settings,
+    });
+    zip.start_file(MANIFEST, options).map_err(|err| err.to_string())?;
+    zip.write_all(manifest.to_string().as_bytes()).map_err(|err| err.to_string())?;
+    let file = zip.finish().map_err(|err| format!("完成备份失败：{err}"))?;
+    file.sync_all().map_err(|err| format!("写入备份失败：{err}"))
 }
 
 pub(crate) fn safe_entry_name(name: &str) -> Option<&str> {
@@ -284,6 +351,81 @@ mod tester_backup_b1 {
         assert_eq!(read("library/small.PDF"), b"%PDF s");
         assert!(z.by_name("library/skip.txt").is_err());
         assert!(fs::read_dir(&d).unwrap().flatten().all(|e| !e.file_name().to_string_lossy().starts_with(".backup-snapshot-")));
+    }
+
+    fn partials(d: &Path) -> Vec<String> {
+        fs::read_dir(d).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.contains(".partial")).collect()
+    }
+
+    #[test] fn b8_failed_backup_keeps_previous_zip_and_leaves_no_partial() {
+        let d = tmp("b8");
+        fs::create_dir_all(d.join("library")).unwrap();
+        fs::write(d.join("library").join("a.pdf"), b"%PDF a").unwrap();
+        // A directory named like a PDF: reading it fails halfway through the zip.
+        fs::create_dir_all(d.join("library").join("broken.pdf")).unwrap();
+        let dest = d.join("out.zip");
+        fs::write(&dest, b"previous backup").unwrap();
+        assert!(tauri::async_runtime::block_on(backup_at(d.clone(), dest.to_string_lossy().into_owned())).is_err());
+        assert_eq!(fs::read(&dest).unwrap(), b"previous backup", "old backup untouched");
+        assert!(partials(&d).is_empty(), "{:?}", partials(&d));
+    }
+
+    #[test] fn b9_backup_replaces_dest_and_ends_with_manifest() {
+        let d = tmp("b9");
+        fs::create_dir_all(d.join("library")).unwrap();
+        fs::write(d.join("library").join("a.pdf"), b"%PDF a").unwrap();
+        fs::write(d.join("library").join("b.PDF"), b"%PDF b").unwrap();
+        fs::write(d.join("biblio-settings.json"), b"{}").unwrap();
+        let dest = d.join("out.zip");
+        fs::write(&dest, b"previous backup").unwrap();
+        // Someone else's file on the first temp name: never reused or deleted.
+        fs::write(d.join("out.zip.partial"), b"not ours").unwrap();
+        tauri::async_runtime::block_on(backup_at(d.clone(), dest.to_string_lossy().into_owned())).unwrap();
+        assert_eq!(fs::read(d.join("out.zip.partial")).unwrap(), b"not ours");
+        assert_eq!(partials(&d), vec!["out.zip.partial".to_string()]);
+        let mut z = zip::ZipArchive::new(File::open(&dest).unwrap()).unwrap();
+        let last = z.by_index(z.len() - 1).unwrap();
+        assert_eq!(last.name(), MANIFEST, "manifest is the last entry");
+        let m: serde_json::Value = serde_json::from_reader(last).unwrap();
+        assert_eq!((m["format"].as_u64(), m["pdfs"].as_u64()), (Some(1), Some(2)));
+        assert_eq!(m["appVersion"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(m["settings"], serde_json::json!(["biblio-settings.json"]));
+        assert!(m["createdAt"].as_u64().unwrap() > 0);
+    }
+
+    #[test] fn b10_backup_round_trips_through_restore() {
+        let d = tmp("b10");
+        let src = d.join("src");
+        fs::create_dir_all(src.join("library")).unwrap();
+        tauri::async_runtime::block_on(async {
+            let o = SqliteConnectOptions::new().filename(src.join("paper-field.db")).create_if_missing(true);
+            let p = SqlitePoolOptions::new().max_connections(1).connect_with(o).await.unwrap();
+            sqlx::query("CREATE TABLE papers(id INTEGER PRIMARY KEY)").execute(&p).await.unwrap();
+            sqlx::query("INSERT INTO papers DEFAULT VALUES").execute(&p).await.unwrap();
+            p.close().await;
+        });
+        fs::write(src.join("library").join("a.pdf"), b"%PDF a").unwrap();
+        let zip_path = d.join("b.zip");
+        tauri::async_runtime::block_on(backup_at(src.clone(), zip_path.to_string_lossy().into_owned())).unwrap();
+        let live = d.join("live");
+        fs::create_dir_all(&live).unwrap();
+        let s = tauri::async_runtime::block_on(crate::restore::stage_restore(&live, &zip_path)).unwrap();
+        assert_eq!((s.papers, s.pdfs), (1, 1));
+        tauri::async_runtime::block_on(crate::restore::commit_preview(&live)).unwrap();
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
+        let status = crate::restore::apply_pending_restore_at(&live, now);
+        assert!(matches!(status, crate::restore::RestoreStatus::Restored { .. }), "{status:?}");
+        assert_eq!(fs::read(live.join("library").join("a.pdf")).unwrap(), b"%PDF a");
+        assert!(!live.join(MANIFEST).exists() && !live.join("library").join(MANIFEST).exists());
+    }
+
+    #[test] fn b11_db_copy_includes_rollback_journal() {
+        let d = tmp("b11");
+        fs::write(d.join("paper-field.db"), b"db").unwrap();
+        fs::write(d.join("paper-field.db-journal"), b"journal").unwrap();
+        let out = copy_database_aside(&d.join("paper-field.db")).unwrap();
+        assert_eq!(fs::read(format!("{out}-journal")).unwrap(), b"journal");
     }
 
     #[test] fn b4_cleanup_removes_only_snapshots() {

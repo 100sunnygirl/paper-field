@@ -5,6 +5,7 @@
 //!   （doclib short_id 与官方 API batch_id 属不同命名空间，中途换源只能重新提交）；
 //! - 跨源切换的唯一入口是 `mineru_submit(provider=None)`：按 order 逐源探测并提交，
 //!   失败自动试下一源，全部失败返回聚合中文错误。
+#![deny(clippy::string_slice)]
 
 use std::collections::HashMap;
 use std::fs;
@@ -1531,7 +1532,7 @@ pub async fn mineru_submit(
 ) -> Result<SubmitResult, String> {
     let file = read_file(&app)?;
     let home = platform::home_dir(&app)?;
-    let pdf = canonical_pdf(&local_path)?;
+    let pdf = canonical_pdf(&crate::library::resolve(&crate::app_config_dir(&app)?, &local_path).to_string_lossy())?;
     if !valid_paper_id(&paper_id) {
         return Err("论文编号无效".into());
     }
@@ -1640,7 +1641,8 @@ pub async fn normalize_pdf(path: String) -> Result<String, String> {
 
 #[tauri::command]
 pub async fn open_pdf(app: AppHandle, path: String) -> Result<(), String> {
-    let canon = canonical_pdf(&path)?;
+    // 文库内的 PDF 存相对名，拼到当前的应用数据目录上再打开。
+    let canon = canonical_pdf(&crate::library::resolve(&crate::app_config_dir(&app)?, &path).to_string_lossy())?;
     platform::open_pdf(&app, &canon)
 }
 

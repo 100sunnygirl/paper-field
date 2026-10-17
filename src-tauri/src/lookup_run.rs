@@ -1,16 +1,18 @@
 //! Lookup order is the same with or without email and API keys.
 //! Configuration only changes User-Agent, mailto, auth headers, and client-side gaps.
+#![deny(clippy::string_slice)]
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
 use crate::lookup::{
-    arxiv_id_from_doi, normalize_arxiv_id, normalize_author_token, normalize_doi, normalize_title,
-    parse_arxiv_atom, parse_crossref, parse_crossref_query, parse_openalex, parse_openalex_single,
-    parse_s2_match, parse_s2_paper, urlencoding_min, LookupHit, TitleQuery,
+    is_arxiv_error_feed, normalize_author_token, normalize_title, parse_arxiv_atom, parse_crossref,
+    parse_crossref_query, parse_openalex, parse_openalex_single, parse_s2_match, parse_s2_paper,
+    urlencoding_min, ArxivId, Doi, LookupHit, TitleQuery,
 };
 
 pub const ARXIV_GAP: Duration = Duration::from_secs(3);
@@ -84,10 +86,60 @@ pub struct OpenAlexBudget {
     pub limit_usd: Option<f64>,
 }
 
-impl OpenAlexBudget {
-    pub fn search_blocked(&self) -> bool {
+/// 运行期的 OpenAlex 额度。只认 OpenAlex 自己的响应头；耗尽时锁到下一个 UTC 零点或一小时后
+/// （取较早者），不再一直锁到重启。
+#[derive(Clone, Debug, Default)]
+pub struct BudgetTracker {
+    pub remaining_usd: Option<f64>,
+    pub limit_usd: Option<f64>,
+    blocked_until: Option<Instant>,
+}
+
+impl BudgetTracker {
+    pub fn search_blocked(&mut self, now: Instant) -> bool {
+        self.expire(now);
         self.remaining_usd.is_some_and(|value| value < 0.001)
     }
+
+    fn expire(&mut self, now: Instant) {
+        if self.blocked_until.is_some_and(|until| now >= until) {
+            self.remaining_usd = None;
+            self.blocked_until = None;
+        }
+    }
+
+    fn mark_remaining(&mut self, value: f64, now: Instant, wall: SystemTime) {
+        self.remaining_usd = Some(value);
+        if value >= 0.001 {
+            self.blocked_until = None;
+        } else if self.blocked_until.is_none() {
+            // 锁住期间 DOI 单条请求还会带回 0，不顺延
+            self.blocked_until = Some(now + latch_window(wall));
+        }
+    }
+
+    /// 保存文献库设置后调用：换了 Key 就该重新试，不沿用旧的「已用完」。
+    pub fn reset(&mut self) {
+        self.remaining_usd = None;
+        self.blocked_until = None;
+    }
+
+    pub fn snapshot(&self) -> OpenAlexBudget {
+        OpenAlexBudget {
+            remaining_usd: self.remaining_usd,
+            limit_usd: self.limit_usd,
+        }
+    }
+}
+
+/// 到下一个 UTC 零点的时长，最多一小时。
+pub fn latch_window(wall: SystemTime) -> Duration {
+    let secs = wall
+        .duration_since(UNIX_EPOCH)
+        .map(|since| since.as_secs())
+        .unwrap_or(0);
+    let to_midnight = 86_400 - secs % 86_400;
+    Duration::from_secs(to_midnight).min(Duration::from_secs(60 * 60))
 }
 
 #[derive(Default)]
@@ -220,12 +272,13 @@ fn cache_key(
     year: Option<i32>,
     authors: &[String],
 ) -> Option<String> {
-    let from_doi = doi.and_then(arxiv_id_from_doi);
-    if let Some(id) = arxiv_id.and_then(normalize_arxiv_id).or(from_doi) {
-        return Some(format!("arxiv:{}", id.to_ascii_lowercase()));
+    let doi = doi.and_then(Doi::parse);
+    let from_doi = doi.as_ref().and_then(ArxivId::from_doi);
+    if let Some(id) = arxiv_id.and_then(ArxivId::parse).or(from_doi) {
+        return Some(format!("arxiv:{}", id.as_str().to_ascii_lowercase()));
     }
-    if let Some(doi) = doi.and_then(normalize_doi) {
-        return Some(format!("doi:{}", doi.to_ascii_lowercase()));
+    if let Some(doi) = doi {
+        return Some(format!("doi:{}", doi.as_str().to_ascii_lowercase()));
     }
     let title = title.map(str::trim).filter(|value| !value.is_empty())?;
     let year = year.map(|value| value.to_string()).unwrap_or_default();
@@ -240,20 +293,15 @@ fn cache_key(
     ))
 }
 
+/// 命中里的 id 必须和请求的一致；ArxivId / Doi 的相等忽略大小写。
 pub fn accepts_ids(hit: &LookupHit, arxiv_id: Option<&str>, doi: Option<&str>) -> bool {
-    if let Some(want) = arxiv_id.and_then(normalize_arxiv_id) {
-        let Some(got) = hit.arxiv_id.as_deref().and_then(normalize_arxiv_id) else {
-            return false;
-        };
-        if !got.eq_ignore_ascii_case(&want) {
+    if let Some(want) = arxiv_id.and_then(ArxivId::parse) {
+        if hit.arxiv_id.as_deref().and_then(ArxivId::parse) != Some(want) {
             return false;
         }
     }
-    if let Some(want) = doi.and_then(normalize_doi) {
-        let Some(got) = hit.doi.as_deref().and_then(normalize_doi) else {
-            return false;
-        };
-        if !got.eq_ignore_ascii_case(&want) {
+    if let Some(want) = doi.and_then(Doi::parse) {
+        if hit.doi.as_deref().and_then(Doi::parse) != Some(want) {
             return false;
         }
     }
@@ -378,16 +426,22 @@ fn note(notices: &mut Vec<LookupNotice>, source: &str, code: &str, message: &str
     });
 }
 
-fn absorb_budget(budget: &mut OpenAlexBudget, headers: &[(String, String)]) {
-    if let Some(value) =
-        header(headers, "x-ratelimit-remaining-usd").and_then(|text| text.parse::<f64>().ok())
+/// 只在 OpenAlex 的响应上调用：别家的 `x-ratelimit-remaining: 0` 与 OpenAlex 额度无关。
+fn absorb_budget(
+    budget: &mut BudgetTracker,
+    headers: &[(String, String)],
+    now: Instant,
+    wall: SystemTime,
+) {
+    if let Some(value) = header(headers, "x-ratelimit-remaining-usd")
+        .and_then(|text| text.trim().parse::<f64>().ok())
     {
-        budget.remaining_usd = Some(value);
+        budget.mark_remaining(value, now, wall);
     } else if header(headers, "x-ratelimit-remaining").is_some_and(|text| text.trim() == "0") {
-        budget.remaining_usd = Some(0.0);
+        budget.mark_remaining(0.0, now, wall);
     }
     if let Some(value) =
-        header(headers, "x-ratelimit-limit-usd").and_then(|text| text.parse::<f64>().ok())
+        header(headers, "x-ratelimit-limit-usd").and_then(|text| text.trim().parse::<f64>().ok())
     {
         budget.limit_usd = Some(value);
     }
@@ -444,10 +498,33 @@ impl Fetcher for LiveFetch {
     }
 }
 
+/// 记下本次查询有没有来源暂时失败（429/403/5xx/断网/超时）；有就不写缓存，下次重新查。
+struct Watch<'a, F> {
+    inner: &'a F,
+    transient: AtomicBool,
+}
+
+impl<F: Fetcher + Sync> Fetcher for Watch<'_, F> {
+    async fn get(&self, request: &HttpRequest) -> Result<HttpResponse, String> {
+        let result = self.inner.get(request).await;
+        if result
+            .as_ref()
+            .map_or(true, |response| transient_status(response.status))
+        {
+            self.transient.store(true, Ordering::Relaxed);
+        }
+        result
+    }
+}
+
+fn transient_status(status: u16) -> bool {
+    matches!(status, 403 | 408 | 429) || status >= 500
+}
+
 struct Gate {
     limiter: Limiter,
     cache: LookupCache,
-    budget: OpenAlexBudget,
+    budget: BudgetTracker,
 }
 
 fn gate() -> &'static tokio::sync::Mutex<Gate> {
@@ -456,18 +533,36 @@ fn gate() -> &'static tokio::sync::Mutex<Gate> {
         tokio::sync::Mutex::new(Gate {
             limiter: Limiter::default(),
             cache: LookupCache::new(CACHE_TTL),
-            budget: OpenAlexBudget::default(),
+            budget: BudgetTracker::default(),
         })
     })
 }
 
-static BUDGET: Mutex<OpenAlexBudget> = Mutex::new(OpenAlexBudget {
+static BUDGET: Mutex<BudgetTracker> = Mutex::new(BudgetTracker {
     remaining_usd: None,
     limit_usd: None,
+    blocked_until: None,
 });
 
+/// 设置保存是同步命令，拿不到 gate 的异步锁：先记一笔，下次查询开始或结束时清掉。
+static BUDGET_RESET: AtomicBool = AtomicBool::new(false);
+
 pub fn budget_snapshot() -> OpenAlexBudget {
-    BUDGET.lock().unwrap_or_else(|err| err.into_inner()).clone()
+    let mut budget = BUDGET.lock().unwrap_or_else(|err| err.into_inner());
+    budget.expire(Instant::now());
+    budget.snapshot()
+}
+
+/// 清掉 OpenAlex「额度已用完」的锁。保存文献库设置时调用。
+pub fn reset_openalex_latch() {
+    BUDGET_RESET.store(true, Ordering::SeqCst);
+    BUDGET.lock().unwrap_or_else(|err| err.into_inner()).reset();
+}
+
+fn take_budget_reset(budget: &mut BudgetTracker) {
+    if BUDGET_RESET.swap(false, Ordering::SeqCst) {
+        budget.reset();
+    }
 }
 
 pub async fn lookup_live(
@@ -477,8 +572,10 @@ pub async fn lookup_live(
     title: Option<&str>,
     year: Option<i32>,
     authors: &[String],
+    force: bool,
 ) -> LookupOutcome {
     let mut gate = gate().lock().await;
+    take_budget_reset(&mut gate.budget);
     let mut now = Instant::now();
     let mut sleep = RealSleep;
     let outcome = {
@@ -488,13 +585,30 @@ pub async fn lookup_live(
             budget,
         } = &mut *gate;
         execute_lookup(
-            auth, arxiv_id, doi, title, year, authors, &LiveFetch, limiter, cache, budget,
+            auth, arxiv_id, doi, title, year, authors, force, &LiveFetch, limiter, cache, budget,
             &mut now, &mut sleep,
         )
         .await
     };
+    take_budget_reset(&mut gate.budget);
     *BUDGET.lock().unwrap_or_else(|err| err.into_inner()) = gate.budget.clone();
     outcome
+}
+
+/// 邮箱 / Key 读不出来（钥匙串出错、secrets.json 或 biblio-settings.json 坏了）时按未配置查询。
+pub fn auth_or_anonymous(loaded: Result<BiblioAuth, String>) -> (BiblioAuth, Option<LookupNotice>) {
+    match loaded {
+        Ok(auth) => (auth, None),
+        Err(err) => {
+            eprintln!("[paper-field] 文献库凭据读取失败，改为匿名查询：{err}");
+            let notice = LookupNotice {
+                source: "biblio".into(),
+                code: "credentials".into(),
+                message: "无法读取文献库的邮箱或 Key，本次按未配置查询；可到设置里重新保存".into(),
+            };
+            (BiblioAuth::default(), Some(notice))
+        }
+    }
 }
 
 enum FetchFail {
@@ -506,7 +620,7 @@ async fn fetch_paced<F: Fetcher, S: Sleeper>(
     fetch: &F,
     sleeper: &mut S,
     limiter: &mut Limiter,
-    budget: &mut OpenAlexBudget,
+    budget: &mut BudgetTracker,
     now: &mut Instant,
     bucket: &str,
     min: Duration,
@@ -520,7 +634,9 @@ async fn fetch_paced<F: Fetcher, S: Sleeper>(
     }
     match fetch.get(request).await {
         Ok(response) => {
-            absorb_budget(budget, &response.headers);
+            if request.source == "openalex" {
+                absorb_budget(budget, &response.headers, *now, SystemTime::now());
+            }
             if crossref {
                 absorb_crossref_limit(limiter, bucket, &response.headers);
             }
@@ -606,17 +722,25 @@ fn openalex_budget_message(keyed: bool) -> &'static str {
     }
 }
 
+fn openalex_busy_message(keyed: bool) -> &'static str {
+    if keyed {
+        "OpenAlex 暂时限流，本次已改用其他文献库"
+    } else {
+        "OpenAlex 暂时限流，本次已改用其他文献库；填写 Key 可提高额度"
+    }
+}
+
 async fn search_openalex<F: Fetcher, S: Sleeper>(
     fetch: &F,
     sleeper: &mut S,
     limiter: &mut Limiter,
-    budget: &mut OpenAlexBudget,
+    budget: &mut BudgetTracker,
     now: &mut Instant,
     notices: &mut Vec<LookupNotice>,
     query: &TitleQuery,
     openalex_key: Option<&str>,
 ) -> Option<LookupHit> {
-    if budget.search_blocked() {
+    if budget.search_blocked(*now) {
         note(
             notices,
             "openalex",
@@ -644,13 +768,18 @@ async fn search_openalex<F: Fetcher, S: Sleeper>(
         }
         Ok(_) => None,
         Err(FetchFail::Status(429)) => {
-            budget.remaining_usd = Some(0.0);
-            note(
-                notices,
-                "openalex",
-                "budget",
-                openalex_budget_message(openalex_key.is_some()),
-            );
+            // 单次 429 只是限流，不锁额度；响应头说额度归零时 absorb_budget 已经锁上
+            let keyed = openalex_key.is_some();
+            if budget.search_blocked(*now) {
+                note(
+                    notices,
+                    "openalex",
+                    "budget",
+                    openalex_budget_message(keyed),
+                );
+            } else {
+                note(notices, "openalex", "busy", openalex_busy_message(keyed));
+            }
             None
         }
         Err(_) => None,
@@ -661,7 +790,7 @@ async fn search_s2<F: Fetcher, S: Sleeper>(
     fetch: &F,
     sleeper: &mut S,
     limiter: &mut Limiter,
-    budget: &mut OpenAlexBudget,
+    budget: &mut BudgetTracker,
     now: &mut Instant,
     notices: &mut Vec<LookupNotice>,
     query: &TitleQuery,
@@ -699,7 +828,7 @@ async fn search_crossref_title<F: Fetcher, S: Sleeper>(
     fetch: &F,
     sleeper: &mut S,
     limiter: &mut Limiter,
-    budget: &mut OpenAlexBudget,
+    budget: &mut BudgetTracker,
     now: &mut Instant,
     notices: &mut Vec<LookupNotice>,
     query: &TitleQuery,
@@ -751,7 +880,7 @@ async fn fill_sparse_from_crossref_then_openalex<F: Fetcher, S: Sleeper>(
     fetch: &F,
     sleeper: &mut S,
     limiter: &mut Limiter,
-    budget: &mut OpenAlexBudget,
+    budget: &mut BudgetTracker,
     now: &mut Instant,
     notices: &mut Vec<LookupNotice>,
     email: Option<&str>,
@@ -785,23 +914,25 @@ async fn fill_sparse_from_crossref_then_openalex<F: Fetcher, S: Sleeper>(
     }
 }
 
-pub async fn execute_lookup<F: Fetcher, S: Sleeper>(
+/// `force` 跳过缓存读取（「刷新链接」），结果照常写回。有来源暂时失败时不写缓存。
+pub async fn execute_lookup<F: Fetcher + Sync, S: Sleeper>(
     auth: &BiblioAuth,
     arxiv_id: Option<&str>,
     doi: Option<&str>,
     title: Option<&str>,
     year: Option<i32>,
     authors: &[String],
+    force: bool,
     fetch: &F,
     limiter: &mut Limiter,
     cache: &mut LookupCache,
-    budget: &mut OpenAlexBudget,
+    budget: &mut BudgetTracker,
     now: &mut Instant,
     sleeper: &mut S,
 ) -> LookupOutcome {
     let mut notices = Vec::new();
     let key = cache_key(arxiv_id, doi, title, year, authors);
-    if let Some(key) = key.as_deref() {
+    if let Some(key) = key.as_deref().filter(|_| !force) {
         if let Some(hit) = cache.get(key, *now) {
             return LookupOutcome {
                 hit: Some(hit),
@@ -811,13 +942,20 @@ pub async fn execute_lookup<F: Fetcher, S: Sleeper>(
             };
         }
     }
+    let watch = Watch {
+        inner: fetch,
+        transient: AtomicBool::new(false),
+    };
+    let fetch = &watch;
 
-    let want_doi = doi.and_then(normalize_doi);
-    let arxiv_from_doi = want_doi.as_deref().and_then(arxiv_id_from_doi);
+    let want_doi = doi.and_then(Doi::parse);
+    let arxiv_from_doi = want_doi.as_ref().and_then(ArxivId::from_doi);
     let want_arxiv = arxiv_id
-        .and_then(normalize_arxiv_id)
+        .and_then(ArxivId::parse)
         .or_else(|| arxiv_from_doi.clone());
     let doi_is_arxiv = arxiv_from_doi.is_some();
+    let want_doi = want_doi.map(Doi::into_string);
+    let want_arxiv = want_arxiv.map(ArxivId::into_string);
     let want_title = title
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -842,13 +980,24 @@ pub async fn execute_lookup<F: Fetcher, S: Sleeper>(
         .await
         {
             Ok(response) if !response.body.is_empty() => {
-                if let Some(mut parsed) = parse_arxiv_atom(&response.body) {
-                    parsed.arxiv_id = Some(id.clone());
-                    if parsed.providers.contains_key("arxivId") || parsed.arxiv_id.is_some() {
-                        parsed.providers.insert("arxivId".into(), "arxiv".into());
-                    }
+                // 用响应 <id> 里的 id 核对，不再拿请求的 id 覆盖后自证
+                if is_arxiv_error_feed(&response.body) {
+                    note(
+                        &mut notices,
+                        "arxiv",
+                        "error",
+                        "arXiv 返回了错误条目，已改查其他文献库",
+                    );
+                } else if let Some(parsed) = parse_arxiv_atom(&response.body) {
                     if accepts_ids(&parsed, Some(&id), None) {
                         hit = Some(parsed);
+                    } else {
+                        note(
+                            &mut notices,
+                            "arxiv",
+                            "mismatch",
+                            "arXiv 返回的条目与请求的 arXiv id 不一致，已跳过",
+                        );
                     }
                 }
             }
@@ -890,18 +1039,32 @@ pub async fn execute_lookup<F: Fetcher, S: Sleeper>(
             }
             Err(_) => {}
         }
+        // 这里的 hit 已经过 id 核对；被拒的 arXiv 条目不会走到这一步，它的标题也不会拿去检索
         if hit.is_some() && (s2_failed || bibliographic_gaps(hit.as_ref().expect("hit"))) {
             let fill_title = hit
                 .as_ref()
                 .map(|item| item.title.trim().to_string())
                 .filter(|title| !title.is_empty())
                 .or_else(|| want_title.clone());
+            // 请求没带作者时用已核对记录的作者佐证，短标题才补得上
+            let fill_authors: Vec<String> = if authors.is_empty() {
+                hit.as_ref()
+                    .map(|item| {
+                        item.authors
+                            .iter()
+                            .map(|author| author.name.clone())
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            } else {
+                authors.to_vec()
+            };
             if let Some(fill_title) = fill_title {
                 fill_sparse_from_crossref_then_openalex(
                     &mut hit,
                     &fill_title,
                     year,
-                    authors,
+                    &fill_authors,
                     want_doi.clone(),
                     Some(id),
                     fetch,
@@ -1043,8 +1206,11 @@ pub async fn execute_lookup<F: Fetcher, S: Sleeper>(
         }
     }
 
-    if let (Some(key), Some(found)) = (key, hit.clone()) {
-        cache.put(key, *now, found);
+    // 只缓存干净的结果：有来源 429/403/断网时，下次还要重新问
+    if !watch.transient.load(Ordering::Relaxed) {
+        if let (Some(key), Some(found)) = (key, hit.clone()) {
+            cache.put(key, *now, found);
+        }
     }
     LookupOutcome {
         hit,
@@ -1057,6 +1223,7 @@ pub async fn execute_lookup<F: Fetcher, S: Sleeper>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lookup::normalize_arxiv_id;
 
     struct Script {
         requests: Mutex<Vec<HttpRequest>>,
@@ -1098,11 +1265,11 @@ mod tests {
         })
     }
 
-    fn harness() -> (Limiter, LookupCache, OpenAlexBudget, Instant, RecordSleep) {
+    fn harness() -> (Limiter, LookupCache, BudgetTracker, Instant, RecordSleep) {
         (
             Limiter::default(),
             LookupCache::new(CACHE_TTL),
-            OpenAlexBudget::default(),
+            BudgetTracker::default(),
             Instant::now(),
             RecordSleep { waits: vec![] },
         )
@@ -1203,6 +1370,7 @@ mod tests {
             None,
             None,
             &[],
+            false,
             &script,
             &mut limiter,
             &mut cache,
@@ -1219,6 +1387,7 @@ mod tests {
             None,
             None,
             &[],
+            false,
             &script,
             &mut limiter,
             &mut cache,
@@ -1250,6 +1419,7 @@ mod tests {
             Some("Attention Is All You Need"),
             None,
             &[],
+            false,
             &script,
             &mut limiter,
             &mut cache,
@@ -1293,6 +1463,7 @@ mod tests {
             None,
             None,
             &[],
+            false,
             &script,
             &mut limiter,
             &mut cache,
@@ -1327,6 +1498,7 @@ mod tests {
             Some("Attention Is All You Need"),
             None,
             &[],
+            false,
             &script,
             &mut limiter,
             &mut cache,
@@ -1374,6 +1546,7 @@ mod tests {
             None,
             None,
             &[],
+            false,
             &script,
             &mut limiter,
             &mut cache,
@@ -1391,6 +1564,7 @@ mod tests {
             None,
             None,
             &[],
+            false,
             &script,
             &mut limiter,
             &mut cache,
@@ -1430,6 +1604,7 @@ mod tests {
             None,
             None,
             &[],
+            false,
             &script,
             &mut limiter,
             &mut cache,
@@ -1465,6 +1640,7 @@ mod tests {
             Some("Attention Is All You Need"),
             None,
             &[],
+            false,
             &script,
             &mut limiter,
             &mut cache,
@@ -1495,6 +1671,7 @@ mod tests {
             None,
             None,
             &[],
+            false,
             &script,
             &mut limiter,
             &mut cache,
@@ -1524,6 +1701,7 @@ mod tests {
             Some("Attention-Is All You Need"),
             None,
             &[],
+            false,
             &script,
             &mut limiter,
             &mut cache,
@@ -1587,6 +1765,7 @@ mod tests {
             Some("Attention-Is All You Need"),
             None,
             &[],
+            false,
             &script,
             &mut limiter,
             &mut cache,
@@ -1638,6 +1817,7 @@ mod tests {
             None,
             None,
             &[],
+            false,
             &script,
             &mut limiter,
             &mut cache,
@@ -1654,6 +1834,7 @@ mod tests {
             None,
             None,
             &[],
+            false,
             &script,
             &mut limiter,
             &mut cache,
@@ -1696,6 +1877,7 @@ mod tests {
             Some("Attention Is All You Need"),
             None,
             &[],
+            false,
             &script,
             &mut limiter,
             &mut cache,
@@ -1711,6 +1893,7 @@ mod tests {
             Some("Attention Is All You Need"),
             None,
             &[],
+            false,
             &script,
             &mut limiter,
             &mut cache,
@@ -1758,6 +1941,7 @@ mod tests {
             Some("Attention Is All You Need"),
             None,
             &[],
+            false,
             &script,
             &mut limiter,
             &mut cache,
@@ -1817,6 +2001,7 @@ mod tests {
             Some("Attention Is All You Need"),
             Some(2017),
             &authors,
+            false,
             &script,
             &mut limiter,
             &mut cache,
@@ -1874,6 +2059,7 @@ mod tests {
             Some("Attention Is All You Need"),
             None,
             &[],
+            false,
             &script,
             &mut limiter,
             &mut cache,
@@ -1908,6 +2094,7 @@ mod tests {
             Some("Attention Is All You Need"),
             None,
             &[],
+            false,
             &script,
             &mut limiter,
             &mut cache,
@@ -1931,7 +2118,7 @@ mod tests {
     #[tokio::test]
     async fn empty_arxiv_abstract_is_filled_from_crossref_after_s2_fails() {
         let (mut limiter, mut cache, mut budget, mut now, mut sleeper) = harness();
-        let crossref = r#"{"message":{"items":[{"title":["Sparse Abstract Paper"],"abstract":"Filled from Crossref.","container-title":["Other Venue"],"author":[{"given":"Jane","family":"Doe"}],"DOI":"10.9999/other"}]}}"#;
+        let crossref = r#"{"message":{"items":[{"title":["Sparse Abstract Paper"],"abstract":"Filled from Crossref.","container-title":["Other Venue"],"author":[{"given":"Ashish","family":"Vaswani"}],"DOI":"10.9999/other"}]}}"#;
         let script = Script {
             requests: Mutex::new(vec![]),
             responses: Mutex::new(vec![
@@ -1948,6 +2135,7 @@ mod tests {
             Some("Sparse Abstract Paper"),
             None,
             &[],
+            false,
             &script,
             &mut limiter,
             &mut cache,
@@ -1969,7 +2157,7 @@ mod tests {
     async fn crossref_fills_empty_arxiv_authors_and_leaves_a_present_abstract() {
         let (mut limiter, mut cache, mut budget, mut now, mut sleeper) = harness();
         let xml = r#"<entry><title>Sparse Abstract Paper</title><summary>Kept abstract.</summary><id>http://arxiv.org/abs/1706.03762v1</id><arxiv:journal_ref>NeurIPS</arxiv:journal_ref><arxiv:doi>10.5555/3295222.3295349</arxiv:doi></entry>"#;
-        let crossref = r#"{"message":{"items":[{"title":["Sparse Abstract Paper"],"abstract":"Different abstract.","author":[{"given":"Grace","family":"Hopper"}],"container-title":["Other Venue"],"DOI":"10.9999/other"}]}}"#;
+        let crossref = r#"{"message":{"items":[{"title":["Sparse Abstract Paper"],"abstract":"Different abstract.","author":[{"given":"Grace","family":"Hopper"}],"published":{"date-parts":[[2017]]},"container-title":["Other Venue"],"DOI":"10.9999/other"}]}}"#;
         let script = Script {
             requests: Mutex::new(vec![]),
             responses: Mutex::new(vec![ok(xml), status(429), ok(crossref), status(404)]),
@@ -1979,8 +2167,9 @@ mod tests {
             Some("1706.03762"),
             None,
             Some("Sparse Abstract Paper"),
-            None,
+            Some(2017),
             &[],
+            false,
             &script,
             &mut limiter,
             &mut cache,
@@ -2014,6 +2203,7 @@ mod tests {
             Some("Attention Is All You Need"),
             Some(2017),
             &ashish,
+            false,
             &script,
             &mut limiter,
             &mut cache,
@@ -2031,6 +2221,7 @@ mod tests {
             Some("Attention Is All You Need"),
             Some(2017),
             &grace,
+            false,
             &script,
             &mut limiter,
             &mut cache,
@@ -2048,6 +2239,7 @@ mod tests {
             Some("Attention   Is All You Need"),
             Some(2017),
             &["ashish   vaswani".to_string()],
+            false,
             &script,
             &mut limiter,
             &mut cache,
@@ -2058,5 +2250,450 @@ mod tests {
         .await;
         assert_eq!(script.requests.lock().unwrap().len(), 2);
         assert_eq!(again.hit.unwrap().venue.as_deref(), Some("First Venue"));
+    }
+
+    type Rig = (Limiter, LookupCache, BudgetTracker, Instant, RecordSleep);
+
+    async fn lookup_with(
+        script: &Script,
+        rig: &mut Rig,
+        arxiv_id: Option<&str>,
+        doi: Option<&str>,
+        title: Option<&str>,
+        force: bool,
+    ) -> LookupOutcome {
+        let (limiter, cache, budget, now, sleeper) = rig;
+        execute_lookup(
+            &BiblioAuth::default(),
+            arxiv_id,
+            doi,
+            title,
+            None,
+            &[],
+            force,
+            script,
+            limiter,
+            cache,
+            budget,
+            now,
+            sleeper,
+        )
+        .await
+    }
+
+    fn scripted(responses: Vec<Result<HttpResponse, String>>) -> Script {
+        Script {
+            requests: Mutex::new(vec![]),
+            responses: Mutex::new(responses),
+        }
+    }
+
+    fn with_headers(
+        code: u16,
+        body: &str,
+        headers: &[(&str, &str)],
+    ) -> Result<HttpResponse, String> {
+        Ok(HttpResponse {
+            status: code,
+            body: body.to_string(),
+            headers: headers
+                .iter()
+                .map(|(key, value)| (key.to_string(), value.to_string()))
+                .collect(),
+        })
+    }
+
+    fn request_count(script: &Script) -> usize {
+        script.requests.lock().unwrap().len()
+    }
+
+    const WRONG_ARXIV: &str = r#"<feed><entry><id>http://arxiv.org/abs/2401.99999v1</id><title>Wrong Paper Entirely</title><summary>Other.</summary></entry></feed>"#;
+
+    #[tokio::test]
+    async fn arxiv_entry_with_another_id_is_rejected_and_its_title_never_searched() {
+        let mut rig = harness();
+        let s2 = r#"{"title":"Verified Title From Semantic Scholar","externalIds":{"ArXiv":"2401.01234"}}"#;
+        let script = scripted(vec![ok(WRONG_ARXIV), ok(s2), status(404), status(404)]);
+        let outcome = lookup_with(
+            &script,
+            &mut rig,
+            Some("2401.01234"),
+            None,
+            Some("My Own Title"),
+            false,
+        )
+        .await;
+        let urls = title_search_urls(&script);
+        assert_eq!(urls.len(), 4, "{urls:?}");
+        assert!(urls.iter().all(|url| !url.contains("Wrong")), "{urls:?}");
+        assert!(
+            urls[2].contains("query.bibliographic=Verified%20Title"),
+            "{urls:?}"
+        );
+        let hit = outcome.hit.expect("s2 hit");
+        assert_eq!(hit.source_name, "semanticscholar");
+        assert_eq!(hit.arxiv_id.as_deref(), Some("2401.01234"));
+        assert!(outcome
+            .notices
+            .iter()
+            .any(|notice| notice.source == "arxiv" && notice.code == "mismatch"));
+    }
+
+    #[tokio::test]
+    async fn rejected_arxiv_entry_falls_through_to_the_requested_title() {
+        let mut rig = harness();
+        let script = scripted(vec![
+            ok(WRONG_ARXIV),
+            status(404),
+            status(404),
+            status(404),
+            status(404),
+        ]);
+        let outcome = lookup_with(
+            &script,
+            &mut rig,
+            Some("2401.01234"),
+            None,
+            Some("My Own Title"),
+            false,
+        )
+        .await;
+        let urls = title_search_urls(&script);
+        assert_eq!(urls.len(), 5, "{urls:?}");
+        assert!(urls.iter().all(|url| !url.contains("Wrong")), "{urls:?}");
+        assert!(urls[2].contains("search=My%20Own%20Title"), "{urls:?}");
+        assert!(outcome.hit.is_none());
+    }
+
+    #[tokio::test]
+    async fn arxiv_error_entry_is_recorded_and_the_next_source_answers() {
+        let mut rig = harness();
+        let error = r#"<feed><entry><id>http://arxiv.org/api/errors#incorrect_id_format_for_2401.01234</id><title>Error</title><summary>incorrect id format</summary><author><name>arXiv api core</name></author></entry></feed>"#;
+        let s2 = r#"{"title":"Verified Title From Semantic Scholar","abstract":"Kept.","venue":"Venue","authors":[{"name":"Jane Doe"}],"externalIds":{"ArXiv":"2401.01234v2"}}"#;
+        let script = scripted(vec![ok(error), ok(s2)]);
+        let outcome = lookup_with(
+            &script,
+            &mut rig,
+            Some("arXiv：2401.01234"),
+            None,
+            None,
+            false,
+        )
+        .await;
+        let urls = title_search_urls(&script);
+        assert_eq!(urls.len(), 2, "{urls:?}");
+        assert!(urls[0].contains("id_list=2401.01234"), "{urls:?}");
+        let hit = outcome.hit.expect("s2 hit");
+        assert_eq!(hit.source_name, "semanticscholar");
+        assert_eq!(hit.title, "Verified Title From Semantic Scholar");
+        assert!(outcome
+            .notices
+            .iter()
+            .any(|notice| notice.source == "arxiv" && notice.code == "error"));
+    }
+
+    #[test]
+    fn identifiers_compare_in_one_form() {
+        let hit = parse_s2_paper(
+            r#"{"title":"T","externalIds":{"DOI":"10.1000/ABC","ArXiv":"2401.01234v2"}}"#,
+        )
+        .unwrap()
+        .expect("s2 paper");
+        assert!(accepts_ids(
+            &hit,
+            Some("arXiv：2401.01234"),
+            Some("https://doi.org/10.1000/abc")
+        ));
+        assert!(!accepts_ids(&hit, Some("2401.01235"), None));
+        assert!(!accepts_ids(&hit, None, Some("10.1000/abd")));
+        assert_eq!(
+            cache_key(Some("arXiv：2401.01234"), None, None, None, &[]),
+            cache_key(
+                Some("https://arxiv.org/abs/2401.01234v3"),
+                None,
+                None,
+                None,
+                &[]
+            )
+        );
+        assert_eq!(
+            cache_key(None, Some("doi:10.48550/arXiv.2401.01234"), None, None, &[]),
+            cache_key(Some("2401.01234"), None, None, None, &[])
+        );
+        assert_eq!(
+            cache_key(None, Some("https://doi.org/10.1000/ABC"), None, None, &[]).as_deref(),
+            Some("doi:10.1000/abc")
+        );
+    }
+
+    #[tokio::test]
+    async fn force_skips_the_cache_read_and_stores_the_fresh_result() {
+        let mut rig = harness();
+        let first = r#"{"results":[{"display_name":"Attention Is All You Need","publication_year":2017,"primary_location":{"source":{"display_name":"First Venue"}}}]}"#;
+        let second = r#"{"results":[{"display_name":"Attention Is All You Need","publication_year":2017,"primary_location":{"source":{"display_name":"Second Venue"}}}]}"#;
+        let script = scripted(vec![ok(first), ok(second)]);
+        let title = Some("Attention Is All You Need");
+        let cached = lookup_with(&script, &mut rig, None, None, title, false).await;
+        assert_eq!(cached.hit.unwrap().venue.as_deref(), Some("First Venue"));
+        let forced = lookup_with(&script, &mut rig, None, None, title, true).await;
+        assert_eq!(request_count(&script), 2);
+        assert_eq!(forced.hit.unwrap().venue.as_deref(), Some("Second Venue"));
+        let again = lookup_with(&script, &mut rig, None, None, title, false).await;
+        assert_eq!(request_count(&script), 2);
+        assert_eq!(again.hit.unwrap().venue.as_deref(), Some("Second Venue"));
+    }
+
+    #[tokio::test]
+    async fn a_transient_failure_keeps_the_result_out_of_the_cache() {
+        let mut rig = harness();
+        let arxiv = include_str!("../fixtures/arxiv-attention.xml");
+        let script = scripted(vec![
+            ok(arxiv),
+            status(429),
+            status(404),
+            status(404),
+            ok(arxiv),
+            status(404),
+            status(404),
+            status(404),
+        ]);
+        let id = Some("1706.03762");
+        assert!(lookup_with(&script, &mut rig, id, None, None, false)
+            .await
+            .hit
+            .is_some());
+        assert_eq!(request_count(&script), 4);
+        assert!(lookup_with(&script, &mut rig, id, None, None, false)
+            .await
+            .hit
+            .is_some());
+        assert_eq!(request_count(&script), 8);
+        let cached = lookup_with(&script, &mut rig, id, None, None, false).await;
+        assert_eq!(request_count(&script), 8);
+        assert_eq!(cached.hit.unwrap().title, "Attention Is All You Need");
+
+        let mut rig = harness();
+        let right = r#"{"display_name":"Attention Is All You Need","publication_year":2017,"doi":"https://doi.org/10.5555/3295222.3295349"}"#;
+        let script = scripted(vec![
+            Err("offline".into()),
+            ok(right),
+            Err("timeout".into()),
+            ok(right),
+        ]);
+        let doi = Some("10.5555/3295222.3295349");
+        for _ in 0..2 {
+            let outcome = lookup_with(&script, &mut rig, None, doi, None, false).await;
+            assert_eq!(outcome.hit.unwrap().source_name, "openalex");
+        }
+        assert_eq!(request_count(&script), 4);
+    }
+
+    #[tokio::test]
+    async fn only_openalex_headers_move_the_openalex_budget() {
+        let mut rig = harness();
+        let zero = [("x-ratelimit-remaining", "0")];
+        let crossref = r#"{"message":{"items":[{"title":["Attention Is All You Need"],"DOI":"10.5555/3295222.3295349"}]}}"#;
+        let script = scripted(vec![
+            status(404),
+            with_headers(200, r#"{"data":[]}"#, &zero),
+            with_headers(200, crossref, &zero),
+            status(404),
+            status(404),
+            status(404),
+        ]);
+        let outcome = lookup_with(
+            &script,
+            &mut rig,
+            None,
+            None,
+            Some("Attention Is All You Need"),
+            false,
+        )
+        .await;
+        assert_eq!(outcome.hit.unwrap().source_name, "crossref");
+        assert!(outcome.openalex_remaining_usd.is_none());
+        assert!(!rig.2.search_blocked(rig.3));
+        lookup_with(
+            &script,
+            &mut rig,
+            None,
+            None,
+            Some("Another Paper About Other Things"),
+            false,
+        )
+        .await;
+        let urls = title_search_urls(&script);
+        assert!(
+            urls[3].contains("api.openalex.org/works?search="),
+            "{urls:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_single_openalex_429_does_not_latch_the_budget() {
+        let mut rig = harness();
+        let script = scripted(vec![
+            status(429),
+            status(404),
+            status(404),
+            status(404),
+            status(404),
+            status(404),
+        ]);
+        let first = lookup_with(
+            &script,
+            &mut rig,
+            None,
+            None,
+            Some("Attention Is All You Need"),
+            false,
+        )
+        .await;
+        assert!(first
+            .notices
+            .iter()
+            .any(|notice| notice.source == "openalex" && notice.code == "busy"));
+        assert!(!first.notices.iter().any(|notice| notice.code == "budget"));
+        assert!(rig.2.remaining_usd.is_none());
+        lookup_with(
+            &script,
+            &mut rig,
+            None,
+            None,
+            Some("Another Paper About Other Things"),
+            false,
+        )
+        .await;
+        let urls = title_search_urls(&script);
+        let searches = urls
+            .iter()
+            .filter(|url| url.contains("api.openalex.org/works?search="))
+            .count();
+        assert_eq!(searches, 2, "{urls:?}");
+    }
+
+    #[tokio::test]
+    async fn exhausted_openalex_budget_unlatches_within_an_hour() {
+        let mut rig = harness();
+        let found =
+            r#"{"results":[{"display_name":"Attention Is All You Need","publication_year":2017}]}"#;
+        let script = scripted(vec![
+            with_headers(
+                200,
+                found,
+                &[
+                    ("x-ratelimit-remaining-usd", "0"),
+                    ("x-ratelimit-limit-usd", "1"),
+                ],
+            ),
+            status(404),
+            status(404),
+            status(404),
+            status(404),
+            status(404),
+        ]);
+        let first = lookup_with(
+            &script,
+            &mut rig,
+            None,
+            None,
+            Some("Attention Is All You Need"),
+            false,
+        )
+        .await;
+        assert_eq!(first.openalex_remaining_usd, Some(0.0));
+        assert_eq!(first.openalex_limit_usd, Some(1.0));
+        let second = lookup_with(
+            &script,
+            &mut rig,
+            None,
+            None,
+            Some("Another Paper About Other Things"),
+            false,
+        )
+        .await;
+        assert!(second.notices.iter().any(|notice| notice.code == "budget"));
+        let searches = |script: &Script| {
+            title_search_urls(script)
+                .iter()
+                .filter(|url| url.contains("api.openalex.org/works?search="))
+                .count()
+        };
+        assert_eq!(searches(&script), 1);
+        rig.3 += Duration::from_secs(60 * 60 + 1);
+        lookup_with(
+            &script,
+            &mut rig,
+            None,
+            None,
+            Some("Yet Another Paper On Something"),
+            false,
+        )
+        .await;
+        assert_eq!(searches(&script), 2, "{:?}", title_search_urls(&script));
+    }
+
+    #[test]
+    fn budget_latch_lasts_until_utc_midnight_or_one_hour() {
+        let midnight = UNIX_EPOCH + Duration::from_secs(86_400 * 20_000);
+        let at = |secs: u64| midnight + Duration::from_secs(secs);
+        assert_eq!(latch_window(at(10 * 3600)), Duration::from_secs(3600));
+        assert_eq!(
+            latch_window(at(23 * 3600 + 30 * 60)),
+            Duration::from_secs(30 * 60)
+        );
+        assert_eq!(latch_window(at(86_399)), Duration::from_secs(1));
+        let now = Instant::now();
+        let mut budget = BudgetTracker::default();
+        budget.mark_remaining(0.0, now, at(23 * 3600 + 30 * 60));
+        assert!(budget.search_blocked(now));
+        // 锁住期间 DOI 请求又带回 0，不顺延
+        budget.mark_remaining(
+            0.0,
+            now + Duration::from_secs(20 * 60),
+            at(23 * 3600 + 50 * 60),
+        );
+        assert!(budget.search_blocked(now + Duration::from_secs(29 * 60)));
+        assert!(!budget.search_blocked(now + Duration::from_secs(30 * 60)));
+        assert!(budget.remaining_usd.is_none());
+        budget.mark_remaining(0.0, now, at(0));
+        budget.reset();
+        assert!(!budget.search_blocked(now));
+    }
+
+    #[test]
+    fn saving_settings_resets_the_shared_latch() {
+        let wall = UNIX_EPOCH + Duration::from_secs(10 * 3600);
+        BUDGET
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .mark_remaining(0.0, Instant::now(), wall);
+        assert_eq!(budget_snapshot().remaining_usd, Some(0.0));
+        let mut gate_budget = BudgetTracker::default();
+        gate_budget.mark_remaining(0.0, Instant::now(), wall);
+        reset_openalex_latch();
+        assert!(budget_snapshot().remaining_usd.is_none());
+        take_budget_reset(&mut gate_budget);
+        assert!(!gate_budget.search_blocked(Instant::now()));
+    }
+
+    #[test]
+    fn unreadable_credentials_fall_back_to_anonymous_with_a_notice() {
+        let (auth, notice) = auth_or_anonymous(Err("secrets.json 无法解析：expected value".into()));
+        assert!(auth.email.is_none() && auth.openalex_key.is_none() && auth.s2_key.is_none());
+        let notice = notice.expect("notice");
+        assert_eq!(notice.source, "biblio");
+        assert_eq!(notice.code, "credentials");
+        assert!(
+            notice.message.contains("按未配置查询"),
+            "{}",
+            notice.message
+        );
+        let (auth, notice) = auth_or_anonymous(Ok(BiblioAuth {
+            email: Some("reader@example.com".into()),
+            ..BiblioAuth::default()
+        }));
+        assert!(notice.is_none());
+        assert_eq!(auth.email.as_deref(), Some("reader@example.com"));
     }
 }

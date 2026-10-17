@@ -405,8 +405,9 @@ describe("updatePaper / applyPreparedMeta（用户编辑锁）", () => {
     expect(detail.venue).toBe("手填期刊"); // 锁定
     expect(detail.titleZh).toBe("AI 中文标题"); // 空白补全
     expect(detail.abstract).toBe("AI 摘要");
-    expect(detail.year).toBe(2023);
-    expect(detail.doi).toBe("10.2/y");
+    // 标识符只能来自用户或文献库：模型给的年份与 DOI 不写
+    expect(detail.year).toBeNull();
+    expect(detail.doi).toBeNull();
     // 用户已有作者（0 个 → 视为空白）时 AI 作者补入
     expect(detail.authors.map((a) => a.name)).toEqual(["Alice"]);
     expect(detail.llmPreparedAt).not.toBeNull();
@@ -443,27 +444,27 @@ describe("updatePaper / applyPreparedMeta（用户编辑锁）", () => {
 });
 
 describe("作者替换与 meta_rev（M4-P4）", () => {
-  it("著录更新放行后 meta_rev 再升高时，不改 paper_authors", async () => {
+  it("写入前用户改了作者：整批冲突回滚，重读后保留用户作者", async () => {
     const domainId = await makeDomain();
     const paper = await repo.createPaper({ domainId });
     await repo.replaceAuthors(paper.id, [{ name: "Alice", affiliation: "Old Lab" }]);
     const before = (await repo.getPaper(paper.id))!.authors.map((author) => author.name);
 
     const inner = holder.engine!;
-    let paperUpdateDone = false;
     let bumped = false;
     const wrapped: SqlEngine = {
-      execute: (sql, params) => {
-        if (/SET\s+title = \?/.test(sql) && /meta_rev = \?/.test(sql)) paperUpdateDone = true;
-        return inner.execute(sql, params);
-      },
-      select: async <T>(sql: string, params?: unknown[]): Promise<T[]> => {
-        const rows = await inner.select<T>(sql, params);
-        if (!bumped && paperUpdateDone && /SELECT meta_rev FROM papers/i.test(sql)) {
+      execute: (sql, params) => inner.execute(sql, params),
+      select: (sql, params) => inner.select(sql, params),
+      batch: async (steps) => {
+        // 模拟用户在补全读快照之后、写入之前保存了作者（来源 user，meta_rev 升高）
+        if (!bumped && steps.some((step) => /author_replace/.test(step.sql))) {
           bumped = true;
-          await inner.execute("UPDATE papers SET meta_rev = meta_rev + 1 WHERE id = ?", [paper.id]);
+          await inner.execute(
+            "UPDATE papers SET meta_rev = meta_rev + 1, field_sources = json_set(field_sources, '$.authors', 'user') WHERE id = ?",
+            [paper.id],
+          );
         }
-        return rows;
+        return inner.batch(steps);
       },
     };
     holder.engine = wrapped;
@@ -511,13 +512,20 @@ describe("笔记与草稿", () => {
     expect(detail.userNotesTouched).toBe(true);
   });
 
-  it("applyDraftedNotes：用户改过笔记且不覆盖时抛 NOTES_TOUCHED", async () => {
+  it("applyDraftedNotes：不覆盖时保留用户改过的块，只写未改过的块", async () => {
     const domainId = await makeDomain();
     const paper = await repo.createPaper({ domainId });
     await repo.updateNote(paper.id, "summary", "我改过的笔记");
-    await expect(
-      repo.applyDraftedNotes(paper.id, { remarks: "", summary: "", highlights: "", weaknesses: "", implications: "" }, false),
-    ).rejects.toThrow("NOTES_TOUCHED");
+    await repo.applyDraftedNotes(
+      paper.id,
+      { remarks: "r", summary: "s", highlights: "h", weaknesses: "w", implications: "i" },
+      false,
+    );
+    const detail = (await repo.getPaper(paper.id))!;
+    expect(detail.notes.summary.content).toBe("我改过的笔记");
+    expect(detail.notes.summary.source).toBe("manual");
+    expect(detail.notes.highlights.content).toBe("h");
+    expect(detail.notes.highlights.source).toBe("llm");
   });
 
   it("applyDraftedNotes(overwrite=true)：写入五块 AI 笔记并标记来源", async () => {
@@ -809,5 +817,114 @@ describe("deleteDomain（领域删除完整性）", () => {
     expect(await repo.listPapers(a.id)).toHaveLength(1);
     const domains = await repo.listDomains();
     expect(domains.some((d) => d.id === a.id)).toBe(true);
+  });
+});
+
+describe("列级写入与条件写入", () => {
+  it("updatePaper 只写 patch 里的列，只改被改字段的来源与徽章", async () => {
+    const domainId = await makeDomain();
+    const paper = await repo.createPaper({ domainId });
+    await repo.applyPreparedMeta(
+      paper.id,
+      {
+        title: "库标题", titleZh: null, abstract: "库摘要", year: 2020, venue: "库期刊", doi: null, arxivId: null,
+        authors: [], labs: [], codeOpenSource: "unknown", codeURL: null, projectPage: null, pdfURL: null, tags: [],
+        fieldProviders: { title: "crossref", abstract: "crossref", year: "crossref", venue: "crossref" },
+      },
+      false,
+      { source: "api" },
+    );
+    const before = (await repo.getPaper(paper.id))!;
+    await repo.updatePaper(paper.id, { venue: "手填期刊" }, true);
+    const after = (await repo.getPaper(paper.id))!;
+    expect(after.venue).toBe("手填期刊");
+    expect(after.fieldSources?.venue).toBe("user");
+    expect(after.fieldProviders?.venue).toBeUndefined();
+    expect(after.fieldSources?.title).toBe("api");
+    expect(after.fieldProviders?.title).toBe("crossref");
+    expect(after.metaRev).toBe((before.metaRev ?? 0) + 1);
+    expect(after.title).toBe("库标题");
+  });
+
+  it("updatePaper：用户手填的无协议链接补上 https://", async () => {
+    const domainId = await makeDomain();
+    const paper = await repo.createPaper({ domainId });
+    await repo.updatePaper(paper.id, { codeUrl: "github.com/foo/bar" }, true);
+    expect((await repo.getPaper(paper.id))!.codeUrl).toBe("https://github.com/foo/bar");
+  });
+
+  it("updatePaper 对不存在的论文报错", async () => {
+    await expect(repo.updatePaper("missing", { title: "x" }, true)).rejects.toThrow("论文不存在");
+  });
+
+  it("replaceLinkIf：链接已被改过或归用户时不写", async () => {
+    const domainId = await makeDomain();
+    const paper = await repo.createPaper({ domainId });
+    await repo.applyPreparedMeta(
+      paper.id,
+      {
+        title: "", titleZh: null, abstract: "", year: null, venue: null, doi: null, arxivId: null, authors: [], labs: [],
+        codeOpenSource: "unknown", codeURL: "https://github.com/ai/guess", projectPage: null, pdfURL: null, tags: [],
+      },
+      false,
+      { source: "llm" },
+    );
+    // 期望值对不上（校验期间被改过）：不写
+    expect(await repo.replaceLinkIf(paper.id, "codeUrl", "https://github.com/other", null)).toBe(false);
+    // 用户改成自己的链接：之后基于旧值的清除不生效
+    await repo.updatePaper(paper.id, { codeUrl: "https://github.com/me/real" }, true);
+    expect(await repo.replaceLinkIf(paper.id, "codeUrl", "https://github.com/me/real", null)).toBe(false);
+    expect((await repo.getPaper(paper.id))!.codeUrl).toBe("https://github.com/me/real");
+  });
+
+  it("replaceLinkIf：值未变且不归用户时清除并去掉来源", async () => {
+    const domainId = await makeDomain();
+    const paper = await repo.createPaper({ domainId });
+    await repo.applyPreparedMeta(
+      paper.id,
+      {
+        title: "", titleZh: null, abstract: "", year: null, venue: null, doi: null, arxivId: null, authors: [], labs: [],
+        codeOpenSource: "unknown", codeURL: "https://github.com/ai/guess", projectPage: null, pdfURL: null, tags: [],
+      },
+      false,
+      { source: "llm" },
+    );
+    const stored = (await repo.getPaper(paper.id))!.codeUrl;
+    expect(await repo.replaceLinkIf(paper.id, "codeUrl", stored, null)).toBe(true);
+    const after = (await repo.getPaper(paper.id))!;
+    expect(after.codeUrl).toBeNull();
+    expect(after.fieldSources?.codeUrl).toBeUndefined();
+  });
+
+  it("applyDraftedNotes：作业开始后被改过的块（版本号变了）整块保留", async () => {
+    const domainId = await makeDomain();
+    const paper = await repo.createPaper({ domainId });
+    const started = (await repo.getPaper(paper.id))!;
+    const revs = Object.fromEntries(Object.entries(started.notes).map(([kind, block]) => [kind, block.rev ?? 0]));
+    // 请求进行中用户保存了「总结」
+    await repo.updateNote(paper.id, "summary", "我在请求期间写的总结");
+    const kept = await repo.applyDraftedNotes(
+      paper.id,
+      { remarks: "r", summary: "AI 总结", highlights: "h", weaknesses: "w", implications: "i" },
+      true,
+      revs,
+    );
+    expect(kept).toEqual(["summary"]);
+    const detail = (await repo.getPaper(paper.id))!;
+    expect(detail.notes.summary.content).toBe("我在请求期间写的总结");
+    expect(detail.notes.summary.source).toBe("manual");
+    expect(detail.notes.highlights.content).toBe("h");
+    expect(detail.notes.highlights.source).toBe("llm");
+  });
+});
+
+describe("手动添加的 PDF 进文库", () => {
+  it("已在库中的 PDF 不重复建档", async () => {
+    const domainId = await makeDomain();
+    await repo.createPaper({ domainId, pdfPath: "library/1-a.pdf", pdfOriginalPath: "/home/u/a.pdf" });
+    await expect(repo.adoptManualPdf("/home/u/a.pdf")).rejects.toThrow("已在库中");
+    await expect(repo.adoptManualPdf("library/1-a.pdf")).rejects.toThrow("已在库中");
+    // 浏览器预览没有文库目录：原样返回
+    expect(await repo.adoptManualPdf("/home/u/b.pdf")).toEqual({ libraryPath: "/home/u/b.pdf", originalPath: "/home/u/b.pdf" });
   });
 });

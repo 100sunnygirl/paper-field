@@ -1,6 +1,7 @@
 import type { CSSProperties } from "react";
 import { MINERU_STATUS_LABELS, READING_STATUS_LABELS, type PaperListItem } from "../lib/types";
 import { pad2 } from "../lib/util";
+import { hasDraft as paperHasDraft, useField } from "../store";
 import { Icon } from "./ui";
 
 /** 批量模式与「全选」共用的复选方块：行首替代序号出现，视觉与状态徽标同源。 */
@@ -33,6 +34,7 @@ export function PaperRow({
 }) {
   const title = paper.titleZh || paper.title;
   const english = paper.titleZh ? paper.title : "";
+  const hasDraft = useField((s) => paperHasDraft(s, paper.id));
   const className = [
     "ef-row",
     "pf-stagger",
@@ -68,6 +70,7 @@ export function PaperRow({
         {paper.mineruStatus && paper.mineruStatus !== "done" ? (
           <span>{MINERU_STATUS_LABELS[paper.mineruStatus]}</span>
         ) : null}
+        {hasDraft ? <span className="ef-row-draft">笔记草稿未保存</span> : null}
       </div>
     </button>
   );

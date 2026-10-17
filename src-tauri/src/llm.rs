@@ -8,7 +8,10 @@
 //!   response_format 被拒时去掉字段立即重试一次；401/403/404 与重试耗尽直接换下一家，
 //!   全部失败返回聚合中文错误；用户取消（abort）立即传播，不被吞也不转移；
 //! - 用量：成功把响应 usage 计入 requests 与 tokens，任一提供商 HTTP 失败计 errors，
-//!   累加在 LlmState 内存并持久化到 llm-usage.json（与设置文件分开）。
+//!   累加在 LlmState 内存并持久化到 llm-usage.json（与设置文件分开）；
+//! - 已存 Key 绑定来源 keyOrigin（scheme://host[:port]，非密钥，落盘在设置文件）：
+//!   保存时 Base URL 换了来源就丢弃旧 Key，出站请求来源不符一律不带 Key 并报错。
+#![deny(clippy::string_slice)]
 
 use std::collections::HashMap;
 use std::fs;
@@ -121,6 +124,9 @@ pub struct ProviderCfg {
     pub requires_key: bool,
     #[serde(default)]
     pub api_key: String,
+    /// Key 只发往这个来源（scheme://host[:port]）；无 Key 时为空，不落盘。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub key_origin: String,
 }
 
 /// 旧版（v1）扁平磁盘格式，仅为迁移保留；字段全部可缺省以容忍历史镜像写入的残缺文件。
@@ -136,7 +142,7 @@ struct LlmFileV1 {
 const V1_DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 const V1_DEFAULT_MODEL: &str = "gpt-4o-mini";
 
-/// 前端保存入参（全量替换）：apiKey 三态——None=保留已存（按 id 匹配）、
+/// 前端保存入参（全量替换）：apiKey 三态——None=保留已存（按 id 匹配，且来源不变）、
 /// Some("")=清除、Some(x)=写入。
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -289,6 +295,8 @@ fn migrate_v1(value: &Value) -> LlmFileV2 {
             enabled: true,
             requires_key: preset.map(|p| p.requires_key).unwrap_or(true),
             api_key: v1.api_key.trim().to_string(),
+            // 读入后由 bind_legacy_key_origins 统一补上
+            key_origin: String::new(),
         }],
     }
 }
@@ -342,7 +350,8 @@ fn read_or_migrate_at(path: &Path) -> Result<LlmFileV2, String> {
             provider.api_key = secret;
         }
     }
-    if migrated || lifted {
+    let bound = bind_legacy_key_origins(&mut file);
+    if migrated || lifted || bound {
         if migrated {
             write_scrubbed_backup(path, &raw)?;
         }
@@ -350,6 +359,47 @@ fn read_or_migrate_at(path: &Path) -> Result<LlmFileV2, String> {
         write_public_llm(path, &file)?;
     }
     Ok(file)
+}
+
+/// Key 绑定的来源：scheme://host[:port]，主机小写、默认端口省略。
+/// 非 http(s) 或解析不了的地址退回去尾斜杠的小写原文，只会与自身相等。
+fn key_origin(base_url: &str) -> String {
+    match reqwest::Url::parse(base_url.trim()) {
+        Ok(url) if matches!(url.scheme(), "http" | "https") && url.host_str().is_some() => {
+            url.origin().ascii_serialization()
+        }
+        _ => normalize_base(base_url),
+    }
+}
+
+/// 旧文件没有 keyOrigin：已存 Key 绑定到当前 Base URL 的来源（信任现有配置）。返回是否补过。
+fn bind_legacy_key_origins(file: &mut LlmFileV2) -> bool {
+    let mut bound = false;
+    for provider in &mut file.providers {
+        if !provider.api_key.trim().is_empty() && provider.key_origin.is_empty() {
+            provider.key_origin = key_origin(&provider.base_url);
+            bound = true;
+        }
+    }
+    bound
+}
+
+/// 出站请求要带的 Key：没有 Key 不发 Authorization；请求来源与 Key 绑定的来源不符则拒发。
+fn outbound_key(provider: &ProviderCfg) -> Result<Option<&str>, String> {
+    let key = provider.api_key.trim();
+    if key.is_empty() {
+        return Ok(None);
+    }
+    let origin = key_origin(&provider.base_url);
+    if origin != provider.key_origin {
+        let shown = |value: &str| if value.is_empty() { "（空）".to_string() } else { value.to_string() };
+        return Err(format!(
+            "已保存的 Key 属于 {}，当前地址是 {}，请为新地址重新填写 Key。",
+            shown(&provider.key_origin),
+            shown(&origin)
+        ));
+    }
+    Ok(Some(key))
 }
 
 /// 备份名沿用 mineru-settings 的「仅一次」语义：llm-settings.json.v1.bak。
@@ -363,6 +413,8 @@ fn read_file(app: &AppHandle) -> Result<LlmFileV2, String> {
 
 /// 全量替换式保存：空 id / 重复 id 兜底生成新 id（保证回退与用量按 id 可区分）；
 /// apiKey 三态按 id 匹配旧记录；空 label 回落「自定义服务」。
+/// 保留旧 Key 只限来源不变：换了主机/端口/协议就丢弃（写盘时从密钥库删除），
+/// 免得 OpenAI 的 Key 被发给新填的地址。
 fn normalize_input(input: &LlmSaveInput, existing: &LlmFileV2) -> LlmFileV2 {
     let mut seen: Vec<String> = Vec::new();
     let mut providers = Vec::with_capacity(input.providers.len());
@@ -373,10 +425,17 @@ fn normalize_input(input: &LlmSaveInput, existing: &LlmFileV2) -> LlmFileV2 {
         }
         seen.push(id.clone());
         let old = existing.providers.iter().find(|e| e.id == id);
-        let api_key = match p.api_key.as_deref() {
-            None => old.map(|e| e.api_key.clone()).unwrap_or_default(),
-            Some(value) if value.trim().is_empty() => String::new(),
-            Some(value) => value.trim().to_string(),
+        let base_url = p.base_url.trim().to_string();
+        let origin = key_origin(&base_url);
+        let (api_key, key_origin) = match p.api_key.as_deref() {
+            None => match old {
+                Some(e) if !e.api_key.trim().is_empty() && e.key_origin == origin => {
+                    (e.api_key.clone(), origin)
+                }
+                _ => (String::new(), String::new()),
+            },
+            Some(value) if value.trim().is_empty() => (String::new(), String::new()),
+            Some(value) => (value.trim().to_string(), origin),
         };
         providers.push(ProviderCfg {
             id,
@@ -387,11 +446,12 @@ fn normalize_input(input: &LlmSaveInput, existing: &LlmFileV2) -> LlmFileV2 {
                 .filter(|s| !s.is_empty())
                 .map(str::to_string),
             label: fallback(p.label.trim(), "自定义服务"),
-            base_url: p.base_url.trim().to_string(),
+            base_url,
             model: p.model.trim().to_string(),
             enabled: p.enabled,
             requires_key: p.requires_key,
             api_key,
+            key_origin,
         });
     }
     LlmFileV2 { version: 2, providers }
@@ -509,7 +569,8 @@ fn load_settings_view(path: &Path) -> SettingsView {
             }
         }
     }
-    if migrated || lifted {
+    let bound = bind_legacy_key_origins(&mut file);
+    if migrated || lifted || bound {
         if migrated {
             let _ = write_scrubbed_backup(path, &raw);
         }
@@ -563,14 +624,16 @@ fn new_provider_id() -> String {
     // UUID v4 的版本与变体位
     bytes[6] = (bytes[6] & 0x0F) | 0x40;
     bytes[8] = (bytes[8] & 0x3F) | 0x80;
-    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    let hex = |range: std::ops::Range<usize>| -> String {
+        bytes[range].iter().map(|b| format!("{b:02x}")).collect()
+    };
     format!(
         "{}-{}-{}-{}-{}",
-        &hex[0..8],
-        &hex[8..12],
-        &hex[12..16],
-        &hex[16..20],
-        &hex[20..32]
+        hex(0..4),
+        hex(4..6),
+        hex(6..8),
+        hex(8..10),
+        hex(10..16)
     )
 }
 
@@ -746,6 +809,8 @@ enum ChatError {
     ContentFilter,
     /// 响应里没有 content。
     EmptyContent,
+    /// 已存 Key 的来源与请求地址不符：不发请求、不重试。
+    KeyMismatch(String),
 }
 
 fn should_retry_status(status: u16) -> bool {
@@ -834,6 +899,7 @@ async fn chat_once(
     temperature: f64,
     max_tokens: Option<u32>,
 ) -> Result<ChatSuccess, ChatError> {
+    let key = outbound_key(provider).map_err(ChatError::KeyMismatch)?;
     let url = format!(
         "{}/chat/completions",
         provider.base_url.trim_end_matches('/')
@@ -854,9 +920,12 @@ async fn chat_once(
     if use_json_mode {
         body["response_format"] = serde_json::json!({ "type": "json_object" });
     }
-    let response = llm_http_client()
-        .post(url)
-        .bearer_auth(provider.api_key.trim())
+    let mut request = llm_http_client().post(url);
+    // 免 Key 服务不发 Authorization，不再带空的「Bearer 」
+    if let Some(key) = key {
+        request = request.bearer_auth(key);
+    }
+    let response = request
         .json(&body)
         .send()
         .await
@@ -973,6 +1042,9 @@ async fn call_provider(
             }
             Err(ChatError::EmptyContent) => {
                 return Err(ProviderError::non_http("模型返回为空".into()));
+            }
+            Err(ChatError::KeyMismatch(message)) => {
+                return Err(ProviderError::non_http(message));
             }
         }
     }
@@ -1115,11 +1187,12 @@ pub async fn llm_test(app: AppHandle, provider_id: String) -> Result<LlmTestResu
         Ok(Err(ChatError::Truncated)) => "模型输出被截断".to_string(),
         Ok(Err(ChatError::ContentFilter)) => "模型拒绝了这次请求（内容过滤）".to_string(),
         Ok(Err(ChatError::EmptyContent)) => "模型返回为空".to_string(),
+        Ok(Err(ChatError::KeyMismatch(message))) => message,
     };
     Ok(LlmTestResult { ok, latency_ms, message })
 }
 
-/// 模型发现：GET {base}/models（有 Key 时带 Bearer），解析 data[].id 去重排序。
+/// 模型发现：GET {base}/models（有 Key 且来源相符时带 Bearer），解析 data[].id 去重排序。
 #[tauri::command]
 pub async fn llm_list_models(
     app: AppHandle,
@@ -1134,10 +1207,11 @@ pub async fn llm_list_models(
     if provider.requires_key && provider.api_key.trim().is_empty() {
         return Err("尚未保存 API Key，无法拉取模型列表".into());
     }
+    let key = outbound_key(provider)?;
     let url = format!("{}/models", provider.base_url.trim_end_matches('/'));
     let mut request = llm_http_client().get(url);
-    if !provider.api_key.trim().is_empty() {
-        request = request.bearer_auth(provider.api_key.trim());
+    if let Some(key) = key {
+        request = request.bearer_auth(key);
     }
     let response = tokio::time::timeout(LLM_PROBE_TIMEOUT, request.send())
         .await
@@ -1237,6 +1311,11 @@ mod tests {
             enabled,
             requires_key,
             api_key: api_key.into(),
+            key_origin: if api_key.trim().is_empty() {
+                String::new()
+            } else {
+                "https://api.deepseek.com".into()
+            },
         }
     }
 
@@ -1330,6 +1409,7 @@ mod tests {
 
         let file = read_or_migrate_at(&path).unwrap();
         assert_eq!(file.providers[0].api_key, "sk-old");
+        assert_eq!(file.providers[0].key_origin, "https://api.deepseek.com", "v1 的 Key 绑定到原地址");
 
         let bak = dir.join("llm-settings.json.v1.bak");
         assert!(bak.exists(), "应生成备份 {}", bak.display());
@@ -1526,6 +1606,217 @@ mod tests {
         assert!(file.providers[0].requires_key);
     }
 
+    // ---------- Key 绑定来源 ----------
+
+    fn save_input_at(id: &str, base_url: &str, api_key: Option<&str>) -> LlmSaveInput {
+        let mut input = save_input_one(id, api_key);
+        input.providers[0].base_url = base_url.into();
+        input
+    }
+
+    #[test]
+    fn key_origin_normalizes_scheme_host_and_default_port() {
+        assert_eq!(key_origin("https://API.OpenAI.com/v1"), "https://api.openai.com");
+        assert_eq!(key_origin(" https://api.openai.com:443/v1/ "), "https://api.openai.com");
+        assert_eq!(key_origin("http://localhost:11434/v1"), "http://localhost:11434");
+        assert_eq!(key_origin("http://192.168.1.5:80/v1"), "http://192.168.1.5");
+        assert_eq!(key_origin("http://[::1]:8080/v1"), "http://[::1]:8080");
+        assert_eq!(key_origin("https://user:pw@api.deepseek.com/v1"), "https://api.deepseek.com");
+        // 解析不了 / 非 http(s)：退回原文，只与自身相等
+        assert_eq!(key_origin("api.deepseek.com/v1/"), "api.deepseek.com/v1");
+        assert_eq!(key_origin("htps://api.openai.com/v1"), "htps://api.openai.com/v1");
+        assert_eq!(key_origin(""), "");
+    }
+
+    #[test]
+    fn saved_key_is_dropped_when_base_url_changes_origin() {
+        let mut existing = LlmFileV2::default();
+        let mut openai = cfg("p1", true, true, "sk-openai");
+        openai.base_url = "https://api.openai.com/v1".into();
+        openai.key_origin = "https://api.openai.com".into();
+        existing.providers.push(openai);
+
+        // 同一来源只改路径 / 大小写 / 默认端口：保留
+        for same in ["https://api.openai.com/v2", "HTTPS://API.OPENAI.COM:443/v1/"] {
+            let file = normalize_input(&save_input_at("p1", same, None), &existing);
+            assert_eq!(file.providers[0].api_key, "sk-openai", "{same}");
+            assert_eq!(file.providers[0].key_origin, "https://api.openai.com", "{same}");
+        }
+        // 换主机 / 端口 / 协议 / 填错：丢弃
+        for other in [
+            "https://api.deepseek.com/v1",
+            "http://192.168.1.20:11434/v1",
+            "http://api.openai.com/v1",
+            "https://api.openai.com:8443/v1",
+            "https://api.openai.co/v1",
+            "https://api.openai.com.evil.com/v1",
+            "",
+        ] {
+            let file = normalize_input(&save_input_at("p1", other, None), &existing);
+            assert_eq!(file.providers[0].api_key, "", "{other}");
+            assert_eq!(file.providers[0].key_origin, "", "{other}");
+        }
+        // 新填 Key：绑定到新地址
+        let file = normalize_input(
+            &save_input_at("p1", "https://api.deepseek.com/v1", Some("sk-ds")),
+            &existing,
+        );
+        assert_eq!(file.providers[0].api_key, "sk-ds");
+        assert_eq!(file.providers[0].key_origin, "https://api.deepseek.com");
+        // 清除 Key：来源一并清掉
+        let file = normalize_input(&save_input_at("p1", "https://api.openai.com/v1", Some("")), &existing);
+        assert_eq!(file.providers[0].key_origin, "");
+    }
+
+    #[test]
+    fn dropped_key_is_deleted_from_secret_store() {
+        let dir = temp_dir("key-origin-save");
+        let path = dir.join("llm-settings.json");
+        let first = normalize_input(
+            &save_input_at("p1", "https://api.openai.com/v1", Some("sk-openai")),
+            &LlmFileV2::default(),
+        );
+        write_file_at(&path, &first).unwrap();
+        let raw = fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("\"keyOrigin\": \"https://api.openai.com\""), "{raw}");
+        assert!(!raw.contains("sk-openai"), "{raw}");
+
+        let existing = read_or_migrate_at(&path).unwrap();
+        assert_eq!(existing.providers[0].api_key, "sk-openai");
+        let moved = normalize_input(&save_input_at("p1", "https://api.deepseek.com/v1", None), &existing);
+        write_file_at(&path, &moved).unwrap();
+        assert_eq!(store_for(&dir).get(&llm_account("p1")).unwrap(), None, "旧 Key 必须从密钥库删除");
+        let raw = fs::read_to_string(&path).unwrap();
+        assert!(!raw.contains("keyOrigin"), "无 Key 不写 keyOrigin：{raw}");
+        assert_eq!(read_or_migrate_at(&path).unwrap().providers[0].api_key, "");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn legacy_file_without_key_origin_binds_to_current_base_url() {
+        let dir = temp_dir("key-origin-legacy");
+        let path = dir.join("llm-settings.json");
+        let raw = r#"{"version":2,"providers":[{"id":"p1","baseUrl":"https://API.openai.com/v1","model":"gpt-4o-mini","enabled":true,"requiresKey":true},{"id":"p2","baseUrl":"http://localhost:11434/v1","requiresKey":false}]}"#;
+        fs::write(&path, raw).unwrap();
+        store_for(&dir).set(&llm_account("p1"), "sk-legacy").unwrap();
+
+        let loaded = load_settings_view(&path);
+        assert_eq!(loaded.file.providers[0].key_origin, "https://api.openai.com");
+        assert_eq!(loaded.file.providers[1].key_origin, "", "无 Key 不绑定");
+        let persisted = fs::read_to_string(&path).unwrap();
+        assert!(persisted.contains("\"keyOrigin\": \"https://api.openai.com\""), "{persisted}");
+        assert!(!persisted.contains("sk-legacy"), "{persisted}");
+        let view = serde_json::to_value(to_public(&loaded.file, HashMap::new())).unwrap();
+        assert_eq!(view["providers"][0]["keyState"], "present");
+
+        // 只走 read_or_migrate_at 的旧文件同样绑定
+        fs::write(&path, raw).unwrap();
+        let file = read_or_migrate_at(&path).unwrap();
+        assert_eq!(file.providers[0].key_origin, "https://api.openai.com");
+        assert!(fs::read_to_string(&path).unwrap().contains("keyOrigin"));
+        // 迁移后改地址保存：旧 Key 不跟过去
+        let moved = normalize_input(&save_input_at("p1", "https://api.deepseek.com/v1", None), &file);
+        assert_eq!(moved.providers[0].api_key, "");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn outbound_key_requires_matching_origin() {
+        let mut p = cfg("p1", true, true, "sk-x");
+        assert_eq!(outbound_key(&p).unwrap(), Some("sk-x"));
+        p.base_url = "https://api.deepseek.com/beta".into();
+        assert_eq!(outbound_key(&p).unwrap(), Some("sk-x"), "同来源换路径照常");
+        p.base_url = "http://192.168.1.20:11434/v1".into();
+        assert_eq!(
+            outbound_key(&p).unwrap_err(),
+            "已保存的 Key 属于 https://api.deepseek.com，当前地址是 http://192.168.1.20:11434，请为新地址重新填写 Key。"
+        );
+        // 没有来源记录的 Key 同样拒发
+        p.base_url = "https://api.deepseek.com/v1".into();
+        p.key_origin.clear();
+        assert!(outbound_key(&p).is_err());
+        // 没 Key：不带 Authorization
+        assert_eq!(outbound_key(&cfg("p2", true, false, "  ")).unwrap(), None);
+    }
+
+    /// 一次性 HTTP 服务：读完请求（头 + Content-Length 正文）后回最小 chat 响应，并把请求原文交回。
+    fn capture_chat_request() -> (String, std::sync::mpsc::Receiver<String>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let Ok((mut conn, _)) = listener.accept() else {
+                return;
+            };
+            let mut raw = Vec::new();
+            let mut buf = [0u8; 4096];
+            loop {
+                let n = conn.read(&mut buf).unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                raw.extend_from_slice(&buf[..n]);
+                let text = String::from_utf8_lossy(&raw).to_string();
+                if let Some((head, body)) = text.split_once("\r\n\r\n") {
+                    let len = head
+                        .lines()
+                        .filter_map(|line| line.split_once(':'))
+                        .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                        .and_then(|(_, value)| value.trim().parse::<usize>().ok())
+                        .unwrap_or(0);
+                    if body.len() >= len {
+                        break;
+                    }
+                }
+            }
+            let body = r#"{"choices":[{"finish_reason":"stop","message":{"content":"ok"}}]}"#;
+            let _ = write!(
+                conn,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = tx.send(String::from_utf8_lossy(&raw).to_string());
+        });
+        (format!("http://{addr}/v1"), rx)
+    }
+
+    #[test]
+    fn keyless_provider_sends_no_authorization_header() {
+        let (base, rx) = capture_chat_request();
+        let mut p = cfg("local", true, false, "");
+        p.base_url = base;
+        let result = tauri::async_runtime::block_on(chat_once(&p, None, "hi", false, 0.0, Some(8)));
+        assert!(result.is_ok());
+        let request = rx.recv_timeout(Duration::from_secs(5)).unwrap().to_ascii_lowercase();
+        assert!(request.starts_with("post /v1/chat/completions"), "{request}");
+        assert!(!request.contains("authorization"), "免 Key 不发 Authorization：{request}");
+    }
+
+    #[test]
+    fn keyed_provider_sends_bearer_only_to_bound_origin() {
+        let (base, rx) = capture_chat_request();
+        let mut p = cfg("p1", true, true, "sk-bound");
+        p.key_origin = key_origin(&base);
+        p.base_url = base;
+        let result = tauri::async_runtime::block_on(chat_once(&p, None, "hi", false, 0.0, Some(8)));
+        assert!(result.is_ok());
+        let request = rx.recv_timeout(Duration::from_secs(5)).unwrap().to_ascii_lowercase();
+        assert!(request.contains("authorization: bearer sk-bound"), "{request}");
+
+        // 来源不符：不建连接，直接报错
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let mut moved = cfg("p1", true, true, "sk-bound");
+        moved.base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let result = tauri::async_runtime::block_on(chat_once(&moved, None, "hi", false, 0.0, Some(8)));
+        let Err(ChatError::KeyMismatch(message)) = result else {
+            panic!("来源不符必须拒发");
+        };
+        assert!(message.starts_with("已保存的 Key 属于 https://api.deepseek.com"), "{message}");
+        assert!(listener.accept().is_err(), "不得连到新地址");
+    }
+
     // ---------- 公共视图 ----------
 
     #[test]
@@ -1548,6 +1839,7 @@ mod tests {
             raw["providers"][0].get("apiKey").is_none(),
             "密钥字段绝不出现在公共视图"
         );
+        assert!(raw["providers"][0].get("keyOrigin").is_none(), "前端不需要 keyOrigin");
         assert_eq!(raw["providers"][0]["presetId"], serde_json::Value::Null);
         assert!(!raw["providers"][1]["hasKey"].as_bool().unwrap());
         assert_eq!(raw["usage"]["p1"]["requests"], 1);

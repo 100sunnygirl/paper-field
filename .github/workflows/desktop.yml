@@ -51,6 +51,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.toolchain-targets }}
+          components: clippy
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -67,6 +68,10 @@ jobs:
 
       - name: Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml
+
+      # 字符串按字节切片在多字节输入上会 panic（如中文输入法的全角冒号）：全仓库禁止。
+      - name: Rust string-slice lint
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -A clippy::all -D clippy::string_slice
 
       - name: Build ${{ matrix.name }} installer
         shell: bash
