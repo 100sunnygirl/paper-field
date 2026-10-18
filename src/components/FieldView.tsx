@@ -6,9 +6,10 @@ import {
   type PaperListItem,
 } from "../lib/types";
 import { repo } from "../lib/repo";
-import { pad2 } from "../lib/util";
+import { pad2, shortcut } from "../lib/util";
 import { useField } from "../store";
 import { CheckSquare, PaperMatrix } from "./PaperMatrix";
+import { PaperSearch } from "./PaperSearch";
 import { Button, Icon } from "./ui";
 
 /** 搜索只改列表。进度和「本领域论文」沿用未过滤的领域论文，换领域后若搜索还在则补一次无搜索词的读取。 */
@@ -199,6 +200,10 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
         </div>
       ) : null}
 
+      <div className="ef-nav-search">
+        <PaperSearch />
+      </div>
+
       <div className={`ef-list-head ${batchMode ? "is-batch" : ""}`.trim()}>
         {batchMode ? (
           <>
@@ -281,11 +286,19 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
         />
       )}
 
-      {mode === "field" ? (
+      {/* 添加论文落进当前领域：只在看得见目标领域的阅读页和收新论文的入库页提供；
+          归档页只列已读论文，新论文不会出现在那里。领域切换走顶部领域名。 */}
+      {mode === "field" || mode === "intake" ? (
         <div className="ef-nav-foot">
-          <Button type="button" onClick={() => openDialog("pick-domain")}>
-            <Icon name="grid" />
-            切换研究领域
+          <Button
+            type="button"
+            className="ef-add-paper"
+            title={domain ? `导入 PDF 或手动录入，添加到「${domain.name}」` : "导入 PDF 或手动录入论文"}
+            onClick={() => openDialog("paper")}
+          >
+            <Icon name="plus" />
+            <span>添加论文</span>
+            <kbd>{shortcut("N")}</kbd>
           </Button>
         </div>
       ) : null}

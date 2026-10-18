@@ -524,7 +524,7 @@ export function ReadingStage({
                 searching
                   ? "可以调整搜索词，或清空搜索后继续阅读。"
                   : emptyDomain
-                    ? "使用顶部的「导入 PDF」添加第一篇论文。"
+                    ? "使用论文列表底部的「添加论文」导入第一篇论文。"
                     : "从左侧列表选择一篇论文，阅读摘要、撰写阅读笔记，或直接打开 PDF。"
               }
             />
@@ -580,25 +580,42 @@ export function ReadingStage({
           </span>
         </span>
         <span className="ef-toolbar-spacer" />
+        {/* 工具条按职责分两组、三级样式：
+            视图切换（专注 / 资料）只改布局，用安静的文字按钮；分隔线之后是对这篇论文的动作：
+            「写笔记」secondary，「打开 PDF」是全屏唯一的 primary；编辑 / 移动 / 删除这类低频
+            管理操作收进最右的「⋯」。所有控件同高，基线对齐。 */}
         <Button
           type="button"
           variant="text"
           className="ef-focus-btn"
           aria-pressed={focus}
+          title={focus ? "退出专注，恢复论文列表与资料栏" : "隐藏论文列表与资料栏，只留正文"}
           onClick={onToggleFocus}
         >
           <Icon name="focus" />
           {focus ? "退出专注" : "专注阅读"}
         </Button>
-        <Button type="button" variant="text" className="ef-context-toggle" onClick={onToggleContext}>
+        <Button
+          type="button"
+          variant="text"
+          className="ef-context-toggle"
+          title="论文资料、链接与本页目录"
+          onClick={onToggleContext}
+        >
           <Icon name="inbox" />
           资料
+        </Button>
+        <span className="ef-toolbar-divider" aria-hidden="true" />
+        <Button type="button" className="ef-write-note" title="跳到第一块未写的笔记并开始编辑" onClick={writeNote}>
+          <Icon name="edit" />
+          写笔记
         </Button>
         {paper.pdfPath ? (
           <Button
             type="button"
             className="ef-pdf-action"
             variant="primary"
+            title="用系统默认阅读器打开本地 PDF"
             onClick={() => {
               void openLocalPdf(paper.pdfPath!).catch((err: unknown) => {
                 setFlash({
@@ -616,34 +633,35 @@ export function ReadingStage({
             type="button"
             className="ef-pdf-action"
             variant="primary"
+            title="在浏览器中打开在线 PDF"
             onClick={() => void openExternal(arxivPdfUrl(paper.arxivId) ?? paper.pdfUrl)}
           >
-            <Icon name="file" />
+            <Icon name="external" />
             打开 PDF
-            <Icon name="external" className="ef-ico" />
           </Button>
         ) : (
-          <span className="ef-pdf-missing ef-pdf-action">
-            这篇论文还没有 PDF。
-            <Button type="button" variant="text" onClick={() => openDialog("edit-paper", paper.id)}>
-              编辑论文信息
-            </Button>
-          </span>
+          <Button
+            type="button"
+            className="ef-pdf-action"
+            title="这篇论文还没有 PDF，可在论文信息中选择本地文件或填写公开链接"
+            onClick={() => openDialog("edit-paper", paper.id)}
+          >
+            <Icon name="file" />
+            补充 PDF
+          </Button>
         )}
-        <Button type="button" className="ef-write-note" onClick={writeNote}>
-          <Icon name="edit" />
-          写笔记
-        </Button>
         <div className="ef-menu-wrap" ref={menuRef}>
           <Button
             type="button"
             variant="text"
+            className="ef-icon-btn ef-more-btn"
+            aria-label="更多操作"
+            title="更多操作"
             aria-expanded={menuOpen}
             aria-controls="action-menu"
             onClick={() => setMenuOpen((open) => !open)}
           >
-            <span>更多</span>
-            <Icon name="down" />
+            <Icon name="more" />
           </Button>
           <div className="ef-action-menu" id="action-menu" hidden={!menuOpen}>
             <button
@@ -712,7 +730,7 @@ export function ReadingStage({
                 </span>
                 <i className="ef-section-rule" aria-hidden="true" />
               </h2>
-              <p>{paper.abstract || "尚未填写摘要。可在「更多」中编辑论文信息。"}</p>
+              <p>{paper.abstract || "尚未填写摘要。可在工具条右侧「更多操作」中编辑论文信息。"}</p>
             </section>
             <div className="ef-notes-heading">
               <h2 className="ef-section-label">

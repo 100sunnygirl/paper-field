@@ -276,3 +276,24 @@ describe("PaperNav · 领域标题与批量入口", () => {
     expect(toggle).toHaveTextContent("批量");
   });
 });
+
+describe("PaperNav · 搜索与添加论文住在列表栏", () => {
+  it.each(["field", "archive", "intake"] as const)("%s 模式在列表上方渲染搜索框", (mode) => {
+    useField.setState({ mode });
+    render(<PaperNav />);
+    expect(screen.getByLabelText("搜索论文")).toBeInTheDocument();
+  });
+
+  it.each(["field", "intake"] as const)("%s 模式在列表底部提供「添加论文」，点击打开添加对话框", (mode) => {
+    useField.setState({ mode });
+    render(<PaperNav />);
+    fireEvent.click(screen.getByRole("button", { name: /添加论文/ }));
+    expect(useField.getState().dialog).toBe("paper");
+  });
+
+  it("归档页只列已读论文，不提供「添加论文」", () => {
+    useField.setState({ mode: "archive" });
+    render(<PaperNav />);
+    expect(screen.queryByRole("button", { name: /添加论文/ })).toBeNull();
+  });
+});

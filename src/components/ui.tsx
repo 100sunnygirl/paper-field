@@ -44,6 +44,7 @@ const ICONS = {
   spark: <path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5zM20 2v4m-2-2h4" />,
   close: <path d="m5 5 14 14M19 5 5 19" />,
   menu: <path d="M3 6h18M3 12h18M3 18h18" />,
+  more: <path d="M5 11h2v2H5zM11 11h2v2h-2zM17 11h2v2h-2z" />,
   trash: <path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7" />,
   batch: (
     <>

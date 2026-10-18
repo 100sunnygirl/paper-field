@@ -1,19 +1,15 @@
-import { useEffect, useMemo, useState, useSyncExternalStore, type CSSProperties } from "react";
+import { useMemo, useSyncExternalStore, type CSSProperties } from "react";
 import { getActivity, subscribeActivity } from "../lib/activity";
 import { deriveJobsView } from "../lib/jobsView";
-import { repo } from "../lib/repo";
 import { hasUsableProvider } from "../lib/settings";
 import {
   MINERU_PROVIDER_LABELS,
   MODE_LABELS,
-  READING_STATUS_LABELS,
   type AppMode,
-  type Domain,
-  type PaperListItem,
 } from "../lib/types";
 import { shortcut } from "../lib/util";
 import { useField } from "../store";
-import { Button, Icon } from "./ui";
+import { Icon } from "./ui";
 
 const MODE_ICONS: Record<AppMode, "grid" | "archive" | "inbox" | "settings"> = {
   field: "grid",
@@ -59,131 +55,18 @@ export function Rail({ mode }: { mode: AppMode }) {
   );
 }
 
-export function Dock({
-  search,
-}: {
-  domain: Domain | null;
-  search: string;
-}) {
-  const setSearch = useField((s) => s.setSearch);
-  const openDialog = useField((s) => s.openDialog);
-  const mode = useField((s) => s.mode);
-  const selectDomain = useField((s) => s.selectDomain);
-  const selectPaper = useField((s) => s.selectPaper);
-  const [scopeOpen, setScopeOpen] = useState(false);
-  const [scopeResults, setScopeResults] = useState<PaperListItem[] | null>(null);
-  const [scopeSearching, setScopeSearching] = useState(false);
-  const query = search.trim();
-
-  // 跨领域检索（repo.searchAll）：与单领域列表过滤并行，作为搜索框的下拉结果。
-  useEffect(() => {
-    if (!query) {
-      setScopeOpen(false);
-      setScopeResults(null);
-      setScopeSearching(false);
-      return;
-    }
-    setScopeSearching(true);
-    const timer = window.setTimeout(() => {
-      repo
-        .searchAll(query)
-        .then((rows) => setScopeResults(rows))
-        .catch(() => setScopeResults([]))
-        .finally(() => setScopeSearching(false));
-    }, 300);
-    return () => window.clearTimeout(timer);
-  }, [query]);
-
-  useEffect(() => {
-    if (mode === "system") setScopeOpen(false);
-  }, [mode]);
-
-  async function jumpToPaper(item: PaperListItem) {
-    setScopeOpen(false);
-    await selectDomain(item.domainId);
-    await selectPaper(item.id);
-  }
-
+/**
+ * 顶栏只放品牌。搜索与「添加论文」都作用于论文列表，放在列表栏里（PaperSearch /
+ * PaperNav 底部），不在顶栏悬空。
+ */
+export function Dock() {
   return (
     <header className="ef-dock">
       <div className="ef-brand">
         <span className="ef-mark" aria-hidden="true" />
-        <span>
-          <strong>PAPER FIELD</strong>
-          <small>论文阅读工作台</small>
-        </span>
+        <strong>PAPER FIELD</strong>
+        <small>论文阅读工作台</small>
       </div>
-      {mode !== "system" ? (
-        <div className="ef-search-wrap">
-          <label className="ef-search">
-            <Icon name="search" />
-            <input
-              id="global-search"
-              value={search}
-              onChange={(e) => {
-                setScopeOpen(true);
-                void setSearch(e.target.value);
-              }}
-              onFocus={() => {
-                if (query) setScopeOpen(true);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Escape" && scopeOpen) {
-                  e.stopPropagation();
-                  setScopeOpen(false);
-                }
-              }}
-              placeholder="搜索标题、作者、标签或 DOI"
-              aria-label="搜索论文"
-            />
-            <kbd>{shortcut("K")}</kbd>
-          </label>
-          {scopeOpen && query ? (
-            <div className="ef-search-scope" aria-label="跨领域搜索结果">
-              <div className="ef-search-scope-head">
-                <span>
-                  全部领域共匹配 {scopeSearching ? "…" : (scopeResults?.length ?? 0)} 篇
-                </span>
-                <button type="button" onClick={() => setScopeOpen(false)}>
-                  收起
-                </button>
-              </div>
-              {scopeSearching ? (
-                <p className="ef-search-scope-tip">
-                  <i className="ef-pulse" aria-hidden="true" />
-                  正在跨领域检索…
-                </p>
-              ) : scopeResults?.length ? (
-                scopeResults.slice(0, 8).map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    className="ef-search-scope-item"
-                    onClick={() => void jumpToPaper(item)}
-                  >
-                    <span className="ef-search-scope-title">{item.titleZh || item.title}</span>
-                    <span className="ef-search-scope-meta">
-                      {item.domainName} · {item.firstAuthor ?? "作者待补充"} ·{" "}
-                      {READING_STATUS_LABELS[item.readingStatus]}
-                    </span>
-                  </button>
-                ))
-              ) : (
-                <p className="ef-search-scope-tip">没有匹配的论文。可以调整搜索词。</p>
-              )}
-            </div>
-          ) : null}
-        </div>
-      ) : (
-        <div className="ef-header-spacer" />
-      )}
-      <span className="ef-header-spacer" />
-      {mode !== "system" ? (
-        <Button type="button" className="new-paper" onClick={() => openDialog("paper")}>
-          <Icon name="plus" />
-          导入 PDF
-        </Button>
-      ) : null}
     </header>
   );
 }
