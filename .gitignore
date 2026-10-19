@@ -36,3 +36,6 @@ agent-tools/
 .env.*
 !
 .env.example
+
+# Security audit register (map of weaknesses; never publish)
+.security-audit/
