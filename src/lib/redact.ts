@@ -25,7 +25,8 @@ export function redactSecrets(text: string): string {
     .replace(/\b((?:x-api-key|x-goog-api-key|api-key)["']?\s*[:=]\s*["']?)[A-Za-z0-9\-._~+/]{8,}=*/gi, "$1…")
     .replace(SECRET_PARAM_RE, "$1…")
     // scheme://user:pass@host → scheme://***@host
-    .replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/?#@"'<>]+@/gi, "$1***@")
+    // 长度都有上限：不设上限时 `a.a.a…` 或一串 `://` 会让正则回溯成平方级。
+    .replace(/\b([a-z][a-z0-9+.-]{0,31}:\/\/)[^\s/?#@"'<>]{1,256}@/gi, "$1***@")
     // 智谱 API Key：32 位十六进制 id + "." + 16 位 secret。
     .replace(/\b[0-9a-f]{32}\.[A-Za-z0-9]{16}\b/g, "…");
 }

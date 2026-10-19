@@ -373,8 +373,12 @@ pub fn redact_secrets(input: &str) -> String {
         }
         // scheme://user:pass@host → scheme://***@host
         if has_prefix(&chars[index..], "://") {
-            let info = chars[index + 3..].iter().take_while(|ch| !matches!(ch, '/' | '?' | '#' | '@' | '"' | '\'' | '<' | '>') && !ch.is_whitespace()).count();
-            if info > 0 && chars.get(index + 3 + info) == Some(&'@') {
+            let info = chars[index + 3..]
+                .iter()
+                .take(USERINFO_MAX + 1)
+                .take_while(|ch| !matches!(ch, '/' | '?' | '#' | '@' | '"' | '\'' | '<' | '>') && !ch.is_whitespace())
+                .count();
+            if info > 0 && info <= USERINFO_MAX && chars.get(index + 3 + info) == Some(&'@') {
                 out.push_str("://***@");
                 index += 3 + info + 1;
                 continue;
@@ -402,6 +406,9 @@ fn has_prefix_ignore_case(chars: &[char], prefix: &str) -> bool {
         .all(|(left, right)| left.eq_ignore_ascii_case(right))
 }
 
+/// userinfo 的扫描上限：每个 `://` 最多往后看这么远，避免一长串 `://` 变成平方级。
+const USERINFO_MAX: usize = 256;
+
 fn is_token_char(ch: char) -> bool {
     ch.is_ascii_alphanumeric() || ch == '_' || ch == '-'
 }
@@ -419,8 +426,9 @@ const SECRET_PARAMS: &[&str] = &[
 
 /// 返回参数名长度（含 `=`）。
 fn secret_param_len(chars: &[char]) -> Option<usize> {
-    let name = chars.iter().take_while(|ch| **ch != '=' && !is_param_end(**ch)).count();
-    if chars.get(name) != Some(&'=') {
+    // 参数名最多 32 个字符、遇 `?` 即停：否则一长串 `?` / `&` 会让每个位置都扫到行尾（平方级）。
+    let name = chars.iter().take(33).take_while(|ch| !matches!(ch, '=' | '?') && !is_param_end(**ch)).count();
+    if name > 32 || chars.get(name) != Some(&'=') {
         return None;
     }
     let lower: String = chars[..name].iter().collect::<String>().to_ascii_lowercase();
@@ -542,6 +550,16 @@ mod tests {
         assert!(cleaned.contains("x-api-key: …"), "{cleaned}");
         assert!(cleaned.contains("?X-Amz-Signature=…&id=7"), "{cleaned}");
         assert!(cleaned.contains("https://***@api.example/v1"), "{cleaned}");
+    }
+
+    #[test]
+    fn adversarial_input_stays_linear() {
+        for unit in ["?", "&", "://", "?a", "eyJ", "x-api-key:"] {
+            let raw = unit.repeat(200_000);
+            let started = std::time::Instant::now();
+            redact_secrets(&raw);
+            assert!(started.elapsed() < std::time::Duration::from_secs(2), "{unit} 太慢：{:?}", started.elapsed());
+        }
     }
 
     #[test]

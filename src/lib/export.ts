@@ -77,6 +77,9 @@ function paperMarkdown(paper: PaperDetail): string {
 
   const pdf = paper.pdfPath ? fileBaseName(paper.pdfPath) : paper.pdfUrl;
   const field = (value: string | number | null | undefined) => (value == null || value === "" ? "—" : inlineText(value));
+  // 链接用 <…> 自动链接原样写出（转义会把 a_b 变成 a\_b，链接失效）；不是干净的 http(s) 地址才按文本转义。
+  const link = (value: string | null | undefined) =>
+    value && /^https?:\/\/[^\s<>]+$/i.test(value.trim()) ? `<${value.trim()}>` : field(value);
 
   return `# ${inlineText(paper.title)}
 
@@ -87,9 +90,9 @@ ${paper.titleZh ? `> ${inlineText(paper.titleZh)}\n` : ""}
 - DOI: ${field(paper.doi)}
 - arXiv: ${field(paper.arxivId)}
 - Open source: ${inlineText(paper.codeOpenSource)}
-- PDF: ${field(pdf)}
-- Code: ${field(paper.codeUrl)}
-- Project: ${field(paper.projectPage)}
+- PDF: ${link(pdf)}
+- Code: ${link(paper.codeUrl)}
+- Project: ${link(paper.projectPage)}
 - Tags: ${paper.tags.map(inlineText).join(", ") || "—"}
 - Labs: ${labs || "—"}
 

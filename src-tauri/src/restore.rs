@@ -270,7 +270,7 @@ fn neutralize_mineru(value: &mut serde_json::Value) -> Option<Option<&'static st
     }
     if let Some(local) = value.get_mut("local") {
         let socket = local.get("socketPath").and_then(serde_json::Value::as_str).unwrap_or("");
-        let keep = !socket.starts_with("\\\\") && !socket.starts_with("//") && !socket.contains("://");
+        let keep = !crate::library::is_remote_or_device_path(socket) && !socket.contains("://");
         disable(local, keep)?;
     }
     Some(changed.then_some("MinerU 的 SSH 远程解析已停用"))

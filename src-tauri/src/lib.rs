@@ -165,7 +165,9 @@ fn export_files_at(root: String, files: Vec<ExportFile>) -> Result<(), String> {
 /// 导出只产出 Markdown（export.ts 的 README.md 与各论文 .md）：名字与内容来自渲染进程，
 /// 扩展名固定为 .md，免得被拿来往用户选的目录里写 .command / .app 之类可执行文件。
 fn is_markdown_name(rel: &str) -> bool {
-    std::path::Path::new(rel)
+    // `:` 一律拒绝：NTFS 上 `x.bat:.md` 是 x.bat 的备用数据流。
+    !rel.contains(':')
+        && std::path::Path::new(rel)
         .extension()
         .and_then(|ext| ext.to_str())
         .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
@@ -405,9 +407,17 @@ mod tester_export_repro {
 
 #[cfg(test)]
 mod export_tests {
-    use super::export_one;
+    use super::{export_one, is_markdown_name};
     use std::fs;
     use std::path::PathBuf;
+
+    #[test]
+    fn markdown_names_reject_alternate_data_streams() {
+        assert!(is_markdown_name("MM-01/README.md") && is_markdown_name("a/B.MD"));
+        for bad in ["x.bat:.md", "a/x.md:evil", "C:x.md", "x.txt"] {
+            assert!(!is_markdown_name(bad), "{bad}");
+        }
+    }
 
     fn scratch(name: &str) -> (PathBuf, PathBuf) {
         let base = crate::test_util::unique_temp_dir(&format!("pf-export-{name}"));

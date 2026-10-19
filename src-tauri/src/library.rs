@@ -27,7 +27,9 @@ fn library_file_name(stored: &str) -> Option<&str> {
         && rest != ".."
         && !rest.contains('/')
         && !rest.contains('\\')
+        && !rest.contains(':')
         && !rest.contains('\0');
+    // `:` 也拒绝：Windows 上 `D:x.pdf` 这类带盘符的相对名会让 join 丢掉文库目录。
     valid.then_some(rest)
 }
 
@@ -39,7 +41,22 @@ pub fn is_remote_or_device_path(raw: &str) -> bool {
     let mut chars = s.chars();
     let sep = |c: Option<char>| matches!(c, Some('\\' | '/'));
     let (first, second) = (chars.next(), chars.next());
+    if is_verbatim_disk(s) {
+        return false;
+    }
     (sep(first) && sep(second)) || s.starts_with("\\??\\") || s.starts_with("/??/")
+}
+
+/// `\\?\C:\…`：本机盘符的长路径写法（dunce 对超过 260 字符的路径保留它），不是网络或设备路径。
+fn is_verbatim_disk(s: &str) -> bool {
+    let Some(rest) = s.strip_prefix("\\\\?\\") else {
+        return false;
+    };
+    let mut chars = rest.chars();
+    matches!(
+        (chars.next(), chars.next(), chars.next()),
+        (Some(letter), Some(':'), Some('\\')) if letter.is_ascii_alphabetic()
+    )
 }
 
 /// 本次运行里用户在系统对话框中选中的 PDF（含所选文件夹里列出的），由 Rust 侧记录。
@@ -78,7 +95,11 @@ pub fn authorize_pdf(config_dir: &Path, grants: &PdfGrants, stored: &str) -> Res
     }
     let library = config_dir.join(LIBRARY_DIR);
     if let Some(name) = library_file_name(stored) {
-        return Ok(library.join(name));
+        let path = library.join(name);
+        if path.parent() == Some(library.as_path()) {
+            return Ok(path);
+        }
+        return Err(UNAUTHORIZED_PDF.into());
     }
     let path = Path::new(stored);
     let plain = path.components().all(|c| !matches!(c, Component::ParentDir | Component::CurDir));
@@ -145,6 +166,16 @@ pub fn relativize(config_dir: &Path, stored: &str) -> Option<String> {
 /// 启动时（恢复与目录迁移之后、数据库层打开之前）把能改写的旧绝对路径改成文库相对名。
 /// 幂等：每次启动都可以跑，换机恢复的备份也在这里被修正。返回改写的行数。
 /// 顺带装入文库外旧路径的快照（首次运行时从改写后的数据库建立，见 [`LEGACY_FILE`]）。
+/// 本次启动刚应用了一次恢复、而旧路径快照还没建立：库来自备份，快照建成空的，
+/// 备份数据库里的绝对路径不会因为恰好赶上升级首启而被永久放行。
+pub fn seal_legacy_snapshot_if_missing(config_dir: &Path) -> Result<(), String> {
+    let file = config_dir.join(LEGACY_FILE);
+    if file.exists() {
+        return Ok(());
+    }
+    crate::io_util::atomic_write(&file, b"[]")
+}
+
 pub fn relativize_database(config_dir: &Path) -> Result<u64, String> {
     let (changed, remaining) = relativize_rows(config_dir)?;
     load_legacy_snapshot(config_dir, || Ok(remaining))?;
@@ -278,7 +309,6 @@ mod tests {
         for bad in [
             r"\\attacker\share\x.pdf",
             "//attacker/share/x.pdf",
-            r"\\?\C:\x.pdf",
             r"\\?\UNC\attacker\share\x.pdf",
             r"\\.\PhysicalDrive0",
             r"\??\C:\x.pdf",
@@ -287,7 +317,8 @@ mod tests {
         ] {
             assert!(is_remote_or_device_path(bad), "{bad}");
         }
-        for ok in ["/Users/a/x.pdf", r"C:\Users\a\x.pdf", "library/a.pdf", r"\Users\a.pdf", ""] {
+        // `\\?\C:\…` 是本机盘符的长路径写法，按本地路径对待（旧数据里超过 260 字符的路径就是这样存的）。
+        for ok in ["/Users/a/x.pdf", r"C:\Users\a\x.pdf", "library/a.pdf", r"\Users\a.pdf", "", r"\\?\C:\x.pdf"] {
             assert!(!is_remote_or_device_path(ok), "{ok}");
         }
     }
@@ -319,6 +350,31 @@ mod tests {
         grants.grant(PathBuf::from(unc));
         assert_eq!(authorize_pdf(&config, &grants, &picked.to_string_lossy()).unwrap(), picked);
         assert_eq!(authorize_pdf(&config, &grants, unc).unwrap(), PathBuf::from(unc));
+    }
+
+    #[test]
+    fn drive_relative_names_and_verbatim_disks() {
+        let config = dir("drive-relative");
+        let grants = PdfGrants::default();
+        for stored in ["library/D:x.pdf", "library\\C:secret.pdf", "library/x.pdf:ads"] {
+            assert!(authorize_pdf(&config, &grants, stored).is_err(), "{stored}");
+        }
+        assert!(!is_remote_or_device_path("\\\\?\\C:\\Users\\a\\very\\long.pdf"));
+        assert!(is_remote_or_device_path("\\\\?\\UNC\\evil\\share\\x.pdf"));
+        assert!(is_remote_or_device_path("\\\\?\\GLOBALROOT\\Device\\x.pdf"));
+        assert!(is_remote_or_device_path("/\\evil\\share\\x.pdf"));
+    }
+
+    #[test]
+    fn restored_launch_seals_an_empty_snapshot() {
+        let config = dir("seal");
+        seal_legacy_snapshot_if_missing(&config).unwrap();
+        load_legacy_snapshot(&config, || Ok(vec!["/backup/abs.pdf".into()])).unwrap();
+        assert!(authorize_pdf(&config, &PdfGrants::default(), "/backup/abs.pdf").is_err());
+        // 已有快照不被覆盖
+        std::fs::write(config.join(LEGACY_FILE), br#"["/mine.pdf"]"#).unwrap();
+        seal_legacy_snapshot_if_missing(&config).unwrap();
+        assert_eq!(std::fs::read(config.join(LEGACY_FILE)).unwrap(), br#"["/mine.pdf"]"#);
     }
 
     #[test]

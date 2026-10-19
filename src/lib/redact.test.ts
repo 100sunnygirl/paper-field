@@ -57,4 +57,12 @@ describe("redactSecrets（SEC-015）", () => {
   ])("不误伤普通文本：%s", (text) => {
     expect(redactSecrets(text)).toBe(text);
   });
+
+  it("对抗输入保持线性：长串 a.a.a 或 :// 不会卡住日志", () => {
+    for (const unit of ["a.", "://", "?key", "eyJ"]) {
+      const started = Date.now();
+      redactSecrets(unit.repeat(40_000));
+      expect(Date.now() - started).toBeLessThan(1000);
+    }
+  });
 });

@@ -120,6 +120,14 @@ describe("buildDomainExport", () => {
     expect(new Set(paths).size).toBe(paths.length);
   });
 
+  it("链接字段以 <…> 原样写出，不被转义破坏；非 http(s) 仍按文本转义", () => {
+    const body = buildDomainExport(makeDomain(), [
+      makePaper({ codeUrl: "https://github.com/a_b/c_d", projectPage: "javascript:alert(1)//_x_" }),
+    ])[1].content;
+    expect(body).toContain("- Code: <https://github.com/a_b/c_d>");
+    expect(body).toContain("- Project: javascript:alert(1)//\\_x\\_");
+  });
+
   it("中文标题进入文件名 slug，领域目录取 code", () => {
     const files = buildDomainExport(makeDomain(), [makePaper({ title: "视觉指令微调", year: null })], new Date(2026, 0, 2, 3, 4, 5));
     expect(files[0].relativePath).toBe("MM-01-20260102-030405/README.md");
@@ -213,7 +221,7 @@ describe("导出 markdown 不让元数据注入结构（SEC-013）", () => {
     const win = paperBody(makePaper({ pdfPath: "C:\\Users\\alice\\AppData\\pdfs\\x_y.pdf" }));
     expect(win).toContain("- PDF: x\\_y.pdf");
     expect(win).not.toContain("alice");
-    expect(paperBody(makePaper({ pdfUrl: "https://arxiv.org/pdf/1" }))).toContain("- PDF: https://arxiv.org/pdf/1");
+    expect(paperBody(makePaper({ pdfUrl: "https://arxiv.org/pdf/1" }))).toContain("- PDF: <https://arxiv.org/pdf/1");
   });
 
   it("README 索引里的标题与领域名同样转义", () => {
