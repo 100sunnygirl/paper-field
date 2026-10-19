@@ -78,8 +78,9 @@ function NoteEditor({
           {pad2(index + 1)}
         </span>
         <h3>{label.zh}</h3>
-        <span className={`ef-note-source is-${block.source}`}>{noteSourceLabel(block)}</span>
-        {editing ? null : (
+        {/* 来源标签只对写了内容的块有意义；空块不标「手动笔记」。 */}
+        {value.trim() ? <span className={`ef-note-source is-${block.source}`}>{noteSourceLabel(block)}</span> : null}
+        {editing || !value.trim() ? null : (
           <button type="button" className="ef-note-edit" onClick={onStart} aria-label={`编辑${label.zh}`}>
             <Icon name="edit" />
             编辑
@@ -109,7 +110,11 @@ function NoteEditor({
       ) : value.trim() ? (
         <div className="ef-note-text ef-md" onClick={onMarkdownClick} dangerouslySetInnerHTML={{ __html: renderMarkdown(value) }} />
       ) : (
-        <p className="ef-empty-note">尚未记录，点击「编辑」写下你的判断。</p>
+        // 空块本身就是入口：点这里就地开写，不必去工具条或右上角找按钮。
+        <button type="button" className="ef-note-start" onClick={onStart}>
+          <Icon name="plus" />
+          写{label.zh}
+        </button>
       )}
     </section>
   );
@@ -493,12 +498,6 @@ export function ReadingStage({
     requestAnimationFrame(() => jump(`note-${kind}`));
   }
 
-  function writeNote() {
-    if (!paper) return;
-    const empty = NOTE_DISPLAY_ORDER.find((kind) => !paper.notes[kind].content.trim());
-    startEdit(empty ?? "remarks");
-  }
-
   if (!paper) {
     const searching = mode === "field" && search.trim().length > 0;
     const emptyDomain = mode === "field" && !searching;
@@ -580,10 +579,10 @@ export function ReadingStage({
           </span>
         </span>
         <span className="ef-toolbar-spacer" />
-        {/* 工具条按职责分两组、三级样式：
-            视图切换（专注 / 资料）只改布局，用安静的文字按钮；分隔线之后是对这篇论文的动作：
-            「写笔记」secondary，「打开 PDF」是全屏唯一的 primary；编辑 / 移动 / 删除这类低频
-            管理操作收进最右的「⋯」。所有控件同高，基线对齐。 */}
+        {/* 工具条按职责分两组：视图切换（专注 / 资料）只改布局，用安静的文字按钮；
+            分隔线之后是对这篇论文的动作：「打开 PDF」是全屏唯一的 primary，编辑论文信息 /
+            移动 / 删除这类低频管理操作收进最右的「⋯」。笔记不在这里：每块笔记就地编辑。
+            所有控件同高，基线对齐。 */}
         <Button
           type="button"
           variant="text"
@@ -606,10 +605,6 @@ export function ReadingStage({
           资料
         </Button>
         <span className="ef-toolbar-divider" aria-hidden="true" />
-        <Button type="button" className="ef-write-note" title="跳到第一块未写的笔记并开始编辑" onClick={writeNote}>
-          <Icon name="edit" />
-          写笔记
-        </Button>
         {paper.pdfPath ? (
           <Button
             type="button"
@@ -672,7 +667,10 @@ export function ReadingStage({
               }}
             >
               <Icon name="edit" />
-              编辑论文信息
+              <span className="ef-menu-text">
+                编辑论文信息
+                <small>标题、作者、摘要、PDF 与链接</small>
+              </span>
             </button>
             <button
               type="button"
@@ -730,7 +728,16 @@ export function ReadingStage({
                 </span>
                 <i className="ef-section-rule" aria-hidden="true" />
               </h2>
-              <p>{paper.abstract || "尚未填写摘要。可在工具条右侧「更多操作」中编辑论文信息。"}</p>
+              {paper.abstract ? (
+                <p>{paper.abstract}</p>
+              ) : (
+                <p className="ef-empty-note">
+                  尚未填写摘要。摘要属于论文信息，不是笔记：
+                  <Button type="button" variant="link" onClick={() => openDialog("edit-paper", paper.id)}>
+                    编辑论文信息
+                  </Button>
+                </p>
+              )}
             </section>
             <div className="ef-notes-heading">
               <h2 className="ef-section-label">
