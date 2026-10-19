@@ -237,7 +237,7 @@ jobs:
           else:
               updates = (
                   "- Updates: this release has no updater signature (`TAURI_SIGNING_PRIVATE_KEY` was not set). "
-                  "设置里的「检查更新」stays unavailable until a signed release is published and the placeholder public key is replaced."
+                  "设置里的「检查更新」stays unavailable until a signed release is published."
               )
           body = "\n".join([
               "Paper Field desktop installers.",

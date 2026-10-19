@@ -254,7 +254,7 @@ xattr -dr com.apple.quarantine "/Applications/Paper Field.app"
 
    命令会问一个密码（可以留空）。它打印两段内容：公钥，以及私钥文件路径。私钥文件在 `~/.tauri/paper-field.key`，只留在你的电脑和 GitHub Secret 里。
 
-2. 用打印出来的公钥**替换** `src-tauri/tauri.conf.json` 里 `plugins.updater.pubkey` 的整段值。现在这段是占位公钥：解码后的注释里有 `PLACEHOLDER`。占位期间，设置页的「检查更新」不会联网，只提示尚未配置公钥。换成你自己的公钥并重新打包之后，按钮才会真正检查。
+2. 用打印出来的公钥**替换** `src-tauri/tauri.conf.json` 里 `plugins.updater.pubkey` 的整段值。本仓库已填入正式公钥（key ID `D7BE557F51D73642`）；fork 后自己发布时要换成你自己的公钥。公钥解码后的注释里含 `PLACEHOLDER` 时，设置页的「检查更新」不会联网，只提示尚未配置公钥。
 
 3. 把私钥文件的**全部内容**存成 Secret `TAURI_SIGNING_PRIVATE_KEY`（不是文件路径；把文件打开，从 `untrusted comment` 起整段复制）。如果生成时设了密码，再加 Secret `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。没有私钥时，工作流会把 `createUpdaterArtifacts` 关掉，安装包照常产出，只是没有 `.sig` 和 `latest.json`。
 

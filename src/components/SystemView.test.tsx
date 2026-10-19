@@ -556,10 +556,10 @@ describe("SystemView · 设置页顺序与 MinerU 高级项", () => {
     expect(within(api).getByText(/pipeline 走通用解析流水线/)).toBeInTheDocument();
   });
 
-  it("未配置更新公钥时，检查更新给出中文说明且不报 download", async () => {
+  it("已配置正式公钥：桌面应用之外点检查更新只给中文说明，不报 download", async () => {
     render(<SystemView />);
     fireEvent.click(screen.getByRole("button", { name: "检查更新" }));
-    expect(await screen.findByText(/尚未配置更新签名公钥/)).toBeInTheDocument();
+    expect(await screen.findByText(/检查更新只在桌面应用里可用/)).toBeInTheDocument();
   });
 });
 
