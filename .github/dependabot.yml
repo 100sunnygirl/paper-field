@@ -1,14 +1,49 @@
 version: 2
+# 小版本与补丁按生态各合成一个 PR，每周一次；大版本不自动提，按需手动升级。
+# Tauri 插件不自动升：Rust 端 tauri-plugin-* 与 npm 端 @tauri-apps/plugin-* 必须同一小版本，
+# Dependabot 只能各升一边，单独的 PR 必然构建失败，所以两边一起手动升。
+# 注意：ignore 也可能挡住安全更新（只在新大版本里修复的漏洞、被忽略的 Tauri/sqlx 包），
+# 这类告警会出现在 Security → Dependabot alerts，需要手动升级。
 updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
   - package-ecosystem: npm
     directory: /
     schedule:
       interval: weekly
+    groups:
+      npm-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@tauri-apps/*"
+
   - package-ecosystem: cargo
     directory: /src-tauri
     schedule:
       interval: weekly
+    groups:
+      cargo-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "tauri"
+      - dependency-name: "tauri-build"
+      - dependency-name: "tauri-plugin-*"
+      # sqlx 与 libsqlite3-sys 按版本精确配对（Cargo.toml 里用 = 固定），一起手动升。
+      - dependency-name: "sqlx"
+      - dependency-name: "libsqlite3-sys"
