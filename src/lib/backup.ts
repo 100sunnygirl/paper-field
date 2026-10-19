@@ -17,6 +17,8 @@ export interface BackupSummary {
   latestUpdatedAt: string | null;
   pdfs: number;
   zipBytes: number;
+  /** Restored LLM/MinerU network settings that were switched off; null when none. */
+  settingsNotice?: string | null;
 }
 
 export function formatBytes(n: number): string {
@@ -33,6 +35,7 @@ export function restoreConfirmText(backup: BackupSummary, current: number | null
     ...(current !== null && backup.papers < current
       ? ["", `⚠ 备份比当前少 ${current - backup.papers} 篇，恢复后这些论文会丢失。`]
       : []),
+    ...(backup.settingsNotice ? ["", backup.settingsNotice] : []),
     "",
     "恢复会用备份替换当前文库，原文件会移到 pre-restore 目录。确定后应用将重启。",
   ];

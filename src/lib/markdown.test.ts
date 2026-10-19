@@ -125,3 +125,49 @@ describe("renderMarkdown 正常 GFM 输出", () => {
     expect(link?.textContent).toBe("官网");
   });
 });
+
+describe("renderMarkdown 加固（SEC-017）", () => {
+  afterEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  it.each([
+    ["svg", '<svg><a href="javascript:alert(1)"><text>x</text></a></svg>'],
+    ["svg foreignObject", "<svg><foreignObject><img src=x></foreignObject></svg>"],
+    ["mathml", "<math><mi>x</mi><mtext><img src=x></mtext></math>"],
+  ])("剥掉 %s", (_name, payload) => {
+    const html = renderMarkdown(payload);
+    expect(html).not.toMatch(/<(svg|math|foreignobject|mi|mtext|text)\b/i);
+    expect(html).not.toMatch(/javascript\s*:/i);
+  });
+
+  it("剥掉输入里的 class / id / data-* / 伪造的 data-remote-src", () => {
+    const html = renderMarkdown(
+      '<div class="ef-flash ef-md-remote-img" id="fulltext" data-x="1">假提示</div>' +
+        '<button data-remote-src="https://evil.example/">打开</button>',
+    );
+    expect(html).not.toMatch(/\s(class|id|data-[\w-]+)=/i);
+    const container = mount(html);
+    expect(container.querySelector("div")?.textContent).toBe("假提示");
+    expect(container.querySelector("[data-remote-src]")).toBeNull();
+  });
+
+  it("代码块的 language- class 一并剥掉，内容不变", () => {
+    const container = mount(renderMarkdown("```ts\nlet a = 1;\n```"));
+    const code = container.querySelector("pre > code");
+    expect(code?.getAttribute("class")).toBeNull();
+    expect(code?.textContent).toBe("let a = 1;\n");
+  });
+
+  it("标题照常渲染，不带 id（目录锚点只属于应用自身）", () => {
+    const container = mount(renderMarkdown("# 第一章\n\n## abstract"));
+    expect(container.querySelector("h1")?.textContent).toBe("第一章");
+    expect(container.querySelector("h2")?.hasAttribute("id")).toBe(false);
+  });
+
+  it("远程图片占位仍由渲染器自己生成 class 与 data-remote-src", () => {
+    const container = mount(renderMarkdown('![图](https://example.com/a.png "t")'));
+    const btn = container.querySelector(".ef-md-remote-img > .ef-md-remote-open");
+    expect(btn?.getAttribute("data-remote-src")).toBe("https://example.com/a.png");
+  });
+});

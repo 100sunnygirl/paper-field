@@ -33,7 +33,7 @@ describe("remote images", () => {
     expect(openUrl).toHaveBeenCalledWith("https://example.com/a.png");
   });
 
-  it("opens an http(s) link outside the webview and ignores javascript and file", async () => {
+  it("opens an http(s) link outside the webview and blocks javascript and file", async () => {
     const root = mount(
       '<a href="https://example.com/paper">paper</a><a href="javascript:alert(1)">js</a><a href="file:///tmp/a.pdf">file</a>',
     );
@@ -41,8 +41,36 @@ describe("remote images", () => {
     expect(await click(paper)).toHaveBeenCalled();
     expect(openUrl).toHaveBeenCalledWith("https://example.com/paper");
     openUrl.mockClear();
-    expect(await click(js)).not.toHaveBeenCalled();
-    expect(await click(file)).not.toHaveBeenCalled();
+    // SEC-016：其他协议既不打开，也不让主 webview 跟随跳转。
+    expect(await click(js)).toHaveBeenCalled();
+    expect(await click(file)).toHaveBeenCalled();
+    expect(openUrl).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["relative", '<a href="other.html">x</a>'],
+    ["root-relative", '<a href="/index.html">x</a>'],
+    ["protocol-relative", '<a href="//evil.example/x">x</a>'],
+    ["no scheme host", '<a href="evil.example">x</a>'],
+    ["area", '<map name="m"><area href="other.html" alt="x"></map>'],
+  ])("keeps %s links from navigating the main webview", async (_n, html) => {
+    const root = mount(html);
+    const link = root.querySelector("a, area")!;
+    expect(await click(link)).toHaveBeenCalled();
+    expect(openUrl).not.toHaveBeenCalled();
+  });
+
+  it("intercepts clicks on elements nested inside a link", async () => {
+    const root = mount(renderMarkdown("[**bold**](other.md) [*x*](https://example.com/n)"));
+    expect(await click(root.querySelector("strong")!)).toHaveBeenCalled();
+    expect(openUrl).not.toHaveBeenCalled();
+    expect(await click(root.querySelector("em")!)).toHaveBeenCalled();
+    expect(openUrl).toHaveBeenCalledWith("https://example.com/n");
+  });
+
+  it("leaves in-page # anchors to the browser", async () => {
+    const root = mount('<a href="#sec">x</a><a href=" #y">y</a>');
+    for (const a of Array.from(root.querySelectorAll("a"))) expect(await click(a)).not.toHaveBeenCalled();
     expect(openUrl).not.toHaveBeenCalled();
   });
 
@@ -186,15 +214,21 @@ describe("unsaved images: API paths and unloadable schemes", () => {
 
   it("removes its sanitize hook after rendering", async () => {
     const { default: DOMPurify } = await import("dompurify");
+    const add = vi.spyOn(DOMPurify, "addHook");
+    const remove = vi.spyOn(DOMPurify, "removeHook");
     renderMarkdown("![f](doc:x)");
-    expect(DOMPurify.sanitize('<img src="doc:x">')).not.toContain("data-pf-unsaved-ref");
+    expect(add).toHaveBeenCalledTimes(1);
+    expect(remove).toHaveBeenCalledWith(add.mock.calls[0][0], add.mock.calls[0][1]);
+    add.mockRestore();
+    remove.mockRestore();
   });
 
-  it("a hand-written mark only yields the notice, never an open button or fetch", async () => {
-    const root = mount(renderMarkdown('<img data-pf-unsaved-ref src="https://e.com/a.png">'));
-    expect(root.querySelector("img")).toBeNull();
-    expect(root.querySelector(`[${REMOTE_IMG_ATTR}]`)).toBeNull();
-    expect(root.querySelector(".ef-md-remote-img")?.textContent).toBe(NOTE);
-    expect(openUrl).not.toHaveBeenCalled();
+  it("a hand-written mark is stripped and changes nothing", () => {
+    const html = renderMarkdown('<img data-pf-unsaved-ref src="https://e.com/a.png"> <img data-pf-unsaved-ref src="data:image/png;base64,AAAA">');
+    expect(html).not.toContain("data-pf-unsaved-ref");
+    const root = mount(html);
+    // 远程图仍按远程处理（按钮 URL 来自我们自己的校验），data: 图保持原样。
+    expect(root.querySelector(".ef-md-remote-img")?.textContent).toContain("远程图片未加载");
+    expect(root.querySelector("img")?.getAttribute("src")).toBe("data:image/png;base64,AAAA");
   });
 });

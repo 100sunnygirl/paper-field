@@ -216,14 +216,9 @@ fn fill_backup_zip(dir: &Path, snap: &Path, file: File) -> Result<(), String> {
         }
     }
     let mut settings = Vec::new();
-    for (name, scrub) in [("llm-settings.json", true), ("mineru-settings.json", true), ("biblio-settings.json", false)] {
-        let (entry, path) = (format!("settings/{name}"), dir.join(name));
-        let added = if scrub {
-            add_scrubbed_settings(&mut zip, options, &entry, &path)?
-        } else {
-            add_file(&mut zip, options, &entry, &path)?
-        };
-        if added {
+    // biblio-settings.json 只有用户邮箱（个人信息、换台机器重填即可），不进备份。
+    for name in ["llm-settings.json", "mineru-settings.json"] {
+        if add_scrubbed_settings(&mut zip, options, &format!("settings/{name}"), &dir.join(name))? {
             settings.push(name);
         }
     }
@@ -376,7 +371,8 @@ mod tester_backup_b1 {
         fs::create_dir_all(d.join("library")).unwrap();
         fs::write(d.join("library").join("a.pdf"), b"%PDF a").unwrap();
         fs::write(d.join("library").join("b.PDF"), b"%PDF b").unwrap();
-        fs::write(d.join("biblio-settings.json"), b"{}").unwrap();
+        fs::write(d.join("biblio-settings.json"), br#"{"email":"reader@example.com"}"#).unwrap();
+        fs::write(d.join("mineru-settings.json"), br#"{"version":2,"api":{"token":"secret-token"}}"#).unwrap();
         let dest = d.join("out.zip");
         fs::write(&dest, b"previous backup").unwrap();
         // Someone else's file on the first temp name: never reused or deleted.
@@ -385,12 +381,16 @@ mod tester_backup_b1 {
         assert_eq!(fs::read(d.join("out.zip.partial")).unwrap(), b"not ours");
         assert_eq!(partials(&d), vec!["out.zip.partial".to_string()]);
         let mut z = zip::ZipArchive::new(File::open(&dest).unwrap()).unwrap();
+        assert!(z.by_name("settings/biblio-settings.json").is_err(), "email stays out of the backup");
+        let mut mineru = String::new();
+        std::io::Read::read_to_string(&mut z.by_name("settings/mineru-settings.json").unwrap(), &mut mineru).unwrap();
+        assert!(!mineru.contains("secret-token"), "{mineru}");
         let last = z.by_index(z.len() - 1).unwrap();
-        assert_eq!(last.name(), MANIFEST, "manifest is the last entry");
+        assert_eq!(last.name().unwrap(), MANIFEST, "manifest is the last entry");
         let m: serde_json::Value = serde_json::from_reader(last).unwrap();
         assert_eq!((m["format"].as_u64(), m["pdfs"].as_u64()), (Some(1), Some(2)));
         assert_eq!(m["appVersion"], env!("CARGO_PKG_VERSION"));
-        assert_eq!(m["settings"], serde_json::json!(["biblio-settings.json"]));
+        assert_eq!(m["settings"], serde_json::json!(["mineru-settings.json"]));
         assert!(m["createdAt"].as_u64().unwrap() > 0);
     }
 

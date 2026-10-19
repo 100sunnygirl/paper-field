@@ -12,10 +12,8 @@ async function relaunch(): Promise<void> {
   await relaunch();
 }
 
-async function revealPre(path: string): Promise<void> {
-  const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
-  await revealItemInDir(path);
-}
+// 打开哪个目录由 Rust 侧按恢复状态决定，不从页面传路径（渲染进程没有「显示任意路径」的权限）。
+const revealPre = () => call("reveal_pre_restore");
 
 /** Startup restore outcome: stuck, rolled back, pending confirmation, restored. */
 export function RestoreNotice({ initial }: { initial?: RestoreStatus }) {
@@ -62,7 +60,7 @@ export function RestoreNotice({ initial }: { initial?: RestoreStatus }) {
       actions = [
         <button key="abandon" disabled={busy} onClick={abandon}>放弃这次恢复</button>,
         ...(status.pre
-          ? [<button key="reveal" disabled={busy} onClick={run(() => revealPre(status.pre))}>打开原数据目录</button>]
+          ? [<button key="reveal" disabled={busy} onClick={run(revealPre)}>打开原数据目录</button>]
           : []),
       ];
       break;
@@ -82,7 +80,7 @@ export function RestoreNotice({ initial }: { initial?: RestoreStatus }) {
         ? `已恢复 ${status.summary.papers} 篇、${status.summary.pdfs} 个 PDF，原数据保存在 ${status.pre}。`
         : `已从备份恢复文库，原数据保存在 ${status.pre}。`;
       actions = [
-        <button key="open" disabled={busy} onClick={run(() => revealPre(status.pre))}>打开文件夹</button>,
+        <button key="open" disabled={busy} onClick={run(revealPre)}>打开文件夹</button>,
         <button key="ok" onClick={dismiss}>知道了</button>,
       ];
       break;
@@ -92,6 +90,7 @@ export function RestoreNotice({ initial }: { initial?: RestoreStatus }) {
     <div role="alert" className="restore-notice" data-kind={status.kind}
       style={{ padding: "12px 16px", borderBottom: "1px solid currentColor", display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
       <span>{text}</span>
+      {status.kind === "restored" && status.summary?.settingsNotice ? <span>{status.summary.settingsNotice}</span> : null}
       {actions}
       {failure ? <span role="status">操作失败：{failure}</span> : null}
     </div>

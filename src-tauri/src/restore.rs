@@ -47,8 +47,17 @@ const MARKER_STUCK: &str = "无法清除恢复标记，请退出应用后删除�
 const SIDECARS: [&str; 3] = ["paper-field.db-wal", "paper-field.db-shm", "paper-field.db-journal"];
 const MAX_ATTEMPTS: u32 = 2;
 const STALE_MS: u128 = 10 * 60 * 1000;
-/// Sanity cap on what one backup may unpack to (zip bombs).
+/// Sanity cap on what one backup may unpack to (zip bombs). A large PDF library
+/// legitimately runs to several GiB; free disk space is checked separately.
 const MAX_UNPACKED: u64 = 8 << 30;
+/// Left free after staging, so the live database and the OS can still write.
+const DISK_HEADROOM: u64 = 64 << 20;
+/// keyOrigin given to every restored LLM provider. `llm::key_origin` only ever
+/// yields lower-case ASCII (a URL origin, or the lower-cased base URL), so a value
+/// with upper-case letters never matches: the stored key for that provider id is
+/// refused until the user re-enters it. Empty would not do: `bind_legacy_key_origins`
+/// binds an empty origin to whatever baseUrl the backup carries.
+const RESTORED_KEY_ORIGIN: &str = "从备份恢复，需重新填写 Key";
 /// Settings and the manifest are read into memory.
 const MAX_SMALL_ENTRY: u64 = 16 << 20;
 
@@ -206,6 +215,72 @@ fn map_entry(name: &str) -> Option<String> {
     }
 }
 
+/// Settings in a backup are untrusted (it may be shared or edited): every
+/// network destination they name stays off until the user re-enables it.
+/// Returns the file to stage and, when something was switched off, what to tell
+/// the user; `None` skips the file (not a v2 settings file), keeping the live one.
+fn neutralize_settings(dest: &str, raw: &str) -> Option<(String, Option<&'static str>)> {
+    let mut value: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let note = match dest {
+        "llm-settings.json" => neutralize_llm(&mut value)?,
+        "mineru-settings.json" => neutralize_mineru(&mut value)?,
+        _ => return Some((raw.to_string(), None)),
+    };
+    Some((serde_json::to_string_pretty(&value).ok()?, note))
+}
+
+fn is_v2(value: &serde_json::Value) -> bool {
+    value.is_object() && value.get("version").and_then(serde_json::Value::as_u64) == Some(2)
+}
+
+/// Every provider: disabled (keyless ones would otherwise send papers to the
+/// backup's baseUrl) and its saved key unusable until re-entered.
+fn neutralize_llm(value: &mut serde_json::Value) -> Option<Option<&'static str>> {
+    if !is_v2(value) {
+        return None;
+    }
+    let providers = value.get_mut("providers")?.as_array_mut()?;
+    for provider in providers.iter_mut() {
+        let provider = provider.as_object_mut()?;
+        provider.insert("enabled".into(), false.into());
+        provider.insert("apiKey".into(), "".into());
+        provider.insert("keyOrigin".into(), RESTORED_KEY_ORIGIN.into());
+    }
+    Some((!providers.is_empty()).then_some("LLM 提供商已全部停用，已保存的 API Key 需要重新填写"))
+}
+
+/// SSH off (it uploads every parsed PDF to the backup's host). The official API
+/// has a fixed host and its token never leaves the keychain, so it stays as is;
+/// the local socket stays unless its path points off this machine.
+fn neutralize_mineru(value: &mut serde_json::Value) -> Option<Option<&'static str>> {
+    if !is_v2(value) {
+        return None;
+    }
+    let mut changed = false;
+    let mut disable = |section: &mut serde_json::Value, keep: bool| -> Option<()> {
+        let section = section.as_object_mut()?;
+        if section.get("enabled") != Some(&serde_json::Value::Bool(false)) && !keep {
+            section.insert("enabled".into(), false.into());
+            changed = true;
+        }
+        Some(())
+    };
+    if let Some(ssh) = value.get_mut("ssh") {
+        disable(ssh, false)?;
+    }
+    if let Some(local) = value.get_mut("local") {
+        let socket = local.get("socketPath").and_then(serde_json::Value::as_str).unwrap_or("");
+        let keep = !socket.starts_with("\\\\") && !socket.starts_with("//") && !socket.contains("://");
+        disable(local, keep)?;
+    }
+    Some(changed.then_some("MinerU 的 SSH 远程解析已停用"))
+}
+
+/// One line for the confirm dialog and the post-restore notice.
+fn settings_notice(notes: &[&str]) -> Option<String> {
+    (!notes.is_empty()).then(|| format!("为安全起见，备份中的设置没有直接生效：{}。请在设置中核对地址后再启用。", notes.join("；")))
+}
+
 /// Duplicate check key: `library/a.pdf` and `library\A.pdf` are one file on Windows/macOS.
 fn fold_name(name: &str) -> String {
     use unicode_normalization::UnicodeNormalization;
@@ -250,21 +325,91 @@ fn manifest_pdfs(bytes: &[u8]) -> Result<u64, String> {
         .ok_or_else(|| "备份清单 manifest.json 已损坏".to_string())
 }
 
-/// Unpacks `src` into `staging` and returns the relative dest paths written.
-fn unpack(src: &Path, staging: &Path) -> Result<Vec<String>, String> {
+/// Relative dest paths written to staging, and what restored settings had switched off.
+#[derive(Debug)]
+struct Unpacked {
+    written: Vec<String>,
+    notes: Vec<&'static str>,
+}
+
+/// Unpacks `src` into `staging`.
+fn unpack(src: &Path, staging: &Path) -> Result<Unpacked, String> {
     unpack_capped(src, staging, MAX_UNPACKED)
 }
 
-fn unpack_capped(src: &Path, staging: &Path, cap: u64) -> Result<Vec<String>, String> {
+fn entry_name<R: std::io::Read + ?Sized>(entry: &zip::read::ZipFile<'_, R>) -> Option<String> {
+    entry.enclosed_name().map(|p| p.to_string_lossy().replace('\\', "/"))
+}
+
+/// Available bytes on the volume holding `dir`; `None` when unknown.
+#[cfg(unix)]
+fn free_bytes(dir: &Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(dir.as_os_str().as_bytes()).ok()?;
+    // SAFETY: statvfs is plain old data; zeroed is a valid value for it.
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: path is NUL-terminated and outlives the call; stat is a valid out pointer.
+    if unsafe { libc::statvfs(path.as_ptr(), &mut stat) } != 0 {
+        return None;
+    }
+    #[allow(clippy::unnecessary_cast)] // u32 on some platforms
+    Some((stat.f_bavail as u64).saturating_mul(stat.f_frsize as u64))
+}
+
+#[cfg(windows)]
+fn free_bytes(dir: &Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetDiskFreeSpaceExW(dir: *const u16, avail: *mut u64, total: *mut u64, free: *mut u64) -> i32;
+    }
+    let wide: Vec<u16> = dir.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut avail = 0u64;
+    // SAFETY: wide is NUL-terminated; ULARGE_INTEGER is a u64; the other out pointers may be null.
+    let ok = unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &mut avail, std::ptr::null_mut(), std::ptr::null_mut()) };
+    (ok != 0).then_some(avail)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn free_bytes(_: &Path) -> Option<u64> {
+    None
+}
+
+/// Unknown free space is not a reason to refuse: unpacking then fails on its own.
+fn check_free_space(needed: u64, free: Option<u64>) -> Result<(), String> {
+    match free {
+        Some(free) if needed.saturating_add(DISK_HEADROOM) > free => Err(format!(
+            "磁盘空间不足：恢复需要约 {} MB，可用 {} MB，请先清理磁盘",
+            needed.saturating_add(DISK_HEADROOM).div_ceil(1 << 20),
+            free >> 20
+        )),
+        _ => Ok(()),
+    }
+}
+
+fn unpack_capped(src: &Path, staging: &Path, cap: u64) -> Result<Unpacked, String> {
     let file = File::open(src).map_err(|e| format!("无法打开备份：{e}"))?;
     let mut archive = ZipArchive::new(file).map_err(|e| format!("备份不是有效的 zip：{e}"))?;
+    // Declared sizes from the central directory, before anything is written.
+    let mut needed = 0u64;
+    for index in 0..archive.len() {
+        let entry = archive.by_index_raw(index).map_err(|e| e.to_string())?;
+        if entry_name(&entry).is_some_and(|name| map_entry(&name).is_some()) {
+            needed = needed.saturating_add(entry.size());
+        }
+    }
+    if needed > cap {
+        return Err("备份解压后过大，已拒绝".into());
+    }
+    check_free_space(needed, free_bytes(staging))?;
     let mut written = Vec::new();
+    let mut notes = Vec::new();
     let mut seen = HashSet::new();
     let mut expected_pdfs = None;
     let mut total = 0u64;
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index).map_err(|e| e.to_string())?;
-        let Some(name) = entry.enclosed_name().map(|p| p.to_string_lossy().replace('\\', "/")) else {
+        let Some(name) = entry_name(&entry) else {
             continue;
         };
         if safe_entry_name(&name).is_none() {
@@ -286,14 +431,20 @@ fn unpack_capped(src: &Path, staging: &Path, cap: u64) -> Result<Vec<String>, St
             expected_pdfs = Some(manifest_pdfs(&read_small(&mut entry, declared, &name)?)?);
             continue;
         };
-        let mut out = create_staged(&staging.join(&dest))?;
         if name.starts_with("settings/") {
             let bytes = read_small(&mut entry, declared, &name)?;
             let scrubbed = scrub_json_secrets(&String::from_utf8_lossy(&bytes));
-            out.write_all(scrubbed.as_bytes()).map_err(|e| format!("写入暂存文件失败：{e}"))?;
-        } else {
-            copy_entry(&mut entry, declared, &mut out, &name)?;
+            // Not a settings file this version understands: keep the live one.
+            let Some((safe, note)) = neutralize_settings(&dest, &scrubbed) else { continue };
+            notes.extend(note);
+            let mut out = create_staged(&staging.join(&dest))?;
+            out.write_all(safe.as_bytes()).map_err(|e| format!("写入暂存文件失败：{e}"))?;
+            out.sync_all().map_err(|e| format!("写入暂存文件失败：{e}"))?;
+            written.push(dest);
+            continue;
         }
+        let mut out = create_staged(&staging.join(&dest))?;
+        copy_entry(&mut entry, declared, &mut out, &name)?;
         out.sync_all().map_err(|e| format!("写入暂存文件失败：{e}"))?;
         written.push(dest);
     }
@@ -307,7 +458,7 @@ fn unpack_capped(src: &Path, staging: &Path, cap: u64) -> Result<Vec<String>, St
             return Err(format!("备份与清单不符：清单记录 {expected} 个 PDF，实际有 {pdfs} 个，备份可能不完整，已拒绝恢复"));
         }
     }
-    Ok(written)
+    Ok(Unpacked { written, notes })
 }
 
 /// What a staged backup contains, returned to the UI before the user confirms.
@@ -319,6 +470,9 @@ pub struct BackupSummary {
     pub latest_updated_at: Option<String>,
     pub pdfs: usize,
     pub zip_bytes: u64,
+    /// Restored settings that were switched off (see `neutralize_settings`).
+    #[serde(default)]
+    pub settings_notice: Option<String>,
 }
 
 /// `integrity_check` must be `ok` and `user_version` must not be newer than this app.
@@ -426,7 +580,7 @@ pub async fn stage_restore(dir: &Path, src: &Path) -> Result<BackupSummary, Stri
     let _ = remove_dir_off_thread(staging.clone()).await;
     fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
     let result = async {
-        let staged = unpack(src, &staging)?;
+        let Unpacked { written: staged, notes } = unpack(src, &staging)?;
         let (papers, latest_updated_at) = check_staged_db(&staging.join(DB)).await?;
         enable_wal(&staging.join(DB)).await?;
         let summary = BackupSummary {
@@ -434,6 +588,7 @@ pub async fn stage_restore(dir: &Path, src: &Path) -> Result<BackupSummary, Stri
             latest_updated_at,
             pdfs: staged.iter().filter(|d| d.to_ascii_lowercase().ends_with(".pdf")).count(),
             zip_bytes: fs::metadata(src).map(|m| m.len()).unwrap_or(0),
+            settings_notice: settings_notice(&notes),
         };
         let marker = Marker {
             stage: Stage::Previewed,
@@ -1916,7 +2071,8 @@ mod tests {
         patch_declared_size(&mut bytes, "library/big.pdf", 10);
         fs::write(&zip, &bytes).unwrap();
         let err = stage(&live, &zip).unwrap_err();
-        assert!(err.contains("超过记录"), "{err}");
+        // 自己的计数或 zip 库（>= 9）的声明大小校验，哪一层先拦下都算。
+        assert!(err.contains("超过记录") || err.contains("larger than its declared"), "{err}");
         assert!(!live.join(MARKER).exists() && !live.join(STAGING).exists());
 
         let honest = live.parent().unwrap().join("honest.zip");
@@ -1925,8 +2081,119 @@ mod tests {
         let err = unpack_capped(&honest, &staging, 50_000).unwrap_err();
         assert!(err.contains("过大"), "{err}");
         let staging = live.parent().unwrap().join("cap-staging-ok");
-        assert_eq!(unpack_capped(&honest, &staging, 10 << 20).unwrap().len(), 2);
+        assert_eq!(unpack_capped(&honest, &staging, 10 << 20).unwrap().written.len(), 2);
         assert_eq!(fs::read(staging.join("library/big.pdf")).unwrap().len(), 100_000);
+    }
+
+    const EVIL_LLM: &str = r#"{"version":2,"providers":[
+        {"id":"p1","label":"OpenAI","baseUrl":"https://evil.example/v1","model":"m","enabled":true,
+         "requiresKey":true,"apiKey":"sk-attacker","keyOrigin":"https://evil.example"},
+        {"id":"p2","label":"free","baseUrl":"https://collector.example/v1","model":"m","enabled":true,"requiresKey":false},
+        {"id":"p3","baseUrl":"https://evil.example/v1","keyOrigin":"","keyOrigin":"https://evil.example"}]}"#;
+    const EVIL_MINERU: &str = r#"{"version":2,"order":["ssh","local","api"],
+        "local":{"enabled":true,"socketPath":"\\\\evil.example\\share\\doclib.sock"},
+        "ssh":{"enabled":true,"host":"evil.example","user":"u","inboxDir":"~/in"},
+        "api":{"token":"stolen"}}"#;
+
+    fn settings_zip(live: &Path, name: &str, entries: &[(&str, &[u8])]) -> PathBuf {
+        let db = fs::read(live.parent().unwrap().join("src.db")).unwrap();
+        let zip = live.parent().unwrap().join(name);
+        let mut all: Vec<(&str, &[u8])> = vec![(DB, &db)];
+        all.extend_from_slice(entries);
+        zip_of(&zip, &all);
+        zip
+    }
+
+    #[test]
+    fn restored_settings_never_reach_the_backups_destinations() {
+        let (live, _) = setup("restore-evil-settings");
+        let zip = settings_zip(
+            &live,
+            "evil.zip",
+            &[("settings/llm-settings.json", EVIL_LLM.as_bytes()), ("settings/mineru-settings.json", EVIL_MINERU.as_bytes())],
+        );
+        let summary = stage_summary(&live, &zip).unwrap();
+        let notice = summary.settings_notice.clone().expect("user is told");
+        assert!(notice.contains("LLM") && notice.contains("SSH"), "{notice}");
+        tauri::async_runtime::block_on(commit_preview(&live)).unwrap();
+        match apply_pending_restore_at(&live, now_ms()) {
+            RestoreStatus::Restored { summary, .. } => assert_eq!(summary.unwrap().settings_notice, Some(notice)),
+            other => panic!("{other:?}"),
+        }
+
+        let raw = fs::read_to_string(live.join("llm-settings.json")).unwrap();
+        assert!(!raw.contains("sk-attacker"), "{raw}");
+        let llm: crate::llm::LlmFileV2 = serde_json::from_str(&raw).unwrap();
+        assert_eq!(llm.providers.len(), 3);
+        for p in &llm.providers {
+            assert!(!p.enabled, "{} must be disabled", p.id);
+            assert!(p.api_key.is_empty());
+            assert_eq!(p.key_origin, RESTORED_KEY_ORIGIN, "{}: empty would be re-bound to the backup's baseUrl", p.id);
+        }
+
+        let raw = fs::read_to_string(live.join("mineru-settings.json")).unwrap();
+        assert!(!raw.contains("stolen"), "{raw}");
+        let mineru: crate::mineru::MineruFileV2 = serde_json::from_str(&raw).unwrap();
+        assert!(!mineru.ssh.enabled, "SSH upload must stay off");
+        assert!(!mineru.local.enabled, "a UNC socket path is not local");
+        assert_eq!(mineru.ssh.host, "evil.example", "kept for the user to review");
+    }
+
+    #[test]
+    fn restored_key_origin_can_never_equal_a_computed_origin() {
+        // llm::key_origin only yields lower-case ASCII; an upper-case letter rules out a match.
+        assert!(RESTORED_KEY_ORIGIN.bytes().any(|b| b.is_ascii_uppercase()));
+        assert_ne!(RESTORED_KEY_ORIGIN.to_ascii_lowercase(), RESTORED_KEY_ORIGIN);
+        assert!(!RESTORED_KEY_ORIGIN.is_empty());
+    }
+
+    #[test]
+    fn harmless_settings_restore_quietly_and_unknown_formats_are_skipped() {
+        let (live, _) = setup("restore-quiet-settings");
+        let mineru = br#"{"version":2,"local":{"enabled":true,"socketPath":"~/.mineru/doclib.sock"},"ssh":{"enabled":false}}"#;
+        let zip = settings_zip(
+            &live,
+            "quiet.zip",
+            &[
+                ("settings/llm-settings.json", br#"{"version":2,"providers":[]}"#),
+                ("settings/mineru-settings.json", mineru),
+                ("settings/biblio-settings.json", br#"{"email":"a@b.c"}"#),
+            ],
+        );
+        assert_eq!(stage_summary(&live, &zip).unwrap().settings_notice, None);
+        let staged: crate::mineru::MineruFileV2 =
+            serde_json::from_slice(&fs::read(live.join(STAGING).join("mineru-settings.json")).unwrap()).unwrap();
+        assert!(staged.local.enabled, "a local socket stays on");
+        assert!(live.join(STAGING).join("biblio-settings.json").exists());
+        tauri::async_runtime::block_on(abandon_restore(&live)).unwrap();
+
+        // v1, other versions and broken JSON: not staged, so the live file is kept.
+        fs::write(live.join("llm-settings.json"), "live").unwrap();
+        let cases: [(&str, &[u8]); 5] = [
+            ("settings/llm-settings.json", br#"{"baseUrl":"https://evil.example","apiKey":""}"#),
+            ("settings/llm-settings.json", br#"{"version":3}"#),
+            ("settings/llm-settings.json", b"not json"),
+            ("settings/llm-settings.json", br#"{"version":2,"providers":[1]}"#),
+            ("settings/mineru-settings.json", br#"{"mode":"ssh","sshHost":"evil.example"}"#),
+        ];
+        for (i, entry) in cases.into_iter().enumerate() {
+            let zip = settings_zip(&live, &format!("skip{i}.zip"), &[entry]);
+            stage(&live, &zip).unwrap();
+            let m = read_marker(&live).unwrap().unwrap();
+            assert!(m.plan.iter().all(|item| !item.dest.ends_with("-settings.json")), "{i}");
+            assert!(matches!(apply_pending_restore_at(&live, now_ms()), RestoreStatus::Restored { .. }));
+            assert_eq!(fs::read_to_string(live.join("llm-settings.json")).unwrap(), "live");
+        }
+    }
+
+    #[test]
+    fn restore_needs_room_on_disk() {
+        assert!(check_free_space(10 << 20, None).is_ok(), "unknown free space does not block");
+        assert!(check_free_space(10 << 20, Some(1 << 30)).is_ok());
+        let err = check_free_space(1 << 30, Some(512 << 20)).unwrap_err();
+        assert!(err.contains("磁盘空间不足") && err.contains("1088 MB") && err.contains("512 MB"), "{err}");
+        assert!(check_free_space(0, Some(DISK_HEADROOM - 1)).is_err(), "headroom is kept");
+        assert!(free_bytes(&std::env::temp_dir()).is_some_and(|n| n > 0));
     }
 
     #[test]

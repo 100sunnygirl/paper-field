@@ -1092,6 +1092,7 @@ pub(crate) fn is_forbidden(ip: std::net::IpAddr) -> bool {
                 || v4.is_documentation()
                 || o[0] == 0
                 || (o[0] == 100 && (o[1] & 0xc0) == 64) // 100.64.0.0/10 shared CGNAT
+                || (o[0] == 192 && o[1] == 0 && o[2] == 0) // 192.0.0.0/24 IETF protocol assignments
                 || (o[0] == 198 && (o[1] & 0xfe) == 18) // 198.18.0.0/15 benchmarking
                 || o[0] >= 240
         }
@@ -1106,12 +1107,22 @@ pub(crate) fn is_forbidden(ip: std::net::IpAddr) -> bool {
                     return is_forbidden(IpAddr::V4(v4));
                 }
             }
+            let embedded = |hi: u16, lo: u16| std::net::Ipv4Addr::from((u32::from(hi) << 16) | u32::from(lo));
+            // 64:ff9b::/96 well-known NAT64: the gateway dials the embedded IPv4
+            if seg[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
+                return is_forbidden(IpAddr::V4(embedded(seg[6], seg[7])));
+            }
+            // 2002::/16 6to4: the relay dials the IPv4 in bits 16..48
+            if seg[0] == 0x2002 && is_forbidden(IpAddr::V4(embedded(seg[1], seg[2]))) {
+                return true;
+            }
             v6.is_loopback()
                 || v6.is_unspecified()
                 || v6.is_multicast()
                 || (seg[0] & 0xfe00) == 0xfc00 // fc00::/7 unique local
                 || (seg[0] & 0xffc0) == 0xfe80 // fe80::/10 link local
-                || (seg[0] == 0x64 && seg[1] == 0xff9b) // 64:ff9b::/96 NAT64
+                || (seg[0] & 0xffc0) == 0xfec0 // fec0::/10 site local (deprecated, still routed internally)
+                || (seg[0] == 0x64 && seg[1] == 0xff9b) // rest of 64:ff9b::/32, incl. 64:ff9b:1::/48 local NAT64
         }
     }
 }
@@ -2089,10 +2100,13 @@ mod tests {
     fn is_forbidden_covers_internal_ranges() {
         for ip in ["127.0.0.1", "10.0.0.1", "172.16.5.4", "192.168.1.1", "169.254.169.254", "0.0.0.0",
                    "100.64.0.1", "255.255.255.255", "224.0.0.1", "::1", "::", "fc00::1", "fd12::1",
-                   "fe80::1", "::ffff:127.0.0.1", "::127.0.0.1", "::10.0.0.1", "::ffff:10.0.0.1", "64:ff9b::a00:1"] {
+                   "fe80::1", "::ffff:127.0.0.1", "::127.0.0.1", "::10.0.0.1", "::ffff:10.0.0.1", "64:ff9b::a00:1",
+                   "192.0.0.1", "192.0.0.170", "fec0::1", "feff::1", "2002:7f00:1::", "2002:a9fe:a9fe::1",
+                   "2002:c0a8:101:1::1", "64:ff9b::127.0.0.1", "64:ff9b::169.254.169.254", "64:ff9b:1::808:808"] {
             assert!(is_forbidden(ip.parse().unwrap()), "{ip}");
         }
-        for ip in ["8.8.8.8", "1.1.1.1", "2606:4700:4700::1111", "::ffff:8.8.8.8", "::8.8.8.8"] {
+        for ip in ["8.8.8.8", "1.1.1.1", "2606:4700:4700::1111", "::ffff:8.8.8.8", "::8.8.8.8",
+                   "192.0.1.1", "191.255.255.255", "2002:808:808::1", "64:ff9b::8.8.8.8", "fe7f::1"] {
             assert!(!is_forbidden(ip.parse().unwrap()), "{ip}");
         }
     }

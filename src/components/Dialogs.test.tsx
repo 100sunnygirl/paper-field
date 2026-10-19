@@ -1,7 +1,6 @@
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { listPdfs, normalizePdf } from "../lib/mineru";
+import { pickPdfFiles, pickPdfFolder } from "../lib/mineru";
 import { repo } from "../lib/repo";
 import { useField } from "../store";
 import { DeleteCheckedPapersDialog, DomainDialog, PaperDialog } from "./Dialogs";
@@ -9,7 +8,7 @@ import type { Paper } from "../lib/types";
 
 vi.mock("../lib/mineru", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/mineru")>();
-  return { ...actual, listPdfs: vi.fn(), normalizePdf: vi.fn() };
+  return { ...actual, pickPdfFiles: vi.fn(), pickPdfFolder: vi.fn() };
 });
 
 vi.mock("../lib/repo", () => ({
@@ -68,9 +67,8 @@ function paperOf(path: string): Paper {
 
 beforeEach(() => {
   useField.setState(useField.getInitialState(), true);
-  vi.mocked(openDialog).mockReset();
-  vi.mocked(listPdfs).mockReset();
-  vi.mocked(normalizePdf).mockReset();
+  vi.mocked(pickPdfFiles).mockReset();
+  vi.mocked(pickPdfFolder).mockReset();
   vi.mocked(repo.importLocalPdfs).mockReset();
   vi.mocked(repo.pdfPaths).mockResolvedValue([]);
   useField.setState({ dialog: "paper", selectedDomainId: "d-1" });
@@ -142,8 +140,7 @@ describe("PaperDialog · 单篇导入", () => {
   beforeEach(() => asTauri());
 
   it("选择多个 PDF 后列表显示文件名，导入按钮计数 2", async () => {
-    vi.mocked(openDialog).mockResolvedValue(["/papers/a.pdf", "/papers/b.pdf"]);
-    vi.mocked(normalizePdf).mockImplementation(async (path: string) => path);
+    vi.mocked(pickPdfFiles).mockResolvedValue(["/papers/a.pdf", "/papers/b.pdf"]);
     render(<PaperDialog />);
     fireEvent.click(screen.getByRole("button", { name: /选择 PDF/ }));
     await waitFor(() => expect(screen.getByText("a.pdf")).toBeInTheDocument());
@@ -155,8 +152,7 @@ describe("PaperDialog · 单篇导入", () => {
 
   it("已入库路径标记「已在库中」且不计入导入数", async () => {
     vi.mocked(repo.pdfPaths).mockResolvedValue(["/papers/a.pdf"]);
-    vi.mocked(openDialog).mockResolvedValue(["/papers/a.pdf", "/papers/b.pdf"]);
-    vi.mocked(normalizePdf).mockImplementation(async (path: string) => path);
+    vi.mocked(pickPdfFiles).mockResolvedValue(["/papers/a.pdf", "/papers/b.pdf"]);
     render(<PaperDialog />);
     fireEvent.click(screen.getByRole("button", { name: /选择 PDF/ }));
     await waitFor(() => expect(screen.getByText("a.pdf")).toBeInTheDocument());
@@ -168,12 +164,20 @@ describe("PaperDialog · 单篇导入", () => {
 
   it("全部重复时不显示导入按钮", async () => {
     vi.mocked(repo.pdfPaths).mockResolvedValue(["/papers/a.pdf"]);
-    vi.mocked(openDialog).mockResolvedValue("/papers/a.pdf");
-    vi.mocked(normalizePdf).mockImplementation(async (path: string) => path);
+    vi.mocked(pickPdfFiles).mockResolvedValue(["/papers/a.pdf"]);
     render(<PaperDialog />);
     fireEvent.click(screen.getByRole("button", { name: /选择 PDF/ }));
     await waitFor(() => expect(screen.getByText("a.pdf")).toBeInTheDocument());
     expect(screen.queryByRole("button", { name: /^导入/ })).toBeNull();
+  });
+
+  it("对话框由 Rust 侧弹出（多选）；取消时列表不变、不报错", async () => {
+    vi.mocked(pickPdfFiles).mockResolvedValue(null);
+    render(<PaperDialog />);
+    fireEvent.click(screen.getByRole("button", { name: /选择 PDF/ }));
+    await waitFor(() => expect(pickPdfFiles).toHaveBeenCalledWith(true));
+    expect(screen.getByRole("heading", { name: "添加论文" })).toBeInTheDocument();
+    expect(document.querySelector(".ef-error")).toBeNull();
   });
 });
 
@@ -181,11 +185,10 @@ describe("PaperDialog · 文件夹批量导入", () => {
   beforeEach(() => asTauri());
 
   it("选择文件夹列出目录下全部 PDF", async () => {
-    vi.mocked(openDialog).mockResolvedValue("/papers/folder");
-    vi.mocked(listPdfs).mockResolvedValue(["/papers/folder/x.pdf", "/papers/folder/y.pdf", "/papers/folder/z.pdf"]);
+    vi.mocked(pickPdfFolder).mockResolvedValue(["/papers/folder/x.pdf", "/papers/folder/y.pdf", "/papers/folder/z.pdf"]);
     render(<PaperDialog />);
     fireEvent.click(screen.getByRole("button", { name: /选择文件夹/ }));
-    await waitFor(() => expect(listPdfs).toHaveBeenCalledWith("/papers/folder"));
+    await waitFor(() => expect(pickPdfFolder).toHaveBeenCalledTimes(1));
     expect(screen.getByText("x.pdf")).toBeInTheDocument();
     expect(screen.getByText("y.pdf")).toBeInTheDocument();
     expect(screen.getByText("z.pdf")).toBeInTheDocument();
@@ -194,8 +197,7 @@ describe("PaperDialog · 文件夹批量导入", () => {
 
   it("文件夹内已入库文件同样标重复、只导新增", async () => {
     vi.mocked(repo.pdfPaths).mockResolvedValue(["/papers/folder/x.pdf"]);
-    vi.mocked(openDialog).mockResolvedValue("/papers/folder");
-    vi.mocked(listPdfs).mockResolvedValue(["/papers/folder/x.pdf", "/papers/folder/new.pdf"]);
+    vi.mocked(pickPdfFolder).mockResolvedValue(["/papers/folder/x.pdf", "/papers/folder/new.pdf"]);
     render(<PaperDialog />);
     fireEvent.click(screen.getByRole("button", { name: /选择文件夹/ }));
     await waitFor(() => expect(screen.getByText("new.pdf")).toBeInTheDocument());
@@ -208,8 +210,7 @@ describe("PaperDialog · 扫描结果挑选排除", () => {
   beforeEach(() => asTauri());
 
   function setupScan(paths: string[]) {
-    vi.mocked(openDialog).mockResolvedValue("/papers/folder");
-    vi.mocked(listPdfs).mockResolvedValue(paths);
+    vi.mocked(pickPdfFolder).mockResolvedValue(paths);
   }
 
   it("扫描结果默认全部勾选，审阅条显示统计", async () => {
@@ -282,7 +283,7 @@ describe("PaperDialog · 扫描结果挑选排除", () => {
 
     // 用户再次点击「选择文件夹」重扫
     fireEvent.click(screen.getByRole("button", { name: /选择文件夹/ }));
-    await waitFor(() => expect(listPdfs).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(pickPdfFolder).toHaveBeenCalledTimes(2));
     expect(screen.getByLabelText("a.pdf")).toBeChecked();
     expect(screen.getByLabelText("b.pdf")).not.toBeChecked();
     expect(screen.getByRole("button", { name: "导入 1" })).toBeEnabled();
@@ -293,8 +294,7 @@ describe("PaperDialog · 导入执行与进度", () => {
   beforeEach(() => asTauri());
 
   function setupTwoPdfs() {
-    vi.mocked(openDialog).mockResolvedValue(["/papers/a.pdf", "/papers/b.pdf"]);
-    vi.mocked(normalizePdf).mockImplementation(async (path: string) => path);
+    vi.mocked(pickPdfFiles).mockResolvedValue(["/papers/a.pdf", "/papers/b.pdf"]);
   }
 
   it("导入中显示「正在导入 n/总数 · 当前文件」", async () => {

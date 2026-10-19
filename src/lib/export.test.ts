@@ -111,6 +111,15 @@ describe("buildDomainExport", () => {
     expect(new Set(paths).size).toBe(paths.length);
   });
 
+  it("只差大小写的同年标题在不区分大小写的磁盘上也不撞名", () => {
+    const papers = [
+      makePaper({ id: "aaaa0001-0000-4000-8000-000000000001", title: "Attention" }),
+      makePaper({ id: "bbbb0002-0000-4000-8000-000000000002", title: "ATTENTION" }),
+    ];
+    const paths = buildDomainExport(makeDomain(), papers).map((file) => file.relativePath.toLowerCase());
+    expect(new Set(paths).size).toBe(paths.length);
+  });
+
   it("中文标题进入文件名 slug，领域目录取 code", () => {
     const files = buildDomainExport(makeDomain(), [makePaper({ title: "视觉指令微调", year: null })], new Date(2026, 0, 2, 3, 4, 5));
     expect(files[0].relativePath).toBe("MM-01-20260102-030405/README.md");
@@ -140,5 +149,78 @@ describe("export folder never reuses an existing name", () => {
     const a = buildDomainExport(makeDomain(), [makePaper()], new Date(2026, 0, 1, 0, 0, 0));
     const b = buildDomainExport(makeDomain(), [makePaper()], new Date(2026, 0, 1, 0, 0, 1));
     expect(a[0].relativePath.split("/")[0]).not.toBe(b[0].relativePath.split("/")[0]);
+  });
+});
+
+describe("导出 markdown 不让元数据注入结构（SEC-013）", () => {
+  const paperBody = (paper: PaperDetail) =>
+    buildDomainExport(makeDomain(), [paper]).find((file) => !file.relativePath.endsWith("README.md"))!.content;
+
+  it("单行元数据里的换行被压平，不能注入标题或列表项", () => {
+    const body = paperBody(
+      makePaper({ title: "Real\n# Injected\n- Status: fake", venue: "Conf\r\n## Notes", tags: ["a\n# b"] }),
+    );
+    const lines = body.split("\n");
+    // 压成一行后 # 与 - 不在行首，只是普通字符。
+    expect(lines[0]).toBe("# Real # Injected - Status: fake");
+    expect(lines.filter((line) => line.startsWith("#") && line.includes("Injected"))).toHaveLength(1);
+    expect(body).toContain("- Venue: Conf ## Notes");
+    expect(body).not.toMatch(/^## Notes/m);
+    expect(body).toContain("- Tags: a # b");
+    expect(paperBody(makePaper({ titleZh: "\n# 标题" }))).toContain("> \\# 标题");
+  });
+
+  it("元数据里的 HTML 与 markdown 链接被转义成字面文本", () => {
+    const body = paperBody(
+      makePaper({
+        title: '<img src=x onerror="alert(1)">',
+        venue: "[click](javascript:alert(1))",
+        authors: [{ id: "a", name: "<script>x</script>", nameZh: null, affiliation: "**Bold**", lab: null, homepage: null, orcid: null, order: 0, isCorresponding: false }],
+      }),
+    );
+    expect(body).not.toMatch(/(^|[^\\])<(img|script)/);
+    expect(body).toContain("# \\<img src=x onerror=\"alert(1)\"\\>");
+    expect(body).toContain("- Venue: \\[click\\](javascript:alert(1))");
+    expect(body).toContain("\\*\\*Bold\\*\\*");
+  });
+
+  it("摘要保留换行但逐行转义，不能起标题或插入 HTML", () => {
+    const body = paperBody(makePaper({ abstract: "First line.\n# Heading\n<iframe src=x></iframe>" }));
+    expect(body).toContain("First line.\n\\# Heading\n\\<iframe src=x\\>\\</iframe\\>");
+  });
+
+  it("笔记正文保留 markdown，只中和代码之外的原始 HTML", () => {
+    const content = "**要点**\n- [链接](https://example.com)\n<img src=x onerror=alert(1)>\n<!-- c -->\n```html\n<b>代码</b>\n```\na < b";
+    const body = paperBody(
+      makePaper({ notes: { ...makePaper().notes, summary: { ...makePaper().notes.summary, content } } }),
+    );
+    expect(body).toContain("**要点**\n- [链接](https://example.com)\n\\<img src=x onerror=alert(1)>\n\\<!-- c -->");
+    expect(body).toContain("```html\n<b>代码</b>\n```\na < b");
+  });
+
+  it("围栏内藏 \\r 换行或伪造的开栏都不能放过 HTML", () => {
+    const tricks = ["```\r```\r<img src=x onerror=alert(1)>", "``` a`b\n<img src=x onerror=alert(1)>", "  ```\n<img src=x onerror=alert(1)>"];
+    for (const content of tricks) {
+      const body = paperBody(
+        makePaper({ notes: { ...makePaper().notes, summary: { ...makePaper().notes.summary, content } } }),
+      );
+      expect(body).toContain("\\<img src=x");
+    }
+  });
+
+  it("PDF 只导出库内文件名，不泄露本机绝对路径", () => {
+    expect(paperBody(makePaper({ pdfPath: "/Users/alice/Library/PaperField/pdfs/abc.pdf" }))).toContain("- PDF: abc.pdf");
+    const win = paperBody(makePaper({ pdfPath: "C:\\Users\\alice\\AppData\\pdfs\\x_y.pdf" }));
+    expect(win).toContain("- PDF: x\\_y.pdf");
+    expect(win).not.toContain("alice");
+    expect(paperBody(makePaper({ pdfUrl: "https://arxiv.org/pdf/1" }))).toContain("- PDF: https://arxiv.org/pdf/1");
+  });
+
+  it("README 索引里的标题与领域名同样转义", () => {
+    const files = buildDomainExport(makeDomain({ name: "多模态\n# x", summary: "<b>s</b>" }), [makePaper({ title: "A](evil) [B" })]);
+    const readme = files[0].content;
+    expect(readme.split("\n")[0]).toBe("# 多模态 # x / MM-01");
+    expect(readme).toContain("\\<b\\>s\\</b\\>");
+    expect(readme).toContain("1. [A\\](evil) \\[B](./");
   });
 });

@@ -253,7 +253,7 @@ export async function applySchema(engine: SqlEngine): Promise<void> {
 
 export type RestoreStatus =
   | { kind: "none" }
-  | { kind: "restored"; pre: string; summary: { papers: number; pdfs: number } | null }
+  | { kind: "restored"; pre: string; summary: { papers: number; pdfs: number; settingsNotice?: string | null } | null }
   | { kind: "rolledBack"; pre: string }
   | { kind: "pendingConfirm" }
   | { kind: "stuck"; pre: string; dbAvailable: boolean };

@@ -18,7 +18,7 @@ use sha2::{Digest, Sha256};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 use crate::app_config_dir;
 use crate::mineru_api::ApiClient;
@@ -637,6 +637,9 @@ fn validate_config(file: &MineruFileV2, home: &Path) -> Result<(), String> {
         }
         if !valid_user(&file.ssh.user) {
             return Err("SSH 用户无效".into());
+        }
+        if !crate::transport::valid_inbox_dir(&file.ssh.inbox_dir) {
+            return Err(crate::transport::INBOX_RULE.into());
         }
         if !file.ssh.identity_file.is_empty() {
             let path = expand_local_path(&file.ssh.identity_file, home);
@@ -1532,7 +1535,7 @@ pub async fn mineru_submit(
 ) -> Result<SubmitResult, String> {
     let file = read_file(&app)?;
     let home = platform::home_dir(&app)?;
-    let pdf = canonical_pdf(&crate::library::resolve(&crate::app_config_dir(&app)?, &local_path).to_string_lossy())?;
+    let pdf = authorized_pdf(&app, &local_path)?;
     if !valid_paper_id(&paper_id) {
         return Err("论文编号无效".into());
     }
@@ -1597,9 +1600,51 @@ pub async fn mineru_markdown(
     target.markdown(&doc_ref, &tier, &page_range).await
 }
 
+/// 系统对话框选 PDF（`multiple` 时可多选）；返回规范化后的绝对路径并记入授权表，取消时返回 None。
+/// 路径只来自对话框：渲染进程不能再让 Rust 规范化 / 列举任意路径，后续导入也只认这里给出的路径。
 #[tauri::command]
-pub async fn list_pdfs(directory: String) -> Result<Vec<String>, String> {
-    scan_pdfs_in_dir(&directory)
+pub async fn pick_pdf_files(app: AppHandle, multiple: bool) -> Result<Option<Vec<String>>, String> {
+    const FILTER: (&str, &[&str]) = ("PDF", &["pdf"]);
+    let picked = if multiple {
+        platform::pick_paths(&app, "选择 PDF", FILTER).await?
+    } else {
+        platform::pick_path(&app, "选择 PDF", platform::PickKind::OpenFile { filter: FILTER })
+            .await?
+            .map(|path| vec![path])
+    };
+    let Some(picked) = picked else { return Ok(None) };
+    let mut found = Vec::with_capacity(picked.len());
+    for path in picked {
+        found.push(canonical_pdf(&path.to_string_lossy())?.to_string_lossy().to_string());
+    }
+    grant_all(&app, &found);
+    Ok(Some(found))
+}
+
+/// 系统对话框选文件夹，列出其中（一层）的 PDF 并记入授权表；取消时返回 None。
+#[tauri::command]
+pub async fn pick_pdf_folder(app: AppHandle) -> Result<Option<Vec<String>>, String> {
+    let Some(dir) = platform::pick_path(&app, "选择 PDF 所在文件夹", platform::PickKind::Folder).await? else {
+        return Ok(None);
+    };
+    let found = scan_pdfs_in_dir(&dir.to_string_lossy())?;
+    grant_all(&app, &found);
+    Ok(Some(found))
+}
+
+fn grant_all(app: &AppHandle, paths: &[String]) {
+    let grants = app.state::<crate::library::PdfGrants>();
+    for path in paths {
+        grants.grant(PathBuf::from(path));
+    }
+}
+
+/// 渲染进程 / 数据库给出的 PDF 路径：先授权（对话框选过的、文库里的、旧版快照里的；
+/// 网络共享 / 设备路径在碰文件系统之前拒绝），再规范化。
+fn authorized_pdf(app: &AppHandle, stored: &str) -> Result<PathBuf, String> {
+    let grants = app.state::<crate::library::PdfGrants>();
+    let path = crate::library::authorize_pdf(&crate::app_config_dir(app)?, &grants, stored)?;
+    canonical_pdf(&path.to_string_lossy())
 }
 
 /// 只列出目录本身（一层）的 PDF，不进入子目录；隐藏文件跳过。
@@ -1635,14 +1680,9 @@ fn scan_pdfs_in_dir(directory: &str) -> Result<Vec<String>, String> {
 }
 
 #[tauri::command]
-pub async fn normalize_pdf(path: String) -> Result<String, String> {
-    Ok(canonical_pdf(&path)?.to_string_lossy().to_string())
-}
-
-#[tauri::command]
 pub async fn open_pdf(app: AppHandle, path: String) -> Result<(), String> {
     // 文库内的 PDF 存相对名，拼到当前的应用数据目录上再打开。
-    let canon = canonical_pdf(&crate::library::resolve(&crate::app_config_dir(&app)?, &path).to_string_lossy())?;
+    let canon = authorized_pdf(&app, &path)?;
     platform::open_pdf(&app, &canon)
 }
 
@@ -2226,7 +2266,7 @@ mod tests {
         }
     }
 
-    // ---------- list_pdfs：只读所选目录一层，不进入子目录 ----------
+    // ---------- pick_pdf_folder 的扫描：只读所选目录一层，不进入子目录 ----------
 
     fn temp_scan_dir(tag: &str) -> PathBuf {
         crate::test_util::unique_temp_dir(&format!("pf-list-pdfs-{tag}"))

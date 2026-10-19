@@ -288,11 +288,12 @@ unsafe extern "C" fn authorize_reader(
     }
 }
 
-/// 跳过空白与注释后的第一个关键字（大写）。
+/// 跳过空白、注释与空语句（前导分号）后的第一个关键字（大写）。
+/// SQLite 会把 `;VACUUM …` 前面的空语句跳过，这里也得跳过，否则关键字过滤会被绕开。
 fn leading_keyword(sql: &str) -> String {
     let mut rest = sql;
     loop {
-        rest = rest.trim_start();
+        rest = rest.trim_start_matches(|c: char| c.is_whitespace() || c == ';');
         if let Some(after) = rest.strip_prefix("--") {
             rest = after.split_once('\n').map_or("", |(_, tail)| tail);
         } else if let Some(after) = rest.strip_prefix("/*") {
@@ -642,5 +643,28 @@ mod tests {
         assert_eq!(leading_keyword("  -- x\n /* y */ vacuum"), "VACUUM");
         assert_eq!(leading_keyword("SELECT 1"), "SELECT");
         assert_eq!(leading_keyword("/* unterminated"), "");
+        assert_eq!(leading_keyword(";VACUUM INTO 'x'"), "VACUUM");
+        assert_eq!(leading_keyword(" ; ;\n-- c\n; /* d */ ;attach 'x' AS y"), "ATTACH");
+    }
+
+    #[tokio::test]
+    async fn leading_semicolons_do_not_bypass_the_keyword_filter() {
+        let (dir, p) = pools("semi").await;
+        let outside = dir.join("evil.db");
+        let outside_sql = outside.to_string_lossy().replace('\'', "''");
+        for sql in [
+            format!(";VACUUM INTO '{outside_sql}'"),
+            format!(" ; ;VACUUM INTO '{outside_sql}'"),
+            format!(";/* c */; vacuum into '{outside_sql}'"),
+            format!(";-- c\nVACUUM INTO '{outside_sql}'"),
+            format!(";ATTACH DATABASE '{outside_sql}' AS evil"),
+            format!("; ;attach '{outside_sql}' AS evil"),
+            ";DETACH DATABASE evil".to_string(),
+        ] {
+            let err = execute_on(&p.writer, &sql, &[]).await.unwrap_err();
+            assert_eq!(err, DbError::sql("不允许的语句"), "writer must reject: {sql}");
+            assert!(select_on(&p.reader, &sql, &[]).await.is_err(), "reader must reject: {sql}");
+        }
+        assert!(!outside.exists());
     }
 }

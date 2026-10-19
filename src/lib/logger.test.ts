@@ -1,18 +1,29 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// plugin-store 统一替换为内存假 store：既隔离 IPC，也提供落盘行为断言。
+// 内存假 store：既隔离 IPC，也提供落盘行为断言。
 const fakeStore = vi.hoisted(() => ({
   set: vi.fn(async (_key: string, _value: unknown) => undefined),
   get: vi.fn(async (_key?: string) => undefined as unknown),
   clear: vi.fn(async () => undefined),
   save: vi.fn(async () => undefined),
 }));
-const storeLoad = vi.hoisted(() =>
-  vi.fn(async (_path: string, _options?: unknown) => fakeStore),
+// 落盘改走 Rust 命令 app_log_*：映射到内存假 store，沿用原有断言口径
+// （write = set("entries") + save，clear = clear + save，read = get("entries")）。
+const invokeMock = vi.hoisted(() =>
+  vi.fn(async (cmd: string, args?: Record<string, unknown>): Promise<unknown> => {
+    if (cmd === "app_log_read") return fakeStore.get("entries");
+    if (cmd === "app_log_write") {
+      await fakeStore.set("entries", args?.entries);
+      return fakeStore.save();
+    }
+    if (cmd === "app_log_clear") {
+      await fakeStore.clear();
+      return fakeStore.save();
+    }
+    return undefined;
+  }),
 );
-vi.mock("@tauri-apps/plugin-store", () => ({
-  load: storeLoad,
-}));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
 
 // isTauri 可按用例切换（默认 false = 浏览器 / jsdom 分支），其余 util 保持原实现。
 vi.mock("./util", async (importOriginal) => {
@@ -88,16 +99,14 @@ describe("logger · 内存缓冲与订阅", () => {
     expect(debugSpy).toHaveBeenCalledWith("[app] D-开发");
   });
 
-  it("非 Tauri：写入不触发任何 IPC、不动态加载 plugin-store", async () => {
+  it("非 Tauri：写入不触发任何 IPC", async () => {
     vi.useFakeTimers();
     vi.mocked(invoke).mockClear();
-    vi.mocked(storeLoad).mockClear();
     log.error("app", "E1");
     log.warn("store", "W1");
     await vi.advanceTimersByTimeAsync(60_000);
     expect(getEntries()).toHaveLength(2);
     expect(invoke).not.toHaveBeenCalled();
-    expect(storeLoad).not.toHaveBeenCalled();
   });
 });
 
@@ -107,7 +116,7 @@ describe("logger · Tauri 落盘", () => {
     quiet = quietConsole();
     vi.useFakeTimers();
     vi.mocked(isTauri).mockReturnValue(true);
-    vi.mocked(storeLoad).mockClear();
+    invokeMock.mockClear();
     // mockReset 并恢复默认实现：上一用例注入的 mockRejectedValue 不得泄漏。
     fakeStore.set.mockReset();
     fakeStore.set.mockResolvedValue(undefined);
@@ -125,8 +134,7 @@ describe("logger · Tauri 落盘", () => {
 
   it("3s 尾沿防抖合并写入；落盘只含 ≥info 条目并显式 save", async () => {
     const fresh = await freshLogger();
-    // bootstrap 在模块加载时即 load 一次（回读上次会话），此处只盯落盘副作用。
-    storeLoad.mockClear();
+    // bootstrap 在模块加载时即 app_log_read 一次（回读上次会话），此处只盯落盘副作用。
     fakeStore.set.mockClear();
     fakeStore.save.mockClear();
     fresh.log.debug("app", "D-不落盘");
@@ -136,7 +144,7 @@ describe("logger · Tauri 落盘", () => {
     expect(fakeStore.set).not.toHaveBeenCalled();
     expect(fakeStore.save).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
-    expect(storeLoad).toHaveBeenCalledTimes(1);
+    expect(invokeMock.mock.calls.filter(([cmd]) => cmd === "app_log_write")).toHaveLength(1);
     expect(fakeStore.set).toHaveBeenCalledTimes(1);
     const [key, value] = fakeStore.set.mock.calls[0]!;
     expect(key).toBe("entries");
@@ -184,6 +192,16 @@ describe("logger · Tauri 落盘", () => {
     fresh.log.info("app", "新条目");
     const entries = fresh.getEntries();
     expect(entries[entries.length - 1]!.seq).toBe(3);
+  });
+
+  it("只调用写死文件名的 app_log_* 命令：不向后端传任何路径", async () => {
+    const fresh = await freshLogger();
+    fresh.log.info("app", "I1");
+    await vi.advanceTimersByTimeAsync(3100);
+    await fresh.clear();
+    const calls = invokeMock.mock.calls as Array<[string, Record<string, unknown>?]>;
+    expect(calls.map(([cmd]) => cmd)).toEqual(["app_log_read", "app_log_write", "app_log_clear"]);
+    for (const [, args] of calls) expect(Object.keys(args ?? {}).filter((key) => key !== "entries")).toEqual([]);
   });
 
   it("启动回读失败：按落盘故障降级（仅内存 + 一条 warn），不抛出", async () => {

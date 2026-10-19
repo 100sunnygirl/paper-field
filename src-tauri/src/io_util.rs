@@ -83,9 +83,79 @@ pub fn atomic_write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
     result
 }
 
+/// 网络响应体上限：防止异常或恶意端点用超大响应耗尽内存。
+pub const LLM_BODY_LIMIT: u64 = 8 * 1024 * 1024;
+pub const LOOKUP_BODY_LIMIT: u64 = 4 * 1024 * 1024;
+pub const MINERU_JSON_LIMIT: u64 = 4 * 1024 * 1024;
+
+/// Read a response body as text, at most `limit` bytes. A declared
+/// Content-Length over the limit is refused before reading; otherwise chunks
+/// are counted as they arrive and reading stops as soon as the limit is passed.
+/// Invalid UTF-8 is replaced, like `Response::text` does for UTF-8 bodies.
+pub async fn read_text_capped(mut response: reqwest::Response, limit: u64) -> Result<String, String> {
+    let too_big = || format!("响应超过 {}MB，已停止读取", limit.div_ceil(1024 * 1024));
+    if response.content_length().is_some_and(|n| n > limit) {
+        return Err(too_big());
+    }
+    let mut bytes: Vec<u8> = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|e| format!("读取响应失败：{}", reqwest_error_text(e)))? {
+        if bytes.len() as u64 + chunk.len() as u64 > limit {
+            return Err(too_big());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// reqwest 错误转成可展示文本：去掉 URL（可能含 userinfo、?api-key= 或预签名参数），
+/// 带上 source 链（连接失败、重定向被拒等原因藏在里面），再过一遍 `redact_secrets`。
+pub fn reqwest_error_text(e: reqwest::Error) -> String {
+    let e = e.without_url();
+    let mut out = e.to_string();
+    let mut cur = std::error::Error::source(&e);
+    while let Some(src) = cur {
+        let msg = src.to_string();
+        if !out.contains(&msg) {
+            out.push_str("：");
+            out.push_str(&msg);
+        }
+        cur = src.source();
+    }
+    crate::secrets::redact_secrets(&out)
+}
+
+/// 重定向只许留在同一来源（协议 + 主机 + 端口），另允许同主机 http→https 升级。
+/// reqwest 默认策略跨主机时只剥 Authorization/Cookie，自定义头（如 x-api-key）照样
+/// 跟到新主机；同主机 https→http 降级时连 Authorization 也不剥。
+pub fn redirect_keeps_origin(previous: &reqwest::Url, next: &reqwest::Url) -> bool {
+    if next.host_str() != previous.host_str() || next.host_str().is_none() {
+        return false;
+    }
+    match (previous.scheme(), next.scheme()) {
+        (a, b) if a == b => previous.port_or_known_default() == next.port_or_known_default(),
+        ("http", "https") => true,
+        _ => false,
+    }
+}
+
+const MAX_REDIRECTS: usize = 5;
+
+/// 带凭据请求用的重定向策略：最多 5 跳，离开原来源即报错（不跟随）。
+pub fn same_origin_redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() > MAX_REDIRECTS {
+            return attempt.error("重定向次数过多");
+        }
+        match attempt.previous().last() {
+            Some(prev) if redirect_keeps_origin(prev, attempt.url()) => attempt.follow(),
+            _ => attempt.error("已拒绝跳转到其他站点的重定向（避免凭据外泄）"),
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::atomic_write;
+    use super::*;
     use std::fs;
 
     fn tmp_left(dir: &std::path::Path) -> Vec<String> {
@@ -142,5 +212,96 @@ mod tests {
         assert!(atomic_write(&p, b"new").is_err());
         assert!(p.is_dir());
         assert!(tmp_left(&d).is_empty(), "{:?}", tmp_left(&d));
+    }
+
+    fn serve_raw(raw: Vec<u8>) -> String {
+        use std::io::{Read as _, Write as _};
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = l.local_addr().unwrap();
+        std::thread::spawn(move || {
+            if let Ok((mut c, _)) = l.accept() {
+                let mut buf = [0u8; 2048];
+                let _ = c.read(&mut buf);
+                let _ = c.write_all(&raw);
+            }
+        });
+        format!("http://{addr}/x")
+    }
+
+    fn read_from(raw: Vec<u8>, limit: u64) -> Result<String, String> {
+        let url = serve_raw(raw);
+        tauri::async_runtime::block_on(async move {
+            let response = reqwest::Client::builder().no_proxy().build().unwrap().get(url).send().await.unwrap();
+            read_text_capped(response, limit).await
+        })
+    }
+
+    fn chunked(parts: &[&[u8]]) -> Vec<u8> {
+        let mut raw = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n".to_vec();
+        for part in parts {
+            raw.extend_from_slice(format!("{:x}\r\n", part.len()).as_bytes());
+            raw.extend_from_slice(part);
+            raw.extend_from_slice(b"\r\n");
+        }
+        raw.extend_from_slice(b"0\r\n\r\n");
+        raw
+    }
+
+    #[test]
+    fn capped_read_accepts_body_up_to_limit() {
+        let body = "响应".repeat(100); // 600 bytes
+        let raw = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+        assert_eq!(read_from(raw.into_bytes(), 600).unwrap(), body);
+        let a = [b'a'; 300];
+        assert_eq!(read_from(chunked(&[&a, &a]), 600).unwrap(), "a".repeat(600), "恰好等于上限照收");
+    }
+
+    #[test]
+    fn capped_read_refuses_declared_oversize_before_body() {
+        // 头部声称 5 MB 却没有正文：只有 Content-Length 检查能给出超限错误。
+        let raw = b"HTTP/1.1 200 OK\r\nContent-Length: 5242880\r\nConnection: close\r\n\r\n".to_vec();
+        assert_eq!(read_from(raw, 4 * 1024 * 1024).unwrap_err(), "响应超过 4MB，已停止读取");
+    }
+
+    #[test]
+    fn capped_read_stops_streamed_body_past_limit() {
+        let a = [b'a'; 400];
+        assert_eq!(read_from(chunked(&[&a, &a]), 600).unwrap_err(), "响应超过 1MB，已停止读取");
+    }
+
+    #[test]
+    fn redirect_policy_keeps_origin_only() {
+        let u = |s: &str| reqwest::Url::parse(s).unwrap();
+        let base = u("https://api.semanticscholar.org/graph/v1/paper?x=1");
+        for ok in ["https://api.semanticscholar.org/other", "https://API.semanticscholar.org:443/x"] {
+            assert!(redirect_keeps_origin(&base, &u(ok)), "{ok}");
+        }
+        for bad in [
+            "https://evil.example/graph",
+            "https://semanticscholar.org/graph",
+            "https://api.semanticscholar.org.evil.example/",
+            "http://api.semanticscholar.org/graph",
+            "https://api.semanticscholar.org:8443/graph",
+            "https://user:pw@evil.example/",
+        ] {
+            assert!(!redirect_keeps_origin(&base, &u(bad)), "{bad}");
+        }
+        // 同主机 http→https 升级允许；反过来降级不行
+        assert!(redirect_keeps_origin(&u("http://localhost:11434/v1"), &u("https://localhost/v1")));
+        assert!(!redirect_keeps_origin(&u("http://localhost:11434/v1"), &u("http://localhost:8080/v1")));
+    }
+
+    #[test]
+    fn redirect_policy_refuses_cross_host_and_hides_url() {
+        // 跳去别的主机（这里是另一个端口）：报错不跟随，错误里不带原 URL 的密钥参数。
+        let url = serve_raw(b"HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:1/steal\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec());
+        let err = tauri::async_runtime::block_on(async move {
+            let client = reqwest::Client::builder().no_proxy().redirect(same_origin_redirect_policy()).build().unwrap();
+            client.get(format!("{url}?api-key=sk-leak-123456")).header("x-api-key", "k").send().await.unwrap_err()
+        });
+        assert!(err.is_redirect(), "{err:?}");
+        let text = reqwest_error_text(err);
+        assert!(text.contains("已拒绝跳转到其他站点"), "{text}");
+        assert!(!text.contains("sk-leak") && !text.contains("127.0.0.1"), "{text}");
     }
 }

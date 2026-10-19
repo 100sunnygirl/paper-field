@@ -462,9 +462,12 @@ struct LiveFetch;
 
 impl Fetcher for LiveFetch {
     async fn get(&self, request: &HttpRequest) -> Result<HttpResponse, String> {
+        // 只跟随同来源重定向：默认策略会把 S2 的 x-api-key 带去任意主机，
+        // 同主机降级到 http 时连 OpenAlex 的 Bearer 也照发。这几个 API 本身不跨站跳转。
         let client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(8))
             .timeout(Duration::from_secs(12))
+            .redirect(crate::io_util::same_origin_redirect_policy())
             .build()
             .map_err(|_| format!("{} 无法发起请求", describe_request(request)))?;
         let mut builder = client.get(&request.url);
@@ -486,8 +489,7 @@ impl Fetcher for LiveFetch {
                 )
             })
             .collect();
-        let body = response
-            .text()
+        let body = crate::io_util::read_text_capped(response, crate::io_util::LOOKUP_BODY_LIMIT)
             .await
             .map_err(|_| format!("{} 响应无法读取", describe_request(request)))?;
         Ok(HttpResponse {

@@ -10,7 +10,7 @@ use std::process::Stdio;
 use std::sync::{Mutex, OnceLock};
 
 use serde_json::Value;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 
 #[derive(Debug, Clone)]
@@ -73,10 +73,17 @@ impl DoclibTransport {
         let Self::Ssh(ssh) = self else {
             return Err("本地 MinerU 源不需要上传 PDF".into());
         };
+        if !valid_inbox_dir(&ssh.inbox_dir) {
+            return Err(INBOX_RULE.into());
+        }
+        if paper_id.is_empty() || !paper_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            return Err("论文编号无效".into());
+        }
         let home = remote_home(ssh, connect_timeout).await?;
         let inbox = expand_remote_tilde(&ssh.inbox_dir, &home);
-        if inbox.contains(['\n', '\r', '\0', ' ', '"', '\'']) {
-            return Err("远程暂存目录不能包含空格或引号".into());
+        // 远端 $HOME 也会拼进 scp 路径，同样过一遍白名单。
+        if !valid_inbox_dir(&inbox) {
+            return Err(format!("远程暂存目录展开后含有不支持的字符：{}", clip(&inbox)));
         }
         ssh_exec(
             ssh,
@@ -89,7 +96,8 @@ impl DoclibTransport {
         let remote_file = format!("{inbox}/{paper_id}.pdf");
         let mut cmd = new_command("scp");
         push_ssh_opts(&mut cmd, "-P", ssh, connect_timeout);
-        cmd.arg(pdf)
+        cmd.arg("--")
+            .arg(pdf)
             .arg(format!("{}:{remote_file}", ssh_target(ssh)));
         let output = run_command(cmd, None).await?;
         command_text(&output, "scp", "上传 PDF 到远程暂存目录")
@@ -106,6 +114,24 @@ pub(crate) fn expand_remote_tilde(path: &str, home: &str) -> String {
     } else {
         path.to_string()
     }
+}
+
+/// 设置界面与 `valid_inbox_dir` 共用的提示。
+pub(crate) const INBOX_RULE: &str = "远程暂存目录只能包含字母、数字和 . _ / ~ -，不能以 - 开头，也不能含 .. 段";
+
+/// 远程暂存目录白名单 `[A-Za-z0-9._/~-]`：旧版 scp 协议（OpenSSH < 9.0，Windows 10 自带 8.1）
+/// 把 `host:路径` 交给远端 shell 解释，`$()`、反引号、`;`、`|` 等会在 MinerU 服务器上执行。
+/// `~` 只能作为开头的 `~` 或 `~/`（由 `expand_remote_tilde` 展开）；`-` 开头会被 mkdir 当成选项；
+/// 不接受 `..` 段。保存设置与真正上传前都要调用。
+pub(crate) fn valid_inbox_dir(path: &str) -> bool {
+    let rest = if path == "~" { "" } else { path.strip_prefix("~/").unwrap_or(path) };
+    !path.is_empty()
+        && path.len() <= 512
+        && !rest.starts_with(['-', '~'])
+        && rest
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '/' | '~' | '-'))
+        && !rest.split('/').any(|part| part == "..")
 }
 
 pub(crate) fn quote_posix_remote_command(value: &str) -> String {
@@ -125,9 +151,29 @@ fn new_command(program: &str) -> Command {
     cmd
 }
 
-async fn run_command(
+/// 子进程输出只收这么多：stdout 超出算失败（远端或本地服务异常），stderr 超出只截断。
+const MAX_STDOUT: u64 = 64 << 20;
+const MAX_STDERR: u64 = 1 << 20;
+
+async fn run_command(cmd: Command, stdin_data: Option<&[u8]>) -> Result<std::process::Output, String> {
+    run_command_capped(cmd, stdin_data, MAX_STDOUT, MAX_STDERR).await
+}
+
+/// 最多读 `cap` 字节；超出的部分读掉丢弃（不读的话子进程会卡在写满的管道上）。返回是否超出。
+async fn read_capped(pipe: Option<impl AsyncRead + Unpin>, cap: u64) -> std::io::Result<(Vec<u8>, bool)> {
+    let mut buf = Vec::new();
+    let Some(pipe) = pipe else { return Ok((buf, false)) };
+    let mut limited = pipe.take(cap);
+    limited.read_to_end(&mut buf).await?;
+    let extra = tokio::io::copy(&mut limited.into_inner(), &mut tokio::io::sink()).await?;
+    Ok((buf, extra > 0))
+}
+
+async fn run_command_capped(
     mut cmd: Command,
     stdin_data: Option<&[u8]>,
+    max_stdout: u64,
+    max_stderr: u64,
 ) -> Result<std::process::Output, String> {
     if stdin_data.is_some() {
         cmd.stdin(Stdio::piped());
@@ -150,7 +196,17 @@ async fn run_command(
             drop(stdin);
         }
     }
-    child.wait_with_output().await.map_err(|e| e.to_string())
+    let (stdout, stderr) = (child.stdout.take(), child.stderr.take());
+    let ((stdout, stdout_over), (stderr, _), status) = tokio::try_join!(
+        read_capped(stdout, max_stdout),
+        read_capped(stderr, max_stderr),
+        child.wait(),
+    )
+    .map_err(|e| e.to_string())?;
+    if stdout_over {
+        return Err(format!("{program} 输出超过 {} MB，已放弃这次结果", max_stdout >> 20));
+    }
+    Ok(std::process::Output { status, stdout, stderr })
 }
 
 /// scp read timeouts are often caused by cloud placeholders rather than SSH.
@@ -178,6 +234,10 @@ fn command_text(output: &std::process::Output, program: &str, op: &str) -> Resul
         clip(stderr.trim())
     };
     // 只有 ssh/scp 自己的登录失败才是「登录被拒绝」；本地 socket、远端目录的权限错误照实报出是哪一步。
+    // accept-new 只自动接受首次见到的主机；密钥变了 OpenSSH 拒绝连接，原文是一大片 @@@ 警告。
+    if matches!(program, "ssh" | "scp") && is_host_key_mismatch(&stderr) {
+        return Err(HOST_KEY_CHANGED.into());
+    }
     if matches!(program, "ssh" | "scp") && is_ssh_auth_failure(&stderr) {
         return Err("SSH 登录被拒绝，请检查用户和私钥".into());
     }
@@ -189,6 +249,13 @@ fn command_text(output: &std::process::Output, program: &str, op: &str) -> Resul
     } else {
         detail
     })
+}
+
+const HOST_KEY_CHANGED: &str = "SSH 服务器的主机密钥与上次记录的不一致，已拒绝连接（可能是服务器重装，也可能是中间人攻击）。\
+     请向服务器管理员核实指纹后，再从 known_hosts 中删除旧记录";
+
+fn is_host_key_mismatch(stderr: &str) -> bool {
+    stderr.contains("REMOTE HOST IDENTIFICATION HAS CHANGED") || stderr.contains("Host key verification failed")
 }
 
 /// OpenSSH 鉴权失败：`Permission denied (publickey,password).` 或密码重试提示。
@@ -236,7 +303,7 @@ async fn ssh_exec(
 ) -> Result<String, String> {
     let mut cmd = new_command("ssh");
     push_ssh_opts(&mut cmd, "-p", settings, connect_timeout);
-    cmd.arg(ssh_target(settings));
+    cmd.arg("--").arg(ssh_target(settings));
     cmd.arg(remote);
     let output = run_command(cmd, stdin_data).await?;
     command_text(&output, "ssh", op)
@@ -438,6 +505,55 @@ mod tests {
     }
 
     #[test]
+    fn inbox_dir_allowlist_rejects_shell_metacharacters() {
+        for ok in ["~", "~/.mineru/paper-field-inbox", "/srv/mineru/inbox", "inbox", "/a/b~c/d-e_f.g/"] {
+            assert!(valid_inbox_dir(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            "~/x$(id)",
+            "~/`id`",
+            "/tmp/a;id",
+            "/tmp/a|id",
+            "/tmp/a&id",
+            "/tmp/a b",
+            "/tmp/'a'",
+            "/tmp/\"a\"",
+            "/tmp/a\nid",
+            "/tmp/*",
+            "/tmp/a>b",
+            "~root/inbox",
+            "~~/x",
+            "-rf",
+            "~/-x",
+            "/srv/../etc",
+            "~/..",
+            "/tmp/收件箱",
+        ] {
+            assert!(!valid_inbox_dir(bad), "{bad:?}");
+        }
+        assert!(!valid_inbox_dir(&format!("/{}", "a".repeat(600))));
+        // 展开后的路径同样要过白名单
+        assert!(valid_inbox_dir(&expand_remote_tilde("~/.mineru/in", "/home/u")));
+        assert!(!valid_inbox_dir(&expand_remote_tilde("~/in", "/home/$(id)")));
+    }
+
+    #[tokio::test]
+    async fn upload_rejects_bad_inbox_before_running_anything() {
+        let ssh = SshResolved {
+            // 不可解析的主机：若校验漏过，会在 ssh 那一步失败而不是这里
+            host: "invalid.invalid".into(),
+            port: 22,
+            user: "u".into(),
+            identity: None,
+            socket_path: "~/.mineru/doclib.sock".into(),
+            inbox_dir: "~/in$(touch /tmp/pwned)".into(),
+        };
+        let err = DoclibTransport::Ssh(ssh).upload_pdf(Path::new("/nonexistent.pdf"), "x", 1).await.unwrap_err();
+        assert_eq!(err, INBOX_RULE);
+    }
+
+    #[test]
     fn new_command_keeps_program() {
         for program in ["curl", "ssh", "scp"] {
             assert_eq!(new_command(program).as_std().get_program(), program);
@@ -509,6 +625,15 @@ mod tests {
         assert!(err.starts_with("创建远程暂存目录时权限不足"), "{err}");
 
         assert_eq!(command_text(&failed(""), "ssh", "读取远端主目录").unwrap_err(), "读取远端主目录失败");
+
+        let changed = failed(
+            "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n\
+             @    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @\n\
+             Host key verification failed.",
+        );
+        assert_eq!(command_text(&changed, "ssh", "读取远端主目录").unwrap_err(), HOST_KEY_CHANGED);
+        assert_eq!(command_text(&changed, "scp", "上传 PDF 到远程暂存目录").unwrap_err(), HOST_KEY_CHANGED);
+        assert_eq!(command_text(&failed("Host key verification failed."), "ssh", "x").unwrap_err(), HOST_KEY_CHANGED);
         assert_eq!(command_text(&failed("boom"), "curl", "访问本地 MinerU 服务").unwrap_err(), "boom");
     }
 
@@ -529,6 +654,28 @@ mod tests {
                 .unwrap_err();
             assert!(err.to_string().contains("deadline"), "{err}");
             assert!(started.elapsed() < Duration::from_secs(3));
+        }
+
+        #[tokio::test]
+        async fn captured_output_is_capped() {
+            let sh = |script: &str| {
+                let mut cmd = Command::new("sh");
+                cmd.arg("-c").arg(script);
+                cmd
+            };
+            // stdout 超出上限：整个结果作废，但子进程照常结束（多余部分被读掉）
+            let err = run_command_capped(sh("head -c 100000 /dev/zero"), None, 1000, 1000).await.unwrap_err();
+            assert!(err.contains("输出超过"), "{err}");
+            // stderr 超出只截断
+            let out = run_command_capped(sh("head -c 100000 /dev/zero >&2; printf ok"), None, 1000, 1000)
+                .await
+                .unwrap();
+            assert_eq!(out.stdout, b"ok");
+            assert_eq!(out.stderr.len(), 1000);
+            assert!(out.status.success());
+            // 上限以内原样返回
+            let out = run_command_capped(sh("printf hello"), None, 5, 5).await.unwrap();
+            assert_eq!(out.stdout, b"hello");
         }
 
         #[tokio::test]

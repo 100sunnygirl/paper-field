@@ -24,7 +24,7 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, State};
 
 use crate::app_config_dir;
-use crate::io_util::atomic_write;
+use crate::io_util::{atomic_write, read_text_capped, reqwest_error_text, LLM_BODY_LIMIT};
 use crate::secrets::{llm_account, redact_secrets, scrub_json_secrets, store_for};
 
 // ---------- 预设反查表（仅迁移用；唯一权威在 TS 侧 src/lib/settings.ts） ----------
@@ -384,11 +384,62 @@ fn bind_legacy_key_origins(file: &mut LlmFileV2) -> bool {
     bound
 }
 
-/// 出站请求要带的 Key：没有 Key 不发 Authorization；请求来源与 Key 绑定的来源不符则拒发。
+/// 明文 http 只许用于本机 / 局域网地址（Ollama、LM Studio、内网网关）；
+/// 其他主机带 Key 必须走 https，免得 Key 在公网上明文传输。解析不了的地址不在此判断。
+fn plaintext_key_target(base_url: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(base_url.trim()) else {
+        return false;
+    };
+    if url.scheme() != "http" {
+        return false;
+    }
+    let host = url.host_str().unwrap_or("").trim_start_matches('[').trim_end_matches(']').to_ascii_lowercase();
+    let local = match host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(v4)) => {
+            let o = v4.octets();
+            v4.is_loopback() || v4.is_private() || v4.is_link_local() || (o[0] == 100 && (o[1] & 0xc0) == 64)
+        }
+        Ok(std::net::IpAddr::V6(v6)) => {
+            let seg = v6.segments();
+            v6.is_loopback() || (seg[0] & 0xfe00) == 0xfc00 || (seg[0] & 0xffc0) == 0xfe80
+        }
+        // 单标签主机名（docker 服务名、局域网机器名）与本地专用后缀
+        Err(_) => {
+            !host.is_empty()
+                && (!host.contains('.')
+                    || [".localhost", ".local", ".lan", ".home.arpa", ".internal"]
+                        .iter()
+                        .any(|suffix| host.ends_with(suffix)))
+        }
+    };
+    !local
+}
+
+fn plaintext_key_error(label: &str) -> String {
+    format!("「{label}」的 Base URL 是明文 http，API Key 会被明文发送；请改用 https://（仅本机或局域网地址可用 http）。")
+}
+
+/// 保存前检查：带 Key 的提供商不许指向公网的明文 http 地址。
+fn check_key_transport(file: &LlmFileV2) -> Result<(), String> {
+    match file
+        .providers
+        .iter()
+        .find(|p| !p.api_key.trim().is_empty() && plaintext_key_target(&p.base_url))
+    {
+        Some(p) => Err(plaintext_key_error(&p.label)),
+        None => Ok(()),
+    }
+}
+
+/// 出站请求要带的 Key：没有 Key 不发 Authorization；请求来源与 Key 绑定的来源不符则拒发；
+/// 公网明文 http 也拒发（旧配置文件可能早已存下这种组合）。
 fn outbound_key(provider: &ProviderCfg) -> Result<Option<&str>, String> {
     let key = provider.api_key.trim();
     if key.is_empty() {
         return Ok(None);
+    }
+    if plaintext_key_target(&provider.base_url) {
+        return Err(plaintext_key_error(&provider.label));
     }
     let origin = key_origin(&provider.base_url);
     if origin != provider.key_origin {
@@ -792,6 +843,8 @@ fn llm_http_client() -> &'static reqwest::Client {
             .connect_timeout(Duration::from_secs(15))
             .timeout(Duration::from_secs(120))
             .use_rustls_tls()
+            // reqwest 默认在同主机 https→http 降级时照发 Authorization；只跟随同来源重定向。
+            .redirect(crate::io_util::same_origin_redirect_policy())
             .build()
             .expect("build llm http client")
     })
@@ -929,17 +982,16 @@ async fn chat_once(
         .json(&body)
         .send()
         .await
-        .map_err(|e| ChatError::Network(e.to_string()))?;
+        .map_err(|e| ChatError::Network(reqwest_error_text(e)))?;
     let status = response.status().as_u16();
     let retry_after = response
         .headers()
         .get("retry-after")
         .and_then(|v| v.to_str().ok())
         .and_then(parse_retry_after_secs);
-    let text = response
-        .text()
+    let text = read_text_capped(response, LLM_BODY_LIMIT)
         .await
-        .map_err(|e| ChatError::Network(e.to_string()))?;
+        .map_err(ChatError::Network)?;
     if !(200..300).contains(&status) {
         return Err(ChatError::Http { status, body: text, retry_after });
     }
@@ -1149,6 +1201,7 @@ pub async fn save_llm_settings(
 ) -> Result<LlmSettingsPublic, String> {
     let existing = read_file(&app)?;
     let file = normalize_input(&settings, &existing);
+    check_key_transport(&file)?;
     write_file_at(&settings_file(&app)?, &file)?;
     Ok(to_public(&file, usage_snapshot(&app, &state)))
 }
@@ -1216,10 +1269,9 @@ pub async fn llm_list_models(
     let response = tokio::time::timeout(LLM_PROBE_TIMEOUT, request.send())
         .await
         .map_err(|_| "获取模型列表超时（30 秒），请检查网络".to_string())?
-        .map_err(|e| format!("获取模型列表失败：{e}"))?;
+        .map_err(|e| format!("获取模型列表失败：{}", reqwest_error_text(e)))?;
     let status = response.status().as_u16();
-    let text = response
-        .text()
+    let text = read_text_capped(response, LLM_BODY_LIMIT)
         .await
         .map_err(|e| format!("读取模型列表失败：{e}"))?;
     if !(200..300).contains(&status) {
@@ -1737,6 +1789,84 @@ mod tests {
         assert!(outbound_key(&p).is_err());
         // 没 Key：不带 Authorization
         assert_eq!(outbound_key(&cfg("p2", true, false, "  ")).unwrap(), None);
+    }
+
+    #[test]
+    fn plaintext_http_key_only_for_local_hosts() {
+        for local in [
+            "http://localhost:11434/v1",
+            "http://127.0.0.1:1234/v1",
+            "http://[::1]:8080/v1",
+            "http://192.168.1.20:11434/v1",
+            "http://10.0.0.5/v1",
+            "http://172.16.0.9/v1",
+            "http://100.101.102.103/v1",
+            "http://[fd12::1]/v1",
+            "http://ollama:11434/v1",
+            "http://nas.local/v1",
+            "https://api.openai.com/v1",
+            "api.deepseek.com/v1",
+            "",
+        ] {
+            assert!(!plaintext_key_target(local), "{local}");
+        }
+        for remote in ["http://api.openai.com/v1", "HTTP://8.8.8.8/v1", "http://[2606:4700::1]/v1", "http://localhost.evil.com/v1"] {
+            assert!(plaintext_key_target(remote), "{remote}");
+        }
+    }
+
+    #[test]
+    fn plaintext_http_key_refused_on_save_and_send() {
+        let mut file = LlmFileV2::default();
+        let mut p = cfg("p1", true, true, "sk-x");
+        p.base_url = "http://api.example.com/v1".into();
+        p.key_origin = key_origin(&p.base_url);
+        file.providers.push(p.clone());
+        let err = check_key_transport(&file).unwrap_err();
+        assert!(err.contains("明文 http") && err.contains(&p.label), "{err}");
+        assert_eq!(outbound_key(&p).unwrap_err(), err, "旧文件里的组合同样拒发");
+        // 无 Key 的公网 http、带 Key 的局域网 http：照常
+        file.providers[0].api_key.clear();
+        assert!(check_key_transport(&file).is_ok());
+        let mut lan = cfg("p2", true, true, "sk-y");
+        lan.base_url = "http://192.168.1.20:11434/v1".into();
+        lan.key_origin = key_origin(&lan.base_url);
+        file.providers.push(lan.clone());
+        assert!(check_key_transport(&file).is_ok());
+        assert_eq!(outbound_key(&lan).unwrap(), Some("sk-y"));
+    }
+
+    #[test]
+    fn network_error_never_echoes_base_url_secrets() {
+        // 端口 1 无人监听：连接失败；reqwest 原错误会带完整 URL（含 userinfo 与 ?api-key=）。
+        let mut p = cfg("local", true, false, "");
+        p.base_url = "http://user:sk-userinfo-secret@127.0.0.1:1/v1?api-key=query-secret".into();
+        let result = tauri::async_runtime::block_on(chat_once(&p, None, "hi", false, 0.0, Some(8)));
+        let Err(ChatError::Network(message)) = result else {
+            panic!("应为网络错误");
+        };
+        assert!(!message.contains("secret") && !message.contains("127.0.0.1"), "{message}");
+    }
+
+    #[test]
+    fn oversized_chat_response_is_refused() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            if let Ok((mut conn, _)) = listener.accept() {
+                let mut buf = [0u8; 8192];
+                let _ = conn.read(&mut buf);
+                let _ = write!(conn, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", LLM_BODY_LIMIT + 1);
+            }
+        });
+        let mut p = cfg("local", true, false, "");
+        p.base_url = format!("http://{addr}/v1");
+        let result = tauri::async_runtime::block_on(chat_once(&p, None, "hi", false, 0.0, Some(8)));
+        let Err(ChatError::Network(message)) = result else {
+            panic!("超限响应必须拒收");
+        };
+        assert_eq!(message, "响应超过 8MB，已停止读取");
     }
 
     /// 一次性 HTTP 服务：读完请求（头 + Content-Length 正文）后回最小 chat 响应，并把请求原文交回。

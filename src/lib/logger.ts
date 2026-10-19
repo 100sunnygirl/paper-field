@@ -3,9 +3,10 @@
 //   必须返回版本号原始值，返回新数组会触发无限重渲染）；
 // - 控制台镜像按级别映射 console.debug/log/warn/error，带 [scope] 前缀；
 //   debug 仅在 DEV 镜像（缓冲始终保留）；
-// - Tauri 桌面端经 plugin-store 落盘 app-log.json（3s 尾沿防抖，只写 ≥info
-//   的最近 200 条）；文件名与 llm-settings.json / mineru-settings.json 永久错开
-//   （0.2.6 事故教训：plugin-store 与设置文件同名同目录会互相覆盖）；
+// - Tauri 桌面端经 Rust 命令 app_log_read / app_log_write / app_log_clear 落盘
+//   app-log.json（3s 尾沿防抖，只写 ≥info 的最近 200 条）；文件名由 Rust 写死、
+//   大小封顶，与 llm-settings.json / mineru-settings.json 永久错开（0.2.6 事故教训：
+//   同名同目录会互相覆盖）。不再用 plugin-store：它按页面给的任意路径读写 JSON；
 // - 非 Tauri（浏览器预览 / jsdom 测试）只缓冲 + console，零动态 import、零 IPC；
 // - 落盘失败静默降级为仅内存缓冲，并只写一条 warn 条目（防自激励循环）。
 // 约定：message/detail 不得包含 API Key / Token 等机密（现有 flash 文案只回显 hasKey）。
@@ -32,8 +33,6 @@ export const LOG_BUFFER_LIMIT = 500;
 export const LOG_PERSIST_LIMIT = 200;
 /** 落盘尾沿防抖：高频写入合并为一次 save。 */
 const PERSIST_DEBOUNCE_MS = 3000;
-const STORE_FILE = "app-log.json";
-const STORE_KEY = "entries";
 
 const LEVELS: readonly LogLevel[] = ["debug", "info", "warn", "error"];
 const SCOPES: readonly LogScope[] = ["app", "store", "llm", "mineru", "engine", "ui"];
@@ -107,29 +106,21 @@ function mirror(entry: LogEntry): void {
   else console.debug(line);
 }
 
-// ---------- Tauri 落盘（仅 isTauri() 时才动态 import plugin-store） ----------
+// ---------- Tauri 落盘（仅 isTauri() 时才动态 import invoke） ----------
 
-let storePromise: Promise<import("@tauri-apps/plugin-store").Store> | null = null;
 let persistTimer: number | null = null;
 /** 落盘故障标记：置位后彻底降级为仅内存，不再重试（防自激励循环）。 */
 let persistBroken = false;
 let persistWarned = false;
 
-function ensureStore(): Promise<import("@tauri-apps/plugin-store").Store> {
-  if (!storePromise) {
-    storePromise = import("@tauri-apps/plugin-store").then(({ load }) =>
-      // autoSave 关闭：统一由下面的显式 save() 控制落盘时机。
-      load(STORE_FILE, { autoSave: false }),
-    );
-  }
-  return storePromise;
+async function logCommand<T>(cmd: "app_log_read" | "app_log_write" | "app_log_clear", args?: Record<string, unknown>): Promise<T> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke<T>(cmd, args);
 }
 
 async function flush(): Promise<void> {
-  const store = await ensureStore();
   const entries = buffer.filter((entry) => entry.level !== "debug").slice(-LOG_PERSIST_LIMIT);
-  await store.set(STORE_KEY, entries);
-  await store.save();
+  await logCommand<void>("app_log_write", { entries });
 }
 
 function schedulePersist(): void {
@@ -158,9 +149,7 @@ export async function clear(): Promise<void> {
   listeners.forEach((listener) => listener());
   if (!isTauri() || persistBroken) return;
   try {
-    const store = await ensureStore();
-    await store.clear();
-    await store.save();
+    await logCommand<void>("app_log_clear");
   } catch {
     persistBroken = true;
   }
@@ -183,8 +172,7 @@ function isValidEntry(value: unknown): value is LogEntry {
 function bootstrap(): void {
   if (!isTauri()) return;
   const epoch = clearEpoch;
-  ensureStore()
-    .then((store) => store.get<unknown>(STORE_KEY))
+  logCommand<unknown>("app_log_read")
     .then((value) => {
       // 竞态守卫：回读在途期间若发生过 clear()（纪元已变），回读到的旧数据
       // 已被用户明确清除，落地合并等于复活已清空的日志——直接丢弃。

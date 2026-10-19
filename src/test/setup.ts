@@ -26,6 +26,8 @@ afterEach(() => {
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
 }));
+// 文件 / 文件夹对话框已移到 Rust 侧（pick_pdf_files 等命令）；页面只剩确认框。
 vi.mock("@tauri-apps/plugin-dialog", () => ({
-  open: vi.fn(),
+  ask: vi.fn(),
+  message: vi.fn(),
 }));

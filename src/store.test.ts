@@ -21,11 +21,6 @@ vi.mock("./lib/repo", () => ({
   },
 }));
 
-// 仅为「零动态加载」断言提供 spy：非 Tauri 分支的收口链路本就不应触碰 plugin-store。
-vi.mock("@tauri-apps/plugin-store", () => ({
-  load: vi.fn(),
-}));
-
 import { DEFAULT_MINERU } from "./lib/mineru";
 import { clear as clearLog, getEntries, log } from "./lib/logger";
 import { repo } from "./lib/repo";
@@ -413,19 +408,16 @@ describe("setFlash × notify：通知唯一收口", () => {
     expect(useField.getState().flash).toBeNull();
   });
 
-  it("非 Tauri 下收口链路零 IPC、零 plugin-store 动态加载（绕过校验防回归）", async () => {
+  it("非 Tauri 下收口链路零 IPC（日志落盘也走 invoke，绕过校验防回归）", async () => {
     vi.useFakeTimers();
     try {
       const { invoke } = await import("@tauri-apps/api/core");
-      const { load } = await import("@tauri-apps/plugin-store");
       vi.mocked(invoke).mockClear();
-      vi.mocked(load).mockClear();
       useField.getState().setFlash({ tone: "error", text: "boom" });
       useField.getState().setFlash({ tone: "warn", text: "careful" });
       await vi.advanceTimersByTimeAsync(30_000);
       expect(getEntries().length).toBeGreaterThanOrEqual(2);
       expect(invoke).not.toHaveBeenCalled();
-      expect(load).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }

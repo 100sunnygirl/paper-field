@@ -1,4 +1,5 @@
 mod appdir;
+mod applog;
 mod backup;
 mod biblio;
 mod db;
@@ -48,26 +49,33 @@ struct ImportedPdf {
     original_path: String,
 }
 
+/// `source` 必须是本次运行系统对话框选中的 PDF（见 mineru::pick_pdf_files / pick_pdf_folder）
+/// 或文库里的文件；任意路径一律拒绝。
 #[tauri::command]
-async fn import_pdf_to_library(app: tauri::AppHandle, source: String) -> Result<ImportedPdf, String> {
-    import_pdf_at(app_config_dir(&app)?, source).await
+async fn import_pdf_to_library(
+    app: tauri::AppHandle,
+    grants: tauri::State<'_, library::PdfGrants>,
+    source: String,
+) -> Result<ImportedPdf, String> {
+    let config = app_config_dir(&app)?;
+    let src = library::authorize_pdf(&config, &grants, &source)?;
+    import_pdf_at(config, src).await
 }
 
 /// Waits for the restore lock (an abandon may be moving files back into
 /// `library/`), then copies off the async worker.
-async fn import_pdf_at(config: PathBuf, source: String) -> Result<ImportedPdf, String> {
+async fn import_pdf_at(config: PathBuf, src: PathBuf) -> Result<ImportedPdf, String> {
     let _guard = restore::OP_LOCK.lock().await;
-    tauri::async_runtime::spawn_blocking(move || import_pdf_locked(&config, &source))
+    tauri::async_runtime::spawn_blocking(move || import_pdf_locked(&config, &src))
         .await
         .map_err(|err| err.to_string())?
 }
 
-fn import_pdf_locked(config: &std::path::Path, source: &str) -> Result<ImportedPdf, String> {
-    let src = PathBuf::from(&source);
+fn import_pdf_locked(config: &std::path::Path, src: &std::path::Path) -> Result<ImportedPdf, String> {
     if !src.is_file() {
         return Err("PDF 不存在".into());
     }
-    let canon = dunce::canonicalize(&src).map_err(|err| err.to_string())?;
+    let canon = dunce::canonicalize(src).map_err(|err| err.to_string())?;
     let is_pdf = canon
         .extension()
         .and_then(|ext| ext.to_str())
@@ -141,6 +149,10 @@ async fn export_files(app: tauri::AppHandle, files: Vec<ExportFile>) -> Result<O
 }
 
 fn export_files_at(root: String, files: Vec<ExportFile>) -> Result<(), String> {
+    // 先整体校验再写：不让一半文件落盘后才发现某个名字不合法。
+    if let Some(bad) = files.iter().find(|file| !is_markdown_name(&file.relative_path)) {
+        return Err(format!("导出文件名无效：{}（只能导出 .md 文件）", bad.relative_path));
+    }
     let root = PathBuf::from(root);
     fs::create_dir_all(&root).map_err(|e| e.to_string())?;
     let root = root.canonicalize().map_err(|e| e.to_string())?;
@@ -150,14 +162,25 @@ fn export_files_at(root: String, files: Vec<ExportFile>) -> Result<(), String> {
     Ok(())
 }
 
+/// 导出只产出 Markdown（export.ts 的 README.md 与各论文 .md）：名字与内容来自渲染进程，
+/// 扩展名固定为 .md，免得被拿来往用户选的目录里写 .command / .app 之类可执行文件。
+fn is_markdown_name(rel: &str) -> bool {
+    std::path::Path::new(rel)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+}
+
 /// Writes `content` to `root/rel`, creating directories one level at a time.
-/// Rejects absolute paths, `..`, `.`, and any symlink along the way.
+/// Rejects absolute paths, `..`, `.`, and any symlink along the way. Never
+/// replaces an existing file (each export goes to a fresh timestamped folder;
+/// a clash means the user picked a folder that already holds one).
 fn export_one(root: &std::path::Path, rel: &str, content: &[u8]) -> Result<(), String> {
     use std::io::Write;
     use std::path::Component;
     const INVALID: &str = "invalid export path";
     let comps: Vec<_> = std::path::Path::new(rel).components().collect();
-    if comps.is_empty() {
+    if comps.is_empty() || !is_markdown_name(rel) {
         return Err(INVALID.into());
     }
     let mut cur = root.to_path_buf();
@@ -173,14 +196,18 @@ fn export_one(root: &std::path::Path, rel: &str, content: &[u8]) -> Result<(), S
             _ => {}
         }
     }
+    // create_new：已有同名文件（或任何东西，含悬空符号链接）时失败，绝不截断用户已有的文件。
     let mut opts = fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
+    opts.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         opts.custom_flags(libc::O_NOFOLLOW);
     }
-    let mut out = opts.open(&cur).map_err(|e| e.to_string())?;
+    let mut out = opts.open(&cur).map_err(|e| match e.kind() {
+        std::io::ErrorKind::AlreadyExists => format!("导出目录里已有同名文件，未覆盖：{rel}"),
+        _ => e.to_string(),
+    })?;
     out.write_all(content).map_err(|e| e.to_string())
 }
 
@@ -248,12 +275,12 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(navigation_plugin())
         .manage(db::Db::default())
         .manage(llm::LlmState::new())
         .manage(mineru::MineruCredBook::default())
+        .manage(library::PdfGrants::default())
         .setup(|app| {
             let menu = build_menu(app)?;
             app.set_menu(menu)?;
@@ -279,8 +306,8 @@ pub fn run() {
             mineru::save_mineru_settings,
             mineru::mineru_test,
             mineru::mineru_probe,
-            mineru::list_pdfs,
-            mineru::normalize_pdf,
+            mineru::pick_pdf_files,
+            mineru::pick_pdf_folder,
             mineru::open_pdf,
             mineru::mineru_current_fingerprint,
             mineru::mineru_submit,
@@ -300,6 +327,10 @@ pub fn run() {
             restore::restore_delete_pre,
             restore::restore_abandon,
             appdir::appdir_migration_notices,
+            applog::app_log_read,
+            applog::app_log_write,
+            applog::app_log_clear,
+            platform::reveal_pre_restore,
             import_pdf_to_library
         ])
         .build(tauri::generate_context!())
@@ -342,11 +373,21 @@ mod tester_export_repro {
         let r = export_files_at(root.to_string_lossy().into(), vec![f("link/a.md")]);
         assert!(r.is_err() && !outside.join("a.md").exists(), "BUG: wrote through symlink to {}", outside.join("a.md").display());
     }
-    #[test] fn e6_reexport_overwrites() {
+    #[test] fn e6_reexport_never_overwrites() {
         let root = tmp("e6");
         export_files_at(root.to_string_lossy().into(), vec![f("a.md")]).unwrap();
-        export_files_at(root.to_string_lossy().into(), vec![ExportFile{relative_path:"a.md".into(),content:"new".into()}]).expect("re-export must succeed");
-        assert_eq!(fs::read_to_string(root.join("a.md")).unwrap(), "new");
+        let r = export_files_at(root.to_string_lossy().into(), vec![ExportFile{relative_path:"a.md".into(),content:"new".into()}]);
+        assert!(r.unwrap_err().contains("未覆盖"));
+        assert_eq!(fs::read_to_string(root.join("a.md")).unwrap(), "x");
+    }
+    #[test] fn e8_non_markdown_rejected_before_any_write() {
+        let root = tmp("e8");
+        for bad in ["evil.command", "x/run.sh", "a.md.exe", "noext", "x/.md/a"] {
+            let r = export_files_at(root.to_string_lossy().into(), vec![f("ok/a.md"), f(bad)]);
+            assert!(r.is_err(), "{bad}");
+        }
+        assert!(!root.join("ok").exists(), "nothing written when one name is invalid");
+        export_files_at(root.to_string_lossy().into(), vec![f("x/README.MD")]).expect("case-insensitive .md");
     }
     #[cfg(unix)] #[test] fn e7_final_symlink_file_rejected() {
         let base = tmp("e7"); let root = base.join("root"); fs::create_dir_all(&root).unwrap();
@@ -415,11 +456,27 @@ mod export_tests {
     }
 
     #[test]
-    fn overwrites_existing_file() {
+    fn never_overwrites_existing_file() {
         let (_base, root) = scratch("e6");
         export_one(&root, "a.md", b"one").unwrap();
-        export_one(&root, "a.md", b"two").unwrap();
-        assert_eq!(fs::read(root.join("a.md")).unwrap(), b"two");
+        assert!(export_one(&root, "a.md", b"two").is_err());
+        assert_eq!(fs::read(root.join("a.md")).unwrap(), b"one");
+    }
+
+    #[test]
+    fn rejects_non_markdown_extension() {
+        let (_base, root) = scratch("e8");
+        assert!(export_one(&root, "a.command", b"x").is_err());
+        assert!(!root.join("a.command").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_dangling_symlink_target() {
+        let (base, root) = scratch("e9");
+        std::os::unix::fs::symlink(base.join("created-elsewhere.md"), root.join("a.md")).unwrap();
+        assert!(export_one(&root, "a.md", b"x").is_err());
+        assert!(!base.join("created-elsewhere.md").exists());
     }
 
     #[cfg(unix)]
@@ -450,7 +507,7 @@ mod import_tests {
         let src = d.join("p.pdf");
         fs::write(&src, b"%PDF x").unwrap();
         let guard = crate::restore::OP_LOCK.blocking_lock();
-        let (cfg, s2) = (d.join("cfg"), src.to_string_lossy().into_owned());
+        let (cfg, s2) = (d.join("cfg"), src.clone());
         let h = std::thread::spawn(move || tauri::async_runtime::block_on(super::import_pdf_at(cfg, s2)));
         std::thread::sleep(std::time::Duration::from_millis(100));
         assert!(!h.is_finished(), "import must wait for the restore lock");
@@ -458,7 +515,9 @@ mod import_tests {
         drop(guard);
         let got = h.join().unwrap().unwrap();
         assert!(got.library_path.starts_with("library/"), "stored relative: {}", got.library_path);
-        assert_eq!(fs::read(crate::library::resolve(&d.join("cfg"), &got.library_path)).unwrap(), b"%PDF x");
+        let grants = crate::library::PdfGrants::default();
+        let stored = crate::library::authorize_pdf(&d.join("cfg"), &grants, &got.library_path).unwrap();
+        assert_eq!(fs::read(stored).unwrap(), b"%PDF x");
     }
 
     #[test]

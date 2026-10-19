@@ -55,6 +55,12 @@ describe("restore confirmation", () => {
     expect(restoreConfirmText(b, 4)).not.toContain("备份比当前少");
     expect(restoreConfirmText(b, null)).not.toContain("备份比当前少");
   });
+  it("tells the user which restored settings stay off", () => {
+    const b = { papers: 1, latestUpdatedAt: null, pdfs: 0, zipBytes: 10 };
+    const settingsNotice = "为安全起见，备份中的设置没有直接生效：LLM 提供商已全部停用，已保存的 API Key 需要重新填写。请在设置中核对地址后再启用。";
+    expect(restoreConfirmText({ ...b, settingsNotice }, 1)).toContain(settingsNotice);
+    expect(restoreConfirmText({ ...b, settingsNotice: null }, 1)).not.toContain("为安全起见");
+  });
 });
 
 describe("restore cancelled in the file dialog", () => {

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
-import { listPdfs, normalizePdf } from "../lib/mineru";
+import { pickPdfFiles, pickPdfFolder } from "../lib/mineru";
 import { repo } from "../lib/repo";
 import type { Author, PaperDetail } from "../lib/types";
 import { isTauri } from "../lib/util";
@@ -43,16 +43,10 @@ export function PaperDialog() {
   async function pickFiles() {
     setError(null);
     try {
-      const { open: pick } = await import("@tauri-apps/plugin-dialog");
-      const selected = await pick({
-        multiple: true,
-        filters: [{ name: "PDF", extensions: ["pdf"] }],
-      });
+      // 对话框由 Rust 弹出并返回规范化路径；导入时后端只认这些路径。
+      const selected = await pickPdfFiles(true);
       if (!selected) return;
-      const list = Array.isArray(selected) ? selected : [selected];
-      const normalized = [];
-      for (const path of list) normalized.push(await normalizePdf(path));
-      await addPaths(normalized);
+      await addPaths(selected);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -61,10 +55,9 @@ export function PaperDialog() {
   async function pickDirectory() {
     setError(null);
     try {
-      const { open: pick } = await import("@tauri-apps/plugin-dialog");
-      const selected = await pick({ directory: true, multiple: false });
-      if (typeof selected !== "string") return;
-      await addPaths(await listPdfs(selected));
+      const found = await pickPdfFolder();
+      if (!found) return;
+      await addPaths(found);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -230,13 +223,9 @@ function ManualPaperForm({ onCreated, primary = false }: { onCreated: () => void
   async function pickPdf() {
     setError(null);
     try {
-      const { open: pick } = await import("@tauri-apps/plugin-dialog");
-      const selected = await pick({
-        multiple: false,
-        filters: [{ name: "PDF", extensions: ["pdf"] }],
-      });
-      if (typeof selected !== "string") return;
-      setPdfPath(await normalizePdf(selected));
+      const selected = await pickPdfFiles(false);
+      if (!selected?.[0]) return;
+      setPdfPath(selected[0]);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }

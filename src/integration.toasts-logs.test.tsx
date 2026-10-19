@@ -80,15 +80,27 @@ vi.mock("./lib/export", async (importOriginal) => {
   return { ...actual, exportDomain: vi.fn() };
 });
 
-// plugin-store 统一替换为内存假 store：隔离 IPC 并提供落盘行为断言（logger.test.ts 先例）。
+// 日志落盘命令统一替换为内存假 store：隔离 IPC 并提供落盘行为断言（logger.test.ts 先例）。
 const fakeStore = vi.hoisted(() => ({
   set: vi.fn(async (_key: string, _value: unknown) => undefined),
   get: vi.fn(async (_key?: string) => undefined as unknown),
   clear: vi.fn(async () => undefined),
   save: vi.fn(async () => undefined),
 }));
-vi.mock("@tauri-apps/plugin-store", () => ({
-  load: vi.fn(async (_path: string, _options?: unknown) => fakeStore),
+// app_log_write = set("entries") + save；其余命令与原 setup 的 invoke 一样返回 undefined。
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(async (cmd: string, args?: Record<string, unknown>): Promise<unknown> => {
+    if (cmd === "app_log_read") return fakeStore.get("entries");
+    if (cmd === "app_log_write") {
+      await fakeStore.set("entries", args?.entries);
+      return fakeStore.save();
+    }
+    if (cmd === "app_log_clear") {
+      await fakeStore.clear();
+      return fakeStore.save();
+    }
+    return undefined;
+  }),
 }));
 
 // isTauri 按用例切换（默认 false = 浏览器 / jsdom 分支），其余 util 保持原实现。
@@ -102,7 +114,6 @@ import { loadSettings, saveSettings } from "./lib/settings";
 import { exportDomain } from "./lib/export";
 import { isTauri } from "./lib/util";
 import { clear as clearLog, getEntries, log } from "./lib/logger";
-import { load as storeLoad } from "@tauri-apps/plugin-store";
 import { repo } from "./lib/repo";
 import { bindToastLog, dismissAll, getToasts, type ToastLogEvent } from "./toasts";
 import { useField } from "./store";
@@ -745,7 +756,6 @@ describe("持久化异常 × 通知层互不破坏（Tauri 分支）", () => {
   it("错误通知经日志链路 3s 防抖后随 app-log.json 落盘（只含 ≥info）", async () => {
     vi.useFakeTimers();
     vi.mocked(isTauri).mockReturnValue(true);
-    vi.mocked(storeLoad).mockClear();
     fakeStore.set.mockClear();
     fakeStore.save.mockClear();
     fakeStore.set.mockResolvedValue(undefined);

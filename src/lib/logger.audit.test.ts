@@ -9,10 +9,23 @@ const fakeStore = vi.hoisted(() => ({
   clear: vi.fn(async () => undefined),
   save: vi.fn(async () => undefined),
 }));
-const storeLoad = vi.hoisted(() =>
-  vi.fn(async (_path: string, _options?: unknown) => fakeStore),
+// 落盘改走 Rust 命令 app_log_*：映射到内存假 store，沿用原有断言口径
+// （write = set("entries") + save，clear = clear + save，read = get("entries")）。
+const invokeMock = vi.hoisted(() =>
+  vi.fn(async (cmd: string, args?: Record<string, unknown>): Promise<unknown> => {
+    if (cmd === "app_log_read") return fakeStore.get("entries");
+    if (cmd === "app_log_write") {
+      await fakeStore.set("entries", args?.entries);
+      return fakeStore.save();
+    }
+    if (cmd === "app_log_clear") {
+      await fakeStore.clear();
+      return fakeStore.save();
+    }
+    return undefined;
+  }),
 );
-vi.mock("@tauri-apps/plugin-store", () => ({ load: storeLoad }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
 
 vi.mock("./util", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./util")>();

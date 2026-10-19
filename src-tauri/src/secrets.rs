@@ -335,6 +335,51 @@ pub fn redact_secrets(input: &str) -> String {
                 continue;
             }
         }
+        // JWT：三段 base64url，头部 `{"` 编码后固定以 eyJ 开头（MinerU Token 即此形状）。
+        if has_prefix(&chars[index..], "eyJ") && (index == 0 || !is_token_char(chars[index - 1])) {
+            let first = token_len(&chars[index..], true);
+            let second = chars.get(index + first).filter(|ch| **ch == '.').map(|_| token_len(&chars[index + first + 1..], true));
+            if first >= 11 && second.is_some_and(|len| len >= 8) {
+                let mut end = index + first + 1 + second.unwrap_or(0);
+                if chars.get(end) == Some(&'.') {
+                    end += 1 + token_len(&chars[end + 1..], true);
+                }
+                out.push_str("eyJ…");
+                index = end;
+                continue;
+            }
+        }
+        // 头部写法：x-api-key: xxx、"x-goog-api-key": "xxx"。
+        if let Some(skip) = header_key_prefix(&chars[index..]) {
+            let token = token_len(&chars[index + skip..], false);
+            if token >= 8 {
+                out.extend(&chars[index..index + skip]);
+                out.push('…');
+                index += skip + token;
+                continue;
+            }
+        }
+        // 查询参数：?api_key=…、&X-Amz-Signature=…
+        if matches!(chars[index], '?' | '&') {
+            if let Some(name) = secret_param_len(&chars[index + 1..]) {
+                let value = chars[index + 1 + name..].iter().take_while(|ch| !is_param_end(**ch)).count();
+                if value > 0 {
+                    out.extend(&chars[index..=index + name]);
+                    out.push('…');
+                    index += 1 + name + value;
+                    continue;
+                }
+            }
+        }
+        // scheme://user:pass@host → scheme://***@host
+        if has_prefix(&chars[index..], "://") {
+            let info = chars[index + 3..].iter().take_while(|ch| !matches!(ch, '/' | '?' | '#' | '@' | '"' | '\'' | '<' | '>') && !ch.is_whitespace()).count();
+            if info > 0 && chars.get(index + 3 + info) == Some(&'@') {
+                out.push_str("://***@");
+                index += 3 + info + 1;
+                continue;
+            }
+        }
         out.push(chars[index]);
         index += 1;
     }
@@ -355,6 +400,57 @@ fn has_prefix_ignore_case(chars: &[char], prefix: &str) -> bool {
         .iter()
         .zip(prefix.iter())
         .all(|(left, right)| left.eq_ignore_ascii_case(right))
+}
+
+fn is_token_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || ch == '_' || ch == '-'
+}
+
+fn is_param_end(ch: char) -> bool {
+    matches!(ch, '&' | '#' | '"' | '\'' | '<' | '>') || ch.is_whitespace()
+}
+
+/// 值是凭据或请求签名的查询参数名（预签名 S3/OSS 链接带 X-Amz-Signature、Signature 等）。
+const SECRET_PARAMS: &[&str] = &[
+    "key", "api_key", "apikey", "api-key", "token", "access_token", "refresh_token", "id_token", "auth",
+    "signature", "sig", "x-amz-signature", "x-amz-credential", "x-amz-security-token", "x-goog-signature",
+    "x-goog-credential", "client_secret", "secret", "password",
+];
+
+/// 返回参数名长度（含 `=`）。
+fn secret_param_len(chars: &[char]) -> Option<usize> {
+    let name = chars.iter().take_while(|ch| **ch != '=' && !is_param_end(**ch)).count();
+    if chars.get(name) != Some(&'=') {
+        return None;
+    }
+    let lower: String = chars[..name].iter().collect::<String>().to_ascii_lowercase();
+    SECRET_PARAMS.contains(&lower.as_str()).then_some(name + 1)
+}
+
+/// `x-api-key` 等头名后跟可选引号、`:` 或 `=`、空白：返回到值开头的长度。
+fn header_key_prefix(chars: &[char]) -> Option<usize> {
+    let name = ["x-api-key", "x-goog-api-key", "api-key"]
+        .iter()
+        .find(|name| has_prefix_ignore_case(chars, name))?
+        .len();
+    let mut at = name;
+    if matches!(chars.get(at), Some('"' | '\'')) {
+        at += 1;
+    }
+    while chars.get(at).is_some_and(|ch| *ch == ' ') {
+        at += 1;
+    }
+    if !matches!(chars.get(at), Some(':' | '=')) {
+        return None;
+    }
+    at += 1;
+    while chars.get(at).is_some_and(|ch| *ch == ' ') {
+        at += 1;
+    }
+    if matches!(chars.get(at), Some('"' | '\'')) {
+        at += 1;
+    }
+    Some(at)
 }
 
 fn token_len(chars: &[char], sk: bool) -> usize {
@@ -429,6 +525,36 @@ mod tests {
         assert!(cleaned.contains("sk-…"), "{cleaned}");
         assert!(!cleaned.to_ascii_lowercase().contains("bearer sk"), "{cleaned}");
         assert!(cleaned.contains("Bearer …"), "{cleaned}");
+    }
+
+    #[test]
+    fn redacts_jwt_header_keys_query_secrets_and_userinfo() {
+        let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJyZWFkZXIifQ.c2lnbmF0dXJlX3ZhbHVl";
+        let raw = format!(
+            "token {jwt} | x-api-key: abcd1234efgh | \"x-goog-api-key\": \"AIzaSyXXXXXXXX\" | \
+             https://oss.example/a.zip?X-Amz-Signature=deadbeef&id=7 | https://user:pa55@api.example/v1"
+        );
+        let cleaned = redact_secrets(&raw);
+        for leaked in [jwt, "abcd1234efgh", "AIzaSyXXXXXXXX", "deadbeef", "pa55"] {
+            assert!(!cleaned.contains(leaked), "{leaked} 泄露：{cleaned}");
+        }
+        assert!(cleaned.contains("eyJ…"), "{cleaned}");
+        assert!(cleaned.contains("x-api-key: …"), "{cleaned}");
+        assert!(cleaned.contains("?X-Amz-Signature=…&id=7"), "{cleaned}");
+        assert!(cleaned.contains("https://***@api.example/v1"), "{cleaned}");
+    }
+
+    #[test]
+    fn leaves_ordinary_text_alone() {
+        for text in [
+            "the token expired",
+            "x-api-key: missing",
+            "https://doi.org/10.1/abc?page=2&monkey=1",
+            "mail reader@example.com",
+            "论文：eyJ 不是令牌",
+        ] {
+            assert_eq!(redact_secrets(text), text);
+        }
     }
 
     #[test]

@@ -310,14 +310,19 @@ export async function mineruProbe(): Promise<ProviderHealth[]> {
   }
 }
 
-export async function listPdfs(directory: string): Promise<string[]> {
-  if (!isTauri()) throw new Error("请在桌面应用中选择目录。");
-  return invoke<string[]>("list_pdfs", { directory });
+/**
+ * 选 PDF 的系统对话框由 Rust 侧弹出：返回规范化后的绝对路径，用户取消时为 null。
+ * Rust 记下这些路径，之后导入只认它们（渲染进程不能再递任意路径给后端）。
+ */
+export async function pickPdfFiles(multiple: boolean): Promise<string[] | null> {
+  if (!isTauri()) throw new Error("请在桌面应用中选择 PDF。");
+  return invoke<string[] | null>("pick_pdf_files", { multiple });
 }
 
-export async function normalizePdf(path: string): Promise<string> {
-  if (!isTauri()) throw new Error("请在桌面应用中选择 PDF。");
-  return invoke<string>("normalize_pdf", { path });
+/** 选文件夹并列出其中（一层）的 PDF；用户取消时为 null。 */
+export async function pickPdfFolder(): Promise<string[] | null> {
+  if (!isTauri()) throw new Error("请在桌面应用中选择目录。");
+  return invoke<string[] | null>("pick_pdf_folder");
 }
 
 export async function openLocalPdf(path: string): Promise<void> {

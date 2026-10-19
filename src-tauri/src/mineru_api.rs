@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 
+use crate::io_util::{read_text_capped, reqwest_error_text, MINERU_JSON_LIMIT};
 use crate::mineru::{with_timeout, ApiCfg, ParsePoll, FETCH_TIMEOUT};
 
 pub const API_BASE: &str = "https://mineru.net";
@@ -66,9 +67,9 @@ impl ApiClient {
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .send()
             .await
-            .map_err(|e| format!("无法连接 mineru.net：{e}"))?;
+            .map_err(|e| format!("无法连接 mineru.net：{}", reqwest_error_text(e)))?;
         let status = response.status();
-        let text = response.text().await.map_err(|e| e.to_string())?;
+        let text = read_text_capped(response, MINERU_JSON_LIMIT).await?;
         let pair = parse_error_pair(&text);
         let pair_ref = pair.as_ref().map(|(code, msg)| (code.as_str(), msg.as_str()));
         match pair_ref {
@@ -110,9 +111,9 @@ impl ApiClient {
             .json(&body)
             .send()
             .await
-            .map_err(|e| format!("无法连接 mineru.net：{e}"))?;
+            .map_err(|e| format!("无法连接 mineru.net：{}", reqwest_error_text(e)))?;
         let status = response.status();
-        let text = response.text().await.map_err(|e| e.to_string())?;
+        let text = read_text_capped(response, MINERU_JSON_LIMIT).await?;
         if !status.is_success() {
             return Err(map_http_error(status, &text));
         }
@@ -144,7 +145,7 @@ impl ApiClient {
                 .body(bytes)
                 .send()
                 .await
-                .map_err(|e| format!("上传 PDF 到 mineru.net 失败：{e}"))?;
+                .map_err(|e| format!("上传 PDF 到 mineru.net 失败：{}", reqwest_error_text(e)))?;
             if !response.status().is_success() {
                 return Err(format!("上传 PDF 失败（HTTP {}）", response.status()));
             }
@@ -163,9 +164,9 @@ impl ApiClient {
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .send()
             .await
-            .map_err(|e| format!("无法连接 mineru.net：{e}"))?;
+            .map_err(|e| format!("无法连接 mineru.net：{}", reqwest_error_text(e)))?;
         let status = response.status();
-        let text = response.text().await.map_err(|e| e.to_string())?;
+        let text = read_text_capped(response, MINERU_JSON_LIMIT).await?;
         if !status.is_success() {
             return Err(map_http_error(status, &text));
         }
@@ -359,12 +360,14 @@ async fn download_pinned(
 
 const MAX_REDIRECTS: usize = 5;
 
-/// Result URLs are pre-signed; drop query and fragment so signatures never
-/// reach error messages or logs.
+/// Result URLs are pre-signed; drop query, fragment and userinfo so
+/// signatures never reach error messages or logs.
 fn redact_url(mut e: reqwest::Error) -> reqwest::Error {
     if let Some(url) = e.url_mut() {
         url.set_query(None);
         url.set_fragment(None);
+        let _ = url.set_username("");
+        let _ = url.set_password(None);
     }
     e
 }
@@ -401,7 +404,7 @@ pub fn extract_full_md_with(bytes: &[u8], max_md: u64) -> Result<String, String>
         let entry = archive
             .by_index(index)
             .map_err(|e| format!("解析结果压缩包无效：{e}"))?;
-        if entry.is_dir() || !is_full_md(entry.name()) {
+        if entry.is_dir() || !entry.name().is_ok_and(|name| is_full_md(&name)) {
             continue;
         }
         // Never trust the declared size: cap the actual decompressed bytes.
@@ -445,10 +448,13 @@ async fn download_client(
     builder.build().map_err(|e| format!("创建网络客户端失败：{e}"))
 }
 
+/// 带 Bearer 的 API 调用只跟随同来源重定向（reqwest 默认在同主机 https→http 降级时照发
+/// Authorization）；预签名上传也走它，对象存储不跨站跳转。
 fn api_client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(60))
         .use_rustls_tls()
+        .redirect(crate::io_util::same_origin_redirect_policy())
         .build()
         .map_err(|e| e.to_string())
 }
@@ -955,5 +961,20 @@ mod tests {
         let err = get(&format!("{short}?Signature=LEAK3"), ResultLimits::default()).unwrap_err();
         assert!(err.starts_with("下载解析结果失败"), "{err}");
         assert!(!err.contains("LEAK"), "{err}");
+    }
+
+    #[test]
+    fn upload_error_text_drops_presigned_url() {
+        // 预签名上传失败（端口 1 无人监听）：错误文本里不得出现签名、userinfo 或地址。
+        let err = tauri::async_runtime::block_on(async {
+            api_client().unwrap().put("http://u:pw-LEAK0@127.0.0.1:1/up.pdf?Signature=LEAK1").body("x").send().await.unwrap_err()
+        });
+        let shown = format!("上传 PDF 到 mineru.net 失败：{}", reqwest_error_text(err));
+        assert!(!shown.contains("LEAK") && !shown.contains("127.0.0.1"), "{shown}");
+        let err = tauri::async_runtime::block_on(async {
+            reqwest::Client::new().get("http://u:pw-LEAK0@127.0.0.1:1/r.zip?Signature=LEAK1").send().await.unwrap_err()
+        });
+        let shown = redact_url(err).to_string();
+        assert!(!shown.contains("LEAK") && shown.contains("127.0.0.1:1/r.zip"), "{shown}");
     }
 }
