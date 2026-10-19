@@ -41,19 +41,23 @@ jobs:
 
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      # 发布（tag）构建不读缓存：缓存可被其他分支的构建写入，不能进入带签名密钥的产物。
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 20
-          cache: npm
+          cache: ${{ github.ref_type != 'tag' && 'npm' || '' }}
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10
         with:
           targets: ${{ matrix.toolchain-targets }}
           components: clippy
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        if: github.ref_type != 'tag'
         with:
           workspaces: src-tauri
 
@@ -124,7 +128,7 @@ jobs:
           printf '{"appleSigned":%s,"updaterSigned":%s}\n' "$apple_signed" "$updater_signed" > "$stage/meta-${slug}.json"
 
       - name: Upload installer artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ matrix.artifact-name }}
           path: bundle-upload/*
@@ -140,7 +144,7 @@ jobs:
       contents: write
     steps:
       - name: Download built release artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: release-assets-*
           path: release-assets
