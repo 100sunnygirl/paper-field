@@ -76,7 +76,7 @@ export function SystemView() {
                     </span>
                   </li>
                   <li>
-                    <span>导入 PDF</span>
+                    <span>添加论文（导入 PDF / 手动录入）</span>
                     <span className="kbd">{shortcut("N")}</span>
                   </li>
                   <li>
@@ -96,7 +96,7 @@ export function SystemView() {
                     <span className="kbd">Esc</span>
                   </li>
                 </ul>
-                <p className="ef-kbd-note">在设置页按 {shortcut("K")} 会先切回阅读模式，再聚焦搜索框。</p>
+                <p className="ef-kbd-note">在设置页按 {shortcut("K")} 会先切回阅读模式，再聚焦论文列表上方的搜索框。</p>
               </article>
 
               <UpdateBlock />

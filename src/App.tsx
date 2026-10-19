@@ -27,6 +27,18 @@ function typingTarget(target: EventTarget | null): boolean {
   return target.isContentEditable || Boolean(target.closest("[contenteditable]"));
 }
 
+/** 聚焦论文列表栏里的搜索框；它或任一祖先被 display:none 隐藏时不动，返回 false。 */
+function focusSearch(): boolean {
+  const input = document.getElementById("global-search") as HTMLInputElement | null;
+  if (!input) return false;
+  for (let node: HTMLElement | null = input; node; node = node.parentElement) {
+    if (getComputedStyle(node).display === "none") return false;
+  }
+  input.focus();
+  input.select();
+  return true;
+}
+
 /**
  * ⌘R / Ctrl+R and the mark-read menu. Typing, an open dialog, the settings page, or no
  * visible paper leaves the paper alone. The key's default (webview reload on Windows)
@@ -50,9 +62,7 @@ export default function App() {
   const ready = useField((s) => s.ready);
   const error = useField((s) => s.error);
   const mode = useField((s) => s.mode);
-  const domains = useField((s) => s.domains);
   const selectedDomainId = useField((s) => s.selectedDomainId);
-  const search = useField((s) => s.search);
   const paper = useField((s) => s.paper);
   const navigatePapers = useField((s) => s.navigatePapers);
   const openDialog = useField((s) => s.openDialog);
@@ -103,26 +113,18 @@ export default function App() {
       }
       if (meta && event.key.toLowerCase() === "k") {
         event.preventDefault();
-        const input = document.getElementById("global-search") as HTMLInputElement | null;
-        if (input && getComputedStyle(input).display !== "none") {
-          input.focus();
-          return;
-        }
+        if (focusSearch()) return;
+        // 搜索框在论文列表栏里：设置页不渲染列表栏，专注模式隐藏它，窄屏它是抽屉。
+        // 先把列表栏亮出来，再等 React 提交后聚焦。setMode 是异步 zustand 更新，
+        // 单帧 rAF 可能在 #global-search 挂载前触发，因此用双 rAF；仍取不到时静默返回。
+        const later = () => requestAnimationFrame(() => requestAnimationFrame(() => void focusSearch()));
         if (mode === "system") {
-          // 设置模式不渲染搜索框：先切回阅读模式，再等 React 提交 Dock 后聚焦。
-          // setMode 是异步 zustand 更新，单帧 rAF 可能在 #global-search 挂载前触发，
-          // 因此用双 rAF；第二帧仍取不到时静默返回。
-          void setMode("field").finally(() => {
-            requestAnimationFrame(() => {
-              requestAnimationFrame(() => {
-                const el = document.getElementById("global-search") as HTMLInputElement | null;
-                if (el && getComputedStyle(el).display !== "none") el.focus();
-              });
-            });
-          });
+          void setMode("field").finally(later);
           return;
         }
+        setFocus(false);
         setListOpen(true);
+        later();
         return;
       }
       if (meta && event.key.toLowerCase() === "n") {
@@ -178,8 +180,6 @@ export default function App() {
     };
   }, [openDialog, setMode]);
 
-  const domain = domains.find((d) => d.id === selectedDomainId) ?? null;
-
   // 舞台三面以 mode+domain 为 key 重挂，模式/领域切换时重播不超过 150ms 的透明度过渡。
   // 外壳（rail/dock/status）不挂动画。三面各带前缀派生自己的 key：PaperNav 与
   // ReadingStage 是同一 Fragment 内的兄弟节点，共用同一个 key 会让 React 在切换时
@@ -228,7 +228,7 @@ export default function App() {
       <RestoreNotice />
       <MigrationNotices />
       <Rail mode={mode} />
-      <Dock domain={domain} search={search} />
+      <Dock />
       {mode === "system" ? (
         <SystemView key={`system:${stageKey}`} />
       ) : (

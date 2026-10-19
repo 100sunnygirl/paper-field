@@ -65,7 +65,7 @@
   /* ---- Geometry ---- */
   --pf-radius: 2px;
   --pf-rail-width: 76px;
-  --pf-dock-height: 68px;
+  --pf-dock-height: 48px;
   --pf-status-height: 28px;
   /* Side columns grow gently with the window so wide screens are not all canvas. */
   --pf-paper-list-width: clamp(292px, 15vw, 340px);
@@ -512,12 +512,14 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   background: var(--pf-signal);
   pointer-events: none;
 }
+/* 顶栏只是一条品牌题头：字标 + 产品副名，不放控件。搜索与「添加论文」作用于论文列表，
+   住在列表栏里（.ef-nav-search / .ef-nav-foot）。 */
 .ef-brand {
   display: flex;
-  gap: 12px;
+  gap: 10px;
   align-items: center;
-  /* Keeps the search box aligned with the reading stage's left edge. */
-  min-width: calc(var(--pf-rail-width) + var(--pf-paper-list-width) - 54px);
+  min-width: 0;
+  white-space: nowrap;
 }
 .ef-mark {
   width: 24px;
@@ -526,74 +528,84 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
   clip-path: polygon(0 0, 100% 0, 100% 57%, 56% 57%, 56% 100%, 0 100%);
   flex-shrink: 0;
 }
+.ef-brand .ef-mark { width: 20px; height: 21px; }
 .ef-brand strong {
-  display: block;
-  font-size: var(--pf-fs-h2);
+  font-size: var(--pf-fs-title);
   font-weight: 700;
-  letter-spacing: -0.02em;
-  line-height: 1.1;
+  letter-spacing: 0.01em;
+  line-height: 1;
 }
 .ef-brand small {
-  display: block;
-  margin-top: 5px;
-  font-size: var(--pf-fs-tag);
+  margin-left: 4px;
+  padding-left: 12px;
+  border-left: 1px solid #4a4d45;
+  font-size: var(--pf-fs-caption);
   color: var(--pf-on-dark-2);
   letter-spacing: 0.16em;
-  line-height: 1.2;
+  line-height: 1;
 }
+
+/* 列表栏搜索框：浅色输入位，紧贴它所过滤的列表。 */
+.ef-nav-search { padding: 16px 22px 0; }
+.ef-nav-search + .ef-list-head { padding-top: 14px; }
 .ef-search {
   position: relative;
-  height: 40px;
-  max-width: 580px;
+  height: var(--pf-control-height);
   flex: 1;
   display: flex;
   align-items: center;
-  gap: 10px;
-  background: var(--pf-ink-2);
-  border: 1px solid #5c5f57;
-  padding: 0 12px;
-  color: var(--pf-on-dark-2);
+  gap: 8px;
+  background: var(--pf-surface);
+  border: 1px solid var(--pf-line-strong);
+  border-radius: var(--pf-radius);
+  padding: 0 6px 0 10px;
+  color: var(--pf-muted);
   min-width: 0;
-  transition: border-color var(--pf-motion), background-color var(--pf-motion), box-shadow var(--pf-motion);
+  transition: border-color var(--pf-motion), box-shadow var(--pf-motion);
 }
-.ef-search:hover { border-color: #8a8d84; }
-/* 聚焦：黄框 + 左缘 3px 黄条内嵌，输入位一眼可辨。 */
+.ef-search > .ef-ico { width: 16px; height: 16px; }
+.ef-search:hover { border-color: var(--pf-control-border); }
+/* 聚焦：墨框 + 左缘 3px 黄条内嵌，输入位一眼可辨。 */
 .ef-search:focus-within {
-  border-color: var(--pf-signal);
-  background: #2f322c;
+  border-color: var(--pf-ink);
   box-shadow: inset 3px 0 0 var(--pf-signal);
 }
-.ef-search:focus-within > .ef-ico { color: var(--pf-signal); }
+.ef-search:focus-within > .ef-ico { color: var(--pf-ink); }
 .ef-search input {
   width: 100%;
   min-width: 0;
-  color: var(--pf-on-dark);
+  color: var(--pf-ink);
   border: 0;
   background: transparent;
   outline: none;
   font-size: var(--pf-fs-ui);
 }
-.ef-search input::placeholder { color: #a9ada1; }
-.ef-search kbd {
+.ef-search input::placeholder { color: var(--pf-muted); }
+.ef-search kbd,
+.ef-add-paper kbd {
   font-family: var(--pf-font-mono);
   font-size: var(--pf-fs-tag);
-  color: var(--pf-on-dark-2);
-  border: 1px solid #5c5f57;
+  font-weight: 400;
+  color: var(--pf-muted);
+  border: 1px solid var(--pf-divider);
   padding: 1px 5px;
   white-space: nowrap;
 }
-.ef-header-spacer { flex: 1; }
-.ef-dock .ef-btn-secondary {
+.ef-search-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex: none;
+  padding: 0;
+  border: 0;
   background: transparent;
-  color: var(--pf-on-dark);
-  border-color: #6f736a;
+  color: var(--pf-muted);
+  transition: background-color var(--pf-motion), color var(--pf-motion);
 }
-.ef-dock .ef-btn-secondary::after { background: var(--pf-notch-signal); }
-.ef-dock .ef-btn-secondary:hover:not(:disabled) {
-  background: var(--pf-ink-3);
-  border-color: var(--pf-on-dark);
-}
-.ef-dock .ef-btn-secondary .ef-ico { color: var(--pf-signal); }
+.ef-search-clear .ef-ico { width: 14px; height: 14px; }
+.ef-search-clear:hover { background: var(--pf-hover-flat); color: var(--pf-ink); }
 
 /* ---- Rail ---- */
 .ef-rail {
@@ -826,6 +838,9 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   color: var(--pf-muted);
 }
 .ef-nav-foot .ef-btn { width: 100%; background: transparent; }
+/* 「添加论文」：列表的收尾动作，左对齐图标 + 文案，右端挂快捷键。 */
+.ef-nav-foot .ef-add-paper { justify-content: flex-start; background: var(--pf-surface); }
+.ef-add-paper kbd { margin-left: auto; }
 
 /* 论文行：行间以发丝线分隔；悬停时左缘灰条长出，选中时换成墨条 + 信号黄
    短钩，卡面提白并在右上角切出墨色角标。列表行不持有投影。 */
@@ -1145,31 +1160,38 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 .ef-toolbar .ef-pdf-action {
   flex-shrink: 0;
 }
-.ef-pdf-missing {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  min-width: 0;
-  color: var(--pf-muted);
-  font-size: var(--pf-fs-caption);
-  font-weight: 500;
-  line-height: 1.3;
-  white-space: nowrap;
+/* 工具条控件统一 36px 高、同一基线；三级样式各管一类：
+   文字按钮 = 视图切换，secondary = 次要动作，primary = 本屏唯一主动作。
+   主按钮在工具条里静止时不带硬投影（否则比邻居高出 2px、基线错位），悬停才抬起。 */
+.ef-toolbar .ef-btn { min-height: 36px; padding: 0 12px; }
+.ef-toolbar .ef-btn-primary:not(:hover) { box-shadow: none; }
+.ef-toolbar .ef-btn-text { color: var(--pf-secondary); }
+.ef-toolbar .ef-btn-text:hover:not(:disabled) { color: var(--pf-ink); }
+.ef-toolbar .ef-btn-text[aria-pressed="true"] {
+  background: var(--pf-hover-flat);
+  border-color: var(--pf-divider);
+  color: var(--pf-ink);
 }
-.ef-pdf-missing .ef-btn {
-  min-height: 32px;
-  padding: 0 8px;
-  color: var(--pf-secondary);
+.ef-toolbar .ef-icon-btn { width: 36px; padding: 0; }
+.ef-toolbar-divider {
+  flex: none;
+  width: 1px;
+  height: 20px;
+  margin: 0 4px;
+  background: var(--pf-divider);
 }
 .ef-list-back, .ef-context-toggle { display: none; }
 .ef-menu-wrap { position: relative; }
-.ef-menu-wrap > .ef-btn .ef-ico { width: 16px; height: 16px; transition: transform var(--pf-direct); }
-.ef-menu-wrap > .ef-btn[aria-expanded="true"] .ef-ico { transform: rotate(180deg); }
+.ef-menu-wrap > .ef-btn[aria-expanded="true"] {
+  background: var(--pf-hover-flat);
+  border-color: var(--pf-divider);
+  color: var(--pf-ink);
+}
 .ef-action-menu {
   position: absolute;
   right: 0;
-  top: 47px;
-  width: 196px;
+  top: calc(100% + 6px);
+  width: 244px;
   padding: 6px;
   background: var(--pf-surface);
   border: 1px solid var(--pf-ink);
@@ -1194,6 +1216,8 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   transition: background-color var(--pf-motion), transform var(--pf-t-press);
 }
 .ef-action-menu button .ef-ico { width: 16px; height: 16px; }
+.ef-action-menu .ef-menu-text { display: flex; flex-direction: column; gap: 2px; padding: 7px 0; }
+.ef-action-menu .ef-menu-text small { font-size: var(--pf-fs-caption); color: var(--pf-muted); line-height: 1.3; }
 .ef-action-menu button::before {
   content: "";
   position: absolute;
@@ -1573,6 +1597,30 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 .ef-note-text li + li { margin-top: 5px; }
 .ef-note-text li::marker { color: var(--pf-muted); }
 .ef-empty-note { margin: 0; color: var(--pf-muted); font-size: var(--pf-fs-ui); }
+.ef-empty-note .ef-btn-link { display: inline-flex; min-height: 0; margin-left: 4px; }
+/* 空笔记块的就地入口：虚线框占位，点击即在原位打开编辑框。 */
+.ef-note-start {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 48px;
+  padding: 0 14px;
+  border: 1px dashed var(--pf-line-strong);
+  border-radius: var(--pf-radius);
+  background: transparent;
+  color: var(--pf-secondary);
+  font-size: var(--pf-fs-ui);
+  text-align: left;
+  transition: background-color var(--pf-motion), border-color var(--pf-motion), color var(--pf-motion), transform var(--pf-t-press);
+}
+.ef-note-start .ef-ico { width: 16px; height: 16px; }
+.ef-note-start:hover {
+  background: var(--pf-surface);
+  border-color: var(--pf-ink);
+  color: var(--pf-ink);
+}
+.ef-note-start:active { transform: translateY(var(--pf-nudge)); }
 .ef-note textarea {
   display: block;
   min-height: 160px;
@@ -3635,7 +3683,7 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 @media (min-width: 1800px) {
   .ef-toolbar { padding: 0 32px; }
   .ef-context { padding: 28px 26px 56px; }
-  .ef-nav-head, .ef-list-head, .ef-nav-foot { padding-left: 26px; padding-right: 26px; }
+  .ef-nav-head, .ef-nav-search, .ef-list-head, .ef-nav-foot { padding-left: 26px; padding-right: 26px; }
   .ef-paper-list { padding: 0 14px 12px; }
   .filter-row { padding-left: 26px; padding-right: 26px; }
 }
@@ -3687,8 +3735,6 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   }
   .ef-read { grid-area: read; }
   .ef-list-back { display: inline-flex; }
-  .ef-brand { min-width: 240px; }
-  .ef-dock { gap: 18px; }
   .ef-toolbar-label { display: none; }
   .ef-toolbar { gap: 7px; }
   /* 列表收进抽屉后，行长不超过收起前（1101px）那一档。 */
@@ -3706,7 +3752,7 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   .ef-shell.is-focus,
   .ef-shell[data-mode="system"] {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: 60px minmax(0, 1fr) 64px;
+    grid-template-rows: var(--pf-dock-height) minmax(0, 1fr) 64px;
     grid-template-areas:
       "dock"
       "read"
@@ -3715,12 +3761,7 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   .ef-status { display: none; }
   .ef-dock { padding: 0 16px; gap: 12px; }
   .ef-dock::after { display: none; }
-  .ef-brand { min-width: auto; }
-  .ef-brand strong { font-size: var(--pf-fs-title); }
-  .ef-mark { height: 22px; width: 21px; }
   .ef-brand small { display: none; }
-  .ef-search { display: none; }
-  .ef-dock .ef-btn { padding: 0 10px; font-size: var(--pf-fs-caption); min-height: 36px; }
   .ef-rail {
     flex-direction: row;
     justify-content: space-around;
@@ -3751,9 +3792,8 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   .ef-list-back { grid-column: 1; grid-row: 1; justify-self: start; }
   .ef-context-toggle { grid-column: 2; grid-row: 1; margin-left: 0; }
   .ef-menu-wrap { grid-column: 3; grid-row: 1; }
-  .ef-pdf-action { grid-column: 1; grid-row: 2; justify-content: center; }
-  .ef-write-note { grid-column: 2 / 4; grid-row: 2; justify-content: center; }
-  .ef-toolbar-spacer, .ef-focus-btn { display: none; }
+  .ef-pdf-action { grid-column: 1 / 4; grid-row: 2; justify-content: center; }
+  .ef-toolbar-spacer, .ef-focus-btn, .ef-toolbar-divider { display: none; }
   .ef-reading-grid, .ef-shell.is-focus .ef-reading-grid {
     display: block;
     max-width: none;
@@ -3769,7 +3809,7 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   .ef-note.is-editing::before { left: -19px; }
   .ef-nav {
     left: 0;
-    top: 60px;
+    top: var(--pf-dock-height);
     bottom: 64px;
     width: min(320px, 88vw);
   }
@@ -3814,11 +3854,9 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   }
 }
 
-/* ---- Cross-domain search dropdown (Dock) ---- */
+/* ---- Cross-domain search dropdown (paper list search) ---- */
 .ef-search-wrap {
   position: relative;
-  flex: 1;
-  max-width: 580px;
   min-width: 0;
   display: flex;
 }
@@ -3834,6 +3872,7 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   box-shadow: var(--pf-elev-2);
   animation: pf-unfold var(--pf-t-unfold) backwards;
   color: var(--pf-ink);
+  z-index: 10;
   max-height: min(420px, 60vh);
   overflow: auto;
 }

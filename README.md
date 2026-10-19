@@ -23,7 +23,7 @@ The product chrome is a **reading workstation**: charcoal top bar, pale mode rai
 - **Jobs panel (作业面板):** click the strip's job segment or press ⌘J to see what is running — batch progress, per-job stage and page progress, the queue and recent results
 - Search and Markdown export of a domain
 - Keyboard: ↑↓ list, ⌘N 添加论文, ⌘R 标记已读, ⌘K 搜索
-- Move paper across domains via 更多 → 移动到其他领域; delete requires a confirm dialog
+- Move paper across domains via 工具条「⋯ 更多操作」→ 移动到其他领域; delete requires a confirm dialog
 
 ## Run from source
 
@@ -282,7 +282,7 @@ xattr -dr com.apple.quarantine "/Applications/Paper Field.app"
 | ↑ / ↓ | Move in the current paper list |
 | ⌘N / Ctrl+N | 添加论文（选 PDF / 选文件夹 / 手动添加） |
 | ⌘R / Ctrl+R | 标记已读 |
-| ⌘K / Ctrl+K | 搜索；系统模式下按它会先跳回现场再聚焦搜索框 |
+| ⌘K / Ctrl+K | 聚焦论文列表上方的搜索框；在设置页、专注模式或窄屏下会先把列表栏亮出来再聚焦 |
 | ⌘J / Ctrl+J | 打开 / 收起作业面板 |
 | Esc | Close dialog / 关闭抽屉 / 收起作业面板 |
 
