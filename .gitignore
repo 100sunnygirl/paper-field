@@ -34,8 +34,11 @@ agent-tools/
 # Secrets
 .env
 .env.*
-!
-.env.example
+!.env.example
 
 # Security audit register (map of weaknesses; never publish)
 .security-audit/
+
+# Internal process docs and reports stay local; never publish
+docs/
+reports/

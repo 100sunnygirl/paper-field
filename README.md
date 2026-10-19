@@ -296,7 +296,7 @@ xattr -dr com.apple.quarantine "/Applications/Paper Field.app"
 
 ## Tests / 测试
 
-三项门禁与逐文件覆盖说明见 [docs/测试报告.md](docs/测试报告.md)：
+三项门禁：
 
 ```bash
 npm test                                                   # 前端 vitest

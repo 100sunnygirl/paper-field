@@ -5,7 +5,7 @@ import type { FieldSource, MetaField, PreparedMeta } from "./types";
 type Prev = FieldSource | "empty";
 type Write = "api" | "api-refresh" | "api-overwrite" | "llm" | "llm-overwrite";
 
-// 决策表本身就是规格：逐格断言（docs/架构改进方案.md 第二节）。
+// 决策表本身就是规格：逐格断言。
 const TABLE: Record<Prev, Record<Write, boolean>> = {
   empty: { api: true, "api-refresh": true, "api-overwrite": true, llm: true, "llm-overwrite": true },
   file: { api: true, "api-refresh": true, "api-overwrite": true, llm: true, "llm-overwrite": true },
