@@ -390,20 +390,15 @@ pub fn redact_secrets(input: &str) -> String {
     out
 }
 
+// 每个字符位置都要试好几个前缀：逐字比较、不分配，长文本里这是主要开销。
 fn has_prefix(chars: &[char], prefix: &str) -> bool {
-    let prefix: Vec<char> = prefix.chars().collect();
-    chars.len() >= prefix.len() && chars[..prefix.len()] == prefix[..]
+    let mut rest = chars.iter();
+    prefix.chars().all(|want| rest.next() == Some(&want))
 }
 
 fn has_prefix_ignore_case(chars: &[char], prefix: &str) -> bool {
-    let prefix: Vec<char> = prefix.chars().collect();
-    if chars.len() < prefix.len() {
-        return false;
-    }
-    chars[..prefix.len()]
-        .iter()
-        .zip(prefix.iter())
-        .all(|(left, right)| left.eq_ignore_ascii_case(right))
+    let mut rest = chars.iter();
+    prefix.chars().all(|want| rest.next().is_some_and(|got| got.eq_ignore_ascii_case(&want)))
 }
 
 /// userinfo 的扫描上限：每个 `://` 最多往后看这么远，避免一长串 `://` 变成平方级。
@@ -554,11 +549,13 @@ mod tests {
 
     #[test]
     fn adversarial_input_stays_linear() {
+        // 平方级时 20 万次重复要跑几分钟以上；线性实现在 CI 的 debug 构建里不到一秒。
+        // 上限留足余量，只拦住退化成平方级，不因 runner 快慢抖动而失败。
         for unit in ["?", "&", "://", "?a", "eyJ", "x-api-key:"] {
             let raw = unit.repeat(200_000);
             let started = std::time::Instant::now();
             redact_secrets(&raw);
-            assert!(started.elapsed() < std::time::Duration::from_secs(2), "{unit} 太慢：{:?}", started.elapsed());
+            assert!(started.elapsed() < std::time::Duration::from_secs(15), "{unit} 太慢：{:?}", started.elapsed());
         }
     }
 

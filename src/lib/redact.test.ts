@@ -59,10 +59,11 @@ describe("redactSecrets（SEC-015）", () => {
   });
 
   it("对抗输入保持线性：长串 a.a.a 或 :// 不会卡住日志", () => {
+    // 平方级回溯时 10 万次重复要十几秒以上；上限留足余量，只拦住退化，不因机器快慢抖动。
     for (const unit of ["a.", "://", "?key", "eyJ"]) {
       const started = Date.now();
-      redactSecrets(unit.repeat(40_000));
-      expect(Date.now() - started).toBeLessThan(1000);
+      redactSecrets(unit.repeat(100_000));
+      expect(Date.now() - started).toBeLessThan(3000);
     }
   });
 });
