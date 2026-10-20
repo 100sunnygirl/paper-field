@@ -175,7 +175,7 @@ xattr -dr com.apple.quarantine "/Applications/Paper Field.app"
 open "/Applications/Paper Field.app"
 ```
 
-Windows 直接运行 `src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis\Paper Field_0.2.16_x64-setup.exe`。默认按当前用户安装，不需要管理员权限；安装器会在缺少 WebView2 Runtime 时在线引导安装。
+Windows 直接运行 `src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis\Paper Field_0.2.17_x64-setup.exe`。默认按当前用户安装，不需要管理员权限；安装器会在缺少 WebView2 Runtime 时在线引导安装。
 
 首次 release 编译会较久；之后增量会快很多。
 
