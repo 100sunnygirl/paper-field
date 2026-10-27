@@ -140,6 +140,19 @@ interface FieldState {
   /** 从任意模式跳到设置页指定卡片（通知里的「去设置」等入口）。 */
   openSystemCard: (anchor: string) => void;
   clearSystemFocus: () => void;
+  /**
+   * 设置页离开守卫：由 SystemView 挂载时注册、卸载时清空。setMode 离开设置页前
+   * 先询问它；返回 true（有未保存修改）时不切换，改记 pendingMode 由设置页弹三选。
+   */
+  settingsLeaveGuard: (() => boolean) | null;
+  setSettingsLeaveGuard: (guard: (() => boolean) | null) => void;
+  /** 被离开守卫拦下的目标模式；设置页弹「保存/放弃/留在此页」三选后处理。 */
+  pendingMode: AppMode | null;
+  /** 三选后的一次性放行：用户已明确处理未保存修改，setMode 不再二次拦截。 */
+  leaveGuardBypass: boolean;
+  /** 三选后继续被拦下的切换（保存或放弃后守卫不再拦截）。 */
+  continuePendingMode: () => Promise<void>;
+  cancelPendingMode: () => void;
   init: () => Promise<void>;
   setMode: (mode: AppMode) => Promise<void>;
   selectDomain: (id: string | null) => Promise<void>;
@@ -301,6 +314,9 @@ export const useField = create<FieldState>((set, get) => ({
   loadError: null,
   jobsOpen: false,
   systemFocus: null,
+  settingsLeaveGuard: null,
+  pendingMode: null,
+  leaveGuardBypass: false,
 
   // 【通知唯一入口 / 日志唯一收口】flash 字段的唯一写入口就是本函数：写入镜像的同时
   // 桥接 toasts 层（评审裁定的收口层）——非 null 走 notify（emit / refresh 等事件与
@@ -337,6 +353,22 @@ export const useField = create<FieldState>((set, get) => ({
   },
 
   clearSystemFocus: () => set({ systemFocus: null }),
+
+  setSettingsLeaveGuard: (guard) => set({ settingsLeaveGuard: guard }),
+
+  continuePendingMode: async () => {
+    const target = get().pendingMode;
+    // 一次性放行：保存 / 放弃由本动作负责，setMode 不再因表单仍标脏而二次拦截
+    //（保存后 React 尚未重渲染，守卫读到的还是旧状态）。
+    set({ pendingMode: null, leaveGuardBypass: true });
+    try {
+      if (target) await get().setMode(target);
+    } finally {
+      set({ leaveGuardBypass: false });
+    }
+  },
+
+  cancelPendingMode: () => set({ pendingMode: null }),
 
   dequeueMineruPaper: (batchId, paperId) => {
     // 只移出这一批；库里状态写成 cancelled，重启或保存 MinerU 设置后不会被重新提交。
@@ -458,6 +490,19 @@ export const useField = create<FieldState>((set, get) => ({
   },
 
   setMode: async (mode) => {
+    // 设置页有未保存修改时先拦下：记录目标模式，由设置页的「保存/放弃/留在此页」三选处理。
+    // continuePendingMode 会先清掉 pendingMode 再回调本函数，不会被这里二次拦截。
+    const state = get();
+    if (
+      state.mode === "system" &&
+      mode !== "system" &&
+      state.pendingMode === null &&
+      !state.leaveGuardBypass &&
+      state.settingsLeaveGuard?.()
+    ) {
+      set({ pendingMode: mode });
+      return;
+    }
     set({ mode });
     await get().refresh({ reselect: true });
   },

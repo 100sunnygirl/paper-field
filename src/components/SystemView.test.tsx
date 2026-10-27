@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // 只桩掉桌面专属的备份执行函数，其余（记录读写 / 文案）保持真实实现，
 // 组件与 store 动作走真路径，可断言「备份成功后写入本机记录」。
@@ -925,6 +925,136 @@ describe("SystemView · 备份状态与预检", () => {
       expect(record.papers).toBe(2);
     });
     expect(await within(backupBlock()).findByText(/上次备份/)).toBeInTheDocument();
+  });
+});
+
+describe("SystemView · 未保存修改拦截与草稿保留", () => {
+  beforeEach(() => {
+    useField.setState(useField.getInitialState(), true);
+    localStorage.clear();
+  });
+
+  /** 把某块表单改脏（改自定义服务的 Base URL）。 */
+  function dirtyLlmForm() {
+    fireEvent.change(within(screen.getByRole("region", { name: "自定义服务" })).getByLabelText("Base URL"), {
+      target: { value: "https://changed.example/v1" },
+    });
+  }
+
+  it("修改表单出现「未保存」标记", () => {
+    useField.setState({ settings: llmSettings() });
+    render(<SystemView />);
+    const block = llmBlock();
+    expect(within(block).queryByText("未保存")).not.toBeInTheDocument();
+    dirtyLlmForm();
+    expect(within(block).getByText("未保存")).toBeInTheDocument();
+  });
+
+  it("有未保存修改时 setMode 被拦下并弹三选；「留在此页」取消切换", async () => {
+    useField.setState({
+      mode: "system",
+      refresh: vi.fn(async () => undefined),
+      settings: llmSettings(),
+      saveLlmSettings: vi.fn(async () => undefined),
+    });
+    render(<SystemView />);
+    dirtyLlmForm();
+    await act(async () => {
+      await useField.getState().setMode("field");
+    });
+    // 未切换：记录目标模式，弹三选
+    expect(useField.getState().mode).toBe("system");
+    expect(useField.getState().pendingMode).toBe("field");
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("设置页有未保存的修改")).toBeInTheDocument();
+    expect(within(dialog).getByText("AI 服务设置")).toBeInTheDocument();
+    for (const label of ["保存修改并离开", "放弃修改并离开", "留在此页"]) {
+      expect(within(dialog).getByRole("button", { name: label })).toBeInTheDocument();
+    }
+    fireEvent.click(within(dialog).getByRole("button", { name: "留在此页" }));
+    expect(useField.getState().pendingMode).toBeNull();
+    expect(useField.getState().mode).toBe("system");
+  });
+
+  it("「保存修改并离开」先保存再切换；「放弃修改并离开」清草稿并切换", async () => {
+    const saveLlmSettings = vi.fn(async () => undefined);
+    useField.setState({
+      mode: "system",
+      refresh: vi.fn(async () => undefined),
+      settings: llmSettings(),
+      saveLlmSettings,
+    });
+    const { unmount } = render(<SystemView />);
+    dirtyLlmForm();
+    // dirty 时草稿已写盘（不含 Key）
+    expect(localStorage.getItem("paper-field.settings-draft.llm")).not.toContain("sk-");
+    await act(async () => {
+      await useField.getState().setMode("archive");
+    });
+    let dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "保存修改并离开" }));
+    await waitFor(() => expect(saveLlmSettings).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(useField.getState().mode).toBe("archive"));
+    unmount();
+
+    // 放弃路径：改脏 → 拦下 → 放弃 → 模式切换且草稿键被清
+    useField.setState({ mode: "system", pendingMode: null, settings: llmSettings() });
+    render(<SystemView />);
+    dirtyLlmForm();
+    await act(async () => {
+      await useField.getState().setMode("intake");
+    });
+    dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "放弃修改并离开" }));
+    await waitFor(() => expect(useField.getState().mode).toBe("intake"));
+    expect(localStorage.getItem("paper-field.settings-draft.llm")).toBeNull();
+  });
+
+  it("未保存的非敏感草稿在本机保留，回到设置页可恢复或丢弃", () => {
+    useField.setState({ settings: llmSettings() });
+    const { unmount } = render(<SystemView />);
+    fireEvent.change(within(screen.getByRole("region", { name: "自定义服务" })).getByLabelText("Base URL"), {
+      target: { value: "https://draft.example/v1" },
+    });
+    unmount();
+    // 重新进入设置页：草稿恢复（不含 Key），可一键丢弃
+    render(<SystemView />);
+    expect(screen.getByText(/已恢复上次未保存的草稿（不含 API Key）/)).toBeInTheDocument();
+    const row = screen.getByRole("region", { name: "自定义服务" });
+    expect(within(row).getByLabelText("Base URL")).toHaveValue("https://draft.example/v1");
+    fireEvent.click(screen.getByRole("button", { name: "丢弃草稿" }));
+    expect(within(screen.getByRole("region", { name: "自定义服务" })).getByLabelText("Base URL")).toHaveValue(
+      "https://my-proxy.example/v1",
+    );
+    expect(localStorage.getItem("paper-field.settings-draft.llm")).toBeNull();
+  });
+
+  it("MinerU 与文献库表单也注册守卫：改脏后离开被拦下", async () => {
+    useField.setState({
+      mode: "system",
+      refresh: vi.fn(async () => undefined),
+      mineru: mineruState(),
+      saveMineruSettings: vi.fn(async () => undefined),
+    });
+    render(<SystemView />);
+    // 改 SSH 主机 → 脏
+    const ssh = screen.getByRole("region", { name: "SSH 远程" });
+    fireEvent.click(within(ssh).getByRole("button", { name: "高级" }));
+    fireEvent.change(within(ssh).getByLabelText("主机"), { target: { value: "new-host" } });
+    await act(async () => {
+      await useField.getState().setMode("field");
+    });
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("MinerU 解析源")).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "留在此页" }));
+    expect(useField.getState().mode).toBe("system");
+  });
+
+  it("已保存 Token 但输入框留空时不算脏（不误报未保存）", () => {
+    useField.setState({ mineru: mineruState() });
+    render(<SystemView />);
+    const block = screen.getByRole("heading", { level: 3, name: "MinerU 解析源" }).closest("article") as HTMLElement;
+    expect(within(block).queryByText("未保存")).not.toBeInTheDocument();
   });
 });
 

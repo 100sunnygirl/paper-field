@@ -31,10 +31,83 @@ import { useField } from "../store";
 import { LogPanel } from "./LogPanel";
 import { PreRestoreList } from "./PreRestoreList";
 import { SecretsOverview } from "./SecretsOverview";
-import { Button, Field, Icon } from "./ui";
+import { Button, Dialog, Field, Icon } from "./ui";
 
 function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+// ---------- 设置页离开守卫：三块表单注册 isDirty / save / discard，setMode 离开前询问 ----------
+
+interface SettingsGuardEntry {
+  id: string;
+  title: string;
+  isDirty: () => boolean;
+  save: () => Promise<void>;
+  discard: () => void;
+}
+
+/** 模块级注册表：SystemView 的三块表单各注册一条；守卫函数在决策时刻实时读取。 */
+const settingsGuards: SettingsGuardEntry[] = [];
+
+function registerSettingsGuard(entry: SettingsGuardEntry): () => void {
+  settingsGuards.push(entry);
+  return () => {
+    const index = settingsGuards.indexOf(entry);
+    if (index >= 0) settingsGuards.splice(index, 1);
+  };
+}
+
+export function dirtySettingsCards(): SettingsGuardEntry[] {
+  return settingsGuards.filter((entry) => entry.isDirty());
+}
+
+/** 注册一条守卫；isDirty/save/discard 每次渲染刷新到 ref，注册本身只做一次。 */
+function useSettingsGuard(
+  id: string,
+  title: string,
+  handlers: Pick<SettingsGuardEntry, "isDirty" | "save" | "discard">,
+): void {
+  const ref = useRef(handlers);
+  ref.current = handlers;
+  useEffect(() => {
+    const entry: SettingsGuardEntry = {
+      id,
+      title,
+      isDirty: () => ref.current.isDirty(),
+      save: () => ref.current.save(),
+      discard: () => ref.current.discard(),
+    };
+    return registerSettingsGuard(entry);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
+}
+
+// ---------- 非敏感草稿：dirty 时写 localStorage（不含 Key / Token），挂载时恢复 ----------
+
+/** 三块表单的草稿键；Key 与 Token 永不写入草稿。 */
+const LLM_DRAFT_KEY = "paper-field.settings-draft.llm";
+const MINERU_DRAFT_KEY = "paper-field.settings-draft.mineru";
+const BIBLIO_DRAFT_KEY = "paper-field.settings-draft.biblio";
+
+function readSettingsDraft<T>(key: string): T | null {
+  try {
+    const raw = typeof localStorage === "undefined" ? null : localStorage.getItem(key);
+    const value = raw ? (JSON.parse(raw) as unknown) : null;
+    return value && typeof value === "object" ? (value as T) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeSettingsDraft(key: string, value: unknown): void {
+  try {
+    if (typeof localStorage === "undefined") return;
+    if (value === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // 写不进（隐私模式等）：草稿只是额外保护，不影响表单本身。
+  }
 }
 
 /**
@@ -104,6 +177,11 @@ export function SystemView() {
   const setMode = useField((s) => s.setMode);
   const selectPaper = useField((s) => s.selectPaper);
   const clearSystemFocus = useField((s) => s.clearSystemFocus);
+  const setSettingsLeaveGuard = useField((s) => s.setSettingsLeaveGuard);
+  const pendingMode = useField((s) => s.pendingMode);
+  const continuePendingMode = useField((s) => s.continuePendingMode);
+  const cancelPendingMode = useField((s) => s.cancelPendingMode);
+  const [leaveError, setLeaveError] = useState<string | null>(null);
 
   const [query, setQuery] = useState("");
   const [activeCard, setActiveCard] = useState<SystemCardId>("llm");
@@ -158,6 +236,43 @@ export function SystemView() {
       // 返回途中出错不影响已清除的深链状态；模式切换失败有各自的提示。
     }
   }
+
+  // 离开守卫：setMode 离开设置页前询问（有未保存修改时记 pendingMode，本页弹三选）。
+  useEffect(() => {
+    setSettingsLeaveGuard(() => settingsGuards.some((entry) => entry.isDirty()));
+    return () => setSettingsLeaveGuard(null);
+  }, [setSettingsLeaveGuard]);
+
+  // 关窗 / 刷新前的最后保护（浏览器预览生效；桌面端以离开拦截为主）。
+  useEffect(() => {
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (settingsGuards.some((entry) => entry.isDirty())) {
+        event.preventDefault();
+        event.returnValue = "";
+      }
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, []);
+
+  async function saveAllAndLeave() {
+    setLeaveError(null);
+    const dirty = dirtySettingsCards();
+    try {
+      for (const entry of dirty) await entry.save();
+      await continuePendingMode();
+    } catch (err) {
+      setLeaveError(`保存失败：${errText(err)}。可以重试、放弃修改，或留在此页。`);
+    }
+  }
+
+  function discardAllAndLeave() {
+    for (const entry of dirtySettingsCards()) entry.discard();
+    setLeaveError(null);
+    void continuePendingMode();
+  }
+
+  const dirtyCards = pendingMode !== null ? dirtySettingsCards() : [];
 
   const backLabel = systemFocus?.returnTo
     ? systemFocus.returnTo.paperId
@@ -248,6 +363,42 @@ export function SystemView() {
           </div>
         </div>
       </div>
+
+      {/* 离开守卫三选：保存修改 / 放弃修改 / 留在此页；Esc 与遮罩等同「留在此页」。 */}
+      <Dialog
+        open={pendingMode !== null}
+        title="设置页有未保存的修改"
+        onClose={() => {
+          setLeaveError(null);
+          cancelPendingMode();
+        }}
+        footer={
+          <>
+            <Button type="button" variant="primary" onClick={() => void saveAllAndLeave()}>
+              保存修改并离开
+            </Button>
+            <Button type="button" variant="danger" onClick={discardAllAndLeave}>
+              放弃修改并离开
+            </Button>
+            <Button type="button" onClick={() => cancelPendingMode()}>
+              留在此页
+            </Button>
+          </>
+        }
+      >
+        <p>以下设置卡有未保存的修改：</p>
+        <ul>
+          {dirtyCards.map((entry) => (
+            <li key={entry.id}>{entry.title}</li>
+          ))}
+        </ul>
+        <p>离开前想怎么处理？未保存的非敏感草稿已在本机保留（不含 Key 与 Token）。</p>
+        {leaveError ? (
+          <p className="ef-probe-line is-error" role="alert">
+            {leaveError}
+          </p>
+        ) : null}
+      </Dialog>
     </section>
   );
 }
@@ -719,12 +870,30 @@ function LlmSettingsBlock({ focused }: { focused: boolean }) {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [confirmClearKeyId, setConfirmClearKeyId] = useState<string | null>(null);
   const [addChoice, setAddChoice] = useState(LLM_PRESETS[0]?.id ?? CUSTOM_PRESET);
+  const [draftRestored, setDraftRestored] = useState(false);
 
   useEffect(() => {
     setRows(saved.providers.map(toRow));
     setConfirmDeleteId(null);
     setConfirmClearKeyId(null);
+    // 保存成功（saved 变化）即草稿已被采纳：清掉「已恢复草稿」提示。
+    setDraftRestored(false);
   }, [saved]);
+
+  // 恢复上次未保存的非敏感草稿（不含 API Key；按提供商 id 合并到当前行）。
+  useEffect(() => {
+    const draft = readSettingsDraft<{ providers: Array<Record<string, unknown>> }>(LLM_DRAFT_KEY);
+    if (!draft?.providers?.length) return;
+    setRows((prev) =>
+      prev.map((row) => {
+        const item = draft.providers.find((provider) => provider.id === row.id);
+        return item ? { ...row, ...item, apiKeyDraft: row.apiKeyDraft } : row;
+      }),
+    );
+    setDraftRestored(true);
+    // 只在挂载时执行一次。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function updateRow(id: string, patch: Partial<ProviderRow>) {
     setRows((prev) => prev.map((row) => (row.id === id ? { ...row, ...patch } : row)));
@@ -768,6 +937,41 @@ function LlmSettingsBlock({ focused }: { focused: boolean }) {
       );
     });
   }
+
+  function resetFromSaved(): void {
+    setRows(saved.providers.map(toRow));
+    setMessage(null);
+    // 丢弃 / 保存后草稿已被采纳或放弃：同步清键，不等重渲染（组件可能随即卸载）。
+    writeSettingsDraft(LLM_DRAFT_KEY, null);
+  }
+
+  // 离开守卫 + 非敏感草稿：dirty 时写本机草稿（不含 Key），干净时清掉。
+  const dirty = isDirty();
+  useSettingsGuard("llm", "AI 服务设置", {
+    isDirty,
+    save: async () => {
+      await saveLlmSettings(currentInput());
+    },
+    discard: resetFromSaved,
+  });
+  useEffect(() => {
+    writeSettingsDraft(
+      LLM_DRAFT_KEY,
+      dirty
+        ? {
+            providers: rows.map((row) => ({
+              id: row.id,
+              presetId: row.presetId,
+              label: row.label,
+              baseUrl: row.baseUrl,
+              model: row.model,
+              enabled: row.enabled,
+              requiresKey: row.requiresKey,
+            })),
+          }
+        : null,
+    );
+  });
 
   function applyPreset(id: string, value: string) {
     if (value === CUSTOM_PRESET) {
@@ -896,10 +1100,19 @@ function LlmSettingsBlock({ focused }: { focused: boolean }) {
     >
       <header className="ef-block-head">
         <h3>AI 服务设置</h3>
+        {dirty ? <span className="ef-dirty-badge">未保存</span> : null}
         <p>
           配置 OpenAI 兼容的 AI 服务，可添加多个提供商并按顺序自动回退；保存后即可使用「补全论文信息」与「起草阅读笔记」。
         </p>
       </header>
+      {draftRestored ? (
+        <p className="ef-draft-note">
+          已恢复上次未保存的草稿（不含 API Key）。
+          <Button type="button" size="sm" onClick={() => { resetFromSaved(); setDraftRestored(false); }}>
+            丢弃草稿
+          </Button>
+        </p>
+      ) : null}
       {llmLoadError ? (
         <p className="ef-probe-line is-error" role="alert">
           {llmLoadError}
@@ -1198,14 +1411,63 @@ function BiblioSettings({ focused }: { focused: boolean }) {
   const [clearOpenalex, setClearOpenalex] = useState(false);
   const [clearS2, setClearS2] = useState(false);
   const [message, setMessage] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
+  const [draftRestored, setDraftRestored] = useState(false);
 
-  useEffect(() => {
+  function resetFromSaved(): void {
+    writeSettingsDraft(BIBLIO_DRAFT_KEY, null);
     setEmail(saved.email);
     setOpenalexKey("");
     setS2Key("");
     setClearOpenalex(false);
     setClearS2(false);
+    setMessage(null);
+  }
+
+  useEffect(() => {
+    resetFromSaved();
+    setDraftRestored(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [saved]);
+
+  // 恢复上次未保存的邮箱草稿（Key 不落盘，没有草稿）。必须在草稿写入效果之前声明：
+  // 挂载时写入效果会按「当前不脏」清掉草稿键，读取必须先发生。
+  useEffect(() => {
+    const draft = readSettingsDraft<{ email: string }>(BIBLIO_DRAFT_KEY);
+    if (draft && typeof draft.email === "string") {
+      setEmail(draft.email);
+      setDraftRestored(true);
+    }
+    // 只在挂载时执行一次。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function isDirty(): boolean {
+    return (
+      email.trim() !== saved.email.trim() ||
+      Boolean(openalexKey.trim()) ||
+      Boolean(s2Key.trim()) ||
+      (clearOpenalex && saved.hasOpenalexKey) ||
+      (clearS2 && saved.hasS2Key)
+    );
+  }
+
+  // 离开守卫 + 非敏感草稿：邮箱可丢草稿；Key 永不落盘。
+  const dirty = isDirty();
+  useSettingsGuard("biblio", "文献库", {
+    isDirty,
+    save: async () => {
+      const input: BiblioSaveInput = {
+        email: email.trim(),
+        openalexKey: clearOpenalex ? "" : openalexKey.trim() ? openalexKey.trim() : null,
+        s2Key: clearS2 ? "" : s2Key.trim() ? s2Key.trim() : null,
+      };
+      await saveBiblio(input);
+    },
+    discard: resetFromSaved,
+  });
+  useEffect(() => {
+    writeSettingsDraft(BIBLIO_DRAFT_KEY, dirty && email.trim() !== saved.email.trim() ? { email: email.trim() } : null);
+  });
 
   const crossrefConfigured = biblioEmailConfigured(saved.email);
   const remaining = saved.openalexRemainingUsd;
@@ -1218,8 +1480,17 @@ function BiblioSettings({ focused }: { focused: boolean }) {
     >
       <header className="ef-block-head">
         <h3>文献库</h3>
+        {dirty ? <span className="ef-dirty-badge">未保存</span> : null}
         <p>不填写也能查询。邮箱和 Key 只改变请求走哪条通道、多快、每天能查多少，不改变查哪些库、按什么顺序查。</p>
       </header>
+      {draftRestored ? (
+        <p className="ef-draft-note">
+          已恢复上次未保存的邮箱草稿。
+          <Button type="button" size="sm" onClick={() => { resetFromSaved(); setDraftRestored(false); }}>
+            丢弃草稿
+          </Button>
+        </p>
+      ) : null}
       <SettingsLoadError which="biblio" />
       <ul className="ef-kbd-list">
         <li>
@@ -1351,8 +1622,10 @@ function MineruSettings({ focused }: { focused: boolean }) {
   const [testing, setTesting] = useState<MineruProviderKind | null>(null);
   const [probing, setProbing] = useState(false);
   const [confirmClearToken, setConfirmClearToken] = useState(false);
+  const [draftRestored, setDraftRestored] = useState(false);
 
-  useEffect(() => {
+  function resetFromSaved(): void {
+    writeSettingsDraft(MINERU_DRAFT_KEY, null);
     setLocalEnabled(saved.local.enabled);
     setLocalSocket(saved.local.socketPath);
     setSshEnabled(saved.ssh.enabled);
@@ -1371,7 +1644,44 @@ function MineruSettings({ focused }: { focused: boolean }) {
     setOrder(saved.order);
     setApiToken("");
     setConfirmClearToken(false);
+    setMessage(null);
+  }
+
+  useEffect(() => {
+    resetFromSaved();
+    setDraftRestored(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [saved]);
+
+  // 恢复上次未保存的非敏感草稿（不含 Token）。
+  useEffect(() => {
+    const draft = readSettingsDraft<Record<string, unknown>>(MINERU_DRAFT_KEY);
+    if (!draft) return;
+    if (typeof draft.localEnabled === "boolean") setLocalEnabled(draft.localEnabled);
+    if (typeof draft.localSocket === "string") setLocalSocket(draft.localSocket);
+    if (typeof draft.sshEnabled === "boolean") setSshEnabled(draft.sshEnabled);
+    if (typeof draft.sshHost === "string") setSshHost(draft.sshHost);
+    if (typeof draft.sshPort === "string") setSshPort(draft.sshPort);
+    if (typeof draft.sshUser === "string") setSshUser(draft.sshUser);
+    if (typeof draft.sshKey === "string") setSshKey(draft.sshKey);
+    if (typeof draft.sshSocket === "string") setSshSocket(draft.sshSocket);
+    if (typeof draft.sshInbox === "string") setSshInbox(draft.sshInbox);
+    if (draft.modelVersion === "pipeline" || draft.modelVersion === "vlm") setModelVersion(draft.modelVersion);
+    if (draft.language === "ch" || draft.language === "en") setLanguage(draft.language);
+    if (typeof draft.enableFormula === "boolean") setEnableFormula(draft.enableFormula);
+    if (typeof draft.enableTable === "boolean") setEnableTable(draft.enableTable);
+    if (draft.tier === "flash" || draft.tier === "basic" || draft.tier === "standard" || draft.tier === "advanced") {
+      setTier(draft.tier);
+    }
+    if (typeof draft.pageRange === "string") setPageRange(draft.pageRange);
+    if (Array.isArray(draft.order)) {
+      const next = draft.order.filter((item): item is MineruProviderKind => item === "local" || item === "ssh" || item === "api");
+      if (next.length) setOrder(next);
+    }
+    setDraftRestored(true);
+    // 只在挂载时执行一次。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function currentInput(nextOrder?: MineruProviderKind[]): MineruSaveInput {
     return {
@@ -1414,7 +1724,9 @@ function MineruSettings({ focused }: { focused: boolean }) {
           socketPath: saved.ssh.socketPath,
           inboxDir: saved.ssh.inboxDir,
         }) ||
-      Boolean(cur.api.token) !== saved.api.hasToken ||
+      // Token 三态：留空 = 保留已存（不脏）；输入新 Token 才算脏。
+      // 清除走「清除已保存的 Token」按钮（立即保存），不经过表单脏检查。
+      Boolean(apiToken.trim()) ||
       cur.api.modelVersion !== saved.api.modelVersion ||
       cur.api.language !== saved.api.language ||
       cur.api.enableFormula !== saved.api.enableFormula ||
@@ -1423,6 +1735,41 @@ function MineruSettings({ focused }: { focused: boolean }) {
       cur.pageRange !== saved.pageRange
     );
   }
+
+  // 离开守卫 + 非敏感草稿（不含 Token）。
+  const dirty = isDirty();
+  useSettingsGuard("mineru", "MinerU 解析源", {
+    isDirty,
+    save: async () => {
+      await save(currentInput());
+    },
+    discard: resetFromSaved,
+  });
+  useEffect(() => {
+    writeSettingsDraft(
+      MINERU_DRAFT_KEY,
+      dirty
+        ? {
+            localEnabled,
+            localSocket,
+            sshEnabled,
+            sshHost,
+            sshPort,
+            sshUser,
+            sshKey,
+            sshSocket,
+            sshInbox,
+            modelVersion,
+            language,
+            enableFormula,
+            enableTable,
+            tier,
+            pageRange,
+            order,
+          }
+        : null,
+    );
+  });
 
   async function save(input: MineruSaveInput): Promise<void> {
     await saveMineru(input);
@@ -1512,8 +1859,17 @@ function MineruSettings({ focused }: { focused: boolean }) {
     >
       <header className="ef-block-head">
         <h3>MinerU 解析源</h3>
+        {dirty ? <span className="ef-dirty-badge">未保存</span> : null}
         <p>导入 PDF 后自动送解析：按回退顺序探测，上方解析源不可用时自动切到下一个。</p>
       </header>
+      {draftRestored ? (
+        <p className="ef-draft-note">
+          已恢复上次未保存的草稿（不含 Token）。
+          <Button type="button" size="sm" onClick={() => { resetFromSaved(); setDraftRestored(false); }}>
+            丢弃草稿
+          </Button>
+        </p>
+      ) : null}
       <SettingsLoadError which="mineru" />
 
       <div className={`ef-statusbar ${statusTone}`} aria-live="polite">

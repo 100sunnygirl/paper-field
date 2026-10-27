@@ -2148,6 +2148,31 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 }
 .ef-backup-status.is-warn { color: var(--pf-danger); font-weight: 500; }
 .ef-backup-precheck b { color: var(--pf-ink); font-weight: 600; }
+/* 未保存标记与草稿提示（离开守卫三选的行内对应物）。 */
+.ef-block-head { position: relative; }
+.ef-dirty-badge {
+  position: absolute;
+  top: 0;
+  right: 0;
+  padding: 2px 8px;
+  font-size: var(--pf-fs-tag);
+  font-weight: 500;
+  color: var(--pf-danger);
+  border: 1px solid var(--pf-tint-danger);
+  background: var(--pf-danger-bg);
+}
+.ef-draft-note {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 0 0 14px;
+  padding: 8px 12px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+  background: var(--pf-panel);
+  border: 1px dashed var(--pf-divider);
+}
 .ef-llm-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
