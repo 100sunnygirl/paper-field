@@ -470,7 +470,7 @@ describe("JobsPanel", () => {
   });
 
   it("失败作业一键复制错误信息与作业 id", async () => {
-    const writeText = vi.fn(async () => undefined);
+    const writeText = vi.fn(async (_text: string) => undefined);
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
     useField.setState({
       jobs: [
