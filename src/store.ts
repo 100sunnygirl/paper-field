@@ -142,6 +142,11 @@ interface FieldState {
   setJobsPinned: (on: boolean) => void;
   /** 入库页作业行点击后在面板里高亮的作业卡 id（数秒后自动清除）。 */
   highlightJobId: string | null;
+  /**
+   * 标已读微反馈的序号：每次从未读/在读真正转入「已读」时 +1。
+   * 领域进度条与状态条已读计数据此做一次轻量 +1 动画（prefers-reduced-motion 下静态）。
+   */
+  readPulse: number;
   /** 打开作业面板并高亮指定作业卡（入库页作业行入口）。 */
   highlightJob: (jobId: string) => void;
   /**
@@ -366,6 +371,7 @@ export const useField = create<FieldState>((set, get) => ({
   jobsOpen: false,
   jobsPinned: false,
   highlightJobId: null,
+  readPulse: 0,
   systemFocus: null,
   settingsLeaveGuard: null,
   pendingMode: null,
@@ -1093,6 +1099,10 @@ export const useField = create<FieldState>((set, get) => ({
       else await repo.setReadingStatus(id, status, restoreReadAt);
       // 「在读起点」本机记账（在读第 N 天用；库里没有状态变更时间戳）。
       noteReadingStatus(id, status);
+      // 标已读的核心仪式：真正转入已读时发一次 +1 微反馈脉冲。
+      if (status === "read" && prevStatus !== "read") {
+        set({ readPulse: get().readPulse + 1 });
+      }
       await get().refresh();
       const labels = { unread: "未读", reading: "在读", read: "已读" };
       const flash: Flash = { tone: "ok", text: `阅读状态已更新为${labels[status]}。` };

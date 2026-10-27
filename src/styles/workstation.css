@@ -858,6 +858,20 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   width: 8px;
   background: var(--pf-signal);
 }
+/* 标已读的 +1 微反馈：填充闪一层成功色、已读计数轻跳一下（约 700ms，
+   reduced-motion 由全局兜底关闭；不引入新色，成功色与状态条 .ok 同源）。 */
+.ef-progress.is-read-pulse > i::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--pf-tint-success);
+  animation: pf-flash-out 700ms var(--pf-ease-out);
+}
+.ef-progress-value b.is-read-pulse,
+.ef-status b.is-read-pulse {
+  display: inline-block;
+  animation: pf-count-bump 700ms var(--pf-ease-out);
+}
 .ef-list-head {
   display: flex;
   align-items: center;
@@ -4769,6 +4783,16 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 @keyframes pf-mode-fade {
   from { opacity: 0.88; }
   to { opacity: 1; }
+}
+/* 标已读微反馈：成功色闪光淡出（挂在进度填充上）与计数上跳回落。 */
+@keyframes pf-flash-out {
+  from { opacity: 0.85; }
+  to { opacity: 0; }
+}
+@keyframes pf-count-bump {
+  0% { transform: translateY(0); }
+  35% { transform: translateY(-3px); }
+  100% { transform: translateY(0); }
 }
 .ef-shell .ef-nav,
 .ef-shell .ef-read,

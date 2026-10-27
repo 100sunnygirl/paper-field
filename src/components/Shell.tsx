@@ -13,6 +13,7 @@ import {
 import { shortcut } from "../lib/util";
 import { useField } from "../store";
 import { Icon } from "./ui";
+import { useReadPulse } from "./useReadPulse";
 
 const MODE_ICONS: Record<AppMode, "grid" | "archive" | "inbox" | "settings"> = {
   field: "grid",
@@ -331,6 +332,8 @@ export function StatusStrip() {
   const settings = useField((s) => s.settings);
   const mineru = useField((s) => s.mineru);
   const effectiveProvider = useField((s) => s.effectiveProvider);
+  // 标已读时状态条的已读计数做一次轻量跳动（与领域进度条同一脉冲源）。
+  const readPulse = useReadPulse();
   const mineruLabel = effectiveProvider
     ? `MinerU：${MINERU_PROVIDER_LABELS[effectiveProvider]}`
     : mineru.configured
@@ -339,7 +342,7 @@ export function StatusStrip() {
   return (
     <footer className="ef-status">
       <span>
-        已读 <b>{stats.read}</b> / {stats.total}
+        已读 <b className={readPulse ? "is-read-pulse" : ""}>{stats.read}</b> / {stats.total}
       </span>
       <span className="ok">
         开源 <b>{stats.openSource}</b>

@@ -330,3 +330,18 @@ describe("PaperNav · 搜索与添加论文住在列表栏", () => {
     expect(screen.queryByRole("button", { name: /添加论文/ })).toBeNull();
   });
 });
+
+describe("PaperNav · 标已读的 +1 微反馈", () => {
+  it("readPulse 置位时：领域进度条与已读计数挂上脉冲类", () => {
+    useField.setState({ mode: "field", papers: [intakeItem("p1", null), intakeItem("p2", null)], readPulse: 1 });
+    render(<PaperNav />);
+    expect(document.querySelector(".ef-progress")).toHaveClass("is-read-pulse");
+    expect(document.querySelector(".ef-progress-value b")).toHaveClass("is-read-pulse");
+  });
+
+  it("无脉冲时进度条不带脉冲类", () => {
+    useField.setState({ mode: "field", papers: [intakeItem("p1", null)] });
+    render(<PaperNav />);
+    expect(document.querySelector(".ef-progress")).not.toHaveClass("is-read-pulse");
+  });
+});

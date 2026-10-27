@@ -11,6 +11,7 @@ import { jobStageLine } from "../lib/jobsView";
 import { repo } from "../lib/repo";
 import { pad2, shortcut } from "../lib/util";
 import { useField } from "../store";
+import { useReadPulse } from "./useReadPulse";
 import { CheckSquare, PaperMatrix } from "./PaperMatrix";
 import { PaperSearch } from "./PaperSearch";
 import { Button, Icon } from "./ui";
@@ -83,6 +84,8 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
   const domainRead = domainPapers.filter((p) => p.readingStatus === "read").length;
   const fill = domainPapers.length ? domainRead / domainPapers.length : 0;
   const allChecked = list.length > 0 && checkedPaperIds.length === list.length;
+  // 标已读（⌘R / 下拉）时：领域进度条 + 已读计数做一次 +1 微反馈。
+  const readPulse = useReadPulse();
 
   // 批量模式下 Esc 退出。对话框打开时 Dialog 的捕获层会拦截 Esc，不会误退批量模式。
   useEffect(() => {
@@ -117,11 +120,11 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
           <div className="ef-progress-label">
             <span>阅读进度</span>
             <span className="ef-progress-value">
-              已读 <b className="mono">{domainRead}</b>
+              已读 <b className={`mono${readPulse ? " is-read-pulse" : ""}`}>{domainRead}</b>
               <span className="mono"> / {domainPapers.length}</span>
             </span>
           </div>
-          <div className="ef-progress" aria-hidden="true">
+          <div className={`ef-progress${readPulse ? " is-read-pulse" : ""}`} aria-hidden="true">
             <i style={{ width: `${Math.round(fill * 100)}%` }} />
           </div>
         </div>

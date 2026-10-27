@@ -141,6 +141,21 @@ describe("setReadingStatus 轻量撤销（含已读时间戳恢复）", () => {
     expect(JSON.parse(localStorage.getItem("paper-field.reading-since") ?? "{}")["p-1"]).toBeUndefined();
     localStorage.removeItem("paper-field.reading-since");
   });
+
+  it("真正转入已读时 readPulse +1；重复标已读不再脉冲", async () => {
+    useField.setState({ mode: "field", readPulse: 0 });
+    vi.mocked(repo.getPaper).mockImplementation(async () => statusDetail("p-1", "reading", null));
+    await useField.getState().setReadingStatus("read", "p-1");
+    expect(useField.getState().readPulse).toBe(1);
+    // 已读再选一次已读：没有状态变化，不脉冲
+    vi.mocked(repo.getPaper).mockImplementation(async () => statusDetail("p-1", "read", "2026-01-01T00:00:00.000Z"));
+    await useField.getState().setReadingStatus("read", "p-1");
+    expect(useField.getState().readPulse).toBe(1);
+    // 已读改在读再标回已读：又一次真正的转入，再脉冲
+    vi.mocked(repo.getPaper).mockImplementation(async () => statusDetail("p-1", "reading", "2026-01-01T00:00:00.000Z"));
+    await useField.getState().setReadingStatus("read", "p-1");
+    expect(useField.getState().readPulse).toBe(2);
+  });
 });
 
 describe("navigatePapers（缺陷 9：未选中时的首末落点）", () => {

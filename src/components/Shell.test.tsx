@@ -185,4 +185,10 @@ describe("StatusStrip · 未保存草稿集中入口", () => {
     await waitFor(() => expect(selectDomain).toHaveBeenCalledWith("d1"));
     await waitFor(() => expect(selectPaper).toHaveBeenCalledWith("p9"));
   });
+
+  it("标已读脉冲时状态条已读计数挂上跳动类", () => {
+    useField.setState({ readPulse: 1 });
+    render(<StatusStrip />);
+    expect(document.querySelector(".ef-status > span > b")).toHaveClass("is-read-pulse");
+  });
 });
