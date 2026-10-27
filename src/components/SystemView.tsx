@@ -24,9 +24,19 @@ import { biblioEmailConfigured, type BiblioSaveInput } from "../lib/biblio";
 import { BACKUP_STALE_DAYS, daysSinceBackup, readLastBackup, type BackupRecord } from "../lib/backup";
 import type { ExportContentOptions } from "../lib/export";
 import { repo } from "../lib/repo";
+import {
+  bindingLabel,
+  currentKeymap,
+  DEFAULT_KEYMAP,
+  KEYMAP_ACTIONS,
+  resetKeymap,
+  saveKeyBinding,
+  type KeyBinding,
+  type KeymapAction,
+} from "../lib/keymap";
 import { checkAppUpdateInfo, installAppUpdate, type AppUpdateInfo } from "../lib/updater";
 import { openExternal } from "../lib/urls";
-import { formatDate, isTauri, pad2, shortcut, uid } from "../lib/util";
+import { formatDate, isTauri, pad2, uid } from "../lib/util";
 import { useField } from "../store";
 import { LogPanel } from "./LogPanel";
 import { PreRestoreList } from "./PreRestoreList";
@@ -679,6 +689,45 @@ function ShortcutsBlock({ focused }: { focused: boolean }) {
   const setJobsOpen = useField((s) => s.setJobsOpen);
   const markRead = useField((s) => s.markRead);
 
+  // 全量清单 + 搜索 + 可自定义绑定（默认键位与历史行为一致；只存本机）。
+  const [map, setMap] = useState<Record<KeymapAction, KeyBinding>>(() => ({ ...currentKeymap() }));
+  const [query, setQuery] = useState("");
+  const [capturing, setCapturing] = useState<KeymapAction | null>(null);
+  const [bindingError, setBindingError] = useState<string | null>(null);
+
+  // 改键捕获：一次 keydown；Esc 取消；不带修饰键或非字母数字给出原因；冲突拒绝。
+  useEffect(() => {
+    if (!capturing) return;
+    const onKey = (event: KeyboardEvent) => {
+      // 捕获阶段拦下，避免 App 的全局快捷键同时触发（比如把搜索键改到 ⌘K 时又跳模式）。
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.key === "Escape") {
+        setCapturing(null);
+        setBindingError(null);
+        return;
+      }
+      const result = saveKeyBinding(capturing, {
+        key: event.key,
+        meta: event.metaKey || event.ctrlKey,
+      });
+      if (result.ok) {
+        setMap({ ...currentKeymap() });
+        setCapturing(null);
+        setBindingError(null);
+        return;
+      }
+      if (result.conflict) {
+        const owner = KEYMAP_ACTIONS.find((item) => item.id === result.conflict);
+        setBindingError(`「${owner?.label ?? result.conflict}」已占用这个组合，请换一个。`);
+      } else {
+        setBindingError(result.reason ?? "这个键位不可用，请换一个。");
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [capturing]);
+
   function tryShortcut(id: string) {
     if (id === "add") {
       openDialog("paper");
@@ -702,14 +751,27 @@ function ShortcutsBlock({ focused }: { focused: boolean }) {
     }
   }
 
-  const rows: Array<{ id?: string; label: string; keys: ReactNode }> = [
+  const actionLabel: Record<KeymapAction, string> = {
+    addPaper: "添加论文（导入 PDF / 手动录入）",
+    markRead: "标记已读",
+    search: "搜索",
+    jobsPanel: "作业面板",
+  };
+
+  const q = query.trim().toLowerCase();
+  const match = (label: string) => !q || label.toLowerCase().includes(q);
+
+  const customizable = KEYMAP_ACTIONS.map((item) => ({
+    action: item.id,
+    label: actionLabel[item.id],
+    binding: map[item.id],
+    isDefault: map[item.id].key === DEFAULT_KEYMAP[item.id].key,
+  })).filter((row) => match(row.label));
+  const fixedRows = [
     { label: "在论文列表中移动", keys: <><span className="kbd">↑</span><span className="kbd">↓</span></> },
-    { id: "add", label: "添加论文（导入 PDF / 手动录入）", keys: <span className="kbd">{shortcut("N")}</span> },
-    { id: "read", label: "标记已读", keys: <span className="kbd">{shortcut("R")}</span> },
-    { id: "search", label: "搜索", keys: <span className="kbd">{shortcut("K")}</span> },
-    { id: "jobs", label: "作业面板", keys: <span className="kbd">{shortcut("J")}</span> },
-    { label: "关闭对话框 / 抽屉", keys: <span className="kbd">Esc</span> },
-  ];
+    { label: "关闭对话框 / 抽屉 / 退出批量模式", keys: <span className="kbd">Esc</span> },
+  ].filter((row) => match(row.label));
+  const hasCustom = customizable.some((row) => !row.isDefault);
 
   return (
     <article
@@ -719,28 +781,84 @@ function ShortcutsBlock({ focused }: { focused: boolean }) {
     >
       <header className="ef-block-head">
         <h3>快捷键</h3>
+        <p>全部全局快捷键。字母组合键（⌘/Ctrl + N / R / K / J）可按习惯改绑，冲突会提示；只保存在本机。</p>
       </header>
+      <label className="ef-shortcut-search">
+        <span>查找快捷键</span>
+        <input
+          type="search"
+          value={query}
+          placeholder="按动作名称过滤"
+          aria-label="查找快捷键"
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") setQuery("");
+          }}
+        />
+      </label>
       <ul className="ef-kbd-list">
-        {rows.map((row) => (
-          <li key={row.id ?? row.label}>
+        {fixedRows.map((row) => (
+          <li key={row.label}>
+            <span>{row.label}</span>
+            <span>{row.keys}</span>
+          </li>
+        ))}
+        {customizable.map((row) => (
+          <li key={row.action}>
             <span>{row.label}</span>
             <span>
-              {row.keys}
-              {row.id ? (
-                <button
-                  type="button"
-                  className="ef-kbd-try"
-                  aria-label={`试用：${row.label}`}
-                  onClick={() => tryShortcut(row.id!)}
-                >
-                  试用
-                </button>
-              ) : null}
+              <span className="kbd">{bindingLabel(row.binding)}</span>
+              <button
+                type="button"
+                className="ef-kbd-try"
+                aria-label={`试用：${row.label}`}
+                onClick={() => tryShortcut(row.action === "addPaper" ? "add" : row.action === "markRead" ? "read" : row.action === "search" ? "search" : "jobs")}
+              >
+                试用
+              </button>
+              <button
+                type="button"
+                className="ef-kbd-try"
+                aria-label={`改键：${row.label}`}
+                disabled={capturing !== null}
+                onClick={() => {
+                  setCapturing(row.action);
+                  setBindingError(null);
+                }}
+              >
+                改键
+              </button>
             </span>
           </li>
         ))}
       </ul>
-      <p className="ef-kbd-note">在设置页按 {shortcut("K")} 会先切回阅读模式，再聚焦论文列表上方的搜索框。</p>
+      {capturing ? (
+        <p className="ef-kbd-capture" role="status">
+          正在为「{actionLabel[capturing]}」改键：按住 ⌘/Ctrl 再按一个字母或数字键；Esc 取消。
+        </p>
+      ) : null}
+      {bindingError ? (
+        <p className="ef-probe-line is-error" role="alert">
+          {bindingError}
+        </p>
+      ) : null}
+      {hasCustom ? (
+        <p className="ef-kbd-note">
+          有自定义键位。
+          <Button
+            type="button"
+            size="sm"
+            onClick={() => {
+              resetKeymap();
+              setMap({ ...currentKeymap() });
+              setBindingError(null);
+            }}
+          >
+            恢复默认
+          </Button>
+        </p>
+      ) : null}
+      <p className="ef-kbd-note">在设置页按 {bindingLabel(map.search)} 会先切回阅读模式，再聚焦论文列表上方的搜索框。</p>
     </article>
   );
 }

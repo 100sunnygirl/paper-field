@@ -727,6 +727,53 @@ describe("SystemView · 锚点目录、查找设置与深链", () => {
     fireEvent.click(screen.getByRole("button", { name: "试用：添加论文（导入 PDF / 手动录入）" }));
     expect(useField.getState().dialog).toBe("paper");
   });
+
+  it("快捷键卡列出全部快捷键并可按动作名过滤", () => {
+    render(<SystemView />);
+    const block = screen.getByRole("heading", { level: 3, name: "快捷键" }).closest("article") as HTMLElement;
+    for (const label of ["在论文列表中移动", "标记已读", "搜索", "作业面板", "关闭对话框 / 抽屉 / 退出批量模式"]) {
+      expect(within(block).getByText(label)).toBeInTheDocument();
+    }
+    for (const label of ["改键：标记已读", "改键：搜索", "改键：作业面板", "改键：添加论文（导入 PDF / 手动录入）"]) {
+      expect(within(block).getByRole("button", { name: label })).toBeInTheDocument();
+    }
+    fireEvent.change(within(block).getByLabelText("查找快捷键"), { target: { value: "已读" } });
+    expect(within(block).getByText("标记已读")).toBeInTheDocument();
+    expect(within(block).queryByText("作业面板")).not.toBeInTheDocument();
+    expect(within(block).queryByText("在论文列表中移动")).not.toBeInTheDocument();
+  });
+
+  it("改键：捕获新组合立即生效，冲突时拒绝并指明占用者", () => {
+    render(<SystemView />);
+    const block = screen.getByRole("heading", { level: 3, name: "快捷键" }).closest("article") as HTMLElement;
+    fireEvent.click(within(block).getByRole("button", { name: "改键：标记已读" }));
+    expect(within(block).getByText(/正在为「标记已读」改键/)).toBeInTheDocument();
+    // 冲突：⌘N 已被「添加论文」占用
+    fireEvent.keyDown(document.body, { key: "n", metaKey: true, bubbles: true, cancelable: true });
+    expect(within(block).getByText(/「添加论文（导入 PDF \/ 手动录入）」已占用这个组合/)).toBeInTheDocument();
+    expect(within(block).getByText(/正在为「标记已读」改键/)).toBeInTheDocument();
+    // 合法组合：⌘M 保存成功，行内键位更新并出现「恢复默认」
+    fireEvent.keyDown(document.body, { key: "m", metaKey: true, bubbles: true, cancelable: true });
+    expect(within(block).queryByText(/正在为「标记已读」改键/)).not.toBeInTheDocument();
+    expect(within(block).getByText("恢复默认")).toBeInTheDocument();
+    const markReadRow = within(block).getByText("标记已读").closest("li")!;
+    expect(markReadRow.textContent).toContain("M");
+    // 恢复默认回到 R
+    fireEvent.click(within(block).getByRole("button", { name: "恢复默认" }));
+    const restored = within(block).getByText("标记已读").closest("li")!;
+    expect(restored.textContent).toContain("R");
+  });
+
+  it("改键捕获期间 Esc 取消，纯字母提示需组合键", () => {
+    render(<SystemView />);
+    const block = screen.getByRole("heading", { level: 3, name: "快捷键" }).closest("article") as HTMLElement;
+    fireEvent.click(within(block).getByRole("button", { name: "改键：搜索" }));
+    fireEvent.keyDown(document.body, { key: "f", metaKey: false, ctrlKey: false, bubbles: true, cancelable: true });
+    expect(within(block).getByText(/请按住 ⌘\/Ctrl/)).toBeInTheDocument();
+    fireEvent.keyDown(document.body, { key: "Escape", bubbles: true, cancelable: true });
+    expect(within(block).queryByText(/正在为「搜索」改键/)).not.toBeInTheDocument();
+    expect(within(block).queryByText(/请按住/)).not.toBeInTheDocument();
+  });
 });
 
 describe("SystemView · 数据导出（范围与内容选择）", () => {

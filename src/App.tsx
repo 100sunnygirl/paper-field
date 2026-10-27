@@ -54,6 +54,7 @@ export function requestMarkRead(event?: { preventDefault: () => void; target: Ev
   void state.markRead(paperId);
 }
 import { setPersistFailureHandler } from "./lib/engine";
+import { currentKeymap, eventMatchesBinding } from "./lib/keymap";
 import { notify } from "./toasts";
 import "./styles/workstation.css";
 
@@ -105,13 +106,15 @@ export default function App() {
         return;
       }
       const meta = event.metaKey || event.ctrlKey;
-      if (meta && event.key.toLowerCase() === "j") {
+      // 字母类全局快捷键走本机键位表（默认 N/R/K/J，可在设置页改键；保存即生效）。
+      const keymap = currentKeymap();
+      if (meta && eventMatchesBinding(event, keymap.jobsPanel)) {
         // 作业面板是非模态浮层：对话框打开时不叠出来，避免焦点在两层之间来回跳。
         event.preventDefault();
         if (!dialog) setJobsOpen(!useField.getState().jobsOpen);
         return;
       }
-      if (meta && event.key.toLowerCase() === "k") {
+      if (meta && eventMatchesBinding(event, keymap.search)) {
         event.preventDefault();
         if (focusSearch()) return;
         // 搜索框在论文列表栏里：设置页不渲染列表栏，专注模式隐藏它，窄屏它是抽屉。
@@ -127,13 +130,13 @@ export default function App() {
         later();
         return;
       }
-      if (meta && event.key.toLowerCase() === "n") {
+      if (meta && eventMatchesBinding(event, keymap.addPaper)) {
         event.preventDefault();
         // 不替换已经打开的对话框（编辑中的论文信息会被直接丢掉）。
         if (!dialog) openDialog("paper");
         return;
       }
-      if (meta && event.key.toLowerCase() === "r") {
+      if (meta && eventMatchesBinding(event, keymap.markRead)) {
         requestMarkRead(event);
         return;
       }

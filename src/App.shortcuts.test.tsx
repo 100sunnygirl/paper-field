@@ -34,6 +34,7 @@ vi.mock("./lib/repo", () => ({
 
 import App from "./App";
 import { repo } from "./lib/repo";
+import { resetKeymap, saveKeyBinding } from "./lib/keymap";
 import { useField } from "./store";
 
 async function readyApp() {
@@ -134,5 +135,25 @@ describe("requestMarkRead", () => {
     (document.body as HTMLElement).focus();
     expect(pressRead(document.body, "meta")).toBe(false);
     await waitFor(() => expect(repo.setReadingStatus).toHaveBeenCalledWith("p-1", "read"));
+  });
+
+  it("自定义键位立即生效：标记已读改绑 ⌘M 后，⌘R 不再触发、⌘M 触发", async () => {
+    resetKeymap();
+    try {
+      expect(saveKeyBinding("markRead", { key: "m", meta: true }).ok).toBe(true);
+      await readyApp();
+      act(() => {
+        useField.setState({ selectedPaperId: "p-1", dialog: null });
+      });
+      vi.mocked(repo.setReadingStatus).mockClear();
+      (document.body as HTMLElement).focus();
+      // ⌘R 已解绑：不再标记已读（也不需要再拦浏览器刷新）
+      pressRead(document.body, "meta");
+      expect(repo.setReadingStatus).not.toHaveBeenCalled();
+      fireEvent.keyDown(document.body, { key: "m", metaKey: true, bubbles: true, cancelable: true });
+      await waitFor(() => expect(repo.setReadingStatus).toHaveBeenCalledWith("p-1", "read"));
+    } finally {
+      resetKeymap();
+    }
   });
 });
