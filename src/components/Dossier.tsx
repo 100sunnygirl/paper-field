@@ -34,6 +34,9 @@ import { formatDate, modLabel, pad2 } from "../lib/util";
 import { useField } from "../store";
 import { Button, Dialog, Empty, ExternalResource, Icon, SourceBadge } from "./ui";
 
+/** 本页目录里解析全文章节二级项的显示上限：更长的全文只列前若干节并注明其余节数。 */
+const TOC_SECTION_LIMIT = 30;
+
 function NoteEditor({
   kind,
   index,
@@ -436,9 +439,24 @@ function ContextPanel({
   const setMode = useField((s) => s.setMode);
   const lookupHint = useField((s) => s.lookupHint);
   const openDialog = useField((s) => s.openDialog);
+  const setFlash = useField((s) => s.setFlash);
   const active = jobs.filter(
     (job) => job.paperId === paper.id && (job.status === "running" || job.status === "queued"),
   );
+  // 解析全文的小节标题 → 本页目录的二级导航；过长时截断显示并注明其余节数。
+  const fulltextHeadings = useMemo(() => extractFulltextHeadings(paper.parsedMarkdown), [paper.parsedMarkdown]);
+  const visibleHeadings = fulltextHeadings.slice(0, TOC_SECTION_LIMIT);
+
+  async function copySectionCitation(heading: (typeof fulltextHeadings)[number]) {
+    const title = paper.titleZh || paper.title;
+    try {
+      await navigator.clipboard.writeText(buildSectionCitation(title, heading));
+      setFlash({ tone: "ok", text: `已复制章节引用：§${heading.number} ${heading.text}` });
+    } catch {
+      // 非安全上下文 / 无剪贴板权限时降级提示（与摘录条复制同口径）。
+      setFlash({ tone: "warn", text: "复制失败：当前环境无法访问剪贴板。" });
+    }
+  }
 
   return (
     <aside className="ef-context" aria-label="论文资料与目录">
@@ -600,6 +618,38 @@ function ContextPanel({
           >
             <span className="mono">—</span>解析全文
           </a>
+          {visibleHeadings.length ? (
+            <div className="ef-toc-sections">
+              {visibleHeadings.map((heading) => (
+                <div className="ef-toc-section-row" key={heading.id}>
+                  <a
+                    href={`#${heading.id}`}
+                    className={activeSection === heading.id ? "is-active" : ""}
+                    title={`跳到 §${heading.number} ${heading.text}`}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      onJump(heading.id);
+                    }}
+                  >
+                    <span className="mono">{heading.number}</span>
+                    {heading.text}
+                  </a>
+                  <button
+                    type="button"
+                    className="ef-toc-copy"
+                    aria-label={`复制引用：§${heading.number} ${heading.text}`}
+                    title="复制「论文+小节」引用"
+                    onClick={() => void copySectionCitation(heading)}
+                  >
+                    <Icon name="copy" />
+                  </button>
+                </div>
+              ))}
+              {fulltextHeadings.length > TOC_SECTION_LIMIT ? (
+                <p className="ef-toc-more">另有 {fulltextHeadings.length - TOC_SECTION_LIMIT} 节，展开解析全文查看。</p>
+              ) : null}
+            </div>
+          ) : null}
           {noteOrder.map((kind, i) => (
             <a
               key={kind}
@@ -799,6 +849,8 @@ export function ReadingStage({
   }, [paper?.id]);
 
   function jump(id: string) {
+    // 跳到解析全文的某一节：折叠着的时候先展开，锚点才可见可滚。
+    if (id.startsWith("ft-sec-")) document.getElementById("fulltext")?.setAttribute("open", "");
     const root = scrollRef.current;
     const target = root?.querySelector<HTMLElement>(`#${id}`);
     const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;

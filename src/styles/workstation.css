@@ -1985,6 +1985,41 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 }
 .ef-toc a.is-active::before { transform: none; }
 .ef-toc a.is-active .mono { color: var(--pf-ink); }
+/* 解析全文章节的二级导航：缩进一档、小一号，行尾附「复制引用」安静图标按钮。 */
+.ef-toc-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 1px 0 6px;
+  padding-left: 9px;
+  border-left: 1px solid var(--pf-divider);
+}
+.ef-toc-section-row { display: flex; align-items: center; min-width: 0; }
+.ef-toc-section-row a {
+  flex: 1;
+  min-width: 0;
+  min-height: 28px;
+  font-size: var(--pf-fs-caption);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.ef-toc-section-row a .mono { width: auto; min-width: 26px; padding-right: 4px; }
+.ef-toc-copy {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--pf-muted);
+  border-radius: var(--pf-radius);
+  transition: background-color var(--pf-motion), color var(--pf-motion);
+}
+.ef-toc-copy .ef-ico { width: 13px; height: 13px; }
+.ef-toc-copy:hover { background: var(--pf-hover-flat); color: var(--pf-ink); }
+.ef-toc-more { margin: 4px 10px 0; font-size: var(--pf-fs-caption); color: var(--pf-muted); }
 /* AI 助手：资料栏唯一的墨色操作面板，与浅色资料块形成明确分区。 */
 .ef-ai-context {
   position: relative;

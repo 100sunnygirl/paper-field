@@ -188,6 +188,62 @@ describe("FulltextDoc · 小节锚点", () => {
   });
 });
 
+describe("本页目录 · 解析全文章节二级导航", () => {
+  it("解析完成后小节列为「解析全文」下的二级项（§编号 + 标题）", () => {
+    useField.setState({ mode: "field", paper: paper(), selectedPaperId: "p1" });
+    renderStage();
+    const intro = document.querySelector('.ef-toc a[href="#ft-sec-0"]');
+    const method = document.querySelector('.ef-toc a[href="#ft-sec-1"]');
+    expect(intro?.textContent).toContain("1");
+    expect(intro?.textContent).toContain("引言");
+    expect(method?.textContent).toContain("1.1");
+    expect(method?.textContent).toContain("方法");
+  });
+
+  it("点击小节：先展开解析全文折叠区，再滚动到该节锚点", () => {
+    useField.setState({ mode: "field", paper: paper(), selectedPaperId: "p1" });
+    renderStage();
+    const details = document.getElementById("fulltext") as HTMLDetailsElement;
+    expect(details.open).toBe(false);
+    const scrollSpy = vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(() => {});
+    fireEvent.click(document.querySelector('.ef-toc a[href="#ft-sec-1"]')!);
+    expect(details.open).toBe(true);
+    expect(scrollSpy).toHaveBeenCalled();
+    scrollSpy.mockRestore();
+  });
+
+  it("小节行提供「复制引用」：复制《论文+小节》引用", async () => {
+    const writeText = vi.fn(async () => undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    useField.setState({ mode: "field", paper: paper(), selectedPaperId: "p1" });
+    renderStage();
+    fireEvent.click(screen.getByRole("button", { name: "复制引用：§1.1 方法" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalled());
+    expect(writeText).toHaveBeenCalledWith("《视觉指令微调》§1.1 方法");
+    expect(useField.getState().flash?.text).toContain("已复制章节引用");
+  });
+
+  it("没有解析全文时本页目录不出现二级章节", () => {
+    const detail = paper();
+    (detail as { parsedMarkdown: string }).parsedMarkdown = "";
+    useField.setState({ mode: "field", paper: detail, selectedPaperId: "p1" });
+    renderStage();
+    expect(document.querySelector(".ef-toc-sections")).toBeNull();
+  });
+
+  it("超长全文只列前 30 节并注明其余节数", () => {
+    const detail = paper();
+    (detail as { parsedMarkdown: string }).parsedMarkdown = Array.from(
+      { length: 35 },
+      (_, i) => `## 第${i}节\n\n这一节的正文。\n`,
+    ).join("\n");
+    useField.setState({ mode: "field", paper: detail, selectedPaperId: "p1" });
+    renderStage();
+    expect(document.querySelectorAll(".ef-toc-section-row").length).toBe(30);
+    expect(screen.getByText("另有 5 节，展开解析全文查看。")).toBeInTheDocument();
+  });
+});
+
 afterAll(() => {
   vi.restoreAllMocks();
 });
