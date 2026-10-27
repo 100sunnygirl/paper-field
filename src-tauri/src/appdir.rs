@@ -275,8 +275,13 @@ fn symlink_at(target: &Path, dest: &Path) -> Result<(), String> {
 pub fn migration_plugin<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
     tauri::plugin::Builder::new("appdir-migrate")
         .setup(|app, _api| {
+            #[cfg(not(feature = "desktop-e2e"))]
             migrate_on_startup(app);
-            if let Ok(dir) = app.path().app_config_dir() {
+            #[cfg(not(feature = "desktop-e2e"))]
+            let dir = app.path().app_config_dir().map_err(|err| err.to_string());
+            #[cfg(feature = "desktop-e2e")]
+            let dir = crate::desktop_e2e::profile_dir();
+            if let Ok(dir) = dir {
                 // 跨进程互斥：拿不到锁说明另一个进程正在使用这个文库，恢复与路径改写都不做，
                 // 数据库层也拒绝打开（见 db.rs），避免两个进程同时改写同一份数据。
                 if crate::instance::acquire(&dir) {

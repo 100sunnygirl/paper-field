@@ -1,0 +1,5 @@
+{
+  "identifier": "com.paperfield.e2e",
+  "productName": "Paper Field Native Smoke",
+  "bundle": { "active": false, "createUpdaterArtifacts": false }
+}

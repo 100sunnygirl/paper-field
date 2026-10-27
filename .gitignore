@@ -42,3 +42,6 @@ agent-tools/
 # Internal process docs and reports stay local; never publish
 docs/
 reports/
+
+# Synthetic native smoke diagnostics
+test-results/

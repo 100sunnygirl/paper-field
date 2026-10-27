@@ -1604,7 +1604,14 @@ pub async fn mineru_markdown(
 /// 路径只来自对话框：渲染进程不能再让 Rust 规范化 / 列举任意路径，后续导入也只认这里给出的路径。
 #[tauri::command]
 pub async fn pick_pdf_files(app: AppHandle, multiple: bool) -> Result<Option<Vec<String>>, String> {
+    #[cfg(feature = "desktop-e2e")]
+    let picked = {
+        let _ = (multiple, &app);
+        Some(vec![crate::desktop_e2e::fixture_pdf()?])
+    };
+    #[cfg(not(feature = "desktop-e2e"))]
     const FILTER: (&str, &[&str]) = ("PDF", &["pdf"]);
+    #[cfg(not(feature = "desktop-e2e"))]
     let picked = if multiple {
         platform::pick_paths(&app, "选择 PDF", FILTER).await?
     } else {

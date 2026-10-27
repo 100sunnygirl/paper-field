@@ -12,7 +12,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
+#[cfg(not(feature = "desktop-e2e"))]
+use tauri::Manager;
 
 const LOG_FILE: &str = "app-log.json";
 const ENTRIES_KEY: &str = "entries";
@@ -22,7 +24,10 @@ const MAX_ENTRIES: usize = 500;
 const MAX_BYTES: usize = 1024 * 1024;
 
 fn log_file(app: &AppHandle) -> Result<PathBuf, String> {
+    #[cfg(not(feature = "desktop-e2e"))]
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    #[cfg(feature = "desktop-e2e")]
+    let dir = crate::app_config_dir(app)?;
     Ok(dir.join(LOG_FILE))
 }
 
