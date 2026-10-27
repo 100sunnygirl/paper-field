@@ -3146,6 +3146,33 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 /* ---- 运行日志面板（设置页）：只读列表 + 级别过滤 ----
    级别色全复用既有变量：error → danger、info/debug → muted、warn 行左缘
    signal 黄条（与 .ef-toast 的 warn tone 同一语义），不新增色板。 */
+/* 日志筛选行：关键词 + 模块 + 命中计数（与级别 chips 叠加）。 */
+.ef-log-filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.ef-log-filters input {
+  flex: 1;
+  min-width: 180px;
+  height: var(--pf-control-height-sm);
+  padding: 0 10px;
+  font-size: var(--pf-fs-ui);
+  color: var(--pf-body);
+  background: var(--pf-surface);
+  border: 1px solid var(--pf-line-strong);
+}
+.ef-log-filters select {
+  flex: none;
+  height: var(--pf-control-height-sm);
+  padding: 0 8px;
+  font-size: var(--pf-fs-ui);
+  color: var(--pf-body);
+  background: var(--pf-surface);
+  border: 1px solid var(--pf-line-strong);
+}
+.ef-log-count { flex: none; font-size: var(--pf-fs-caption); color: var(--pf-muted); }
 .ef-log-toolbar {
   display: flex;
   align-items: center;

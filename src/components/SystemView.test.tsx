@@ -560,7 +560,7 @@ describe("SystemView · 运行日志面板", () => {
     await waitFor(() => expect(screen.getByText("暂无日志。")).toBeInTheDocument());
   });
 
-  it("「复制」把日志文本写入剪贴板（最新在上、一行一条）", async () => {
+  it("「复制当前结果」把日志文本写入剪贴板（最新在上、一行一条）", async () => {
     log.info("app", "COPY-ROW");
     const writeText = vi.fn(async (_text: string) => undefined);
     Object.defineProperty(navigator, "clipboard", {
@@ -568,10 +568,54 @@ describe("SystemView · 运行日志面板", () => {
       configurable: true,
     });
     render(<SystemView />);
-    fireEvent.click(screen.getByRole("button", { name: "复制" }));
+    fireEvent.click(screen.getByRole("button", { name: "复制当前结果" }));
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
     expect(writeText.mock.calls[0]![0]).toContain("COPY-ROW");
     expect(writeText.mock.calls[0]![0]).toContain("INFO app COPY-ROW");
+  });
+
+  it("关键词筛选：只保留命中的行，计数同步；复制只复制筛选结果", async () => {
+    log.info("mineru", "解析批次开始：共 3 篇");
+    log.error("ui", "导入失败：文件损坏");
+    const writeText = vi.fn(async (_text: string) => undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    render(<SystemView />);
+    fireEvent.change(screen.getByLabelText("日志关键词筛选"), { target: { value: "导入失败" } });
+    const list = screen.getByRole("log", { name: "运行日志" });
+    expect(within(list).getByText(/导入失败：文件损坏/)).toBeInTheDocument();
+    expect(within(list).queryByText(/解析批次开始/)).not.toBeInTheDocument();
+    expect(screen.getByText("1/2 条")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "复制当前结果" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    expect(writeText.mock.calls[0]![0]).toContain("导入失败");
+    expect(writeText.mock.calls[0]![0]).not.toContain("解析批次开始");
+  });
+
+  it("模块筛选：只保留所选 scope 的行，无匹配给空态提示", () => {
+    log.info("mineru", "MINERU-SCOPE-ROW");
+    log.info("ui", "UI-SCOPE-ROW");
+    render(<SystemView />);
+    fireEvent.change(screen.getByLabelText("日志模块筛选"), { target: { value: "ui" } });
+    const list = screen.getByRole("log", { name: "运行日志" });
+    expect(within(list).getByText(/UI-SCOPE-ROW/)).toBeInTheDocument();
+    expect(within(list).queryByText(/MINERU-SCOPE-ROW/)).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("日志模块筛选"), { target: { value: "engine" } });
+    expect(within(screen.getByRole("log", { name: "运行日志" })).getByText("没有符合筛选条件的日志。")).toBeInTheDocument();
+  });
+
+  it("保存为文件：浏览器预览下载 txt 并提示文件名", async () => {
+    log.info("app", "SAVE-FILE-ROW");
+    const createObjectURL = vi.fn(() => "blob:log");
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal("URL", { ...URL, createObjectURL, revokeObjectURL });
+    render(<SystemView />);
+    fireEvent.click(screen.getByRole("button", { name: "保存为文件" }));
+    await waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(revokeObjectURL).toHaveBeenCalledTimes(1));
+    vi.unstubAllGlobals();
   });
 });
 
