@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   browserExportFilename,
   browserMultiExportFilename,
+  buildBibtexExport,
   buildDomainExport,
+  buildMergedMarkdownExport,
   DEFAULT_EXPORT_CONTENT,
+  paperBibtex,
 } from "./export";
 import type { Domain, PaperDetail } from "./types";
 
@@ -189,6 +192,92 @@ describe("导出内容选择（笔记 / 摘要 / 解析全文）", () => {
     expect(browserMultiExportFilename("export", new Date(2026, 0, 2, 3, 4, 5))).toBe(
       "paper-field-export-20260102-030405.md",
     );
+  });
+});
+
+describe("BibTeX 导出", () => {
+  const now = new Date(2026, 9, 13, 9, 5, 7);
+
+  it("生成 @article 条目：键为 姓+年份+标题首词，字段含著录信息", () => {
+    const files = buildBibtexExport([{ domain: makeDomain(), papers: [makePaper()] }], now);
+    expect(files).toHaveLength(1);
+    expect(files[0].relativePath).toBe("paper-field-bibtex-20261013-090507.bib");
+    const body = files[0].content;
+    expect(body).toContain("% 领域：多模态（MM-01）");
+    expect(body).toContain("@article{Liu2023sample,");
+    expect(body).toContain("title = {Sample Paper}");
+    expect(body).toContain("author = {Haotian Liu}");
+    expect(body).toContain("year = {2023}");
+    expect(body).toContain("journal = {NeurIPS}");
+    expect(body).toContain("doi = {10.1/sample}");
+  });
+
+  it("标题中的花括号与反斜杠被转义，不能注入新字段或新条目", () => {
+    const entry = paperBibtex(makePaper({ title: "Break} out, @misc{evil" }));
+    expect(entry).toContain("title = {Break\\} out, @misc\\{evil}");
+    expect(entry.match(/@misc\{evil/)).toBeNull();
+  });
+
+  it("无 venue 记为 @misc；arXiv 与链接进 eprint / url；中文标题进 note", () => {
+    const entry = paperBibtex(
+      makePaper({ venue: null, arxivId: "2401.00001", pdfUrl: "https://arxiv.org/pdf/2401.00001", titleZh: "样例论文" }),
+    );
+    expect(entry).toContain("@misc{");
+    expect(entry).not.toContain("journal =");
+    expect(entry).toContain("eprint = {2401.00001}");
+    expect(entry).toContain("url = {https://arxiv.org/pdf/2401.00001}");
+    expect(entry).toContain("note = {样例论文}");
+  });
+
+  it("同年同姓同首词的条目键自动去重", () => {
+    const files = buildBibtexExport(
+      [
+        {
+          domain: makeDomain(),
+          papers: [
+            makePaper({ id: "aaaa0001-0000-4000-8000-000000000001" }),
+            makePaper({ id: "bbbb0002-0000-4000-8000-000000000002" }),
+          ],
+        },
+      ],
+      now,
+    );
+    const body = files[0].content;
+    expect(body).toContain("@article{Liu2023sample,");
+    expect(body).toContain("@article{Liu2023sample-2,");
+  });
+});
+
+describe("单文件合并版导出", () => {
+  const now = new Date(2026, 9, 13, 9, 5, 7);
+
+  it("合并为一个 .md：顶部标题、每个领域的索引与论文正文都在", () => {
+    const other = makeDomain({ id: "domain-2", name: "指令对齐", code: "IA-02" });
+    const files = buildMergedMarkdownExport(
+      [
+        { domain: makeDomain(), papers: [makePaper()] },
+        { domain: other, papers: [makePaper({ id: "p-2", domainId: "domain-2", title: "Aligned Paper" })] },
+      ],
+      now,
+    );
+    expect(files).toHaveLength(1);
+    expect(files[0].relativePath).toBe("paper-field-export-20261013-090507.md");
+    const body = files[0].content;
+    expect(body.startsWith("# Paper Field 导出 · ")).toBe(true);
+    expect(body).toContain("# 多模态 / MM-01");
+    expect(body).toContain("# 指令对齐 / IA-02");
+    expect(body).toContain("# Sample Paper");
+    expect(body).toContain("# Aligned Paper");
+  });
+
+  it("内容选择同样生效（关闭笔记后正文不含笔记小节）", () => {
+    const files = buildMergedMarkdownExport(
+      [{ domain: makeDomain(), papers: [makePaper()] }],
+      now,
+      { notes: false, abstract: true, parsedText: false },
+    );
+    expect(files[0].content).not.toContain("总结 / SUMMARY");
+    expect(files[0].content).toContain("## Abstract");
   });
 });
 

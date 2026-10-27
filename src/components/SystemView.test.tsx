@@ -755,6 +755,7 @@ describe("SystemView · 数据导出（范围与内容选择）", () => {
     fireEvent.click(within(block).getByRole("button", { name: /^导出$/ }));
     expect(exportPapers).toHaveBeenCalledWith({
       scope: "read",
+      format: "folders",
       include: { notes: false, abstract: false, parsedText: false },
     });
     // 勾选集为空时预览为 0，按钮禁用
@@ -769,6 +770,41 @@ describe("SystemView · 数据导出（范围与内容选择）", () => {
     const block = exportBlock();
     fireEvent.change(within(block).getByLabelText("导出范围"), { target: { value: "checked" } });
     expect(within(block).getByText(/将导出/).textContent).toContain("3");
+  });
+
+  it("格式选择：BibTeX 隐藏内容选择并说明只含著录信息，随导出提交格式", () => {
+    const exportPapers = vi.fn(async () => undefined);
+    useField.setState({ stats: { read: 2, total: 5, openSource: 0, queued: 0, running: 0 }, exportPapers });
+    render(<SystemView />);
+    const block = exportBlock();
+    expect(within(block).getByLabelText("导出格式")).toHaveValue("folders");
+    expect(within(block).getByRole("checkbox", { name: "现场笔记" })).toBeInTheDocument();
+    fireEvent.change(within(block).getByLabelText("导出格式"), { target: { value: "bibtex" } });
+    expect(within(block).queryByRole("checkbox", { name: "现场笔记" })).not.toBeInTheDocument();
+    expect(within(block).getByText(/只包含著录信息/)).toBeInTheDocument();
+    fireEvent.change(within(block).getByLabelText("导出范围"), { target: { value: "read" } });
+    expect(within(block).getByText(/将导出/).textContent).toContain("条 BibTeX 条目");
+    fireEvent.click(within(block).getByRole("button", { name: /^导出$/ }));
+    expect(exportPapers).toHaveBeenCalledWith({
+      scope: "read",
+      format: "bibtex",
+      include: { notes: true, abstract: true, parsedText: false },
+    });
+  });
+
+  it("格式选择：合并版随导出提交 merged", () => {
+    const exportPapers = vi.fn(async () => undefined);
+    useField.setState({ stats: { read: 0, total: 4, openSource: 0, queued: 0, running: 0 }, exportPapers });
+    render(<SystemView />);
+    const block = exportBlock();
+    fireEvent.change(within(block).getByLabelText("导出格式"), { target: { value: "merged" } });
+    fireEvent.change(within(block).getByLabelText("导出范围"), { target: { value: "all" } });
+    fireEvent.click(within(block).getByRole("button", { name: /^导出$/ }));
+    expect(exportPapers).toHaveBeenCalledWith({
+      scope: "all",
+      format: "merged",
+      include: { notes: true, abstract: true, parsedText: false },
+    });
   });
 });
 

@@ -2,7 +2,9 @@ import { create } from "zustand";
 import {
   browserExportFilename,
   browserMultiExportFilename,
+  buildBibtexExport,
   buildDomainExport,
+  buildMergedMarkdownExport,
   exportDomain,
   writeExportFiles,
   type ExportContentOptions,
@@ -64,9 +66,13 @@ interface Flash {
 /** 数据导出的可选范围。 */
 export type ExportScope = "current" | "all" | "read" | "checked" | "paper";
 
-/** 一次导出的完整计划：范围 + 内容选择。 */
+/** 导出格式：按领域分文件夹的 Markdown / 单文件合并版 / BibTeX。 */
+export type ExportFormat = "folders" | "merged" | "bibtex";
+
+/** 一次导出的完整计划：范围 + 格式 + 内容选择。 */
 export interface ExportPlan {
   scope: ExportScope;
+  format?: ExportFormat;
   include: ExportContentOptions;
 }
 
@@ -1244,9 +1250,18 @@ export const useField = create<FieldState>((set, get) => ({
         get().setFlash({ tone: "warn", text: "所选范围内没有可导出的论文。" });
         return;
       }
-      const files = sections.flatMap((section) => buildDomainExport(section.domain, section.papers, now, plan.include));
+      // 格式：默认按领域分文件夹；BibTeX 只含著录信息，合并版把全部内容写进一个 .md。
+      const format = plan.format ?? "folders";
+      const files =
+        format === "bibtex"
+          ? buildBibtexExport(sections, now)
+          : format === "merged"
+            ? buildMergedMarkdownExport(sections, now, plan.include)
+            : sections.flatMap((section) => buildDomainExport(section.domain, section.papers, now, plan.include));
+      if (format !== "folders") browserName = files[0]?.relativePath ?? browserName;
       const where = await writeExportFiles(files, browserName);
-      get().setFlash({ tone: "ok", text: `已导出 ${count} 篇 · ${where}` });
+      const noun = format === "bibtex" ? "条 BibTeX 条目" : "篇";
+      get().setFlash({ tone: "ok", text: `已导出 ${count} ${noun} · ${where}` });
     } catch (err) {
       if (String(err).includes("EXPORT_CANCELLED")) return;
       get().setFlash({ tone: "error", text: err instanceof Error ? err.message : String(err) });

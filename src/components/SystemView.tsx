@@ -260,6 +260,14 @@ const EXPORT_SCOPES = [
 
 type ExportScopeId = (typeof EXPORT_SCOPES)[number]["id"];
 
+const EXPORT_FORMATS = [
+  { id: "folders", label: "Markdown 文件夹（每篇一个文件）" },
+  { id: "merged", label: "单文件 Markdown（合并版，便于分享）" },
+  { id: "bibtex", label: "BibTeX（.bib，导入引用管理器）" },
+] as const;
+
+type ExportFormatId = (typeof EXPORT_FORMATS)[number]["id"];
+
 function ExportBlock({ focused }: { focused: boolean }) {
   const domains = useField((s) => s.domains);
   const selectedDomainId = useField((s) => s.selectedDomainId);
@@ -271,6 +279,7 @@ function ExportBlock({ focused }: { focused: boolean }) {
   const exportPapers = useField((s) => s.exportPapers);
 
   const [scope, setScope] = useState<ExportScopeId>("current");
+  const [format, setFormat] = useState<ExportFormatId>("folders");
   const [include, setInclude] = useState<ExportContentOptions>({ notes: true, abstract: true, parsedText: false });
 
   const scopeLabel = EXPORT_SCOPES.find((item) => item.id === scope)!.label;
@@ -290,6 +299,7 @@ function ExportBlock({ focused }: { focused: boolean }) {
     [include.notes ? "现场笔记" : null, include.abstract ? "摘要" : null, include.parsedText ? "解析全文" : null]
       .filter(Boolean)
       .join("、") || "仅著录信息";
+  const isBibtex = format === "bibtex";
 
   return (
     <article
@@ -301,50 +311,66 @@ function ExportBlock({ focused }: { focused: boolean }) {
         <h3>数据导出</h3>
         <p>导出为 Markdown：每个领域一个文件夹（README + 每篇论文一个文件）。浏览器预览下载单个合并文件。</p>
       </header>
-      <Field label="导出范围">
-        <select aria-label="导出范围" value={scope} onChange={(e) => setScope(e.target.value as ExportScopeId)}>
-          {EXPORT_SCOPES.map((item) => (
-            <option key={item.id} value={item.id}>
-              {item.label}
-            </option>
-          ))}
-        </select>
-      </Field>
-      <fieldset className="ef-export-content">
-        <legend>导出内容</legend>
-        <label>
-          <input
-            type="checkbox"
-            checked={include.notes}
-            onChange={(e) => setInclude((prev) => ({ ...prev, notes: e.target.checked }))}
-          />
-          现场笔记
-        </label>
-        <label>
-          <input
-            type="checkbox"
-            checked={include.abstract}
-            onChange={(e) => setInclude((prev) => ({ ...prev, abstract: e.target.checked }))}
-          />
-          摘要
-        </label>
-        <label>
-          <input
-            type="checkbox"
-            checked={include.parsedText}
-            onChange={(e) => setInclude((prev) => ({ ...prev, parsedText: e.target.checked }))}
-          />
-          解析全文
-        </label>
-      </fieldset>
+      <div className="ef-field-grid">
+        <Field label="导出范围">
+          <select aria-label="导出范围" value={scope} onChange={(e) => setScope(e.target.value as ExportScopeId)}>
+            {EXPORT_SCOPES.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.label}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="导出格式">
+          <select aria-label="导出格式" value={format} onChange={(e) => setFormat(e.target.value as ExportFormatId)}>
+            {EXPORT_FORMATS.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.label}
+              </option>
+            ))}
+          </select>
+        </Field>
+      </div>
+      {isBibtex ? (
+        <p className="ef-export-preview">BibTeX 只包含著录信息（标题 / 作者 / 年份 / 出处 / DOI / arXiv），不含笔记与全文。</p>
+      ) : (
+        <fieldset className="ef-export-content">
+          <legend>导出内容</legend>
+          <label>
+            <input
+              type="checkbox"
+              checked={include.notes}
+              onChange={(e) => setInclude((prev) => ({ ...prev, notes: e.target.checked }))}
+            />
+            现场笔记
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={include.abstract}
+              onChange={(e) => setInclude((prev) => ({ ...prev, abstract: e.target.checked }))}
+            />
+            摘要
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={include.parsedText}
+              onChange={(e) => setInclude((prev) => ({ ...prev, parsedText: e.target.checked }))}
+            />
+            解析全文
+          </label>
+        </fieldset>
+      )}
       <p className="ef-export-preview">
-        将导出 <b>{previewCount}</b> 篇 · {scopeLabel} · 内容：{includeBits}
+        将导出 <b>{previewCount}</b> {isBibtex ? "条 BibTeX 条目" : "篇"} · {scopeLabel}
+        {!isBibtex ? ` · 内容：${includeBits}` : ""}
         {scope === "paper" && !paper ? "（当前没有打开的论文）" : ""}
       </p>
       <Button
         type="button"
         disabled={previewCount === 0}
-        onClick={() => void exportPapers({ scope, include })}
+        onClick={() => void exportPapers({ scope, format, include })}
       >
         导出{scope === "current" ? ` ${domain?.name ?? "当前领域"}` : ""}
       </Button>

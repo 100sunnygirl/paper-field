@@ -196,6 +196,82 @@ export function browserMultiExportFilename(prefix: string, now: Date = new Date(
   return `paper-field-${prefix}-${exportStamp(now)}.md`;
 }
 
+// ---------- BibTeX 导出（著录信息，不含笔记与全文） ----------
+
+/** BibTeX 字段值：花括号包裹，内部反斜杠与花括号转义，防止注入新字段或新条目。 */
+function bibtexValue(value: string | number | null | undefined): string | null {
+  if (value == null || String(value).trim() === "") return null;
+  return `{${String(value).replace(/[\\{}]/g, (m) => `\\${m}`)}}`;
+}
+
+/** 条目键：第一作者姓氏 + 年份 + 标题首个词；非 ASCII 字符剔除，冲突时追加序号。 */
+function bibtexKey(paper: PaperDetail, used: Set<string>): string {
+  const first = paper.authors[0]?.name ?? paper.labs[0]?.name ?? "";
+  const last = first.split(/\s+/).pop() ?? "";
+  const word = paper.title.split(/\s+/).find((token) => /[\p{L}\p{N}]/u.test(token)) ?? "";
+  const clean = (value: string) => value.replace(/[^\w-]/g, "");
+  const parts = [clean(last), String(paper.year ?? ""), clean(word.toLowerCase())].filter(Boolean);
+  let base = parts.join("") || `entry${used.size + 1}`;
+  base = base.slice(0, 60);
+  let key = base;
+  let n = 2;
+  while (used.has(key.toLowerCase())) key = `${base}-${n++}`;
+  used.add(key.toLowerCase());
+  return key;
+}
+
+/** 单篇论文的 BibTeX 条目。有 venue 记为 @article，否则 @misc。 */
+export function paperBibtex(paper: PaperDetail, used: Set<string> = new Set()): string {
+  const type = paper.venue ? "article" : "misc";
+  const key = bibtexKey(paper, used);
+  const lines: string[] = [];
+  const push = (field: string, value: string | null) => {
+    if (value) lines.push(`  ${field} = ${value},`);
+  };
+  push("title", bibtexValue(paper.title));
+  if (paper.authors.length) push("author", bibtexValue(paper.authors.map((author) => author.name).join(" and ")));
+  push("year", bibtexValue(paper.year));
+  push("journal", bibtexValue(paper.venue));
+  push("doi", bibtexValue(paper.doi));
+  push("eprint", bibtexValue(paper.arxivId));
+  push("url", bibtexValue(paper.pdfUrl ?? paper.projectPage));
+  if (paper.tags.length) push("keywords", bibtexValue(paper.tags.join(", ")));
+  if (paper.titleZh) push("note", bibtexValue(paper.titleZh));
+  return `@${type}{${key},\n${lines.join("\n")}\n}`;
+}
+
+/** 按领域分组的全部论文合成一个 .bib（领域名写在 % 注释行）。 */
+export function buildBibtexExport(
+  sections: Array<{ domain: Domain; papers: PaperDetail[] }>,
+  now: Date = new Date(),
+): ExportFile[] {
+  const used = new Set<string>();
+  const chunks: string[] = [`% Paper Field BibTeX 导出 · ${exportStamp(now)}`];
+  for (const section of sections) {
+    if (!section.papers.length) continue;
+    chunks.push(`% 领域：${section.domain.name}${section.domain.code ? `（${section.domain.code}）` : ""}`);
+    for (const paper of section.papers) chunks.push(paperBibtex(paper, used));
+  }
+  return [{ relativePath: `paper-field-bibtex-${exportStamp(now)}.bib`, content: `${chunks.join("\n\n")}\n` }];
+}
+
+/** 单文件合并版：各领域的 README 索引与论文正文合并进一个 .md，便于直接分享。 */
+export function buildMergedMarkdownExport(
+  sections: Array<{ domain: Domain; papers: PaperDetail[] }>,
+  now: Date = new Date(),
+  include: ExportContentOptions = DEFAULT_EXPORT_CONTENT,
+): ExportFile[] {
+  const parts: string[] = [`# Paper Field 导出 · ${exportStamp(now)}`];
+  for (const section of sections) {
+    if (!section.papers.length) continue;
+    const files = buildDomainExport(section.domain, section.papers, now, include);
+    parts.push(files.map((file) => file.content).join("\n\n---\n\n"));
+  }
+  return [
+    { relativePath: `paper-field-export-${exportStamp(now)}.md`, content: `${parts.join("\n\n---\n\n")}\n` },
+  ];
+}
+
 /**
  * 统一写出：桌面端弹出系统目录对话框写入全部文件（多领域时按各自文件夹落盘）；
  * 浏览器预览没有目录对话框，降级为单个 .md 下载（文件之间用路径分隔行拼合）。
