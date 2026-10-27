@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { selectNativeWindow } from './window-selection.mjs';
+import { waitForVisibleText } from './ui-waits.mjs';
 
 const domain = 'Native smoke domain';
 const note = 'Native SQLite note survives a complete process restart.';
@@ -47,8 +48,7 @@ describe(`real Tauri desktop — ${phase}`, () => {
       // import completion first so Escape cannot conceal a failed import.
       await $('[role="dialog"]').waitForExist({ reverse: true });
       await browser.keys('Escape');
-      await $('#paper-title').waitForDisplayed();
-      assert.equal(await $('#paper-title').getText(), 'smoke');
+      await waitForVisibleText(browser, '#paper-title', 'smoke');
       await click('#note-summary .ef-note-start');
       await $('textarea[aria-label="总结内容"]').setValue(note);
       await click('//section[@id="note-summary"]//button[normalize-space(.)="保存笔记"]');
@@ -57,8 +57,7 @@ describe(`real Tauri desktop — ${phase}`, () => {
       await $('[role="dialog"]').waitForExist({ reverse: true });
       await openPaperList();
       await click('//div[@aria-label="论文列表"]//button[.//h3[normalize-space(.)="smoke"]]');
-      await $('#paper-title').waitForDisplayed();
-      assert.equal(await $('#paper-title').getText(), 'smoke');
+      await waitForVisibleText(browser, '#paper-title', 'smoke');
     } else {
       throw new Error(`Unknown phase: ${phase}`);
     }
