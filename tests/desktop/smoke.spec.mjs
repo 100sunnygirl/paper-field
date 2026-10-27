@@ -31,7 +31,15 @@ describe(`real Tauri desktop — ${phase}`, () => {
       await click('button=新建领域');
       await $('input[placeholder="多模态"]').setValue(domain);
       await click('button=创建领域');
+      // The native SQLite creation is asynchronous. Do not click through its
+      // still-open modal: its completion closes that dialog and would otherwise
+      // also dismiss an import dialog opened prematurely by the driver.
+      await $('[role="dialog"]').waitForExist({ reverse: true });
+      await browser.waitUntil(async () =>
+        (await $('[aria-label^="切换研究领域"]').getText()) === domain,
+      { timeoutMsg: 'Created domain did not become the selected native domain' });
       await click('button*=添加论文');
+      await $('[role="dialog"]').waitForDisplayed();
       // This native-import button is absent from browser preview.
       await click('button*=选择 PDF');
       await click('button=导入 1');
@@ -46,6 +54,7 @@ describe(`real Tauri desktop — ${phase}`, () => {
       await click('//section[@id="note-summary"]//button[normalize-space(.)="保存笔记"]');
     } else if (phase === 'reopen') {
       await click(`button.ef-domain-option*=${domain}`);
+      await $('[role="dialog"]').waitForExist({ reverse: true });
       await openPaperList();
       await click('//div[@aria-label="论文列表"]//button[.//h3[normalize-space(.)="smoke"]]');
       await $('#paper-title').waitForDisplayed();
