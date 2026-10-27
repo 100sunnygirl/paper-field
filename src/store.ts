@@ -1,5 +1,12 @@
 import { create } from "zustand";
-import { exportDomain } from "./lib/export";
+import {
+  browserExportFilename,
+  browserMultiExportFilename,
+  buildDomainExport,
+  exportDomain,
+  writeExportFiles,
+  type ExportContentOptions,
+} from "./lib/export";
 import {
   DEFAULT_MINERU,
   loadMineruSettings,
@@ -52,6 +59,15 @@ interface Flash {
   tone: "ok" | "warn" | "error";
   text: string;
   action?: ToastAction;
+}
+
+/** 数据导出的可选范围。 */
+export type ExportScope = "current" | "all" | "read" | "checked" | "paper";
+
+/** 一次导出的完整计划：范围 + 内容选择。 */
+export interface ExportPlan {
+  scope: ExportScope;
+  include: ExportContentOptions;
 }
 
 interface FieldState {
@@ -177,6 +193,8 @@ interface FieldState {
   saveBiblioSettings: (input: BiblioSaveInput) => Promise<void>;
   probeMineru: () => Promise<ProviderHealth[]>;
   exportCurrentDomain: () => Promise<void>;
+  /** 导出范围与内容选择（全库 / 仅已读 / 勾选集 / 单篇 / 当前领域）。 */
+  exportPapers: (plan: ExportPlan) => Promise<void>;
   backupLibrary: () => Promise<void>;
   restoreLibrary: () => Promise<void>;
   navigatePapers: (delta: number) => Promise<void>;
@@ -1157,6 +1175,78 @@ export const useField = create<FieldState>((set, get) => ({
     try {
       const where = await exportDomain(domain, papers);
       get().setFlash({ tone: "ok", text: `已导出 ${papers.length} 篇 · ${where}` });
+    } catch (err) {
+      if (String(err).includes("EXPORT_CANCELLED")) return;
+      get().setFlash({ tone: "error", text: err instanceof Error ? err.message : String(err) });
+    }
+  },
+
+  exportPapers: async (plan) => {
+    const state = get();
+    const now = new Date();
+    const sections: Array<{ domain: Domain; papers: PaperDetail[] }> = [];
+    let browserName = "paper-field-export.md";
+    try {
+      if (plan.scope === "current") {
+        const domainId = state.selectedDomainId;
+        if (!domainId) {
+          get().setFlash({ tone: "warn", text: "请先选择一个领域，再导出。" });
+          return;
+        }
+        const domain = await repo.getDomain(domainId);
+        if (!domain) return;
+        sections.push({ domain, papers: await repo.papersForExport(domainId) });
+        browserName = browserExportFilename(domain);
+      } else if (plan.scope === "all" || plan.scope === "read") {
+        // 全库 / 仅已读按领域分文件夹；同一时间戳让这批文件夹在磁盘上排在一起。
+        for (const domain of await repo.listDomains()) {
+          const papers = await repo.papersForExport(domain.id);
+          const kept = plan.scope === "read" ? papers.filter((p) => p.readingStatus === "read") : papers;
+          if (kept.length) sections.push({ domain, papers: kept });
+        }
+        browserName = browserMultiExportFilename(plan.scope === "read" ? "read" : "export", now);
+      } else if (plan.scope === "checked") {
+        const ids = state.checkedPaperIds;
+        if (!ids.length) {
+          get().setFlash({
+            tone: "warn",
+            text: "尚未勾选任何论文。先在论文列表进入批量模式勾选，再回到这里导出。",
+          });
+          return;
+        }
+        // 勾选集可能跨领域：按所属领域分组，各自落进对应文件夹。
+        const byDomain = new Map<string, PaperDetail[]>();
+        for (const id of ids) {
+          const detail = await repo.getPaper(id);
+          if (!detail) continue;
+          const list = byDomain.get(detail.domainId) ?? [];
+          list.push(detail);
+          byDomain.set(detail.domainId, list);
+        }
+        for (const [domainId, papers] of byDomain) {
+          const domain = await repo.getDomain(domainId);
+          if (domain) sections.push({ domain, papers });
+        }
+        browserName = browserMultiExportFilename("checked", now);
+      } else if (plan.scope === "paper") {
+        const paperId = state.paper?.id ?? state.selectedPaperId;
+        if (!paperId) {
+          get().setFlash({ tone: "warn", text: "当前没有打开的论文，无法导出单篇。" });
+          return;
+        }
+        const detail = await repo.getPaper(paperId);
+        if (!detail) return;
+        sections.push({ domain: detail.domain, papers: [detail] });
+        browserName = browserMultiExportFilename("paper", now);
+      }
+      const count = sections.reduce((total, section) => total + section.papers.length, 0);
+      if (!count) {
+        get().setFlash({ tone: "warn", text: "所选范围内没有可导出的论文。" });
+        return;
+      }
+      const files = sections.flatMap((section) => buildDomainExport(section.domain, section.papers, now, plan.include));
+      const where = await writeExportFiles(files, browserName);
+      get().setFlash({ tone: "ok", text: `已导出 ${count} 篇 · ${where}` });
     } catch (err) {
       if (String(err).includes("EXPORT_CANCELLED")) return;
       get().setFlash({ tone: "error", text: err instanceof Error ? err.message : String(err) });

@@ -2048,6 +2048,36 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   cursor: pointer;
 }
 .ef-kbd-try:hover { color: var(--pf-ink); border-color: var(--pf-ink); }
+/* 数据导出卡：范围 + 内容选择 + 导出前预览。 */
+.ef-export-content {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 20px;
+  align-items: center;
+  border: 1px solid var(--pf-divider);
+  border-radius: var(--pf-radius);
+  padding: 10px 14px 12px;
+  margin: 0 0 14px;
+}
+.ef-export-content legend {
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
+  padding: 0 6px;
+}
+.ef-export-content label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--pf-fs-ui);
+  color: var(--pf-secondary);
+}
+.ef-export-content input { accent-color: var(--pf-ink); }
+.ef-export-preview {
+  margin: 0 0 14px;
+  font-size: var(--pf-fs-ui);
+  color: var(--pf-secondary);
+}
+.ef-export-preview b { color: var(--pf-ink); font-weight: 600; }
 .ef-llm-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

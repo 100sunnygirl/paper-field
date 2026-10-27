@@ -20,6 +20,7 @@ import {
 import type { LlmProviderView } from "../lib/types";
 import { MODE_LABELS } from "../lib/types";
 import { biblioEmailConfigured, type BiblioSaveInput } from "../lib/biblio";
+import type { ExportContentOptions } from "../lib/export";
 import { checkForAppUpdate } from "../lib/updater";
 import { openExternal } from "../lib/urls";
 import { formatDate, pad2, shortcut, uid } from "../lib/util";
@@ -89,11 +90,6 @@ function focusGlobalSearchSoon(): void {
 }
 
 export function SystemView() {
-  const exportCurrentDomain = useField((s) => s.exportCurrentDomain);
-  const domains = useField((s) => s.domains);
-  const selectedDomainId = useField((s) => s.selectedDomainId);
-  const domain = domains.find((d) => d.id === selectedDomainId);
-
   const systemFocus = useField((s) => s.systemFocus);
   const setMode = useField((s) => s.setMode);
   const selectPaper = useField((s) => s.selectPaper);
@@ -221,21 +217,7 @@ export function SystemView() {
 
               {show("llm") ? <LlmSettingsBlock focused={focusedCard === "llm"} /> : null}
 
-              {show("export") ? (
-                <article
-                  id="settings-export"
-                  className="page-block pf-stagger"
-                  style={{ "--pf-i": 3 } as CSSProperties}
-                >
-                  <header className="ef-block-head">
-                    <h3>数据导出</h3>
-                    <p>将当前领域导出为 Markdown 文件夹（README + 每篇论文一个文件）。</p>
-                  </header>
-                  <Button type="button" onClick={() => void exportCurrentDomain()}>
-                    导出 {domain?.name ?? "当前领域"}
-                  </Button>
-                </article>
-              ) : null}
+              {show("export") ? <ExportBlock focused={focusedCard === "export"} /> : null}
 
               {show("backup") ? <BackupBlock focused={focusedCard === "backup"} /> : null}
 
@@ -253,6 +235,112 @@ export function SystemView() {
         </div>
       </div>
     </section>
+  );
+}
+
+/**
+ * 数据导出卡：范围（当前领域 / 全库 / 仅已读 / 勾选集 / 单篇）+ 内容选择（笔记 /
+ * 摘要 / 解析全文）+ 导出前预览。桌面端按领域分文件夹写入；浏览器预览下载单个合并文件。
+ */
+const EXPORT_SCOPES = [
+  { id: "current", label: "当前领域" },
+  { id: "all", label: "全部领域（按领域分文件夹）" },
+  { id: "read", label: "仅已读（全库）" },
+  { id: "checked", label: "勾选的论文（批量模式勾选集）" },
+  { id: "paper", label: "当前论文" },
+] as const;
+
+type ExportScopeId = (typeof EXPORT_SCOPES)[number]["id"];
+
+function ExportBlock({ focused }: { focused: boolean }) {
+  const domains = useField((s) => s.domains);
+  const selectedDomainId = useField((s) => s.selectedDomainId);
+  const domain = domains.find((d) => d.id === selectedDomainId);
+  const papers = useField((s) => s.papers);
+  const stats = useField((s) => s.stats);
+  const checkedPaperIds = useField((s) => s.checkedPaperIds);
+  const paper = useField((s) => s.paper);
+  const exportPapers = useField((s) => s.exportPapers);
+
+  const [scope, setScope] = useState<ExportScopeId>("current");
+  const [include, setInclude] = useState<ExportContentOptions>({ notes: true, abstract: true, parsedText: false });
+
+  const scopeLabel = EXPORT_SCOPES.find((item) => item.id === scope)!.label;
+  const previewCount =
+    scope === "current"
+      ? papers.length
+      : scope === "all"
+        ? stats.total
+        : scope === "read"
+          ? stats.read
+          : scope === "checked"
+            ? checkedPaperIds.length
+            : paper
+              ? 1
+              : 0;
+  const includeBits =
+    [include.notes ? "现场笔记" : null, include.abstract ? "摘要" : null, include.parsedText ? "解析全文" : null]
+      .filter(Boolean)
+      .join("、") || "仅著录信息";
+
+  return (
+    <article
+      id="settings-export"
+      className={`page-block pf-stagger${focused ? " is-focused" : ""}`}
+      style={{ "--pf-i": 3 } as CSSProperties}
+    >
+      <header className="ef-block-head">
+        <h3>数据导出</h3>
+        <p>导出为 Markdown：每个领域一个文件夹（README + 每篇论文一个文件）。浏览器预览下载单个合并文件。</p>
+      </header>
+      <Field label="导出范围">
+        <select aria-label="导出范围" value={scope} onChange={(e) => setScope(e.target.value as ExportScopeId)}>
+          {EXPORT_SCOPES.map((item) => (
+            <option key={item.id} value={item.id}>
+              {item.label}
+            </option>
+          ))}
+        </select>
+      </Field>
+      <fieldset className="ef-export-content">
+        <legend>导出内容</legend>
+        <label>
+          <input
+            type="checkbox"
+            checked={include.notes}
+            onChange={(e) => setInclude((prev) => ({ ...prev, notes: e.target.checked }))}
+          />
+          现场笔记
+        </label>
+        <label>
+          <input
+            type="checkbox"
+            checked={include.abstract}
+            onChange={(e) => setInclude((prev) => ({ ...prev, abstract: e.target.checked }))}
+          />
+          摘要
+        </label>
+        <label>
+          <input
+            type="checkbox"
+            checked={include.parsedText}
+            onChange={(e) => setInclude((prev) => ({ ...prev, parsedText: e.target.checked }))}
+          />
+          解析全文
+        </label>
+      </fieldset>
+      <p className="ef-export-preview">
+        将导出 <b>{previewCount}</b> 篇 · {scopeLabel} · 内容：{includeBits}
+        {scope === "paper" && !paper ? "（当前没有打开的论文）" : ""}
+      </p>
+      <Button
+        type="button"
+        disabled={previewCount === 0}
+        onClick={() => void exportPapers({ scope, include })}
+      >
+        导出{scope === "current" ? ` ${domain?.name ?? "当前领域"}` : ""}
+      </Button>
+    </article>
   );
 }
 

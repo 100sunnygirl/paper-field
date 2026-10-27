@@ -5,7 +5,7 @@ import { useField } from "../store";
 import { DEFAULT_MINERU, type MineruSaveInput, type MineruSettingsV2 } from "../lib/mineru";
 import { clear as clearLog, log } from "../lib/logger";
 import type { ProviderHealth } from "../lib/mineru";
-import type { LlmProviderView, LlmSettings } from "../lib/types";
+import type { LlmProviderView, LlmSettings, PaperListItem } from "../lib/types";
 import type { LlmSaveInput } from "../lib/settings";
 
 function mineruState(overrides: Partial<MineruSettingsV2> = {}): MineruSettingsV2 {
@@ -21,6 +21,48 @@ function mineruState(overrides: Partial<MineruSettingsV2> = {}): MineruSettingsV
 
 function healths(list: Array<[ProviderHealth["provider"], boolean, string]>): ProviderHealth[] {
   return list.map(([provider, ok, message]) => ({ provider, ok, latencyMs: ok ? 15 : 0, message }));
+}
+
+/** 最小可用的论文列表项（PaperListItem）。 */
+function baseListItem(overrides: Partial<PaperListItem> = {}): PaperListItem {
+  return {
+    id: "p-1",
+    domainId: "d-1",
+    title: "Sample Paper",
+    titleZh: null,
+    abstract: "",
+    year: 2023,
+    venue: null,
+    doi: null,
+    arxivId: null,
+    pdfUrl: null,
+    pdfPath: null,
+    codeUrl: null,
+    codeOpenSource: "unknown",
+    projectPage: null,
+    readingStatus: "unread",
+    readAt: null,
+    llmPreparedAt: null,
+    notesDraftedByLlm: false,
+    userNotesTouched: false,
+    userMetaTouched: false,
+    mineruStatus: null,
+    mineruParseId: null,
+    mineruDocRef: null,
+    mineruError: null,
+    mineruParseIds: [],
+    mineruProvider: null,
+    mineruCredFingerprint: null,
+    tags: [],
+    labs: [],
+    createdAt: "2024-01-01T00:00:00.000Z",
+    updatedAt: "2024-01-01T00:00:00.000Z",
+    firstAuthor: "A",
+    authorCount: 1,
+    domainName: "多模态",
+    domainCode: "MM-01",
+    ...overrides,
+  };
 }
 
 describe("SystemView · MinerU 三源卡片", () => {
@@ -667,6 +709,64 @@ describe("SystemView · 锚点目录、查找设置与深链", () => {
     render(<SystemView />);
     fireEvent.click(screen.getByRole("button", { name: "试用：添加论文（导入 PDF / 手动录入）" }));
     expect(useField.getState().dialog).toBe("paper");
+  });
+});
+
+describe("SystemView · 数据导出（范围与内容选择）", () => {
+  beforeEach(() => {
+    useField.setState(useField.getInitialState(), true);
+    localStorage.clear();
+  });
+
+  function exportBlock(): HTMLElement {
+    return screen.getByRole("heading", { level: 3, name: "数据导出" }).closest("article") as HTMLElement;
+  }
+
+  it("默认当前领域 + 笔记摘要，预览显示当前领域论文数", () => {
+    useField.setState({
+      domains: [{ id: "d-1", name: "多模态", code: "MM-01", summary: null, sortOrder: 1, createdAt: "2024-01-01T00:00:00.000Z" }],
+      selectedDomainId: "d-1",
+      papers: [
+        { ...baseListItem(), id: "p-1" },
+        { ...baseListItem(), id: "p-2" },
+      ],
+      stats: { read: 5, total: 9, openSource: 0, queued: 0, running: 0 },
+    });
+    render(<SystemView />);
+    const block = exportBlock();
+    expect(within(block).getByLabelText("导出范围")).toHaveValue("current");
+    expect(within(block).getByText(/将导出/).textContent).toContain("2");
+    expect(within(block).getByText(/将导出/).textContent).toContain("现场笔记、摘要");
+    expect(within(block).getByRole("button", { name: /导出 多模态/ })).toBeEnabled();
+  });
+
+  it("切换范围到仅已读：预览改用已读数，按钮禁用当计数为 0", () => {
+    const exportPapers = vi.fn(async () => undefined);
+    useField.setState({ stats: { read: 3, total: 9, openSource: 0, queued: 0, running: 0 }, exportPapers });
+    render(<SystemView />);
+    const block = exportBlock();
+    fireEvent.change(within(block).getByLabelText("导出范围"), { target: { value: "read" } });
+    expect(within(block).getByText(/将导出/).textContent).toContain("3");
+    // 关掉笔记与摘要后点导出：提交的范围与内容选择完整传给 store
+    fireEvent.click(within(block).getByRole("checkbox", { name: "现场笔记" }));
+    fireEvent.click(within(block).getByRole("checkbox", { name: "摘要" }));
+    fireEvent.click(within(block).getByRole("button", { name: /^导出$/ }));
+    expect(exportPapers).toHaveBeenCalledWith({
+      scope: "read",
+      include: { notes: false, abstract: false, parsedText: false },
+    });
+    // 勾选集为空时预览为 0，按钮禁用
+    fireEvent.change(within(block).getByLabelText("导出范围"), { target: { value: "checked" } });
+    expect(within(block).getByText(/将导出/).textContent).toContain("0");
+    expect(within(block).getByRole("button", { name: /^导出$/ })).toBeDisabled();
+  });
+
+  it("勾选集范围使用勾选数并随勾选变化", () => {
+    useField.setState({ checkedPaperIds: ["p-1", "p-2", "p-3"], exportPapers: vi.fn(async () => undefined) });
+    render(<SystemView />);
+    const block = exportBlock();
+    fireEvent.change(within(block).getByLabelText("导出范围"), { target: { value: "checked" } });
+    expect(within(block).getByText(/将导出/).textContent).toContain("3");
   });
 });
 

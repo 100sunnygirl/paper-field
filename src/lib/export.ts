@@ -56,7 +56,22 @@ function fileBaseName(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).pop() ?? "";
 }
 
-function paperMarkdown(paper: PaperDetail): string {
+/** 导出内容选择：默认全含（与既有「导出当前领域」行为一致）。 */
+export interface ExportContentOptions {
+  /** 五块现场笔记（总结 / 亮点 / 不足 / 启示 / 备注）。 */
+  notes: boolean;
+  abstract: boolean;
+  /** MinerU 解析出的全文（可能很长，分享前可关闭）。 */
+  parsedText: boolean;
+}
+
+export const DEFAULT_EXPORT_CONTENT: ExportContentOptions = {
+  notes: true,
+  abstract: true,
+  parsedText: false,
+}
+
+function paperMarkdown(paper: PaperDetail, include: ExportContentOptions = DEFAULT_EXPORT_CONTENT): string {
   const authors = paper.authors
     .map((author, index) => {
       const bits = [`${index + 1}. ${inlineText(author.name)}`];
@@ -69,11 +84,18 @@ function paperMarkdown(paper: PaperDetail): string {
 
   const labs = paper.labs.map((lab) => `${inlineText(lab.name)} (${inlineText(lab.institution)})`).join("; ");
 
-  const notes = NOTE_DISPLAY_ORDER.map((kind: NoteKind) => {
-    const block = paper.notes[kind];
-    const label = NOTE_LABELS[kind];
-    return `## ${label.zh} / ${label.en} · ${noteSourceLabel(block)}\n\n${block.content ? neutralizeHtml(block.content) : "_empty_"}\n`;
-  }).join("\n");
+  const notes = include.notes
+    ? NOTE_DISPLAY_ORDER.map((kind: NoteKind) => {
+        const block = paper.notes[kind];
+        const label = NOTE_LABELS[kind];
+        return `## ${label.zh} / ${label.en} · ${noteSourceLabel(block)}\n\n${block.content ? neutralizeHtml(block.content) : "_empty_"}\n`;
+      }).join("\n")
+    : "";
+
+  const parsed =
+    include.parsedText && paper.parsedMarkdown.trim()
+      ? `## 解析全文\n\n${neutralizeHtml(paper.parsedMarkdown.trim())}\n`
+      : "";
 
   const pdf = paper.pdfPath ? fileBaseName(paper.pdfPath) : paper.pdfUrl;
   const field = (value: string | number | null | undefined) => (value == null || value === "" ? "—" : inlineText(value));
@@ -100,12 +122,9 @@ ${paper.titleZh ? `> ${inlineText(paper.titleZh)}\n` : ""}
 
 ${authors || "_none_"}
 
-## Abstract
-
-${paper.abstract ? blockText(paper.abstract) : "_none_"}
-
+${include.abstract ? `## Abstract\n\n${paper.abstract ? blockText(paper.abstract) : "_none_"}\n` : ""}
 ${notes}
-`;
+${parsed}`;
 }
 
 function slug(value: string): string {
@@ -126,7 +145,12 @@ export function exportStamp(now: Date): string {
   return `${now.getFullYear()}${p(now.getMonth() + 1)}${p(now.getDate())}-${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}`;
 }
 
-export function buildDomainExport(domain: Domain, papers: PaperDetail[], now: Date = new Date()): ExportFile[] {
+export function buildDomainExport(
+  domain: Domain,
+  papers: PaperDetail[],
+  now: Date = new Date(),
+  include: ExportContentOptions = DEFAULT_EXPORT_CONTENT,
+): ExportFile[] {
   // Fixed folder names made a second export overwrite the first one, including
   // any edits the user made to those files; a timestamp suffix never collides.
   const folder = `${slug(domain.code || domain.name)}-${exportStamp(now)}`;
@@ -161,10 +185,42 @@ ${papers
   papers.forEach((paper, i) => {
     files.push({
       relativePath: `${folder}/${fileNames[i]}`,
-      content: paperMarkdown(paper),
+      content: paperMarkdown(paper, include),
     });
   });
   return files;
+}
+
+/** 浏览器下载名（多领域 / 仅已读等跨领域导出用，一次一个文件）。 */
+export function browserMultiExportFilename(prefix: string, now: Date = new Date()): string {
+  return `paper-field-${prefix}-${exportStamp(now)}.md`;
+}
+
+/**
+ * 统一写出：桌面端弹出系统目录对话框写入全部文件（多领域时按各自文件夹落盘）；
+ * 浏览器预览没有目录对话框，降级为单个 .md 下载（文件之间用路径分隔行拼合）。
+ * 取消返回的 Error 与既有 exportDomain 相同（EXPORT_CANCELLED），由调用方统一处理。
+ */
+export async function writeExportFiles(files: ExportFile[], browserFilename: string): Promise<string> {
+  if (isTauri()) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    // 选择文件夹的对话框由 Rust 侧弹出，导出根目录只来自系统对话框。
+    const dir = await invoke<string | null>("export_files", { files });
+    if (!dir) throw new Error("EXPORT_CANCELLED");
+    return dir;
+  }
+
+  const blob = new Blob(
+    [files.map((file) => `--- ${file.relativePath} ---\n${file.content}`).join("\n\n")],
+    { type: "text/markdown;charset=utf-8" },
+  );
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = browserFilename;
+  a.click();
+  URL.revokeObjectURL(url);
+  return browserFilename;
 }
 
 /** Browser download name. Shown in the success toast instead of the word "download". */
@@ -175,28 +231,5 @@ export function browserExportFilename(domain: Pick<Domain, "code" | "name">): st
 
 export async function exportDomain(domain: Domain, papers: PaperDetail[]): Promise<string> {
   const files = buildDomainExport(domain, papers);
-  if (isTauri()) {
-    const { invoke } = await import("@tauri-apps/api/core");
-    // 选择文件夹的对话框由 Rust 侧弹出，导出根目录只来自系统对话框。
-    const dir = await invoke<string | null>("export_files", { files });
-    if (!dir) throw new Error("EXPORT_CANCELLED");
-    return dir;
-  }
-
-  const blob = new Blob(
-    [
-      files
-        .map((file) => `--- ${file.relativePath} ---\n${file.content}`)
-        .join("\n\n"),
-    ],
-    { type: "text/markdown;charset=utf-8" },
-  );
-  const filename = browserExportFilename(domain);
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-  return filename;
+  return writeExportFiles(files, browserExportFilename(domain));
 }
