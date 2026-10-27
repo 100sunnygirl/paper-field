@@ -48,6 +48,8 @@ jobs:
         run: npm run test:desktop:guard
       - name: Verify persistence checker detects corruption
         run: python tests/desktop/verify_test.py
+      - name: Verify DOM-only driver window selection
+        run: node --test tests/desktop/window-selection.test.mjs
       - name: Build instrumented native app (never bundled or signed)
         run: npm run tauri -- build --debug --no-bundle --features desktop-e2e --config tests/desktop/tauri.e2e.conf.json -- --locked
       - name: Native UI, real PDF import, SQLite note, complete process restart

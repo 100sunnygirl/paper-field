@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { selectNativeWindow } from './window-selection.mjs';
 
 const domain = 'Native smoke domain';
 const note = 'Native SQLite note survives a complete process restart.';
@@ -21,6 +22,8 @@ async function openPaperList() {
 
 describe(`real Tauri desktop — ${phase}`, () => {
   it('creates or reopens a domain, imported PDF, and persistent note', async () => {
+    // Run after service initialization (WDIO's config before hooks run concurrently).
+    await selectNativeWindow(browser);
     await $('[aria-label="主导航"]').waitForDisplayed({ timeout: 60000 });
     await openPaperList();
     await click('[aria-label^="切换研究领域"]');
