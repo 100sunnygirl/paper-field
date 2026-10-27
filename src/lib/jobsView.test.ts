@@ -136,6 +136,24 @@ describe("deriveJobsView · 进行中", () => {
     expect(view.active.find((a) => a.id === "m")?.stageHint).toBe("按回退顺序选择解析源并上传 PDF");
     expect(view.active.find((a) => a.id === "n")?.stageHint).toBe("写入阅读笔记");
   });
+
+  it("进行中作业带所属批次关联（本批第几篇 / 共几篇）", () => {
+    const view = deriveJobsView({
+      jobs: [job({ id: "m", paperId: "p2", status: "running" })],
+      activity: activity({
+        batches: [batch({ id: 1, paperIds: ["p1", "p2", "p3"], currentPaperId: "p2" })],
+      }),
+      now: NOW,
+    });
+    expect(view.active[0].batch).toEqual({ index: 2, total: 3 });
+    // 不在任何批次里的作业（如手动单篇操作）没有关联。
+    const lone = deriveJobsView({
+      jobs: [job({ id: "x", paperId: "p9", status: "running" })],
+      activity: activity(),
+      now: NOW,
+    });
+    expect(lone.active[0].batch).toBeNull();
+  });
 });
 
 describe("deriveJobsView · 批次与排队", () => {

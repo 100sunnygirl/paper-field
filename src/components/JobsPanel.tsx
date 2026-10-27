@@ -115,11 +115,19 @@ function JobsPanelBody() {
   const setJobsOpen = useField((s) => s.setJobsOpen);
   const jobsPinned = useField((s) => s.jobsPinned);
   const setJobsPinned = useField((s) => s.setJobsPinned);
+  const highlightJobId = useField((s) => s.highlightJobId);
   const selectDomain = useField((s) => s.selectDomain);
   const selectPaper = useField((s) => s.selectPaper);
   const activity = useSyncExternalStore(subscribeActivity, getActivity);
   const titleId = useId();
   const panelRef = useRef<HTMLElement>(null);
+
+  // 入库页作业行的互跳高亮：几秒后自动淡出，不留永久状态。
+  useEffect(() => {
+    if (!highlightJobId) return;
+    const timer = window.setTimeout(() => useField.setState({ highlightJobId: null }), 4000);
+    return () => window.clearTimeout(timer);
+  }, [highlightJobId]);
 
   const batchPaperIds = useMemo(() => activity.batches.flatMap((batch) => batch.paperIds), [activity.batches]);
   const briefs = usePaperBriefs(batchPaperIds, jobs);
@@ -228,7 +236,14 @@ function JobsPanelBody() {
           </h3>
           {view.active.length ? (
             view.active.map((job, index) => (
-              <JobCard key={job.id} job={job} index={index} llmChain={llmChain} onJump={jump} />
+              <JobCard
+                key={job.id}
+                job={job}
+                index={index}
+                llmChain={llmChain}
+                onJump={jump}
+                highlighted={job.id === highlightJobId}
+              />
             ))
           ) : (
             <div className="ef-jobs-idle">
@@ -622,13 +637,23 @@ function JobCard({
   index,
   llmChain,
   onJump,
+  highlighted,
 }: {
   job: ActiveJobView;
   index: number;
   llmChain: LlmProviderView[];
   onJump: (paperId: string, domainId: string | null) => Promise<void>;
+  /** 入库页作业行点击后的互跳高亮（数秒自动清除）。 */
+  highlighted: boolean;
 }) {
   const cancelJob = useField((s) => s.cancelJob);
+  const cardRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    // jsdom 等环境没有实现 scrollIntoView：能滚才滚，高亮描边不依赖它。
+    if (highlighted && typeof cardRef.current?.scrollIntoView === "function") {
+      cardRef.current.scrollIntoView({ block: "nearest" });
+    }
+  }, [highlighted]);
   const isMineru = job.type === "mineruParse";
   // AI 作业的去向：可用提供商的首选（失败时按设置页顺序回退）。
   const via = isMineru
@@ -641,7 +666,8 @@ function JobCard({
   const pagePct = job.pages ? Math.round((job.pages.done / job.pages.total) * 100) : null;
   return (
     <article
-      className={`ef-jobcard is-${job.status} pf-stagger`}
+      ref={cardRef}
+      className={`ef-jobcard is-${job.status}${highlighted ? " is-highlight" : ""} pf-stagger`}
       style={{ "--pf-i": index } as CSSProperties}
       aria-label={`${job.typeLabel}：${job.title}`}
     >
@@ -666,8 +692,12 @@ function JobCard({
       >
         {job.title}
       </button>
-      {job.domainName || via ? (
-        <p className="ef-jobcard-meta">{[job.domainName, via].filter(Boolean).join(" · ")}</p>
+      {job.domainName || job.batch || via ? (
+        <p className="ef-jobcard-meta">
+          {[job.domainName, job.batch ? `本批第 ${job.batch.index}/${job.batch.total} 篇` : null, via]
+            .filter(Boolean)
+            .join(" · ")}
+        </p>
       ) : null}
 
       <ol className="ef-steps" aria-label="作业阶段">

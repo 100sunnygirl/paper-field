@@ -127,6 +127,18 @@ describe("JobsPanel", () => {
     expect(actions.cancelJob).toHaveBeenCalledWith("m");
   });
 
+  it("进行中卡显示所属批次关联；入库页互跳的高亮落在对应卡上", () => {
+    const batchId = queueBatch("mineru", ["p1", "p2", "p3"]);
+    startBatch(batchId);
+    beginBatchItem(batchId, "p2");
+    useField.setState({ jobs: [job({ id: "m", paperId: "p2" })], highlightJobId: "m" });
+    render(<JobsPanel />);
+
+    const card = screen.getByRole("article", { name: "MinerU 解析：Title p2" });
+    expect(within(card).getByText("多模态 · 本批第 2/3 篇")).toBeInTheDocument();
+    expect(card.className).toContain("is-highlight");
+  });
+
   it("AI 作业卡：标注解析后自动，并写出首选提供商与回退数量", () => {
     trackJob("a", "p2", "request", { auto: true });
     useField.setState({

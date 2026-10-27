@@ -1,6 +1,6 @@
 // 作业面板的视图模型：把 llm_jobs（持久状态）与 activity（运行时实况）合成为
 // 「进行中 / 本批进度 / 排队 / 最近完成」四块。纯函数、不读时钟（now 由调用方传入），便于测试。
-import type { ActivityBatch, ActivityState, BatchItemResult, BatchKind, JobStage, PageProgress } from "./activity";
+import type { ActivityBatch, ActivityState, BatchItemResult, BatchKind, JobLive, JobStage, PageProgress } from "./activity";
 import { JOB_TYPE_LABELS, MINERU_PROVIDER_LABELS, type JobType, type LlmJob, type PaperBrief } from "./types";
 import { pad2 } from "./util";
 
@@ -32,6 +32,8 @@ export interface ActiveJobView {
   provider: string | null;
   pages: PageProgress | null;
   auto: boolean;
+  /** 所属批次关联（本批第几篇 / 共几篇）：面板进行中卡与入库页作业行同一口径。 */
+  batch: { index: number; total: number } | null;
 }
 
 export type SegmentState = BatchItemResult | "current" | "pending" | "paused";
@@ -171,9 +173,21 @@ function stageHint(type: JobType, stage: JobStage, provider: string | null, page
   }
 }
 
-function inferStage(job: LlmJob): JobStage {
+function inferStage(job: Pick<LlmJob, "type" | "status">): JobStage {
   if (job.type === "mineruParse") return "submit";
   return job.status === "queued" ? "queue" : "request";
+}
+
+/**
+ * 入库页作业行与作业面板共用的阶段一句话（同一口径）：实况补阶段 / 解析源 / 页进度，
+ * 无实况时按作业类型与状态推断。
+ */
+export function jobStageLine(
+  type: JobType,
+  status: LlmJob["status"],
+  live?: Pick<JobLive, "stage" | "provider" | "pages"> | null,
+): string {
+  return stageHint(type, live?.stage ?? inferStage({ type, status }), providerName(live?.provider), live?.pages ?? null);
 }
 
 function ms(iso: string | null | undefined): number | null {
@@ -324,6 +338,14 @@ export function deriveJobsView(input: {
     const pages = live?.pages ?? null;
     const info = lookup(job.paperId);
     const since = job.status === "running" ? ms(job.startedAt) ?? ms(job.createdAt) : ms(job.createdAt);
+    // 所属批次：正在处理这篇、或这篇还没轮到的批次（运行中的优先）。
+    const ownBatch = activity.batches.find(
+      (batch) =>
+        (batch.state === "running" || batch.state === "waiting") &&
+        batch.paperIds.includes(job.paperId) &&
+        (batch.currentPaperId === job.paperId || !batch.results[job.paperId]),
+    );
+    const index = ownBatch ? ownBatch.paperIds.indexOf(job.paperId) : -1;
     return {
       id: job.id,
       type: job.type,
@@ -341,6 +363,7 @@ export function deriveJobsView(input: {
       provider,
       pages,
       auto: live?.auto ?? false,
+      batch: index >= 0 ? { index: index + 1, total: ownBatch!.paperIds.length } : null,
     };
   });
   const activePaperIds = new Set(active.map((job) => job.paperId));

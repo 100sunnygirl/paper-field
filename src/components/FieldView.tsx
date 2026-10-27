@@ -1,10 +1,13 @@
 import { useEffect, useState } from "react";
+import { useSyncExternalStore } from "react";
 import {
   JOB_STATUS_LABELS,
   JOB_TYPE_LABELS,
   type OpenSource,
   type PaperListItem,
 } from "../lib/types";
+import { getActivity, subscribeActivity } from "../lib/activity";
+import { jobStageLine } from "../lib/jobsView";
 import { repo } from "../lib/repo";
 import { pad2, shortcut } from "../lib/util";
 import { useField } from "../store";
@@ -39,6 +42,9 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
   const cancelJob = useField((s) => s.cancelJob);
   const retryFailedMineru = useField((s) => s.retryFailedMineru);
   const setJobsOpen = useField((s) => s.setJobsOpen);
+  const highlightJob = useField((s) => s.highlightJob);
+  // 阶段一句话与作业面板同一口径：入库页行内直接看到「已解析 n/N 页」等实况。
+  const activity = useSyncExternalStore(subscribeActivity, getActivity);
   const search = useField((s) => s.search);
   const batchMode = useField((s) => s.batchMode);
   const checkedPaperIds = useField((s) => s.checkedPaperIds);
@@ -173,23 +179,39 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
       {mode === "intake" ? (
         <div className="ef-job-list">
           {/* 只显示进行中的作业：完成/失败的历史堆在这里会刷屏（曾经的「MinerU 解析 · 完成」墙），
-              结果通知走右上角弹窗，失败可重试的入口在下方「解析失败 · N 篇」。 */}
+              结果通知走右上角弹窗，失败可重试的入口在下方「解析失败 · N 篇」。
+              行内文案与作业面板同一口径：标题 + 阶段一句话，点击在面板里高亮对应作业卡。 */}
           {jobs
             .filter((job) => job.status === "queued" || job.status === "running")
             .slice(0, 6)
             .map((job) => (
               <div key={job.id} className="ef-job-row">
-                <span className={`status-${job.status}`}>
-                  {job.status === "running" ? <i className="ef-pulse" aria-hidden="true" /> : null}
-                  {JOB_TYPE_LABELS[job.type]} · {JOB_STATUS_LABELS[job.status]}
-                </span>
-                {job.status === "running" || job.status === "queued" ? (
-                  <Button type="button" size="sm" onClick={() => void cancelJob(job.id)}>
-                    取消
-                  </Button>
-                ) : null}
+                <button
+                  type="button"
+                  className="ef-job-row-main"
+                  title="在作业面板查看这张作业卡"
+                  onClick={() => highlightJob(job.id)}
+                >
+                  <span className={`status-${job.status}`}>
+                    {job.status === "running" ? <i className="ef-pulse" aria-hidden="true" /> : null}
+                    {JOB_TYPE_LABELS[job.type]} · {JOB_STATUS_LABELS[job.status]}
+                  </span>
+                  <b className="ef-job-row-title">{job.paperTitleZh || job.paperTitle || "标题待补全"}</b>
+                  <span className="ef-job-row-stage">
+                    {jobStageLine(job.type, job.status, activity.jobs[job.id])}
+                  </span>
+                </button>
+                <Button type="button" size="sm" onClick={() => void cancelJob(job.id)}>
+                  取消
+                </Button>
               </div>
             ))}
+          {jobs.filter((job) => job.status === "queued" || job.status === "running").length > 6 ? (
+            <p className="ef-nav-sum">
+              另有 {jobs.filter((job) => job.status === "queued" || job.status === "running").length - 6} 条进行中作业，
+              可在作业面板查看全部。
+            </p>
+          ) : null}
           {jobs.filter((job) => job.status === "queued" || job.status === "running").length === 0 ? (
             <p className="ef-nav-sum">当前没有进行中的 AI 作业。</p>
           ) : null}

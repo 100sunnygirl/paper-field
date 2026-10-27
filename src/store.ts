@@ -139,6 +139,10 @@ interface FieldState {
   /** 面板钉住为右侧常驻栏：不再随 Esc / ⌘J 收起为浮层，占一列布局。 */
   jobsPinned: boolean;
   setJobsPinned: (on: boolean) => void;
+  /** 入库页作业行点击后在面板里高亮的作业卡 id（数秒后自动清除）。 */
+  highlightJobId: string | null;
+  /** 打开作业面板并高亮指定作业卡（入库页作业行入口）。 */
+  highlightJob: (jobId: string) => void;
   /**
    * 深链：跳到设置页某张卡片（anchor = 卡片 id，见 SystemView 的 SYSTEM_CARDS）。
    * returnTo 记录跳转前的位置，设置页据此提供「返回原论文」入口；null 表示自然进入。
@@ -352,6 +356,7 @@ export const useField = create<FieldState>((set, get) => ({
   loadError: null,
   jobsOpen: false,
   jobsPinned: false,
+  highlightJobId: null,
   systemFocus: null,
   settingsLeaveGuard: null,
   pendingMode: null,
@@ -379,6 +384,9 @@ export const useField = create<FieldState>((set, get) => ({
   },
   setJobsOpen: (open) => set({ jobsOpen: open }),
   setJobsPinned: (on) => set({ jobsPinned: on }),
+  highlightJob: (jobId) => {
+    set({ jobsOpen: true, highlightJobId: jobId });
+  },
 
   openSystemCard: (anchor) => {
     const state = get();

@@ -1064,6 +1064,37 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 .ef-job-row .status-running { color: var(--pf-ink); font-weight: 600; }
 .ef-job-row .status-error { color: var(--pf-danger); font-weight: 600; }
 .ef-job-row .status-done { color: var(--pf-success); }
+/* 入库页作业行主体：标题 + 阶段一句话（与作业面板同口径），点击在面板里高亮对应卡。 */
+.ef-job-row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 0;
+  border: 0;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+.ef-job-row-main:focus-visible { outline: 2px solid var(--pf-ink); outline-offset: 2px; }
+.ef-job-row-main .status-queued,
+.ef-job-row-main .status-running { display: inline-flex; align-items: center; gap: 5px; }
+.ef-job-row-title {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--pf-ink);
+}
+.ef-job-row-stage { color: var(--pf-muted); }
+/* 面板作业卡的互跳高亮：入库页点过来的那张卡亮信号黄描边（选中提示类用途）。 */
+.ef-jobcard.is-highlight {
+  outline: 2px solid var(--pf-signal);
+  outline-offset: 2px;
+}
 
 .no-results {
   margin: 0;
