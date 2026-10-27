@@ -4639,6 +4639,35 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   padding-left: 10px;
 }
 
+/* ---- 专注模式极简翻页条 ----
+   列表与资料栏收起后，底部中央浮一条「上一篇 / 位置 / 标已读 / 下一篇」；
+   不挡正文两侧，仅在专注模式渲染。 */
+.ef-focus-pager {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 5px 8px;
+  background: var(--pf-surface);
+  border: 1px solid var(--pf-ink);
+  border-radius: 999px;
+  box-shadow: var(--pf-elev-1);
+  z-index: 12;
+  max-width: min(92%, 420px);
+}
+.ef-focus-pager .ef-btn { min-height: 30px; padding: 0 10px; }
+.ef-focus-pager .ef-ico { width: 14px; height: 14px; }
+.ef-focus-pager-pos {
+  flex: none;
+  min-width: 44px;
+  text-align: center;
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-muted);
+}
+
 /* Model id combobox (replaces <datalist>, see ModelCombobox.tsx). */
 .ef-combobox { position: relative; display: flex; }
 .ef-combobox > input { flex: 1; min-width: 0; padding-right: 28px; }

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { NOTE_DISPLAY_ORDER, type NoteKind, type PaperDetail } from "../lib/types";
 import { useField } from "../store";
@@ -94,5 +94,81 @@ describe("ReadingStage · 笔记与论文信息的入口不重复", () => {
     expect(screen.getByText(/摘要属于论文信息，不是笔记/)).toBeInTheDocument();
     fireEvent.click(screen.getAllByRole("button", { name: "编辑论文信息" })[0]);
     expect(useField.getState().dialog).toBe("edit-paper");
+  });
+});
+
+describe("ReadingStage · 专注模式极简翻页条", () => {
+  function listItem(id: string) {
+    return { id, title: `论文 ${id}`, domainId: "d1" } as never;
+  }
+
+  function renderFocusStage() {
+    return render(
+      <ReadingStage
+        focus
+        onToggleFocus={() => {}}
+        listOpen={false}
+        onToggleList={() => {}}
+        contextOpen={false}
+        onToggleContext={() => {}}
+      />,
+    );
+  }
+
+  it("专注模式显示翻页条：上一篇 / 位置 / 标已读 / 下一篇", () => {
+    useField.setState({
+      mode: "field",
+      paper: paper({}),
+      selectedPaperId: "p1",
+      papers: [listItem("p0"), listItem("p1"), listItem("p2")],
+    });
+    renderFocusStage();
+    const pager = screen.getByRole("navigation", { name: "专注模式翻页" });
+    expect(pager).toBeInTheDocument();
+    expect(within(pager).getByText("2 / 3")).toBeInTheDocument();
+    // 第 2 / 3 篇：两侧都可翻
+    expect(within(pager).getByRole("button", { name: "上一篇论文" })).toBeEnabled();
+    expect(within(pager).getByRole("button", { name: "下一篇论文" })).toBeEnabled();
+  });
+
+  it("翻页按钮走 navigatePapers，标已读走 markRead（只有用户能标）", () => {
+    const navigatePapers = vi.fn(async () => undefined);
+    const markRead = vi.fn(async () => undefined);
+    useField.setState({
+      mode: "field",
+      paper: paper({}),
+      selectedPaperId: "p1",
+      papers: [listItem("p0"), listItem("p1"), listItem("p2")],
+      navigatePapers,
+      markRead,
+    });
+    renderFocusStage();
+    fireEvent.click(screen.getByRole("button", { name: "下一篇论文" }));
+    expect(navigatePapers).toHaveBeenCalledWith(1);
+    fireEvent.click(screen.getByRole("button", { name: "上一篇论文" }));
+    expect(navigatePapers).toHaveBeenCalledWith(-1);
+    fireEvent.click(screen.getByRole("button", { name: "标已读" }));
+    expect(markRead).toHaveBeenCalledWith("p1");
+  });
+
+  it("第一篇时上一篇禁用；已读的论文标已读变为禁用的「已读」", () => {
+    const read = paper({});
+    (read as { readingStatus: "read" }).readingStatus = "read";
+    useField.setState({
+      mode: "field",
+      paper: read,
+      selectedPaperId: "p1",
+      papers: [listItem("p1"), listItem("p2")],
+    });
+    renderFocusStage();
+    expect(screen.getByRole("button", { name: "上一篇论文" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "已读" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "下一篇论文" })).toBeEnabled();
+  });
+
+  it("非专注模式不渲染翻页条", () => {
+    useField.setState({ mode: "field", paper: paper({}), papers: [listItem("p1")] });
+    renderStage();
+    expect(screen.queryByRole("navigation", { name: "专注模式翻页" })).toBeNull();
   });
 });

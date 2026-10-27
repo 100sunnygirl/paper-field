@@ -620,6 +620,8 @@ export function ReadingStage({
   const setNoteDraft = useField((s) => s.setNoteDraft);
   const setFlash = useField((s) => s.setFlash);
   const saveAllNoteDrafts = useField((s) => s.saveAllNoteDrafts);
+  const navigatePapers = useField((s) => s.navigatePapers);
+  const markRead = useField((s) => s.markRead);
   const drafts = useField((s) => s.drafts);
   const papers = useField((s) => s.papers);
   const archive = useField((s) => s.archive);
@@ -764,6 +766,9 @@ export function ReadingStage({
   const readingStatusLabel = READING_STATUS_LABELS[paper.readingStatus];
   const notesWritten = NOTE_DISPLAY_ORDER.filter((kind) => paper.notes[kind].content.trim()).length;
   const draftCount = NOTE_DISPLAY_ORDER.filter((kind) => drafts[paper.id]?.[kind] !== undefined).length;
+  // 翻页条的位置读数：当前论文在可见列表中的序号（被搜索挡在列表外时读数退化为 —）。
+  const pagerIndex = visibleList.findIndex((item) => item.id === paper.id);
+  const pagerTotal = visibleList.length;
   const fulltextStatus = paper.parsedMarkdown.trim()
     ? "MinerU 已解析"
     : paper.mineruStatus
@@ -1012,6 +1017,48 @@ export function ReadingStage({
           </article>
         </div>
       </div>
+      {/* 专注模式收起列表与资料栏后，正文区只靠 ↑↓ 翻页：底部保留一条极简翻页条，
+          上一篇 / 标已读 / 下一篇 + 位置读数，给出可视出口。 */}
+      {focus ? (
+        <nav className="ef-focus-pager" aria-label="专注模式翻页">
+          <Button
+            type="button"
+            variant="text"
+            size="sm"
+            onClick={() => void navigatePapers(-1)}
+            disabled={pagerIndex <= 0}
+            aria-label="上一篇论文"
+          >
+            <Icon name="up" />
+            上一篇
+          </Button>
+          <span className="ef-focus-pager-pos mono" aria-live="polite">
+            {pagerIndex < 0 ? "—" : `${pagerIndex + 1} / ${pagerTotal}`}
+          </span>
+          {paper.readingStatus === "read" ? (
+            <Button type="button" variant="text" size="sm" disabled title="这篇论文已标记为已读">
+              <Icon name="check" />
+              已读
+            </Button>
+          ) : (
+            <Button type="button" variant="text" size="sm" onClick={() => void markRead(paper.id)}>
+              <Icon name="check" />
+              标已读
+            </Button>
+          )}
+          <Button
+            type="button"
+            variant="text"
+            size="sm"
+            onClick={() => void navigatePapers(1)}
+            disabled={pagerIndex < 0 || pagerIndex >= pagerTotal - 1}
+            aria-label="下一篇论文"
+          >
+            下一篇
+            <Icon name="down" />
+          </Button>
+        </nav>
+      ) : null}
       {context}
       <Dialog
         open={contextOpen}
