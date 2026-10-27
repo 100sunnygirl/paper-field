@@ -1,5 +1,16 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+// 只桩掉桌面专属的备份执行函数，其余（记录读写 / 文案）保持真实实现，
+// 组件与 store 动作走真路径，可断言「备份成功后写入本机记录」。
+vi.mock("../lib/backup", async (orig) => ({
+  ...(await orig<object>()),
+  backupLibrary: vi.fn(async () => "/mock/backup/paper-field.zip"),
+}));
+// jsdom 没有 SQLite 引擎：pdfCount 直接拒绝，预检行与备份记录都走「读取失败降级」路径。
+vi.mock("../lib/repo", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/repo")>();
+  return { repo: { ...actual.repo, pdfCount: vi.fn(async () => { throw new Error("no engine in jsdom"); }) } };
+});
 import { SystemView } from "./SystemView";
 import { useField } from "../store";
 import { DEFAULT_MINERU, type MineruSaveInput, type MineruSettingsV2 } from "../lib/mineru";
@@ -865,6 +876,55 @@ describe("SystemView · 上手清单（最小可用配置）", () => {
     fireEvent.click(screen.getByRole("button", { name: "去导入论文" }));
     await waitFor(() => expect(setMode).toHaveBeenCalledWith("field"));
     expect(openDialog).toHaveBeenCalledWith("paper");
+  });
+});
+
+describe("SystemView · 备份状态与预检", () => {
+  beforeEach(() => {
+    useField.setState(useField.getInitialState(), true);
+    localStorage.clear();
+  });
+
+  function backupBlock(): HTMLElement {
+    return screen.getByRole("heading", { level: 3, name: "备份与恢复" }).closest("article") as HTMLElement;
+  }
+
+  it("无记录时提示从未备份，并显示预检清单（论文数来自统计）", () => {
+    useField.setState({ stats: { read: 1, total: 6, openSource: 0, queued: 0, running: 0 } });
+    render(<SystemView />);
+    const block = backupBlock();
+    expect(within(block).getByText(/本机还没有成功备份的记录/)).toBeInTheDocument();
+    expect(within(block).getByText(/本次将打包/).textContent).toContain("6");
+    expect(within(block).getByText(/本次将打包/).textContent).toContain("—");
+  });
+
+  it("有记录时显示上次备份时间、规模、位置与距今天数；超过 7 天给过期提醒", () => {
+    const at = Date.now() - 10 * 86400_000;
+    localStorage.setItem(
+      "paper-field.last-backup",
+      JSON.stringify({ at, where: "/Volumes/bak/paper-field.zip", papers: 5, pdfs: 4 }),
+    );
+    render(<SystemView />);
+    const block = backupBlock();
+    const status = within(block).getByText(/上次备份/);
+    expect(status.textContent).toContain("共 5 篇");
+    expect(status.textContent).toContain("/Volumes/bak/paper-field.zip");
+    expect(status.textContent).toContain("10 天");
+    expect(status.textContent).toContain("已超过 7 天，建议再备份一次");
+  });
+
+  it("备份成功后写入本机记录并刷新状态行", async () => {
+    useField.setState({ stats: { read: 0, total: 2, openSource: 0, queued: 0, running: 0 } });
+    render(<SystemView />);
+    fireEvent.click(screen.getByRole("button", { name: "备份" }));
+    await waitFor(() => {
+      const raw = localStorage.getItem("paper-field.last-backup");
+      expect(raw).toBeTruthy();
+      const record = JSON.parse(raw!) as { where: string; papers: number };
+      expect(record.where).toBe("/mock/backup/paper-field.zip");
+      expect(record.papers).toBe(2);
+    });
+    expect(await within(backupBlock()).findByText(/上次备份/)).toBeInTheDocument();
   });
 });
 

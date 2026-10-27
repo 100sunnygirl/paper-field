@@ -32,7 +32,7 @@ import {
 import { getActivity } from "./lib/activity";
 import { cancelJob as cancelTrackedJob, jobDoneStep, runTracked } from "./lib/jobs";
 import { pickProviderFromHealths, providerLabel, summarizeHealths } from "./lib/mineruPlan";
-import { backupLibrary, restoreLibrary } from "./lib/backup";
+import { backupLibrary, restoreLibrary, writeLastBackup } from "./lib/backup";
 import { DEFAULT_BIBLIO, loadBiblioSettings, saveBiblioSettings, type BiblioSaveInput, type BiblioStatus } from "./lib/biblio";
 import { filledFrom, lookupPaper, type LookupResult, verifyReachable } from "./lib/lookup";
 import { normalizeArxivId, normalizeDoi, safeHttpUrl, withDefaultScheme } from "./lib/urls";
@@ -1148,6 +1148,14 @@ export const useField = create<FieldState>((set, get) => ({
     try {
       const where = await backupLibrary();
       if (!where) return;
+      // 记录上次成功备份（本机 localStorage）：设置页据此显示「距上次备份 N 天」与过期提醒。
+      let pdfs: number | null = null;
+      try {
+        pdfs = await repo.pdfCount();
+      } catch {
+        pdfs = null;
+      }
+      writeLastBackup({ at: Date.now(), where, papers: get().stats.total, pdfs });
       get().setFlash({ tone: "ok", text: `已备份到 ${where}` });
     } catch (err) {
       if (String(err).includes("DESKTOP_ONLY")) {

@@ -26,6 +26,55 @@ export function formatBytes(n: number): string {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
+// ---------- 上次备份记录（本机 localStorage，浏览器与桌面共用） ----------
+
+/** 超过该天数未备份时，备份卡给出过期提醒。 */
+export const BACKUP_STALE_DAYS = 7;
+
+/** 上次成功备份的本机记录：时间、位置与当时的规模，用于状态显示与定期提醒。 */
+export interface BackupRecord {
+  /** epoch 毫秒。 */
+  at: number;
+  /** 保存位置（桌面目录路径或浏览器下载文件名）。 */
+  where: string;
+  papers: number;
+  pdfs: number | null;
+}
+
+const BACKUP_RECORD_KEY = "paper-field.last-backup";
+
+export function readLastBackup(): BackupRecord | null {
+  try {
+    const raw = typeof localStorage === "undefined" ? null : localStorage.getItem(BACKUP_RECORD_KEY);
+    const value = raw ? (JSON.parse(raw) as unknown) : null;
+    if (
+      value &&
+      typeof value === "object" &&
+      typeof (value as BackupRecord).at === "number" &&
+      typeof (value as BackupRecord).where === "string"
+    ) {
+      return value as BackupRecord;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export function writeLastBackup(record: BackupRecord): void {
+  try {
+    if (typeof localStorage === "undefined") return;
+    localStorage.setItem(BACKUP_RECORD_KEY, JSON.stringify(record));
+  } catch {
+    // 隐私模式等写不进：状态显示降级为「未记录」，不影响备份本身。
+  }
+}
+
+/** 距上次备份的整天数（不足一天按 0）。 */
+export function daysSinceBackup(at: number, now: number = Date.now()): number {
+  return Math.max(0, Math.floor((now - at) / 86400000));
+}
+
 /** Confirm-dialog body; `current` is null when the live count could not be read. */
 export function restoreConfirmText(backup: BackupSummary, current: number | null): string {
   const lines = [

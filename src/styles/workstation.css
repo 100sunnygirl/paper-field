@@ -2139,6 +2139,15 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 .ef-setup-item.is-done .ef-setup-state { color: var(--pf-success); font-weight: 600; }
 .ef-setup-summary { margin: 14px 0 0; font-size: var(--pf-fs-ui); color: var(--pf-secondary); }
 .ef-setup-summary b { color: var(--pf-ink); font-weight: 600; }
+/* 备份卡：上次备份状态与预检清单。 */
+.ef-backup-status,
+.ef-backup-precheck {
+  margin: 0 0 14px;
+  font-size: var(--pf-fs-ui);
+  color: var(--pf-secondary);
+}
+.ef-backup-status.is-warn { color: var(--pf-danger); font-weight: 500; }
+.ef-backup-precheck b { color: var(--pf-ink); font-weight: 600; }
 .ef-llm-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

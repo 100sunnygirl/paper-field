@@ -589,6 +589,15 @@ export const repo = {
     return rows.map((row) => row.path);
   },
 
+  /** 库内带 PDF 的论文数（设置页备份预检显示用）。 */
+  async pdfCount(): Promise<number> {
+    const engine = await getEngine();
+    const rows = await engine.select<{ n: number }>(
+      "SELECT count(*) AS n FROM papers WHERE pdf_path IS NOT NULL AND pdf_path != ''",
+    );
+    return Number(rows[0]?.n ?? 0);
+  },
+
   /**
    * 手动添加时选的本地 PDF 同样复制进文库（库里存相对名，原路径记在 pdf_original_path），
    * 这样它也进备份、也参与去重。已在库中时报错，不重复建档。

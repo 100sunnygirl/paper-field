@@ -21,7 +21,9 @@ import {
 import type { LlmProviderView } from "../lib/types";
 import { MODE_LABELS } from "../lib/types";
 import { biblioEmailConfigured, type BiblioSaveInput } from "../lib/biblio";
+import { BACKUP_STALE_DAYS, daysSinceBackup, readLastBackup, type BackupRecord } from "../lib/backup";
 import type { ExportContentOptions } from "../lib/export";
+import { repo } from "../lib/repo";
 import { checkForAppUpdate } from "../lib/updater";
 import { openExternal } from "../lib/urls";
 import { formatDate, pad2, shortcut, uid } from "../lib/util";
@@ -581,7 +583,37 @@ function ShortcutsBlock({ focused }: { focused: boolean }) {
 function BackupBlock({ focused }: { focused: boolean }) {
   const backup = useField((s) => s.backupLibrary);
   const restore = useField((s) => s.restoreLibrary);
+  const stats = useField((s) => s.stats);
   const [confirming, setConfirming] = useState(false);
+  // 备份预检：论文数来自状态条统计，PDF 数读库（失败降级为 —）。
+  const [pdfs, setPdfs] = useState<number | null>(null);
+  const [lastBackup, setLastBackup] = useState<BackupRecord | null>(() => readLastBackup());
+
+  useEffect(() => {
+    let cancelled = false;
+    // 读不到 PDF 数（引擎不可用 / 旧 mock）时降级为 —，不阻塞备份卡。
+    Promise.resolve()
+      .then(() => repo.pdfCount())
+      .then((count) => {
+        if (!cancelled) setPdfs(count);
+      })
+      .catch(() => {
+        if (!cancelled) setPdfs(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const days = lastBackup ? daysSinceBackup(lastBackup.at) : null;
+  const stale = days !== null && days >= BACKUP_STALE_DAYS;
+  const lastBackupAt = lastBackup ? new Date(lastBackup.at) : null;
+
+  async function runBackup() {
+    await backup();
+    setLastBackup(readLastBackup());
+  }
+
   return (
     <article
       id="settings-backup"
@@ -592,8 +624,24 @@ function BackupBlock({ focused }: { focused: boolean }) {
         <h3>备份与恢复</h3>
         <p>打包数据库、文库中的 PDF 和设置。API Key 与 MinerU Token 不写入压缩包。恢复前会先另存当前数据库。</p>
       </header>
+      <p className={`ef-backup-status${stale || !lastBackup ? " is-warn" : ""}`} role="status">
+        {lastBackup && lastBackupAt && !Number.isNaN(lastBackupAt.getTime()) ? (
+          <>
+            上次备份：{formatDate(lastBackupAt.toISOString())} {pad2(lastBackupAt.getHours())}:
+            {pad2(lastBackupAt.getMinutes())} · 共 {lastBackup.papers} 篇 · 保存于 {lastBackup.where} · 距今{" "}
+            {days === 0 ? "不足 1 天" : `${days} 天`}
+            {stale ? `（已超过 ${BACKUP_STALE_DAYS} 天，建议再备份一次）` : ""}
+          </>
+        ) : (
+          <>本机还没有成功备份的记录，建议立即备份一次。</>
+        )}
+      </p>
+      <p className="ef-backup-precheck">
+        本次将打包：论文 <b>{stats.total}</b> 篇 · PDF <b>{pdfs === null ? "—" : pdfs}</b> 个。预估大小与目标磁盘
+        剩余空间由桌面端在写入时校验，空间不足会失败并提示，不会产生半个备份。
+      </p>
       <div className="ef-ai-buttons">
-        <Button type="button" onClick={() => void backup()}>
+        <Button type="button" onClick={() => void runBackup()}>
           备份
         </Button>
         <Button type="button" onClick={() => setConfirming(true)}>
