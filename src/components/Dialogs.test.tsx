@@ -188,11 +188,33 @@ describe("PaperDialog · 文件夹批量导入", () => {
     vi.mocked(pickPdfFolder).mockResolvedValue(["/papers/folder/x.pdf", "/papers/folder/y.pdf", "/papers/folder/z.pdf"]);
     render(<PaperDialog />);
     fireEvent.click(screen.getByRole("button", { name: /选择文件夹/ }));
-    await waitFor(() => expect(pickPdfFolder).toHaveBeenCalledTimes(1));
-    expect(screen.getByText("x.pdf")).toBeInTheDocument();
+    // 调用选择器不代表扫描、去重查询和 React 渲染已经完成；等待用户可见的结果。
+    expect(await screen.findByText("x.pdf")).toBeInTheDocument();
+    expect(pickPdfFolder).toHaveBeenCalledTimes(1);
     expect(screen.getByText("y.pdf")).toBeInTheDocument();
     expect(screen.getByText("z.pdf")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "导入 3" })).toBeEnabled();
+  });
+
+  it("等待文件夹选择与已入库路径查询完成后才显示扫描结果", async () => {
+    let resolveFolder!: (paths: string[]) => void;
+    let resolveKnown!: (paths: string[]) => void;
+    vi.mocked(pickPdfFolder).mockReturnValue(new Promise((resolve) => { resolveFolder = resolve; }));
+    vi.mocked(repo.pdfPaths).mockReturnValue(new Promise((resolve) => { resolveKnown = resolve; }));
+    render(<PaperDialog />);
+    fireEvent.click(screen.getByRole("button", { name: /选择文件夹/ }));
+
+    expect(pickPdfFolder).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText("x.pdf")).toBeNull();
+    await act(async () => resolveFolder(["/papers/folder/x.pdf", "/papers/folder/y.pdf"]));
+    expect(screen.queryByText("x.pdf")).toBeNull();
+    expect(screen.queryByRole("button", { name: /^导入/ })).toBeNull();
+
+    await act(async () => resolveKnown(["/papers/folder/x.pdf"]));
+    const duplicate = await screen.findByText("x.pdf");
+    expect(within(duplicate.closest("li")!).getByText("已在库中")).toBeInTheDocument();
+    expect(screen.getByText("y.pdf")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "导入 1" })).toBeEnabled();
   });
 
   it("文件夹内已入库文件同样标重复、只导新增", async () => {
