@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { setContextFolded } from "../lib/contextFold";
 import { NOTE_DISPLAY_ORDER, type NoteKind, type PaperDetail } from "../lib/types";
 import { useField } from "../store";
 import { ReadingStage } from "./Dossier";
@@ -232,5 +233,79 @@ describe("ReadingStage · 按论文记忆阅读位置与现场", () => {
     unmount();
     const saved = JSON.parse(localStorage.getItem("paper-field.reading-spot")!) as { p1: { top: number } };
     expect(saved.p1.top).toBe(900);
+  });
+});
+
+describe("ReadingStage · 资料栏折叠记忆与标识符一键复制", () => {
+  function richPaper(): PaperDetail {
+    const base = paper({});
+    return {
+      ...base,
+      arxivId: "2103.00020",
+      doi: "10.5555/12345678",
+      authors: [
+        { id: "a1", name: "甲作者", affiliation: "MIT", lab: "Lab M", isCorresponding: false },
+        { id: "a2", name: "乙作者", affiliation: null, lab: null, isCorresponding: true },
+      ] as PaperDetail["authors"],
+    } as PaperDetail;
+  }
+
+  let writeText: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    localStorage.removeItem("paper-field.context-fold");
+    writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+  });
+
+  it("折叠资料与链接：内容收起、偏好写进本机 localStorage，展开恢复", () => {
+    useField.setState({ mode: "field", paper: richPaper(), selectedPaperId: "p1" });
+    renderStage();
+    expect(screen.getByText("未提供代码仓库")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "折叠资料与链接" }));
+    expect(screen.queryByText("未提供代码仓库")).toBeNull();
+    expect(JSON.parse(localStorage.getItem("paper-field.context-fold")!).links).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "展开资料与链接" }));
+    expect(screen.getByText("未提供代码仓库")).toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem("paper-field.context-fold")!).links).toBe(false);
+  });
+
+  it("重新挂载按本机偏好恢复折叠（本页目录）", () => {
+    // 直接走 contextFold 外部 store（localStorage 写穿在 lib 测试里覆盖）
+    setContextFolded("toc", true);
+    useField.setState({ mode: "field", paper: richPaper(), selectedPaperId: "p1" });
+    renderStage();
+    expect(screen.queryByRole("navigation", { name: "本页目录" })).toBeNull();
+    expect(screen.getByRole("button", { name: "展开本页目录" })).toHaveAttribute("aria-expanded", "false");
+    // 其他区块不受影响
+    expect(screen.getByText("未提供代码仓库")).toBeInTheDocument();
+    setContextFolded("toc", false);
+  });
+
+  it("arXiv / DOI / 作者名单一键复制到剪贴板并给出提示", async () => {
+    useField.setState({ mode: "field", paper: richPaper(), selectedPaperId: "p1" });
+    renderStage();
+    fireEvent.click(screen.getByRole("button", { name: "复制 arXiv 编号" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("2103.00020"));
+    expect(useField.getState().flash?.text).toBe("已复制arXiv 编号。");
+
+    fireEvent.click(screen.getByRole("button", { name: "复制 DOI" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("10.5555/12345678"));
+
+    fireEvent.click(screen.getByRole("button", { name: "复制作者名单" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("甲作者, 乙作者"));
+    expect(useField.getState().flash?.text).toBe("已复制作者名单。");
+  });
+
+  it("剪贴板不可用时降级提示，不抛错", async () => {
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText: vi.fn(async () => Promise.reject(new Error("denied"))) },
+      configurable: true,
+    });
+    useField.setState({ mode: "field", paper: richPaper(), selectedPaperId: "p1" });
+    renderStage();
+    fireEvent.click(screen.getByRole("button", { name: "复制 DOI" }));
+    await waitFor(() => expect(useField.getState().flash?.tone).toBe("warn"));
+    expect(useField.getState().flash?.text).toContain("复制失败");
   });
 });

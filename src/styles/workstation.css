@@ -2072,6 +2072,77 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   color: var(--pf-on-dark-2);
 }
 
+/* ---- 资料栏可折叠区块 ----
+   标题行右端一枚安静的折叠开关（与笔记块同一手法）；偏好经 contextFold 记在本机。 */
+.ef-context-block-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+.ef-context-block-head .ef-context-title { flex: 1; margin-bottom: 0; }
+.ef-context-fold {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--pf-muted);
+  border-radius: var(--pf-radius);
+  transition: background-color var(--pf-motion), color var(--pf-motion);
+}
+.ef-context-fold .ef-ico { width: 15px; height: 15px; transition: transform var(--pf-direct); }
+.ef-context-fold:hover { background: var(--pf-hover-flat); color: var(--pf-ink); }
+.ef-context-fold[aria-expanded="false"] .ef-ico { transform: rotate(-90deg); }
+.ef-context-block.is-folded { padding-bottom: 14px; }
+.ef-context-block.is-folded .ef-context-block-head { margin-bottom: 0; }
+/* AI 助手块保持原有墨色面板观感：不吃通用块的顶部分隔线与标题间距。 */
+.ef-context-block.ef-ai-context { border-top: 0; }
+.ef-ai-context .ef-context-block-head { margin-bottom: 8px; }
+.ef-ai-context.is-folded .ef-context-block-head { margin-bottom: 0; }
+.ef-ai-context .ef-context-fold { color: var(--pf-on-dark-3); }
+.ef-ai-context .ef-context-fold:hover { background: var(--pf-ink-2); color: var(--pf-on-dark); }
+
+/* ---- 标识符一键复制 ----
+   arXiv / DOI 行与作者名单旁的小复制钮；纯动作按钮，不带新色。 */
+.ef-identifier-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.ef-id-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--pf-muted);
+  border-radius: var(--pf-radius);
+  cursor: pointer;
+  transition: background-color var(--pf-motion), color var(--pf-motion);
+}
+.ef-id-copy .ef-ico { width: 12px; height: 12px; }
+.ef-id-copy:hover { background: var(--pf-hover-flat); color: var(--pf-ink); }
+/* 带文字的复制钮（复制作者名单）：caption 档、与作者明细同列。 */
+.ef-id-copy.ef-id-copy-text {
+  width: auto;
+  min-height: 24px;
+  padding: 0 8px;
+  gap: 4px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+  border-color: var(--pf-divider);
+}
+.ef-author-copy-row { margin: 0 0 8px; }
+
 /* ---- System ---- */
 .ef-system {
   height: 100%;

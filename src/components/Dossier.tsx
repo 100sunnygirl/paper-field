@@ -1,5 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { bindingLabel, currentKeymap, eventMatchesBinding } from "../lib/keymap";
+import {
+  setContextFolded,
+  subscribeContextFold,
+  getContextFold,
+  type ContextBlockId,
+} from "../lib/contextFold";
 import {
   appendExcerpt,
   assignFulltextAnchors,
@@ -34,7 +40,7 @@ import { hasUsableProvider } from "../lib/settings";
 import { arxivAbsUrl, arxivPdfUrl, doiUrl, openExternal, safeHttpUrl } from "../lib/urls";
 import { formatDate, modLabel, pad2 } from "../lib/util";
 import { useField } from "../store";
-import { Button, Dialog, Empty, ExternalResource, Icon, SourceBadge } from "./ui";
+import { Button, Dialog, Empty, ExternalResource, Icon, SourceBadge, type IconName } from "./ui";
 
 /** 本页目录里解析全文章节二级项的显示上限：更长的全文只列前若干节并注明其余节数。 */
 const TOC_SECTION_LIMIT = 30;
@@ -499,6 +505,47 @@ function FulltextDoc({
   );
 }
 
+/**
+ * 资料栏的可折叠区块：右栏与窄屏抽屉可能同时挂两份实例，折叠状态走外部
+ * store（contextFold，localStorage 记忆本机偏好）保证两处同步。
+ */
+function ContextBlock({
+  id,
+  title,
+  icon,
+  className = "",
+  children,
+}: {
+  id: ContextBlockId;
+  title: string;
+  icon?: IconName;
+  className?: string;
+  children: ReactNode;
+}) {
+  const folded = useSyncExternalStore(subscribeContextFold, getContextFold).folded[id] ?? false;
+  return (
+    <section className={`ef-context-block${folded ? " is-folded" : ""}${className ? ` ${className}` : ""}`.trim()}>
+      <div className="ef-context-block-head">
+        <h2 className="ef-context-title">
+          {icon ? <Icon name={icon} /> : null}
+          {title}
+        </h2>
+        <button
+          type="button"
+          className="ef-context-fold"
+          aria-expanded={!folded}
+          aria-label={folded ? `展开${title}` : `折叠${title}`}
+          title={folded ? `展开${title}` : `折叠${title}`}
+          onClick={() => setContextFolded(id, !folded)}
+        >
+          <Icon name="down" />
+        </button>
+      </div>
+      {folded ? null : children}
+    </section>
+  );
+}
+
 function ContextPanel({
   paper,
   activeSection,
@@ -543,6 +590,16 @@ function ContextPanel({
     }
   }
 
+  /** 标识符一键复制（arXiv / DOI / 作者名单）：与摘录条复制同一降级口径。 */
+  async function copyIdentifier(text: string, label: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      setFlash({ tone: "ok", text: `已复制${label}。` });
+    } catch {
+      setFlash({ tone: "warn", text: "复制失败：当前环境无法访问剪贴板。" });
+    }
+  }
+
   return (
     <aside className="ef-context" aria-label="论文资料与目录">
       <section className="ef-context-block">
@@ -568,8 +625,7 @@ function ContextPanel({
         </p>
       </section>
 
-      <section className="ef-context-block">
-        <h2 className="ef-context-title">资料与链接</h2>
+      <ContextBlock id="links" title="资料与链接">
         {paper.codeUrl && safeHttpUrl(paper.codeUrl) ? (
           <ExternalResource href={paper.codeUrl} icon="code">
             代码仓库
@@ -589,13 +645,26 @@ function ContextPanel({
         <div className="ef-identifier">
           arXiv
           <SourceBadge source={paper.fieldSources?.arxivId} provider={paper.fieldProviders?.arxivId} />
-          {arxivAbsUrl(paper.arxivId) ? (
-            <button type="button" className="mono ef-id-link" onClick={() => void openExternal(arxivAbsUrl(paper.arxivId))}>
-              {paper.arxivId}
-            </button>
-          ) : (
-            <span className="mono">{paper.arxivId || "未提供"}</span>
-          )}
+          <span className="ef-identifier-value">
+            {arxivAbsUrl(paper.arxivId) ? (
+              <button type="button" className="mono ef-id-link" onClick={() => void openExternal(arxivAbsUrl(paper.arxivId))}>
+                {paper.arxivId}
+              </button>
+            ) : (
+              <span className="mono">{paper.arxivId || "未提供"}</span>
+            )}
+            {paper.arxivId ? (
+              <button
+                type="button"
+                className="ef-id-copy"
+                aria-label="复制 arXiv 编号"
+                title="复制 arXiv 编号"
+                onClick={() => void copyIdentifier(paper.arxivId!, "arXiv 编号")}
+              >
+                <Icon name="copy" />
+              </button>
+            ) : null}
+          </span>
         </div>
         <div className="ef-identifier">
           <span>
@@ -624,16 +693,28 @@ function ContextPanel({
           </summary>
           <div className="ef-author-details">
             {paper.authors.length ? (
-              paper.authors.map((author) => (
-                <p key={author.id}>
-                  <strong>
-                    {author.name}
-                    {author.isCorresponding ? " · 通讯" : ""}
-                  </strong>
-                  <br />
-                  {[author.affiliation, author.lab].filter(Boolean).join(" · ") || "机构待补充"}
-                </p>
-              ))
+              <>
+                <div className="ef-author-copy-row">
+                  <button
+                    type="button"
+                    className="ef-id-copy ef-id-copy-text"
+                    onClick={() => void copyIdentifier(paper.authors.map((author) => author.name).join(", "), "作者名单")}
+                  >
+                    <Icon name="copy" />
+                    复制作者名单
+                  </button>
+                </div>
+                {paper.authors.map((author) => (
+                  <p key={author.id}>
+                    <strong>
+                      {author.name}
+                      {author.isCorresponding ? " · 通讯" : ""}
+                    </strong>
+                    <br />
+                    {[author.affiliation, author.lab].filter(Boolean).join(" · ") || "机构待补充"}
+                  </p>
+                ))}
+              </>
             ) : (
               <p>作者信息待补充</p>
             )}
@@ -642,13 +723,26 @@ function ContextPanel({
               DOI
               <SourceBadge source={paper.fieldSources?.doi} provider={paper.fieldProviders?.doi} />
               <br />
-              {doiUrl(paper.doi) ? (
-                <button type="button" className="mono ef-id-link" onClick={() => void openExternal(doiUrl(paper.doi))}>
-                  {paper.doi}
-                </button>
-              ) : (
-                <span className="mono">{paper.doi || "未提供"}</span>
-              )}
+              <span className="ef-identifier-value">
+                {doiUrl(paper.doi) ? (
+                  <button type="button" className="mono ef-id-link" onClick={() => void openExternal(doiUrl(paper.doi))}>
+                    {paper.doi}
+                  </button>
+                ) : (
+                  <span className="mono">{paper.doi || "未提供"}</span>
+                )}
+                {paper.doi ? (
+                  <button
+                    type="button"
+                    className="ef-id-copy"
+                    aria-label="复制 DOI"
+                    title="复制 DOI"
+                    onClick={() => void copyIdentifier(paper.doi!, "DOI")}
+                  >
+                    <Icon name="copy" />
+                  </button>
+                ) : null}
+              </span>
             </p>
           </div>
         </details>
@@ -678,10 +772,9 @@ function ContextPanel({
             {paper.mineruStatus === "error" || paper.mineruStatus === "cancelled" ? "重新解析" : "发送到 MinerU 解析"}
           </Button>
         ) : null}
-      </section>
+      </ContextBlock>
 
-      <section className="ef-context-block">
-        <h2 className="ef-context-title">本页目录</h2>
+      <ContextBlock id="toc" title="本页目录">
         <nav className="ef-toc" aria-label="本页目录">
           <a
             href="#abstract"
@@ -750,13 +843,9 @@ function ContextPanel({
             </a>
           ))}
         </nav>
-      </section>
+      </ContextBlock>
 
-      <section className="ef-ai-context ef-dark-surface">
-        <h2 className="ef-context-title">
-          <Icon name="spark" />
-          AI 助手
-        </h2>
+      <ContextBlock id="ai" title="AI 助手" icon="spark" className="ef-ai-context ef-dark-surface">
         {hasUsableProvider(settings) ? (
           <p>用于补全论文信息或起草阅读笔记。AI 不会自动把论文标成已读。</p>
         ) : (
@@ -818,7 +907,7 @@ function ContextPanel({
             <Icon name="right" />
           </Button>
         )}
-      </section>
+      </ContextBlock>
     </aside>
   );
 }
