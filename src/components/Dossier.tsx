@@ -1,5 +1,16 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { bindingLabel, currentKeymap, eventMatchesBinding } from "../lib/keymap";
+import {
+  appendExcerpt,
+  assignFulltextAnchors,
+  buildExcerptMarkdown,
+  buildSectionCitation,
+  extractFulltextHeadings,
+  headingForSelection,
+  insertQuoteAtCursor,
+  selectionInRoot,
+  type FulltextSelection,
+} from "../lib/fulltext";
 import { onMarkdownClick, renderMarkdown } from "../lib/markdown";
 import { openLocalPdf } from "../lib/mineru";
 import {
@@ -28,6 +39,7 @@ function NoteEditor({
   paper,
   onStart,
   onSavedNext,
+  fulltextPick,
 }: {
   kind: NoteKind;
   index: number;
@@ -35,6 +47,8 @@ function NoteEditor({
   onStart: () => void;
   /** ⌘Enter 保存成功后跳到下一块空笔记继续写。 */
   onSavedNext: () => void;
+  /** 解析全文里最近一次选中的片段：供「引用解析全文」插入光标处。 */
+  fulltextPick: FulltextSelection | null;
 }) {
   const saveNote = useField((s) => s.saveNote);
   const setNoteDraft = useField((s) => s.setNoteDraft);
@@ -82,6 +96,23 @@ function NoteEditor({
   function cancel() {
     setFailed(false);
     setNoteDraft(paper.id, kind, null);
+  }
+
+  /** 把解析全文里当前选中的段落作为引用插入光标处（无选中时给出指引）。 */
+  function quoteFromFulltext() {
+    if (!fulltextPick) {
+      setFlash({ tone: "warn", text: "先在解析全文中选中要引用的段落，再点「引用解析全文」。" });
+      return;
+    }
+    const quote = buildExcerptMarkdown(fulltextPick.text, fulltextPick.heading);
+    const position = textareaRef.current?.selectionStart ?? value.length;
+    setNoteDraft(paper.id, kind, insertQuoteAtCursor(value, position, quote));
+    setFlash({
+      tone: "ok",
+      text: fulltextPick.heading
+        ? `已插入引用（§${fulltextPick.heading.number} ${fulltextPick.heading.text}），锚点可跳回原文。`
+        : "已插入原文引用。",
+    });
   }
 
   function onEditorKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -162,6 +193,11 @@ function NoteEditor({
             <Button type="button" size="sm" onClick={cancel} disabled={saving}>
               取消
             </Button>
+            {paper.parsedMarkdown.trim() ? (
+              <Button type="button" size="sm" onClick={quoteFromFulltext} disabled={saving}>
+                引用解析全文
+              </Button>
+            ) : null}
             <Button type="button" size="sm" variant="primary" onClick={() => void commit()} disabled={saving}>
               {saving ? "保存中…" : "保存笔记"}
             </Button>
@@ -177,6 +213,114 @@ function NoteEditor({
         </button>
       )}
     </section>
+  );
+}
+
+/**
+ * 解析全文的渲染容器：渲染后按小节补锚点（消毒层剥掉了外部 id），
+ * 选中文字后浮出「摘到笔记」条，一键把引用写入对应笔记块并保留跳回锚点。
+ */
+function FulltextDoc({
+  paper,
+  onPick,
+}: {
+  paper: PaperDetail;
+  /** 选中变化时上报（笔记编辑器的「引用解析全文」用最后一次选中）；选区收起不上报，保留最近一次。 */
+  onPick: (pick: FulltextSelection) => void;
+}) {
+  const setNoteDraft = useField((s) => s.setNoteDraft);
+  const setFlash = useField((s) => s.setFlash);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const headings = useMemo(() => extractFulltextHeadings(paper.parsedMarkdown), [paper.parsedMarkdown]);
+  const [bar, setBar] = useState<{ pick: FulltextSelection; top: number; left: number } | null>(null);
+
+  // innerHTML 每次更新后重新挂锚点；无依赖（幂等），渲染多少次都安全。
+  useEffect(() => {
+    assignFulltextAnchors(rootRef.current, headings);
+  });
+
+  useEffect(() => {
+    const report = () => {
+      const found = selectionInRoot(rootRef.current);
+      if (!found) {
+        setBar(null);
+        return;
+      }
+      const heading = headingForSelection(rootRef.current!, headings, found.node);
+      const pick: FulltextSelection = { text: found.text, heading };
+      onPick(pick);
+      const selection = document.getSelection();
+      const rect = selection && selection.rangeCount ? selection.getRangeAt(0).getBoundingClientRect() : null;
+      setBar({ pick, top: rect?.top ?? 0, left: (rect?.left ?? 0) + (rect?.width ?? 0) / 2 });
+    };
+    // 容器滚动后浮条会漂离选中位置：跟随收起（选区本身不受影响）。
+    const hide = () => setBar(null);
+    const scroller = rootRef.current?.closest(".ef-read-scroll");
+    document.addEventListener("selectionchange", report);
+    scroller?.addEventListener("scroll", hide, { passive: true });
+    return () => {
+      document.removeEventListener("selectionchange", report);
+      scroller?.removeEventListener("scroll", hide);
+    };
+  }, [headings, onPick]);
+
+  function excerptTo(kind: NoteKind) {
+    if (!bar) return;
+    // 追加而非覆盖：块里已有的内容保留，引用另起一段。
+    const base = useField.getState().drafts[paper.id]?.[kind] ?? paper.notes[kind].content;
+    setNoteDraft(paper.id, kind, appendExcerpt(base, buildExcerptMarkdown(bar.pick.text, bar.pick.heading)));
+    setFlash({
+      tone: "ok",
+      text: bar.pick.heading
+        ? `已摘录到「${NOTE_LABELS[kind].zh}」（§${bar.pick.heading.number}），引用锚点可跳回原文。`
+        : `已摘录到「${NOTE_LABELS[kind].zh}」。`,
+    });
+    setBar(null);
+  }
+
+  async function copyCitation() {
+    if (!bar) return;
+    const title = paper.titleZh || paper.title;
+    const quote = bar.pick.text.replace(/\s+/g, " ").trim();
+    const text = bar.pick.heading
+      ? `${buildSectionCitation(title, bar.pick.heading)}：${quote}`
+      : `《${title}》：${quote}`;
+    try {
+      await navigator.clipboard.writeText(text);
+      setFlash({ tone: "ok", text: "已复制「论文+小节」引用。" });
+    } catch {
+      // 非安全上下文 / 无剪贴板权限时降级提示（与作业面板复制失败同口径）。
+      setFlash({ tone: "warn", text: "复制失败：当前环境无法访问剪贴板。" });
+    }
+    setBar(null);
+  }
+
+  return (
+    <>
+      <div
+        ref={rootRef}
+        className="ef-note-text ef-md"
+        onClick={onMarkdownClick}
+        dangerouslySetInnerHTML={{ __html: renderMarkdown(paper.parsedMarkdown) }}
+      />
+      {bar ? (
+        <div
+          className="ef-excerpt-bar"
+          role="toolbar"
+          aria-label="摘录到笔记"
+          style={{ top: bar.top, left: bar.left }}
+        >
+          {NOTE_DISPLAY_ORDER.map((kind) => (
+            <button key={kind} type="button" onClick={() => excerptTo(kind)}>
+              摘到{NOTE_LABELS[kind].zh}
+            </button>
+          ))}
+          <button type="button" className="ef-excerpt-copy" onClick={() => void copyCitation()}>
+            复制引用
+          </button>
+        </div>
+      ) : null}
+    </>
   );
 }
 
@@ -482,12 +626,15 @@ export function ReadingStage({
   const intake = useField((s) => s.intake);
   const [menuOpen, setMenuOpen] = useState(false);
   const [activeSection, setActiveSection] = useState("abstract");
+  // 解析全文里最近一次选中：供「摘到笔记」浮条与笔记编辑器的「引用解析全文」共享。
+  const [fulltextPick, setFulltextPick] = useState<FulltextSelection | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     setMenuOpen(false);
     setActiveSection("abstract");
+    setFulltextPick(null);
   }, [paper?.id]);
 
   useEffect(() => {
@@ -846,6 +993,7 @@ export function ReadingStage({
                 paper={paper}
                 onStart={() => startEdit(kind)}
                 onSavedNext={() => startNextEmptyNote(kind)}
+                fulltextPick={fulltextPick}
               />
             ))}
             <details className="ef-fulltext" id="fulltext">
@@ -856,11 +1004,7 @@ export function ReadingStage({
                 <Icon name="right" />
               </summary>
               {paper.parsedMarkdown.trim() ? (
-                <div
-                  className="ef-note-text ef-md"
-                  onClick={onMarkdownClick}
-                  dangerouslySetInnerHTML={{ __html: renderMarkdown(paper.parsedMarkdown) }}
-                />
+                <FulltextDoc paper={paper} onPick={setFulltextPick} />
               ) : (
                 <p className="ef-empty-note">尚未解析出全文。导入 PDF 并启用解析源后，这里会显示解析结果。</p>
               )}
