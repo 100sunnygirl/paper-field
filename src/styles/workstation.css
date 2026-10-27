@@ -2113,6 +2113,32 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 }
 .ef-secrets-actions { flex: none; display: inline-flex; gap: 6px; }
 .ef-secrets-empty { font-size: var(--pf-fs-caption); color: var(--pf-muted); }
+/* 上手清单：最小可用配置路径，逐项状态 + 去配置入口。 */
+.ef-setup-list { list-style: none; margin: 0; padding: 0; }
+.ef-setup-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  border-bottom: 1px dashed var(--pf-divider);
+  font-size: var(--pf-fs-ui);
+}
+.ef-setup-item:last-child { border-bottom: 0; }
+.ef-setup-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1.5px solid var(--pf-line-strong);
+}
+.ef-setup-item.is-done .ef-setup-dot { background: var(--pf-success); border-color: var(--pf-success); }
+.ef-setup-text { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.ef-setup-text b { font-weight: 600; color: var(--pf-ink); }
+.ef-setup-detail { color: var(--pf-muted); font-size: var(--pf-fs-caption); }
+.ef-setup-state { flex: none; font-size: var(--pf-fs-caption); color: var(--pf-muted); }
+.ef-setup-item.is-done .ef-setup-state { color: var(--pf-success); font-weight: 600; }
+.ef-setup-summary { margin: 14px 0 0; font-size: var(--pf-fs-ui); color: var(--pf-secondary); }
+.ef-setup-summary b { color: var(--pf-ink); font-weight: 600; }
 .ef-llm-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

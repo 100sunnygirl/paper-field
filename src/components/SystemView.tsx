@@ -11,6 +11,7 @@ import {
 } from "../lib/mineru";
 import { providerLabel, summarizeHealths } from "../lib/mineruPlan";
 import {
+  hasUsableProvider,
   LLM_PRESETS,
   listLlmModels,
   presetById,
@@ -39,6 +40,7 @@ function errText(err: unknown): string {
  * 唯一事实来源，顺序即页面顺序。keywords 是搜索的补充词表（标题之外的常用叫法）。
  */
 const SYSTEM_CARDS = [
+  { id: "setup", title: "上手清单", keywords: ["上手", "新手", "清单", "向导", "最小", "入门"] },
   {
     id: "llm",
     title: "AI 服务设置",
@@ -221,6 +223,8 @@ export function SystemView() {
                 </p>
               ) : null}
 
+              {show("setup") ? <SetupChecklistBlock focused={focusedCard === "setup"} /> : null}
+
               {show("llm") ? <LlmSettingsBlock focused={focusedCard === "llm"} /> : null}
 
               {show("secrets") ? <SecretsOverview focused={focusedCard === "secrets"} /> : null}
@@ -243,6 +247,125 @@ export function SystemView() {
         </div>
       </div>
     </section>
+  );
+}
+
+/**
+ * 上手清单：最小可用配置路径（领域 → 导入论文 → 解析源 → 可选 AI / 文献库邮箱），
+ * 每项显示实际状态并提供「去配置」直达入口。只读真实状态，不做假向导。
+ */
+function SetupChecklistBlock({ focused }: { focused: boolean }) {
+  const domains = useField((s) => s.domains);
+  const stats = useField((s) => s.stats);
+  const mineru = useField((s) => s.mineru);
+  const effectiveProvider = useField((s) => s.effectiveProvider);
+  const settings = useField((s) => s.settings);
+  const biblio = useField((s) => s.biblio);
+  const openDialog = useField((s) => s.openDialog);
+  const setMode = useField((s) => s.setMode);
+  const openSystemCard = useField((s) => s.openSystemCard);
+
+  const aiReady = hasUsableProvider(settings);
+  const emailReady = biblioEmailConfigured(biblio.email);
+
+  const items: Array<{
+    key: string;
+    title: string;
+    done: boolean;
+    required?: boolean;
+    detail: string;
+    action: { label: string; run: () => void };
+  }> = [
+    {
+      key: "domain",
+      title: "研究领域",
+      done: domains.length > 0,
+      required: true,
+      detail: domains.length ? `已建 ${domains.length} 个领域` : "先建一个领域，论文按领域组织",
+      action: { label: "去创建领域", run: () => openDialog("domain") },
+    },
+    {
+      key: "papers",
+      title: "导入论文",
+      done: stats.total > 0,
+      required: true,
+      detail: stats.total ? `库内共 ${stats.total} 篇` : "导入 PDF 或手动录入第一篇论文",
+      action: {
+        label: "去导入论文",
+        run: () => {
+          void setMode("field")
+            .then(() => openDialog("paper"))
+            .catch(() => {});
+        },
+      },
+    },
+    {
+      key: "mineru",
+      title: "解析源（可选）",
+      done: mineru.configured,
+      detail: mineru.configured
+        ? effectiveProvider
+          ? `已启用，生效来源：${providerLabel(effectiveProvider)}`
+          : "已启用，但探测未通过，可查看失败原因"
+        : "未启用：导入只入库、不解析，仍可手动阅读与记笔记",
+      action: { label: "去配置", run: () => openSystemCard("mineru") },
+    },
+    {
+      key: "ai",
+      title: "AI 服务（可选）",
+      done: aiReady,
+      detail: aiReady
+        ? "已配置，可补全论文信息与起草笔记"
+        : "未配置：可完整手动录入，AI 只用于预填与起草",
+      action: { label: "去配置", run: () => openSystemCard("llm") },
+    },
+    {
+      key: "biblio",
+      title: "文献库邮箱（可选）",
+      done: emailReady,
+      detail: emailReady
+        ? "Crossref 走礼貌池，著录查询更快"
+        : "未配置：匿名也能查，只是走公共额度",
+      action: { label: "去配置", run: () => openSystemCard("biblio") },
+    },
+  ];
+
+  const doneCount = items.filter((item) => item.done).length;
+
+  return (
+    <article
+      id="settings-setup"
+      className={`page-block pf-stagger${focused ? " is-focused" : ""}`}
+      aria-label="上手清单"
+    >
+      <header className="ef-block-head">
+        <h3>上手清单</h3>
+        <p>
+          最小可用路径：领域 → 导入论文 → 解析源 →（可选）AI 服务。前两项是核心，其余按需配置。
+        </p>
+      </header>
+      <ul className="ef-setup-list">
+        {items.map((item) => (
+          <li key={item.key} className={`ef-setup-item${item.done ? " is-done" : ""}`}>
+            <span className="ef-setup-dot" aria-hidden="true" />
+            <span className="ef-setup-text">
+              <b>{item.title}</b>
+              <span className="ef-setup-detail">{item.detail}</span>
+            </span>
+            <span className="ef-setup-state">{item.done ? "已完成" : item.required ? "待完成" : "可选"}</span>
+            {item.done ? null : (
+              <Button type="button" size="sm" onClick={item.action.run}>
+                {item.action.label}
+              </Button>
+            )}
+          </li>
+        ))}
+      </ul>
+      <p className="ef-setup-summary">
+        进度：<b>{doneCount}</b> / {items.length}
+        {doneCount === items.length ? " · 全部就绪，可以开始阅读了。" : " · 没有配置的部分不影响手动录入与阅读。"}
+      </p>
+    </article>
   );
 }
 

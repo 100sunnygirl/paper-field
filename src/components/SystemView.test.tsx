@@ -573,7 +573,8 @@ describe("SystemView · 设置页顺序与 MinerU 高级项", () => {
     render(<SystemView />);
     const headings = screen.getAllByRole("heading", { level: 3 }).map((node) => node.textContent);
     const at = (title: string) => headings.indexOf(title);
-    expect(at("AI 服务设置")).toBeGreaterThanOrEqual(0);
+    expect(at("上手清单")).toBeGreaterThanOrEqual(0);
+    expect(at("AI 服务设置")).toBeGreaterThan(at("上手清单"));
     expect(at("密钥与令牌")).toBeGreaterThan(at("AI 服务设置"));
     expect(at("数据导出")).toBeGreaterThan(at("密钥与令牌"));
     expect(at("备份与恢复")).toBeGreaterThan(at("数据导出"));
@@ -620,6 +621,7 @@ describe("SystemView · 锚点目录、查找设置与深链", () => {
       const nav = screen.getByRole("navigation", { name: "设置目录" });
       const titles = Array.from(nav.querySelectorAll("a")).map((a) => a.textContent);
       expect(titles).toEqual([
+        "上手清单",
         "AI 服务设置",
         "密钥与令牌",
         "数据导出",
@@ -631,7 +633,7 @@ describe("SystemView · 锚点目录、查找设置与深链", () => {
         "运行日志",
       ]);
       // 每张卡片都带锚点 id
-      for (const id of ["llm", "secrets", "export", "backup", "shortcuts", "update", "mineru", "biblio", "logs"]) {
+      for (const id of ["setup", "llm", "secrets", "export", "backup", "shortcuts", "update", "mineru", "biblio", "logs"]) {
         expect(document.getElementById(`settings-${id}`)).not.toBeNull();
       }
       fireEvent.click(within(nav).getByRole("link", { name: "备份与恢复" }));
@@ -805,6 +807,64 @@ describe("SystemView · 数据导出（范围与内容选择）", () => {
       format: "merged",
       include: { notes: true, abstract: true, parsedText: false },
     });
+  });
+});
+
+describe("SystemView · 上手清单（最小可用配置）", () => {
+  beforeEach(() => {
+    useField.setState(useField.getInitialState(), true);
+    localStorage.clear();
+  });
+
+  it("全新空库：核心两项待完成并给出去配置入口，可选项标注可选", () => {
+    render(<SystemView />);
+    const block = screen.getByRole("article", { name: "上手清单" });
+    expect(within(block).getByText("研究领域")).toBeInTheDocument();
+    expect(within(block).getByText(/先建一个领域/)).toBeInTheDocument();
+    expect(within(block).getByText(/导入 PDF 或手动录入第一篇论文/)).toBeInTheDocument();
+    expect(within(block).getAllByText("待完成")).toHaveLength(2);
+    expect(within(block).getAllByText("可选")).toHaveLength(3);
+    expect(within(block).getByText(/进度：/).textContent).toContain("0");
+    expect(within(block).getByText(/没有配置的部分不影响手动录入与阅读/)).toBeInTheDocument();
+  });
+
+  it("已配置解析源与 AI：状态显示生效来源，进度按实际计数", () => {
+    useField.setState({
+      mineru: mineruState(),
+      effectiveProvider: "local",
+      settings: llmSettings(),
+    });
+    render(<SystemView />);
+    const block = screen.getByRole("article", { name: "上手清单" });
+    expect(within(block).getByText(/已启用，生效来源：本地 CLI/)).toBeInTheDocument();
+    expect(within(block).getByText(/已配置，可补全论文信息与起草笔记/)).toBeInTheDocument();
+    expect(within(block).getByText(/进度：/).textContent).toContain("2");
+  });
+
+  it("「去配置」跳到对应卡片，「去创建领域」打开领域对话框", () => {
+    const openSystemCard = vi.fn();
+    const openDialog = vi.fn();
+    useField.setState({ openSystemCard, openDialog });
+    render(<SystemView />);
+    const block = screen.getByRole("article", { name: "上手清单" });
+    fireEvent.click(within(block).getByRole("button", { name: "去创建领域" }));
+    expect(openDialog).toHaveBeenCalledWith("domain");
+    // 解析源 / AI / 文献库三项的「去配置」都经 openSystemCard 跳卡
+    const goButtons = within(block).getAllByRole("button", { name: "去配置" });
+    for (const button of goButtons) fireEvent.click(button);
+    expect(openSystemCard).toHaveBeenCalledWith("mineru");
+    expect(openSystemCard).toHaveBeenCalledWith("llm");
+    expect(openSystemCard).toHaveBeenCalledWith("biblio");
+  });
+
+  it("「去导入论文」先切回阅读模式再打开论文对话框", async () => {
+    const setMode = vi.fn(async () => undefined);
+    const openDialog = vi.fn();
+    useField.setState({ setMode, openDialog });
+    render(<SystemView />);
+    fireEvent.click(screen.getByRole("button", { name: "去导入论文" }));
+    await waitFor(() => expect(setMode).toHaveBeenCalledWith("field"));
+    expect(openDialog).toHaveBeenCalledWith("paper");
   });
 });
 
