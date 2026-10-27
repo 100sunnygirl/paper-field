@@ -142,6 +142,61 @@ describe("ReadingStage · 笔记保存快捷键与 Esc 保留草稿", () => {
   });
 });
 
+describe("ReadingStage · 笔记失焦自动落库", () => {
+  it("编辑框失焦（点出块外）自动保存：落库、清草稿", async () => {
+    useField.setState({ mode: "field", paper: paper(), selectedPaperId: "p1" });
+    renderStage();
+    fireEvent.click(screen.getByRole("button", { name: "写总结" }));
+    const textarea = screen.getByLabelText("总结内容");
+    fireEvent.change(textarea, { target: { value: "写完直接点出去。" } });
+    fireEvent.blur(textarea);
+    await waitFor(() => expect(repo.updateNote).toHaveBeenCalledWith("p1", "summary", "写完直接点出去。", "manual", true));
+    await waitFor(() => expect(useField.getState().drafts.p1).toBeUndefined());
+    expect(useField.getState().flash?.tone).toBe("ok");
+  });
+
+  it("一个字没改的草稿失焦：安静收起，不写库、不弹提示", async () => {
+    const detail = paper({ summary: "已有内容" });
+    useField.setState({ mode: "field", paper: detail, selectedPaperId: "p1" });
+    renderStage();
+    fireEvent.click(screen.getByRole("button", { name: "编辑总结" }));
+    const textarea = screen.getByLabelText("总结内容");
+    expect(textarea).toHaveValue("已有内容");
+    fireEvent.blur(textarea);
+    await waitFor(() => expect(useField.getState().drafts.p1).toBeUndefined());
+    expect(repo.updateNote).not.toHaveBeenCalled();
+    expect(useField.getState().flash).toBeNull();
+  });
+
+  it("「放弃修改」不触发自动保存：草稿被丢弃、不写库", () => {
+    const detail = paper({ summary: "原来的内容" });
+    useField.setState({ mode: "field", paper: detail, selectedPaperId: "p1" });
+    renderStage();
+    fireEvent.click(screen.getByRole("button", { name: "编辑总结" }));
+    fireEvent.change(screen.getByLabelText("总结内容"), { target: { value: "试了一版不要了" } });
+    // 按钮先按住焦点（mousedown preventDefault）再点击：绕开失焦自动保存
+    const button = screen.getByRole("button", { name: "放弃修改" });
+    fireEvent.mouseDown(button);
+    fireEvent.click(button);
+    expect(useField.getState().drafts.p1).toBeUndefined();
+    expect(repo.updateNote).not.toHaveBeenCalled();
+    expect(screen.getByText("原来的内容")).toBeInTheDocument();
+  });
+
+  it("自动保存失败：草稿保留，失败提示可见", async () => {
+    vi.mocked(repo.updateNote).mockRejectedValueOnce(new Error("写入失败"));
+    useField.setState({ mode: "field", paper: paper(), selectedPaperId: "p1" });
+    renderStage();
+    fireEvent.click(screen.getByRole("button", { name: "写总结" }));
+    const textarea = screen.getByLabelText("总结内容");
+    fireEvent.change(textarea, { target: { value: "会保存失败的内容" } });
+    fireEvent.blur(textarea);
+    await waitFor(() => expect(useField.getState().flash?.tone).toBe("error"));
+    expect(useField.getState().drafts.p1?.summary).toBe("会保存失败的内容");
+    expect(await screen.findByText("保存失败，输入已保留，可重试。")).toBeInTheDocument();
+  });
+});
+
 describe("store · saveAllNoteDrafts", () => {
   it("单块失败时：已保存的落库、失败的保留草稿并汇总原因", async () => {
     const detail = paper();

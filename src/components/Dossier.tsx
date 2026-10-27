@@ -76,7 +76,7 @@ function NoteEditor({
   }, [hasDraft]);
 
   const label = NOTE_LABELS[kind];
-  const saveHint = `${bindingLabel(currentKeymap().saveNote)} 保存 · ${modLabel()}+Enter 保存并写下一块 · Esc 收起`;
+  const saveHint = `${bindingLabel(currentKeymap().saveNote)} 保存 · ${modLabel()}+Enter 写下一块 · 失焦自动保存 · Esc 收起`;
 
   async function commit(): Promise<boolean> {
     if (saving) return false;
@@ -90,6 +90,26 @@ function NoteEditor({
       return false;
     } finally {
       setSaving(false);
+    }
+  }
+
+  /**
+   * 失焦自动落库（快捷键保存的兜底而非替代）：点出块外 / 切换块时自动保存；
+   * 一个字没改的草稿安静收起（不写库、不弹提示）；失败则草稿保留可重试。
+   * 编辑框内自己的按钮（放弃修改 / 引用解析全文 / 保存笔记）先按住焦点再动作，
+   * 不触发这次自动保存。
+   */
+  async function autosaveOnBlur() {
+    if (saving || draft === undefined) return;
+    if (draft === block.content) {
+      setNoteDraft(paper.id, kind, null);
+      return;
+    }
+    try {
+      await saveNote(paper.id, kind, draft);
+    } catch {
+      // saveNote 已弹失败提示；草稿保留，编辑框仍在，行内给出可重试状态。
+      setFailed(true);
     }
   }
 
@@ -180,6 +200,7 @@ function NoteEditor({
             value={value}
             onChange={(e) => setNoteDraft(paper.id, kind, e.target.value)}
             onKeyDown={onEditorKeyDown}
+            onBlur={() => void autosaveOnBlur()}
             aria-label={`${label.zh}内容`}
           />
           <div className="ef-edit-actions">
@@ -190,15 +211,31 @@ function NoteEditor({
                   ? "保存失败，输入已保留，可重试。"
                   : `编辑中 · 尚未保存 · ${saveHint}`}
             </span>
-            <Button type="button" size="sm" onClick={cancel} disabled={saving}>
-              取消
+            {/* 按住焦点再动作（onMouseDown preventDefault）：这三个按钮不触发失焦自动保存，
+                「放弃修改」才能真正丢掉未保存的内容，插入引用也不会被自动保存清掉。 */}
+            <Button
+              type="button"
+              size="sm"
+              title="放弃这次未保存的修改，恢复原内容"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={cancel}
+              disabled={saving}
+            >
+              放弃修改
             </Button>
             {paper.parsedMarkdown.trim() ? (
-              <Button type="button" size="sm" onClick={quoteFromFulltext} disabled={saving}>
+              <Button type="button" size="sm" onMouseDown={(e) => e.preventDefault()} onClick={quoteFromFulltext} disabled={saving}>
                 引用解析全文
               </Button>
             ) : null}
-            <Button type="button" size="sm" variant="primary" onClick={() => void commit()} disabled={saving}>
+            <Button
+              type="button"
+              size="sm"
+              variant="primary"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => void commit()}
+              disabled={saving}
+            >
               {saving ? "保存中…" : "保存笔记"}
             </Button>
           </div>
