@@ -2936,6 +2936,201 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   transition: width var(--pf-t-settle);
 }
 
+/* ---- 草稿入口与清单 ----
+   有未保存草稿时状态条常驻一格（与列表行的小标记同色系：淡红提醒）；
+   点击上拉跨论文清单（与作业面板同族的浮层）。信号黄不用于此。 */
+.ef-status > .ef-status-drafts { padding: 0; }
+.ef-status-drafts button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--pf-status-height);
+  margin: calc((var(--pf-status-height) - 14px) / -2) 0;
+  padding: 0 12px 0 14px;
+  border: 0;
+  background: transparent;
+  color: var(--pf-tint-danger);
+  font-size: var(--pf-fs-caption);
+  white-space: nowrap;
+  transition: background-color var(--pf-motion), color var(--pf-motion), box-shadow var(--pf-motion);
+}
+.ef-status-drafts button b { color: inherit; }
+.ef-status-drafts button:hover { background: var(--pf-ink-2); color: #ffd9d5; }
+.ef-status-drafts.is-open button {
+  background: var(--pf-ink-3);
+  color: #ffd9d5;
+  box-shadow: inset 0 2px 0 var(--pf-tint-danger);
+}
+.ef-status-drafts button:focus-visible { outline-offset: -2px; }
+.ef-status-drafts .ef-ico { width: 12px; height: 12px; opacity: 0.75; }
+/* 清单浮层：白纸面 + 4px 墨顶线（作业面板同族，右下角锚定，避开左上的作业面板）。 */
+.ef-drafts {
+  position: fixed;
+  z-index: var(--pf-z-jobs);
+  right: 12px;
+  bottom: calc(var(--pf-status-height) + 10px);
+  width: min(440px, calc(100vw - 24px));
+  max-height: min(64vh, 620px);
+  display: flex;
+  flex-direction: column;
+  background: var(--pf-surface);
+  color: var(--pf-ink);
+  border: 1px solid var(--pf-ink);
+  border-top-width: 4px;
+  box-shadow: var(--pf-elev-2);
+  animation: pf-unfold-up var(--pf-t-unfold) backwards;
+}
+.ef-drafts:focus,
+.ef-drafts:focus-visible { outline: none; box-shadow: var(--pf-elev-2); }
+.ef-drafts-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 8px 10px 18px;
+  border-bottom: 1px solid var(--pf-divider);
+}
+.ef-drafts-head h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: var(--pf-fs-title);
+  line-height: 1.3;
+  font-weight: 700;
+}
+.ef-drafts-count {
+  padding: 0 6px;
+  border: 1px solid var(--pf-divider);
+  color: var(--pf-danger);
+  font-size: var(--pf-fs-tag);
+  font-weight: 700;
+}
+.ef-drafts-spacer { flex: 1; }
+.ef-drafts-save-all {
+  min-height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--pf-ink);
+  background: var(--pf-ink);
+  color: var(--pf-on-dark);
+  font-size: var(--pf-fs-caption);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color var(--pf-motion);
+}
+.ef-drafts-save-all:hover { background: var(--pf-ink-2); }
+.ef-drafts-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  background: transparent;
+  color: var(--pf-secondary);
+  cursor: pointer;
+}
+.ef-drafts-close .ef-ico { width: 14px; height: 14px; }
+.ef-drafts-close:hover { color: var(--pf-ink); }
+.ef-drafts-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px 16px 16px;
+  background-color: var(--pf-canvas);
+  background-image: var(--pf-dot-grid);
+  background-size: 24px 24px;
+  background-attachment: local;
+  scrollbar-width: thin;
+  scrollbar-color: #b1b5a9 transparent;
+}
+.ef-drafts-group {
+  background: var(--pf-surface);
+  border: 1px solid var(--pf-divider);
+  border-left: var(--pf-marker) solid var(--pf-danger);
+  padding: 10px 12px;
+}
+.ef-drafts-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.ef-drafts-paper {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--pf-ink);
+  font-size: var(--pf-fs-ui);
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ef-drafts-paper:hover { text-decoration: underline; text-underline-offset: 3px; }
+.ef-drafts-paper.is-missing { color: var(--pf-muted); font-weight: 500; cursor: default; }
+.ef-drafts-block-count {
+  flex: none;
+  color: var(--pf-muted);
+  font-size: var(--pf-fs-tag);
+}
+.ef-drafts-group-save,
+.ef-drafts-row-actions button {
+  flex: none;
+  min-height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--pf-control-border);
+  background: var(--pf-surface);
+  color: var(--pf-secondary);
+  font-size: var(--pf-fs-caption);
+  cursor: pointer;
+  transition: border-color var(--pf-motion), color var(--pf-motion), background-color var(--pf-motion);
+}
+.ef-drafts-group-save:hover,
+.ef-drafts-row-actions button:hover {
+  border-color: var(--pf-ink);
+  color: var(--pf-ink);
+  background: var(--pf-hover-flat);
+}
+.ef-drafts-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+}
+.ef-drafts-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  border-top: 1px dashed var(--pf-divider);
+}
+.ef-drafts-row:first-child { border-top: 0; }
+.ef-drafts-kind {
+  flex: none;
+  min-width: 34px;
+  font-size: var(--pf-fs-caption);
+  font-weight: 600;
+  color: var(--pf-secondary);
+}
+.ef-drafts-preview {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ef-drafts-row-actions { display: inline-flex; gap: 4px; }
+
 /* ---- Dialog ---- */
 .ef-backdrop {
   position: fixed;
@@ -4432,8 +4627,10 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   /* 列表收进抽屉后，行长不超过收起前（1101px）那一档。 */
   .ef-read { --pf-document-max-width: 620px; --pf-stage-pad-x: 28px; }
   .ef-reading-grid { padding: 28px; }
+  /* 插入草稿入口（第 4 格）后：窄屏仍只留 已读 / 开源 / 作业 / 搜索提示。 */
   .ef-status > span:nth-child(4),
-  .ef-status > span:nth-child(5) { display: none; }
+  .ef-status > span:nth-child(5),
+  .ef-status > span:nth-child(6) { display: none; }
 }
 
 @media (max-width: 700px) {

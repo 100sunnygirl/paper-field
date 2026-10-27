@@ -207,6 +207,8 @@ interface FieldState {
   saveNote: (paperId: string, kind: NoteKind, content: string) => Promise<void>;
   /** 一键保存这篇论文当前全部笔记草稿：逐块落库，失败的块保留草稿并汇总提示。 */
   saveAllNoteDrafts: (paperId?: string) => Promise<void>;
+  /** 跨论文一键保存：把当前全部草稿逐块落库（状态条「N 处草稿未保存」的统一出口）。 */
+  saveAllDrafts: () => Promise<void>;
   /** 写入 / 清除（null）一块笔记草稿。 */
   setNoteDraft: (paperId: string, kind: NoteKind, value: string | null) => void;
   markRead: (paperId?: string) => Promise<void>;
@@ -1018,24 +1020,12 @@ export const useField = create<FieldState>((set, get) => ({
   saveAllNoteDrafts: async (paperId) => {
     const id = paperId ?? get().paper?.id ?? get().selectedPaperId;
     if (!id) return;
-    const drafts = get().drafts[id];
-    const kinds = NOTE_DISPLAY_ORDER.filter((kind) => drafts?.[kind] !== undefined);
+    const kinds = NOTE_DISPLAY_ORDER.filter((kind) => get().drafts[id]?.[kind] !== undefined);
     if (!kinds.length) {
       get().setFlash({ tone: "warn", text: "这篇论文没有未保存的笔记草稿。" });
       return;
     }
-    let saved = 0;
-    const failed: NoteKind[] = [];
-    for (const kind of kinds) {
-      try {
-        await repo.updateNote(id, kind, drafts![kind]!, "manual", true);
-        get().setNoteDraft(id, kind, null);
-        saved += 1;
-      } catch (err) {
-        log.error("store", "保存本篇全部笔记：单块失败", err);
-        failed.push(kind);
-      }
-    }
+    const { saved, failed } = await persistPaperDrafts(id);
     await get().refresh().catch(() => {});
     if (failed.length) {
       get().setFlash({
@@ -1045,6 +1035,32 @@ export const useField = create<FieldState>((set, get) => ({
       return;
     }
     get().setFlash({ tone: "ok", text: `已保存本篇全部笔记（${saved} 块）。` });
+  },
+
+  saveAllDrafts: async () => {
+    // 跨论文的全局草稿出口：先冻结论文 id 快照，逐篇逐块落库；
+    // 单块失败不打断其余，最后按总数汇总（草稿清单面板由此驱动）。
+    const ids = Object.keys(get().drafts);
+    if (!ids.length) {
+      get().setFlash({ tone: "warn", text: "没有未保存的笔记草稿。" });
+      return;
+    }
+    let saved = 0;
+    let failedCount = 0;
+    for (const id of ids) {
+      const result = await persistPaperDrafts(id);
+      saved += result.saved;
+      failedCount += result.failed.length;
+    }
+    await get().refresh().catch(() => {});
+    if (failedCount) {
+      get().setFlash({
+        tone: "warn",
+        text: `已保存 ${saved} 块笔记；${failedCount} 块保存失败，草稿已保留可重试。`,
+      });
+      return;
+    }
+    get().setFlash({ tone: "ok", text: `已保存全部未保存草稿（${saved} 块，${ids.length} 篇论文）。` });
   },
 
   markRead: async (paperId) => {
@@ -1619,6 +1635,28 @@ function rememberLookup(
         }
       : {}),
   });
+}
+
+/**
+ * 把一篇论文当前的全部笔记草稿逐块落库：成功的清掉草稿，失败的保留并计数。
+ * 「保存本篇全部」与跨论文的「保存全部草稿」共用（同一套失败语义）。
+ */
+async function persistPaperDrafts(paperId: string): Promise<{ saved: number; failed: NoteKind[] }> {
+  const drafts = useField.getState().drafts[paperId];
+  const kinds = NOTE_DISPLAY_ORDER.filter((kind) => drafts?.[kind] !== undefined);
+  const failed: NoteKind[] = [];
+  let saved = 0;
+  for (const kind of kinds) {
+    try {
+      await repo.updateNote(paperId, kind, drafts![kind]!, "manual", true);
+      useField.getState().setNoteDraft(paperId, kind, null);
+      saved += 1;
+    } catch (err) {
+      log.error("store", "保存笔记草稿：单块失败", err);
+      failed.push(kind);
+    }
+  }
+  return { saved, failed };
 }
 
 function mineruHost() {
