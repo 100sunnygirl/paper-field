@@ -574,7 +574,8 @@ describe("SystemView · 设置页顺序与 MinerU 高级项", () => {
     const headings = screen.getAllByRole("heading", { level: 3 }).map((node) => node.textContent);
     const at = (title: string) => headings.indexOf(title);
     expect(at("AI 服务设置")).toBeGreaterThanOrEqual(0);
-    expect(at("数据导出")).toBeGreaterThan(at("AI 服务设置"));
+    expect(at("密钥与令牌")).toBeGreaterThan(at("AI 服务设置"));
+    expect(at("数据导出")).toBeGreaterThan(at("密钥与令牌"));
     expect(at("备份与恢复")).toBeGreaterThan(at("数据导出"));
     expect(at("快捷键")).toBeGreaterThan(at("备份与恢复"));
     expect(at("软件更新")).toBeGreaterThan(at("快捷键"));
@@ -620,6 +621,7 @@ describe("SystemView · 锚点目录、查找设置与深链", () => {
       const titles = Array.from(nav.querySelectorAll("a")).map((a) => a.textContent);
       expect(titles).toEqual([
         "AI 服务设置",
+        "密钥与令牌",
         "数据导出",
         "备份与恢复",
         "快捷键",
@@ -629,7 +631,7 @@ describe("SystemView · 锚点目录、查找设置与深链", () => {
         "运行日志",
       ]);
       // 每张卡片都带锚点 id
-      for (const id of ["llm", "export", "backup", "shortcuts", "update", "mineru", "biblio", "logs"]) {
+      for (const id of ["llm", "secrets", "export", "backup", "shortcuts", "update", "mineru", "biblio", "logs"]) {
         expect(document.getElementById(`settings-${id}`)).not.toBeNull();
       }
       fireEvent.click(within(nav).getByRole("link", { name: "备份与恢复" }));

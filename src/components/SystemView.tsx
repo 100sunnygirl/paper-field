@@ -27,6 +27,7 @@ import { formatDate, pad2, shortcut, uid } from "../lib/util";
 import { useField } from "../store";
 import { LogPanel } from "./LogPanel";
 import { PreRestoreList } from "./PreRestoreList";
+import { SecretsOverview } from "./SecretsOverview";
 import { Button, Field, Icon } from "./ui";
 
 function errText(err: unknown): string {
@@ -42,6 +43,11 @@ const SYSTEM_CARDS = [
     id: "llm",
     title: "AI 服务设置",
     keywords: ["AI", "Key", "API Key", "提供商", "模型", "Base URL", "用量", "补全", "openai", "deepseek", "ollama"],
+  },
+  {
+    id: "secrets",
+    title: "密钥与令牌",
+    keywords: ["密钥", "Key", "Token", "令牌", "清除", "钥匙串", "机密"],
   },
   { id: "export", title: "数据导出", keywords: ["导出", "Markdown", "分享", "md"] },
   { id: "backup", title: "备份与恢复", keywords: ["备份", "恢复", "zip", "原数据", "文库"] },
@@ -216,6 +222,8 @@ export function SystemView() {
               ) : null}
 
               {show("llm") ? <LlmSettingsBlock focused={focusedCard === "llm"} /> : null}
+
+              {show("secrets") ? <SecretsOverview focused={focusedCard === "secrets"} /> : null}
 
               {show("export") ? <ExportBlock focused={focusedCard === "export"} /> : null}
 

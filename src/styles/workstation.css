@@ -2078,6 +2078,41 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   color: var(--pf-secondary);
 }
 .ef-export-preview b { color: var(--pf-ink); font-weight: 600; }
+/* 密钥与令牌总览：一行一条（名称 / 状态 / 定位·清除），保存项打点标绿。 */
+.ef-secrets-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.ef-secrets-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 40px;
+  border-bottom: 1px dashed var(--pf-divider);
+  font-size: var(--pf-fs-ui);
+}
+.ef-secrets-row:last-child { border-bottom: 0; }
+.ef-secrets-label { flex: 1; min-width: 0; color: var(--pf-body); }
+.ef-secrets-status {
+  flex: none;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.ef-secrets-status.is-ok { color: var(--pf-success); font-weight: 600; }
+.ef-secrets-status.is-error { color: var(--pf-danger); font-weight: 600; }
+.ef-secrets-status.is-ok::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  background: var(--pf-success);
+  border-radius: 50%;
+}
+.ef-secrets-actions { flex: none; display: inline-flex; gap: 6px; }
+.ef-secrets-empty { font-size: var(--pf-fs-caption); color: var(--pf-muted); }
 .ef-llm-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
