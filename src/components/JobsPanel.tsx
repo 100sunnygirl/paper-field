@@ -693,6 +693,13 @@ const AI_RETRY_LABELS: Record<NonNullable<HistoryItemView["aiRetry"]>, string> =
   refreshLinks: "重新刷新链接",
 };
 
+/** 完成作业的结果直达入口：解析 → 自动展开全文；补全 → 字段编辑；起草 → 阅读页笔记区。 */
+const RESULT_ENTRIES: Partial<Record<HistoryItemView["type"], { label: string; kind: "fulltext" | "fields" | "notes" }>> = {
+  mineruParse: { label: "阅读全文", kind: "fulltext" },
+  prepareMeta: { label: "查看字段", kind: "fields" },
+  draftNotes: { label: "查看笔记", kind: "notes" },
+};
+
 function historyMatches(item: HistoryItemView, filter: HistoryFilter, query: string): boolean {
   if (filter === "mineru" && item.type !== "mineruParse") return false;
   if (filter === "ai" && item.type === "mineruParse") return false;
@@ -715,6 +722,8 @@ function HistoryList({
   const retryHistoryJob = useField((s) => s.retryHistoryJob);
   const retryMineruPapers = useField((s) => s.retryMineruPapers);
   const retryFailedMetaJobs = useField((s) => s.retryFailedMetaJobs);
+  const openPaperFulltext = useField((s) => s.openPaperFulltext);
+  const openDialog = useField((s) => s.openDialog);
   const [filter, setFilter] = useState<HistoryFilter>("all");
   const [query, setQuery] = useState("");
   /** 「清除已完成」隐藏的作业 id（本次会话有效，重启后恢复全部）。 */
@@ -826,6 +835,21 @@ function HistoryList({
                     onClick={() => void retryHistoryJob(item.paperId, item.aiRetry!)}
                   >
                     {AI_RETRY_LABELS[item.aiRetry]}
+                  </Button>
+                ) : item.status === "done" && RESULT_ENTRIES[item.type] ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="text"
+                    className="ef-hist-retry"
+                    onClick={() => {
+                      const entry = RESULT_ENTRIES[item.type]!;
+                      if (entry.kind === "fulltext") void openPaperFulltext(item.paperId);
+                      else if (entry.kind === "fields") openDialog("edit-paper", item.paperId);
+                      else void onJump(item.paperId, item.domainId);
+                    }}
+                  >
+                    {RESULT_ENTRIES[item.type]!.label}
                   </Button>
                 ) : null}
               </li>

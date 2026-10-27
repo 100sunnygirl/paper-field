@@ -236,6 +236,29 @@ describe("作业面板的队列操作", () => {
     expect(getActivity().batches[0].paperIds).toEqual(["p1", "p3", "p2"]);
   });
 
+  it("openPaperFulltext：跳到该论文并自动展开「解析全文」折叠区", async () => {
+    const id = await makePaper(true);
+    await repo.saveParsedMarkdown(id, "# 全文");
+    // 阅读页的全文折叠区：挂一个同 id 的 details 模拟挂载后的 DOM。
+    const fulltext = document.createElement("details");
+    fulltext.id = "fulltext";
+    document.body.appendChild(fulltext);
+    try {
+      await useField.getState().openPaperFulltext(id);
+      await vi.waitFor(() => expect(fulltext.hasAttribute("open")).toBe(true));
+    } finally {
+      fulltext.remove();
+    }
+    expect(useField.getState().selectedPaperId).toBe(id);
+    expect(useField.getState().mode).toBe("field");
+  });
+
+  it("openPaperFulltext：论文已删除时静默返回，不切换", async () => {
+    useField.setState({ selectedPaperId: "keep" });
+    await useField.getState().openPaperFulltext("gone");
+    expect(useField.getState().selectedPaperId).toBe("keep");
+  });
+
   it("删除论文先取消它的在途作业", async () => {
     const id = await makePaper();
     const reply = deferred<string>();

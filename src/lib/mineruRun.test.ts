@@ -154,6 +154,7 @@ function makeHost(
     hasKey?: boolean;
     configured?: boolean;
     prepare?: (paperId: string, overwrite: boolean, quiet: boolean) => Promise<void>;
+    reveal?: (what: "fulltext" | "fields", paperId: string) => void;
   } = {},
 ) {
   return {
@@ -162,6 +163,7 @@ function makeHost(
     refresh: vi.fn(async () => undefined),
     flash: vi.fn(),
     prepare: vi.fn(options.prepare ?? (async (paperId: string) => markPrepared(paperId))),
+    reveal: options.reveal,
   };
 }
 
@@ -975,6 +977,36 @@ describe("排队调度：置顶 / 上移 / 下移 / 清空其余", () => {
     expect(getActivity().batches[0].results).toEqual({ [ids[0]]: "ok", [ids[2]]: "cancelled", [ids[1]]: "ok" });
     expect(vi.mocked(mineruSubmit).mock.calls.map(([paperId]) => paperId)).toEqual([ids[0], ids[1]]);
     expect((await paperOf(ids[1])).mineruStatus).toBe("done");
+  });
+
+  it("单篇解析完成的通知带「查看全文」直达，触发时调用 reveal", async () => {
+    const id = await makePaper();
+    const reveal = vi.fn();
+    const host = makeHost({ reveal });
+    vi.mocked(mineruSubmit).mockResolvedValue(submitResult({ status: "done" }));
+    markdownByDoc();
+
+    await runMineruBatch(host, [id], true);
+
+    expect(host.flash).toHaveBeenCalledWith("ok", "MinerU 解析完成 1 篇。阅读状态未改动。", {
+      label: "查看全文",
+      run: expect.any(Function),
+    });
+    const action = vi.mocked(host.flash).mock.calls.at(-1)![2]!;
+    action.run();
+    expect(reveal).toHaveBeenCalledWith("fulltext", id);
+  });
+
+  it("多篇批次完成的通知不带直达动作（汇总入口见批次小结）", async () => {
+    const ids = [await makePaper(), await makePaper()];
+    const host = makeHost({ reveal: vi.fn() });
+    vi.mocked(mineruSubmit).mockImplementation(async (paperId) => submitResult({ status: "done", shortId: `doc-${paperId}` }));
+    markdownByDoc();
+
+    await runMineruBatch(host, ids, true);
+
+    expect(host.flash).toHaveBeenCalledWith("ok", "MinerU 解析完成 2 篇。阅读状态未改动。");
+    expect(vi.mocked(host.flash).mock.calls.at(-1)).toHaveLength(2);
   });
 });
 

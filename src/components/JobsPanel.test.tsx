@@ -66,6 +66,8 @@ const actions = {
   stopMineruBatch: vi.fn(async () => undefined),
   reorderQueue: vi.fn(),
   clearQueueRest: vi.fn(async () => undefined),
+  openPaperFulltext: vi.fn(async () => undefined),
+  openDialog: vi.fn(),
 };
 
 beforeEach(() => {
@@ -273,6 +275,31 @@ describe("JobsPanel", () => {
     expect(actions.retryMineruPapers).toHaveBeenCalledWith(["p1", "p2"]);
     fireEvent.click(within(history).getByRole("button", { name: "重试失败补全（2 篇）" }));
     expect(actions.retryFailedMetaJobs).toHaveBeenCalledWith(["p3", "p4"]);
+  });
+
+  it("完成作业的结果直达：阅读全文 / 查看字段 / 查看笔记", async () => {
+    useField.setState({
+      jobs: [
+        job({ id: "m", paperId: "p1", status: "done", finishedAt: new Date().toISOString() }),
+        job({ id: "a", paperId: "p2", type: "prepareMeta", status: "done", finishedAt: new Date().toISOString() }),
+        job({ id: "n", paperId: "p3", type: "draftNotes", status: "done", finishedAt: new Date().toISOString() }),
+        job({ id: "l", paperId: "p4", type: "refreshLinks", status: "done", finishedAt: new Date().toISOString() }),
+      ],
+    });
+    render(<JobsPanel />);
+    const history = screen.getByRole("region", { name: "最近结束的作业" });
+
+    fireEvent.click(within(history).getByRole("button", { name: "阅读全文" }));
+    expect(actions.openPaperFulltext).toHaveBeenCalledWith("p1");
+
+    fireEvent.click(within(history).getByRole("button", { name: "查看字段" }));
+    expect(actions.openDialog).toHaveBeenCalledWith("edit-paper", "p2");
+
+    fireEvent.click(within(history).getByRole("button", { name: "查看笔记" }));
+    await waitFor(() => expect(actions.selectPaper).toHaveBeenCalledWith("p3"));
+
+    // 刷新链接的完成不提供专门入口（结果在资料栏，标题本身可跳转）。
+    expect(within(history).queryByRole("button", { name: "查看资料" })).toBeNull();
   });
 
   it("查不到书目（旧版 repo / 查询失败）时退回短编号，不报错", async () => {

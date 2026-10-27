@@ -213,6 +213,8 @@ interface FieldState {
   setJobsOpen: (open: boolean) => void;
   /** 作业面板「移出队列」：该篇轮到时直接跳过（不提交 MinerU），解析状态保持不变。 */
   dequeueMineruPaper: (batchId: number, paperId: string) => void;
+  /** 跳到该论文的阅读页并自动展开「解析全文」折叠区（解析完成的直达入口）。 */
+  openPaperFulltext: (paperId: string) => Promise<void>;
   /** 作业面板「停止批次」：取消正在解析的一篇，并把本批其余排队论文移出队列。 */
   stopMineruBatch: (batchId: number) => Promise<void>;
   /** 作业面板排队调整：置顶 / 上移 / 下移该篇在本批的处理顺序（对等待中的批次同样生效）。 */
@@ -400,6 +402,24 @@ export const useField = create<FieldState>((set, get) => ({
     void dequeueFromBatch(batchId, paperId)
       .then(() => get().refresh())
       .catch((err) => log.error("mineru", "移出队列写库失败", err));
+  },
+
+  openPaperFulltext: async (paperId) => {
+    const paper = await repo.getPaper(paperId);
+    if (!paper) return;
+    try {
+      if (paper.domainId) await get().selectDomain(paper.domainId);
+      await get().selectPaper(paperId);
+    } catch (err) {
+      log.error("store", "打开论文全文失败", err);
+      return;
+    }
+    // 等两帧让阅读页挂载后再展开「解析全文」折叠区（与 App.focusSearch 同一双 rAF 手法）。
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        document.getElementById("fulltext")?.setAttribute("open", "");
+      }),
+    );
   },
 
   stopMineruBatch: async (batchId) => {
@@ -1486,9 +1506,14 @@ function mineruHost() {
     // 门禁派生口径：任一 enabled 且（requiresKey ? 已存 Key : 免 Key）的提供商。
     hasKey: () => hasUsableProvider(useField.getState().settings),
     refresh: () => useField.getState().refresh(),
-    flash: (tone: "ok" | "warn" | "error", text: string) => useField.getState().setFlash({ tone, text }),
+    flash: (tone: "ok" | "warn" | "error", text: string, action?: { label: string; run: () => void }) =>
+      useField.getState().setFlash({ tone, text, ...(action ? { action } : {}) }),
     prepare: (paperId: string, overwrite: boolean, quiet: boolean) =>
       useField.getState().runPrepareMeta(paperId, overwrite, quiet),
+    reveal: (what: "fulltext" | "fields", paperId: string) => {
+      if (what === "fulltext") void useField.getState().openPaperFulltext(paperId);
+      else useField.getState().openDialog("edit-paper", paperId);
+    },
   };
 }
 

@@ -27,8 +27,11 @@ interface Host {
   mineru: () => MineruSettingsV2;
   hasKey: () => boolean;
   refresh: () => Promise<void>;
-  flash: (tone: "ok" | "warn" | "error", text: string) => void;
+  /** 结束通知可带一个直达入口（如「查看全文」）；实现方负责跳转。 */
+  flash: (tone: "ok" | "warn" | "error", text: string, action?: { label: string; run: () => void }) => void;
   prepare: (paperId: string, overwrite: boolean, quiet: boolean) => Promise<void>;
+  /** 通知里的结果直达：打开该论文的解析全文（自动展开）或字段编辑。 */
+  reveal?: (what: "fulltext" | "fields", paperId: string) => void;
 }
 
 /**
@@ -491,7 +494,11 @@ export async function runMineruBatch(
     } else if (ok && !host.hasKey()) {
       host.flash("warn", "解析完成。尚未配置 AI，书目仍使用文件名，可稍后补全。");
     } else if (ok) {
-      host.flash("ok", `MinerU 解析完成 ${ok} 篇。阅读状态未改动。`);
+      // 单篇完成的通知直接给「查看全文」直达（大批次的汇总入口见批次小结）。
+      const single = ok === 1 && paperIds.length === 1 ? paperIds[0] : null;
+      const action =
+        host.reveal && single ? { label: "查看全文", run: () => host.reveal!("fulltext", single) } : undefined;
+      host.flash("ok", `MinerU 解析完成 ${ok} 篇。阅读状态未改动。`, ...(action ? [action] : []));
     }
   } finally {
     for (const paperId of paperIds) dequeued.delete(queueKey(id, paperId));
@@ -577,7 +584,13 @@ export async function backfillMeta(host: Host): Promise<void> {
     for (const id of ids) dequeued.delete(queueKey(batchId, id));
     finishBatch(batchId, state);
   }
-  if (filled) host.flash("ok", `已为 ${filled} 篇论文补全信息。阅读状态未改动。`);
+  if (filled) {
+    // 单篇补全完成的通知给「查看字段」直达。
+    const single = filled === 1 && ids.length === 1 ? ids[0] : null;
+    const action =
+      host.reveal && single ? { label: "查看字段", run: () => host.reveal!("fields", single) } : undefined;
+    host.flash("ok", `已为 ${filled} 篇论文补全信息。阅读状态未改动。`, ...(action ? [action] : []));
+  }
 }
 
 /** 删除论文前调用：取消它们的在途作业并从所有等待中的批次里移出。 */
