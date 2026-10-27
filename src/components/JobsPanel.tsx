@@ -677,6 +677,24 @@ const HISTORY_STATUS: Record<HistoryItemView["status"], string> = {
   cancelled: "取消",
 };
 
+type HistoryFilter = "all" | "mineru" | "ai" | "failed";
+
+const HISTORY_FILTERS: Array<{ value: HistoryFilter; label: string }> = [
+  { value: "all", label: "全部" },
+  { value: "mineru", label: "解析" },
+  { value: "ai", label: "AI" },
+  { value: "failed", label: "失败" },
+];
+
+function historyMatches(item: HistoryItemView, filter: HistoryFilter, query: string): boolean {
+  if (filter === "mineru" && item.type !== "mineruParse") return false;
+  if (filter === "ai" && item.type === "mineruParse") return false;
+  if (filter === "failed" && item.status !== "error") return false;
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return `${item.typeLabel} ${item.title} ${item.note ?? ""}`.toLowerCase().includes(q);
+}
+
 function HistoryList({
   history,
   now,
@@ -687,55 +705,113 @@ function HistoryList({
   onJump: (paperId: string, domainId: string | null) => Promise<void>;
 }) {
   const retryMineru = useField((s) => s.retryMineru);
+  const [filter, setFilter] = useState<HistoryFilter>("all");
+  const [query, setQuery] = useState("");
+  /** 「清除已完成」隐藏的作业 id（本次会话有效，重启后恢复全部）。 */
+  const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
+
+  const visible = history.filter((item) => !dismissed.has(item.id));
+  const matched = visible.filter((item) => historyMatches(item, filter, query));
+  const filtering = filter !== "all" || Boolean(query.trim());
+  const dismissable = visible.filter((item) => item.status === "done").map((item) => item.id);
+
   return (
     <section className="ef-jobs-section" aria-label="最近结束的作业">
       <h3 className="ef-jobs-sub">
         最近结束
-        <span className="ef-count mono">{pad2(history.length)}</span>
+        <span className="ef-count mono">{pad2(visible.length)}</span>
       </h3>
       {history.length ? (
-        <ol className="ef-history">
-          {history.map((item) => (
-            <li key={item.id} className={`ef-hist-row is-${item.status}`}>
-              <span className="ef-hist-mark" aria-hidden="true">
-                <Icon name={HISTORY_MARKS[item.status]} />
-              </span>
-              <div className="ef-hist-main">
-                <p className="ef-hist-line">
-                  <span className="sr-only">{HISTORY_STATUS[item.status]}：</span>
-                  <b>{item.typeLabel}</b>
-                  <button
-                    type="button"
-                    className="ef-hist-title"
-                    title="在阅读页打开这篇论文"
-                    onClick={() => void onJump(item.paperId, item.domainId)}
-                  >
-                    {item.title}
-                  </button>
-                </p>
-                {item.note ? (
-                  <p className="ef-hist-note" title={item.note}>
-                    {item.note}
+        <div className="ef-hist-tools">
+          <div className="ef-hist-chips" role="group" aria-label="结束作业类型过滤">
+            {HISTORY_FILTERS.map((item) => (
+              <button
+                key={item.value}
+                type="button"
+                className={`ef-log-chip${filter === item.value ? " is-on" : ""}`}
+                aria-pressed={filter === item.value}
+                onClick={() => setFilter(item.value)}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+          <input
+            type="search"
+            value={query}
+            placeholder="搜索标题 / 失败原因"
+            aria-label="搜索结束作业"
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") setQuery("");
+            }}
+          />
+          {filtering ? (
+            <span className="ef-queue-match">
+              {matched.length} / {visible.length} 条
+            </span>
+          ) : null}
+          {dismissable.length ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="text"
+              className="ef-hist-clear"
+              title="隐藏已完成的结束作业（失败与可重试项保留）；本次会话有效，重启后恢复"
+              onClick={() => setDismissed((prev) => new Set([...prev, ...dismissable]))}
+            >
+              清除已完成
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+      {history.length ? (
+        matched.length ? (
+          <ol className="ef-history">
+            {matched.map((item) => (
+              <li key={item.id} className={`ef-hist-row is-${item.status}`}>
+                <span className="ef-hist-mark" aria-hidden="true">
+                  <Icon name={HISTORY_MARKS[item.status]} />
+                </span>
+                <div className="ef-hist-main">
+                  <p className="ef-hist-line">
+                    <span className="sr-only">{HISTORY_STATUS[item.status]}：</span>
+                    <b>{item.typeLabel}</b>
+                    <button
+                      type="button"
+                      className="ef-hist-title"
+                      title="在阅读页打开这篇论文"
+                      onClick={() => void onJump(item.paperId, item.domainId)}
+                    >
+                      {item.title}
+                    </button>
                   </p>
+                  {item.note ? (
+                    <p className="ef-hist-note" title={item.note}>
+                      {item.note}
+                    </p>
+                  ) : null}
+                </div>
+                <span className="ef-hist-side">
+                  <span title="结束时间">{formatClock(item.finishedAt, now)}</span>
+                  <span title="用时">{item.durationMs !== null ? `用时 ${formatSpan(item.durationMs)}` : "—"}</span>
+                </span>
+                {item.retryable ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="ef-hist-retry"
+                    onClick={() => void retryMineru(item.paperId)}
+                  >
+                    重新解析
+                  </Button>
                 ) : null}
-              </div>
-              <span className="ef-hist-side">
-                <span title="结束时间">{formatClock(item.finishedAt, now)}</span>
-                <span title="用时">{item.durationMs !== null ? `用时 ${formatSpan(item.durationMs)}` : "—"}</span>
-              </span>
-              {item.retryable ? (
-                <Button
-                  type="button"
-                  size="sm"
-                  className="ef-hist-retry"
-                  onClick={() => void retryMineru(item.paperId)}
-                >
-                  重新解析
-                </Button>
-              ) : null}
-            </li>
-          ))}
-        </ol>
+              </li>
+            ))}
+          </ol>
+        ) : (
+          <p className="ef-jobs-empty">没有符合条件的结束作业。</p>
+        )
       ) : (
         <p className="ef-jobs-empty">还没有结束的作业。</p>
       )}

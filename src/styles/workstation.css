@@ -3806,6 +3806,25 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 .ef-queue-more .ef-ico { width: 14px; height: 14px; }
 
 /* 最近结束：结果方格（完成绿勾 / 失败红叉 / 取消灰杠）+ 类型与标题 + 用时与时刻。 */
+/* 筛选行：级别 chips 复用日志面板的 .ef-log-chip，加标题 / 失败原因搜索与「清除已完成」。 */
+.ef-hist-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.ef-hist-tools .ef-log-chip { min-height: 24px; padding: 0 8px; }
+.ef-hist-tools input[type="search"] {
+  flex: 1;
+  min-width: 110px;
+  height: 24px;
+  padding: 0 8px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-body);
+  background: var(--pf-surface);
+  border: 1px solid var(--pf-line-strong);
+}
+.ef-hist-clear { margin-left: auto; min-height: 24px; font-size: var(--pf-fs-tag); }
 .ef-hist-row {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;

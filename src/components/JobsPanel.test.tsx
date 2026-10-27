@@ -199,6 +199,51 @@ describe("JobsPanel", () => {
     expect(actions.retryMineru).toHaveBeenCalledWith("p9");
   });
 
+  it("最近结束：类型筛选、只看失败、标题搜索与清除已完成", () => {
+    useField.setState({
+      jobs: [
+        job({
+          id: "e1",
+          paperId: "p9",
+          status: "error",
+          error: "Token 过期",
+          finishedAt: new Date(Date.now() - 1_000).toISOString(),
+        }),
+        job({ id: "d1", paperId: "p8", type: "prepareMeta", status: "done", finishedAt: new Date(Date.now() - 2_000).toISOString() }),
+        job({ id: "d2", paperId: "p7", status: "done", finishedAt: new Date(Date.now() - 3_000).toISOString() }),
+      ],
+    });
+    render(<JobsPanel />);
+    const history = screen.getByRole("region", { name: "最近结束的作业" });
+    // 默认 3 条全列出。
+    expect(within(history).getAllByRole("listitem")).toHaveLength(3);
+
+    // 只看 AI：补全完成的一条。
+    fireEvent.click(within(history).getByRole("button", { name: "AI" }));
+    expect(within(history).getAllByRole("listitem")).toHaveLength(1);
+    expect(within(history).getByText("补全论文信息")).toBeInTheDocument();
+
+    // 只看失败：失败的一条带原因。
+    fireEvent.click(within(history).getByRole("button", { name: "失败" }));
+    expect(within(history).getAllByRole("listitem")).toHaveLength(1);
+    expect(within(history).getByText("Token 过期")).toBeInTheDocument();
+
+    // 标题搜索无命中给空态。
+    fireEvent.change(within(history).getByRole("searchbox", { name: "搜索结束作业" }), {
+      target: { value: "不存在的标题" },
+    });
+    expect(within(history).getByText("没有符合条件的结束作业。")).toBeInTheDocument();
+
+    // 回到全部：清除已完成只留失败项。
+    fireEvent.click(within(history).getByRole("button", { name: "全部" }));
+    fireEvent.change(within(history).getByRole("searchbox", { name: "搜索结束作业" }), { target: { value: "" } });
+    fireEvent.click(within(history).getByRole("button", { name: "清除已完成" }));
+    expect(within(history).getAllByRole("listitem")).toHaveLength(1);
+    expect(within(history).getByText("Token 过期")).toBeInTheDocument();
+    // 已完成清掉后不再显示「清除已完成」入口。
+    expect(within(history).queryByRole("button", { name: "清除已完成" })).toBeNull();
+  });
+
   it("查不到书目（旧版 repo / 查询失败）时退回短编号，不报错", async () => {
     vi.mocked(repo.paperBriefs).mockRejectedValue(new Error("boom"));
     const batchId = queueBatch("mineru", ["abcd-1234", "ef01-5678"]);
