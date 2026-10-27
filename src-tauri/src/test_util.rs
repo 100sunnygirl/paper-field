@@ -16,3 +16,5 @@ pub fn unique_temp_dir(prefix: &str) -> PathBuf {
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
+
+pub mod http;

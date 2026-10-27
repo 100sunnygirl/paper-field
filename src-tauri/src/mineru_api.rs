@@ -32,6 +32,8 @@ pub const PROBE_BATCH_ID: &str = "pf-probe-000000000000";
 pub const MAX_FILE_BYTES: u64 = 200 * 1024 * 1024;
 
 pub struct ApiClient {
+    #[cfg(test)]
+    base_url: String,
     token: String,
     model_version: String,
     language: String,
@@ -42,11 +44,24 @@ pub struct ApiClient {
 impl ApiClient {
     pub fn new(cfg: &ApiCfg) -> Self {
         Self {
+            #[cfg(test)]
+            base_url: API_BASE.into(),
             token: cfg.token.trim().to_string(),
             model_version: cfg.model_version.clone(),
             language: cfg.language.clone(),
             enable_formula: cfg.enable_formula,
             enable_table: cfg.enable_table,
+        }
+    }
+
+    fn api_base(&self) -> &str {
+        #[cfg(test)]
+        {
+            &self.base_url
+        }
+        #[cfg(not(test))]
+        {
+            API_BASE
         }
     }
 
@@ -60,7 +75,7 @@ impl ApiClient {
             return Err("未配置 mineru.net API Token".into());
         }
         let client = api_client()?;
-        let url = extract_batch_url(PROBE_BATCH_ID);
+        let url = extract_batch_url(self.api_base(), PROBE_BATCH_ID);
         let response = client
             .get(&url)
             .bearer_auth(&self.token)
@@ -106,7 +121,7 @@ impl ApiClient {
         );
         let client = api_client()?;
         let response = client
-            .post(format!("{API_BASE}{PATH_FILE_URLS}"))
+            .post(format!("{}{PATH_FILE_URLS}", self.api_base()))
             .bearer_auth(&self.token)
             .json(&body)
             .send()
@@ -157,7 +172,7 @@ impl ApiClient {
 
     async fn fetch_batch(&self, batch_id: &str) -> Result<Value, String> {
         let client = api_client()?;
-        let url = extract_batch_url(batch_id);
+        let url = extract_batch_url(self.api_base(), batch_id);
         let response = client
             .get(&url)
             .bearer_auth(&self.token)
@@ -459,9 +474,9 @@ fn api_client() -> Result<reqwest::Client, String> {
         .map_err(|e| e.to_string())
 }
 
-pub fn extract_batch_url(batch_id: &str) -> String {
+fn extract_batch_url(base: &str, batch_id: &str) -> String {
     format!(
-        "{API_BASE}{}",
+        "{base}{}",
         PATH_EXTRACT_BATCH_FMT.replace("{batch_id}", batch_id)
     )
 }
@@ -590,7 +605,7 @@ mod tests {
     #[test]
     fn extract_batch_url_uses_batch_path() {
         assert_eq!(
-            extract_batch_url("abc123"),
+            extract_batch_url(API_BASE, "abc123"),
             "https://mineru.net/api/v4/extract-results/batch/abc123"
         );
     }
@@ -976,5 +991,146 @@ mod tests {
         });
         let shown = redact_url(err).to_string();
         assert!(!shown.contains("LEAK") && shown.contains("127.0.0.1:1/r.zip"), "{shown}");
+    }
+}
+
+#[cfg(test)]
+mod client_contract_tests {
+    use super::*;
+    use crate::test_util::http::{bounded, Response, Server};
+    use std::io::Write;
+
+    fn client(base: &str) -> ApiClient {
+        let mut client = ApiClient::new(&ApiCfg {
+            token: " fixture-token ".into(), model_version: "pipeline".into(),
+            language: "en".into(), enable_formula: true, enable_table: false,
+        });
+        client.base_url = base.into();
+        client
+    }
+
+    struct PdfFixture(std::path::PathBuf);
+    impl PdfFixture {
+        fn new() -> Self { Self(crate::test_util::unique_temp_dir("mineru-contract")) }
+        fn path(&self) -> std::path::PathBuf { self.0.join("paper.pdf") }
+    }
+    impl Drop for PdfFixture {
+        fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+    }
+
+    #[tokio::test]
+    async fn upload_and_poll_use_production_client_contract() {
+        bounded(async {
+            let server = Server::start(|base| vec![
+                Response::json(200, json!({"code":0,"data":{"batch_id":"batch-1","file_urls":[format!("{base}/signed-upload?signature=fixture")]}})),
+                Response::json(200, json!({})),
+                Response::json(200, json!({"code":0,"data":{"extract_result":[
+                    {"data_id":"paper-1","state":"running","extract_progress":{"extracted_pages":2,"total_pages":4}},
+                    {"data_id":"other","state":"done"}
+                ]}})),
+                Response::json(200, json!({"code":0,"data":{"extract_result":[{"data_id":"paper-1","state":"done"}]}})),
+            ]).await;
+            let pdf = PdfFixture::new();
+            let bytes = b"%PDF-1.4\nfixture\x00\xff";
+            fs::write(pdf.path(), bytes).unwrap();
+            let api = client(&server.base);
+            let batch = api.submit("paper-1", &pdf.path(), "1-4").await.unwrap();
+            assert_eq!(batch, "batch-1");
+            let polls = api.statuses(&batch, &["paper-1".into()]).await.unwrap();
+            assert_eq!(polls.len(), 1);
+            assert_eq!(polls[0].id, "paper-1");
+            assert_eq!(polls[0].status, "parsing");
+            assert_eq!(polls[0].progress.as_deref(), Some("2/4"));
+            assert_eq!(api.statuses(&batch, &[]).await.unwrap()[0].status, "done");
+            let requests = server.finish().await;
+            assert_eq!(requests[0].method, "POST");
+            assert_eq!(requests[0].path, PATH_FILE_URLS);
+            assert_eq!(requests[0].header("authorization"), Some("Bearer fixture-token"));
+            assert_eq!(requests[0].header("content-type"), Some("application/json"));
+            assert_eq!(requests[0].json(), json!({"model_version":"pipeline","language":"en","enable_formula":true,"enable_table":false,
+                "files":[{"name":"paper.pdf","is_ocr":true,"data_id":"paper-1","page_ranges":"1-4"}]}));
+            assert_eq!(requests[1].method, "PUT");
+            assert_eq!(requests[1].path, "/signed-upload?signature=fixture");
+            assert_eq!(requests[1].body, bytes);
+            assert_eq!(requests[1].header("authorization"), None, "API token must not leak to storage");
+            assert_eq!(requests[1].header("content-type"), None, "signed PUT is raw bytes");
+            for poll in &requests[2..] {
+                assert_eq!(poll.method, "GET");
+                assert_eq!(poll.path, "/api/v4/extract-results/batch/batch-1");
+                assert_eq!(poll.header("authorization"), Some("Bearer fixture-token"));
+            }
+        }).await;
+    }
+
+    #[tokio::test]
+    async fn health_and_poll_propagate_api_failures() {
+        bounded(async {
+            let server = Server::start(|_| vec![
+                Response::json(200, json!({"code":-60012,"msg":"not found"})),
+                Response::json(401, json!({"code":"A0202","msg":"invalid token"})),
+                Response::json(200, json!({"code":-60018,"msg":"quota exhausted"})),
+                Response { status: 200, headers: vec![], body: b"not-json".to_vec() },
+            ]).await;
+            let api = client(&server.base);
+            assert!(api.health().await.unwrap().contains("Token 有效"));
+            assert!(api.statuses("b", &[]).await.unwrap_err().contains("无效"));
+            assert!(api.statuses("b", &[]).await.unwrap_err().contains("额度"));
+            assert!(api.statuses("b", &[]).await.unwrap_err().contains("无法解析"));
+            let requests = server.finish().await;
+            assert_eq!(requests[0].path, format!("/api/v4/extract-results/batch/{PROBE_BATCH_ID}"));
+            assert!(requests.iter().all(|r| r.header("authorization") == Some("Bearer fixture-token")));
+        }).await;
+    }
+
+    #[tokio::test]
+    async fn upload_failure_is_not_reported_as_a_submitted_batch() {
+        bounded(async {
+            let server = Server::start(|base| vec![
+                Response::json(200, json!({"code":0,"data":{"batch_id":"b","file_urls":[format!("{base}/upload")]}})),
+                Response::json(403, json!({"error":"expired signature"})),
+            ]).await;
+            let pdf = PdfFixture::new();
+            fs::write(pdf.path(), b"%PDF-fixture").unwrap();
+            let error = client(&server.base).submit("p", &pdf.path(), "all").await.unwrap_err();
+            assert!(error.contains("上传 PDF 失败") && error.contains("403"), "{error}");
+            let requests = server.finish().await;
+            assert!(requests[0].json()["files"][0].get("page_ranges").is_none());
+        }).await;
+    }
+
+    #[tokio::test]
+    async fn markdown_keeps_result_url_guard_and_reports_incomplete_results() {
+        bounded(async {
+            let server = Server::start(|base| vec![
+                Response::json(200, json!({"code":0,"data":{"extract_result":[{"state":"running"}]}})),
+                Response::json(200, json!({"code":0,"data":{"extract_result":[{"state":"failed","err_msg":"fixture parse error"}]}})),
+                Response::json(200, json!({"code":0,"data":{"extract_result":[{"state":"done","full_zip_url":format!("{base}/must-not-download")}]}})),
+            ]).await;
+            let api = client(&server.base);
+            assert!(api.markdown("b").await.unwrap_err().contains("尚未完成"));
+            assert!(api.markdown("b").await.unwrap_err().contains("fixture parse error"));
+            assert_eq!(api.markdown("b").await.unwrap_err(), "结果下载地址必须是 https");
+            assert_eq!(server.finish().await.len(), 3);
+        }).await;
+    }
+
+    #[tokio::test]
+    async fn production_downloader_reads_zip_without_api_authorization() {
+        bounded(async {
+            let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+            zip.start_file("paper/full.md", zip::write::SimpleFileOptions::default()).unwrap();
+            zip.write_all("# 论文\n\nFixture result".as_bytes()).unwrap();
+            let body = zip.finish().unwrap().into_inner();
+            let server = Server::start(|_| vec![Response { status: 200, headers: vec![], body }]).await;
+            // Only the first URL/DNS guard is injected for loopback. The actual download,
+            // redirect validation, response limits and ZIP extraction stay production code.
+            let url = reqwest::Url::parse(&format!("{}/result.zip?signature=fixture", server.base)).unwrap();
+            let markdown = download_pinned(url, ResultLimits::default(), false, |_| false, system_resolve).await.unwrap();
+            assert_eq!(markdown, "# 论文\n\nFixture result");
+            let requests = server.finish().await;
+            assert_eq!(requests[0].method, "GET");
+            assert_eq!(requests[0].path, "/result.zip?signature=fixture");
+            assert_eq!(requests[0].header("authorization"), None);
+        }).await;
     }
 }
