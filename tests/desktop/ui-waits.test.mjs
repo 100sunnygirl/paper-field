@@ -30,3 +30,8 @@ test('does not accept hidden expected text or a visible wrong paper', async () =
     await assert.rejects(waitForVisibleText(driver([state]), '#paper-title', 'smoke'), /condition not met/);
   }
 });
+
+test('ignores only surrounding rendered whitespace, not content differences', async () => {
+  await waitForVisibleText(driver([[true, 'smoke\n']]), '#paper-title', 'smoke');
+  await assert.rejects(waitForVisibleText(driver([[true, 'smo ke\n']]), '#paper-title', 'smoke'), /condition not met/);
+});

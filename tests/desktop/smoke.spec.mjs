@@ -61,8 +61,8 @@ describe(`real Tauri desktop — ${phase}`, () => {
     } else {
       throw new Error(`Unknown phase: ${phase}`);
     }
-    await browser.waitUntil(async () => (await $('#note-summary .ef-note-text').getText()) === note,
-      { timeoutMsg: 'Saved note did not appear in the native webview' });
+    // Require visible rendered text; verify.py separately asserts exact SQLite bytes.
+    await waitForVisibleText(browser, '#note-summary .ef-note-text', note);
     await openPaperList();
     assert.equal(await $('[aria-label^="切换研究领域"]').getText(), domain);
   });
