@@ -23,10 +23,11 @@ fi
 npm install --no-fund --no-audit --save-exact "playwright@${PLAYWRIGHT_VERSION}"
 npx playwright install chromium
 
+# sudo resets PATH, so npx has to be resolved in the caller's environment.
 if [[ "$(id -u)" -eq 0 ]]; then
   npx playwright install-deps chromium
 elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
-  sudo -n npx playwright install-deps chromium
+  sudo -n env "PATH=${PATH}" npx playwright install-deps chromium
 else
   echo "Playwright system libraries were not installed (no root). If chromium fails to launch, rerun setup-tools.sh as a user who can sudo." >&2
 fi
