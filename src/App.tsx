@@ -71,6 +71,8 @@ export default function App() {
   const dialog = useField((s) => s.dialog);
   const setMode = useField((s) => s.setMode);
   const setJobsOpen = useField((s) => s.setJobsOpen);
+  const jobsPinned = useField((s) => s.jobsPinned);
+  const jobsOpen = useField((s) => s.jobsOpen);
   const [focus, setFocus] = useState(false);
   const [listOpen, setListOpen] = useState(false);
   const [contextOpen, setContextOpen] = useState(false);
@@ -102,7 +104,8 @@ export default function App() {
         closeDialog();
         setListOpen(false);
         setContextOpen(false);
-        setJobsOpen(false);
+        // 钉住的作业面板是布局的一部分（右侧常驻栏），Esc 不再把它当浮层收起。
+        if (!useField.getState().jobsPinned) setJobsOpen(false);
         return;
       }
       const meta = event.metaKey || event.ctrlKey;
@@ -218,6 +221,8 @@ export default function App() {
     "ef-shell",
     focus ? "is-focus" : "",
     listOpen ? "is-list-open" : "",
+    // 钉住且打开时，作业面板占布局最右一列（不再浮在正文上）。
+    jobsPinned && jobsOpen ? "is-jobs-pinned" : "",
   ]
     .filter(Boolean)
     .join(" ");

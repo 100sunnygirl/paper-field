@@ -574,4 +574,30 @@ describe("App 级入口", () => {
     fireEvent.keyDown(window, { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "作业面板" })).toBeNull());
   });
+
+  it("钉住为右侧常驻栏：占一列布局，Esc 不收起，取消钉住后恢复", async () => {
+    useField.setState(useField.getInitialState(), true);
+    render(<App />);
+    await screen.findByRole("button", { name: /队列空闲/ });
+
+    fireEvent.keyDown(window, { key: "j", ctrlKey: true });
+    const panel = await screen.findByRole("dialog", { name: "作业面板" });
+    fireEvent.click(within(panel).getByRole("button", { name: "钉住为右侧常驻栏" }));
+
+    expect(useField.getState().jobsPinned).toBe(true);
+    expect(panel.className).toContain("is-pinned");
+    expect(document.querySelector(".ef-shell")!.className).toContain("is-jobs-pinned");
+
+    // 钉住的面板是布局一部分：Esc 不再当作浮层收起。
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(useField.getState().jobsOpen).toBe(true);
+    expect(screen.getByRole("dialog", { name: "作业面板" })).toBeInTheDocument();
+
+    // 取消钉住：回到浮动面板语义。
+    fireEvent.click(within(panel).getByRole("button", { name: "取消钉住（回到浮动面板）" }));
+    expect(useField.getState().jobsPinned).toBe(false);
+    expect(document.querySelector(".ef-shell")!.className).not.toContain("is-jobs-pinned");
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "作业面板" })).toBeNull());
+  });
 });

@@ -486,6 +486,47 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 .ef-shell.is-focus .ef-context { display: none; }
 .ef-shell.is-focus .ef-context-toggle { display: inline-flex; }
 .ef-shell[data-mode="system"] .ef-nav { display: none; }
+/* 钉住的作业面板：作为最右一列参与网格（rail / nav / read / jobs），不再浮在正文上。
+   Esc 不收起（App 侧判定）；关闭面板时这列也跟着消失。 */
+.ef-shell.is-jobs-pinned {
+  --pf-jobs-col: 336px;
+  grid-template-columns: var(--pf-rail-width) var(--pf-paper-list-width) minmax(0, 1fr) var(--pf-jobs-col);
+  grid-template-areas:
+    "dock dock dock dock"
+    "rail nav read jobs"
+    "status status status status";
+}
+.ef-shell.is-focus.is-jobs-pinned {
+  grid-template-columns: var(--pf-rail-width) minmax(0, 1fr) var(--pf-jobs-col);
+  grid-template-areas:
+    "dock dock dock"
+    "rail read jobs"
+    "status status status";
+}
+.ef-shell[data-mode="system"].is-jobs-pinned {
+  grid-template-columns: var(--pf-rail-width) minmax(0, 1fr) var(--pf-jobs-col);
+  grid-template-areas:
+    "dock dock dock"
+    "rail read jobs"
+    "status status status";
+}
+.ef-shell.is-jobs-pinned .ef-jobs {
+  position: static;
+  grid-area: jobs;
+  z-index: auto;
+  width: auto;
+  max-height: none;
+  border-top-width: 1px;
+  border-left: 1px solid var(--pf-ink);
+  box-shadow: none;
+  animation: none;
+}
+.ef-shell.is-jobs-pinned .ef-jobs::before { display: none; }
+.ef-jobs.is-pinned .ef-icon-btn[aria-pressed="true"] {
+  border-color: var(--pf-ink);
+  background: var(--pf-ink);
+  color: var(--pf-on-dark);
+}
 
 /* ---- Dock ---- */
 .ef-dock {

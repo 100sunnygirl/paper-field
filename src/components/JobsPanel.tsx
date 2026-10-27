@@ -113,6 +113,8 @@ function JobsPanelBody() {
   const jobs = useField((s) => s.jobs);
   const settings = useField((s) => s.settings);
   const setJobsOpen = useField((s) => s.setJobsOpen);
+  const jobsPinned = useField((s) => s.jobsPinned);
+  const setJobsPinned = useField((s) => s.setJobsPinned);
   const selectDomain = useField((s) => s.selectDomain);
   const selectPaper = useField((s) => s.selectPaper);
   const activity = useSyncExternalStore(subscribeActivity, getActivity);
@@ -151,7 +153,7 @@ function JobsPanelBody() {
     <section
       ref={panelRef}
       id="jobs-panel"
-      className="ef-jobs"
+      className={`ef-jobs${jobsPinned ? " is-pinned" : ""}`}
       role="dialog"
       aria-modal="false"
       aria-labelledby={titleId}
@@ -170,6 +172,17 @@ function JobsPanelBody() {
         <span className="kbd" aria-hidden="true">
           {shortcut("J")}
         </span>
+        <Button
+          type="button"
+          variant="text"
+          className="ef-icon-btn"
+          aria-pressed={jobsPinned}
+          aria-label={jobsPinned ? "取消钉住（回到浮动面板）" : "钉住为右侧常驻栏"}
+          title={jobsPinned ? "取消钉住（回到浮动面板）" : "钉住为右侧常驻栏：不挡正文，Esc 不再收起"}
+          onClick={() => setJobsPinned(!jobsPinned)}
+        >
+          <Icon name="pin" />
+        </Button>
         <Button
           type="button"
           variant="text"

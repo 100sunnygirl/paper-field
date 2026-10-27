@@ -136,6 +136,9 @@ interface FieldState {
   loadError: string | null;
   /** 作业面板（状态条「作业」入口 / ⌘J）：非模态浮层，不拦截阅读区操作。 */
   jobsOpen: boolean;
+  /** 面板钉住为右侧常驻栏：不再随 Esc / ⌘J 收起为浮层，占一列布局。 */
+  jobsPinned: boolean;
+  setJobsPinned: (on: boolean) => void;
   /**
    * 深链：跳到设置页某张卡片（anchor = 卡片 id，见 SystemView 的 SYSTEM_CARDS）。
    * returnTo 记录跳转前的位置，设置页据此提供「返回原论文」入口；null 表示自然进入。
@@ -348,6 +351,7 @@ export const useField = create<FieldState>((set, get) => ({
   drafts: loadDrafts(),
   loadError: null,
   jobsOpen: false,
+  jobsPinned: false,
   systemFocus: null,
   settingsLeaveGuard: null,
   pendingMode: null,
@@ -374,6 +378,7 @@ export const useField = create<FieldState>((set, get) => ({
     persistDrafts(drafts);
   },
   setJobsOpen: (open) => set({ jobsOpen: open }),
+  setJobsPinned: (on) => set({ jobsPinned: on }),
 
   openSystemCard: (anchor) => {
     const state = get();
