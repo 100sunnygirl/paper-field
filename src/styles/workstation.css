@@ -1576,6 +1576,41 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   line-height: 1.6;
   white-space: nowrap;
 }
+/* 折叠开关：块头最左的安静图标按钮，折叠时箭头转向右。 */
+.ef-note-fold {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--pf-muted);
+  border-radius: var(--pf-radius);
+  transition: background-color var(--pf-motion), color var(--pf-motion);
+}
+.ef-note-fold .ef-ico { width: 15px; height: 15px; transition: transform var(--pf-direct); }
+.ef-note-fold:hover { background: var(--pf-hover-flat); color: var(--pf-ink); }
+.ef-note-fold[aria-expanded="false"] .ef-ico { transform: rotate(-90deg); }
+.ef-note-collapsed-hint { margin: 0; font-size: var(--pf-fs-caption); color: var(--pf-muted); }
+/* 块排序：上移 / 下移一对安静图标按钮，位于块头末尾。 */
+.ef-note-move { display: inline-flex; gap: 2px; margin-left: 2px; }
+.ef-note-move button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--pf-muted);
+  border-radius: var(--pf-radius);
+  transition: background-color var(--pf-motion), color var(--pf-motion);
+}
+.ef-note-move button .ef-ico { width: 14px; height: 14px; }
+.ef-note-move button:hover:not(:disabled) { background: var(--pf-hover-flat); color: var(--pf-ink); }
+.ef-note-move button:disabled { opacity: 0.35; cursor: default; }
 .ef-note {
   position: relative;
   border-bottom: 1px solid var(--pf-divider);

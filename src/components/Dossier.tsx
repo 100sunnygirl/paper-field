@@ -12,6 +12,7 @@ import {
   type FulltextSelection,
 } from "../lib/fulltext";
 import { onMarkdownClick, renderMarkdown } from "../lib/markdown";
+import { loadNoteLayout, moveNoteKind as moveNoteKindInOrder, saveNoteLayout, type NoteLayout } from "../lib/noteLayout";
 import { openLocalPdf } from "../lib/mineru";
 import {
   JOB_STATUS_LABELS,
@@ -40,6 +41,11 @@ function NoteEditor({
   onStart,
   onSavedNext,
   fulltextPick,
+  collapsed,
+  onToggleCollapsed,
+  onMove,
+  canMoveUp,
+  canMoveDown,
 }: {
   kind: NoteKind;
   index: number;
@@ -49,6 +55,13 @@ function NoteEditor({
   onSavedNext: () => void;
   /** 解析全文里最近一次选中的片段：供「引用解析全文」插入光标处。 */
   fulltextPick: FulltextSelection | null;
+  /** 本机记住的折叠偏好；编辑中不可折叠（折叠开关隐藏）。 */
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
+  /** 上移 / 下移这块笔记的显示顺序（本机记住）。 */
+  onMove: (direction: "up" | "down") => void;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
 }) {
   const saveNote = useField((s) => s.saveNote);
   const setNoteDraft = useField((s) => s.setNoteDraft);
@@ -165,6 +178,18 @@ function NoteEditor({
       id={`note-${kind}`}
     >
       <div className="ef-note-head">
+        {editing ? null : (
+          <button
+            type="button"
+            className="ef-note-fold"
+            aria-expanded={!collapsed}
+            aria-label={collapsed ? `展开${label.zh}` : `折叠${label.zh}`}
+            title={collapsed ? `展开${label.zh}` : `折叠${label.zh}`}
+            onClick={onToggleCollapsed}
+          >
+            <Icon name="down" />
+          </button>
+        )}
         <span className="ef-note-number" aria-hidden="true">
           {pad2(index + 1)}
         </span>
@@ -192,6 +217,26 @@ function NoteEditor({
             编辑
           </button>
         ) : null}
+        <span className="ef-note-move">
+          <button
+            type="button"
+            aria-label={`上移${label.zh}`}
+            title={`上移${label.zh}`}
+            disabled={!canMoveUp}
+            onClick={() => onMove("up")}
+          >
+            <Icon name="up" />
+          </button>
+          <button
+            type="button"
+            aria-label={`下移${label.zh}`}
+            title={`下移${label.zh}`}
+            disabled={!canMoveDown}
+            onClick={() => onMove("down")}
+          >
+            <Icon name="down" />
+          </button>
+        </span>
       </div>
       {editing ? (
         <>
@@ -240,6 +285,11 @@ function NoteEditor({
             </Button>
           </div>
         </>
+      ) : collapsed ? (
+        // 折叠态只留块头：一行字数提示，点折叠开关展开。
+        <p className="ef-note-collapsed-hint">
+          {value.trim() ? `${[...value.trim()].length} 字 · 已折叠` : "未写 · 已折叠"}
+        </p>
       ) : value.trim() ? (
         <div className="ef-note-text ef-md" onClick={onMarkdownClick} dangerouslySetInnerHTML={{ __html: renderMarkdown(value) }} />
       ) : (
@@ -365,10 +415,13 @@ function ContextPanel({
   paper,
   activeSection,
   onJump,
+  noteOrder,
 }: {
   paper: PaperDetail;
   activeSection: string;
   onJump: (id: string) => void;
+  /** 笔记块的自定义显示顺序（本页目录与正文保持一致）。 */
+  noteOrder: NoteKind[];
 }) {
   const settings = useField((s) => s.settings);
   const jobs = useField((s) => s.jobs);
@@ -547,7 +600,7 @@ function ContextPanel({
           >
             <span className="mono">—</span>解析全文
           </a>
-          {NOTE_DISPLAY_ORDER.map((kind, i) => (
+          {noteOrder.map((kind, i) => (
             <a
               key={kind}
               href={`#note-${kind}`}
@@ -667,8 +720,25 @@ export function ReadingStage({
   const [activeSection, setActiveSection] = useState("abstract");
   // 解析全文里最近一次选中：供「摘到笔记」浮条与笔记编辑器的「引用解析全文」共享。
   const [fulltextPick, setFulltextPick] = useState<FulltextSelection | null>(null);
+  // 五块笔记的显示布局（顺序 + 折叠）：本机偏好，改动即存。
+  const [noteLayout, setNoteLayout] = useState<NoteLayout>(() => loadNoteLayout());
   const scrollRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    saveNoteLayout(noteLayout);
+  }, [noteLayout]);
+
+  function toggleNoteCollapsed(kind: NoteKind) {
+    setNoteLayout((prev) => ({
+      ...prev,
+      collapsed: { ...prev.collapsed, [kind]: !prev.collapsed[kind] },
+    }));
+  }
+
+  function moveNoteBlock(kind: NoteKind, direction: "up" | "down") {
+    setNoteLayout((prev) => ({ ...prev, order: moveNoteKindInOrder(prev.order, kind, direction) }));
+  }
 
   useEffect(() => {
     setMenuOpen(false);
@@ -749,9 +819,10 @@ export function ReadingStage({
   /** ⌘Enter 保存成功后：跳到当前块之后的下一块空笔记（写完的块不再打扰）。 */
   function startNextEmptyNote(fromKind: NoteKind) {
     if (!paper) return;
-    const start = NOTE_DISPLAY_ORDER.indexOf(fromKind);
-    for (let step = 1; step <= NOTE_DISPLAY_ORDER.length; step += 1) {
-      const kind = NOTE_DISPLAY_ORDER[(start + step) % NOTE_DISPLAY_ORDER.length];
+    const order = noteLayout.order;
+    const start = order.indexOf(fromKind);
+    for (let step = 1; step <= order.length; step += 1) {
+      const kind = order[(start + step) % order.length];
       const content = useField.getState().drafts[paper.id]?.[kind] ?? paper.notes[kind].content;
       if (!content.trim()) {
         startEdit(kind);
@@ -816,6 +887,7 @@ export function ReadingStage({
       paper={paper}
       activeSection={activeSection}
       onJump={jump}
+      noteOrder={noteLayout.order}
     />
   );
 
@@ -1027,7 +1099,7 @@ export function ReadingStage({
               ) : null}
             </div>
             <p className="ef-notes-caption">每块笔记都标注来源：手动笔记或 AI 起草；AI 不会静默覆盖你改过的笔记。</p>
-            {NOTE_DISPLAY_ORDER.map((kind, index) => (
+            {noteLayout.order.map((kind, index) => (
               <NoteEditor
                 key={kind}
                 kind={kind}
@@ -1036,6 +1108,11 @@ export function ReadingStage({
                 onStart={() => startEdit(kind)}
                 onSavedNext={() => startNextEmptyNote(kind)}
                 fulltextPick={fulltextPick}
+                collapsed={Boolean(noteLayout.collapsed[kind])}
+                onToggleCollapsed={() => toggleNoteCollapsed(kind)}
+                onMove={(direction) => moveNoteBlock(kind, direction)}
+                canMoveUp={index > 0}
+                canMoveDown={index < noteLayout.order.length - 1}
               />
             ))}
             <details className="ef-fulltext" id="fulltext">
@@ -1103,7 +1180,7 @@ export function ReadingStage({
         onClose={onToggleContext}
         className="context-drawer"
       >
-        <ContextPanel paper={paper} activeSection={activeSection} onJump={jump} />
+        <ContextPanel paper={paper} activeSection={activeSection} onJump={jump} noteOrder={noteLayout.order} />
       </Dialog>
     </section>
   );

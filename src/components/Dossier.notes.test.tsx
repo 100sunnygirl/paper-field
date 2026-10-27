@@ -73,6 +73,7 @@ beforeAll(() => {
 
 beforeEach(() => {
   useField.setState(useField.getInitialState(), true);
+  localStorage.removeItem("paper-field.note-layout");
   vi.mocked(repo.updateNote).mockClear();
   vi.mocked(repo.getPaper).mockImplementation(async () => paper() as never);
 });
@@ -194,6 +195,68 @@ describe("ReadingStage · 笔记失焦自动落库", () => {
     await waitFor(() => expect(useField.getState().flash?.tone).toBe("error"));
     expect(useField.getState().drafts.p1?.summary).toBe("会保存失败的内容");
     expect(await screen.findByText("保存失败，输入已保留，可重试。")).toBeInTheDocument();
+  });
+});
+
+describe("ReadingStage · 笔记块折叠与显示顺序（本机记忆）", () => {
+  function noteHeadingTexts(): string[] {
+    return Array.from(document.querySelectorAll(".ef-note-head h3")).map((el) => el.textContent ?? "");
+  }
+
+  it("默认五块按 总结 → 亮点 → 不足 → 启示 → 备注 排列，全部展开", () => {
+    useField.setState({ mode: "field", paper: paper({ summary: "内容" }), selectedPaperId: "p1" });
+    renderStage();
+    expect(noteHeadingTexts()).toEqual(["总结", "亮点", "不足", "启示", "备注"]);
+    expect(document.querySelector("#note-summary .ef-note-text")).toBeTruthy();
+  });
+
+  it("点折叠开关：正文收起留字数提示，偏好写进本机 localStorage", () => {
+    useField.setState({ mode: "field", paper: paper({ summary: "六个字的总结" }), selectedPaperId: "p1" });
+    renderStage();
+    fireEvent.click(screen.getByRole("button", { name: "折叠总结" }));
+    expect(document.querySelector("#note-summary .ef-note-text")).toBeNull();
+    expect(document.querySelector("#note-summary .ef-note-collapsed-hint")?.textContent).toContain("字 · 已折叠");
+    const saved = JSON.parse(localStorage.getItem("paper-field.note-layout")!);
+    expect(saved.collapsed.summary).toBe(true);
+    // 再点展开恢复
+    fireEvent.click(screen.getByRole("button", { name: "展开总结" }));
+    expect(document.querySelector("#note-summary .ef-note-text")).toBeTruthy();
+    expect(JSON.parse(localStorage.getItem("paper-field.note-layout")!).collapsed.summary).toBe(false);
+  });
+
+  it("上移 / 下移调整显示顺序：正文、序号与本页目录同步，本机记住", () => {
+    useField.setState({ mode: "field", paper: paper({ summary: "内容" }), selectedPaperId: "p1" });
+    renderStage();
+    fireEvent.click(screen.getByRole("button", { name: "上移亮点" }));
+    expect(noteHeadingTexts()).toEqual(["亮点", "总结", "不足", "启示", "备注"]);
+    // 序号跟随新位置：亮点变 01
+    expect(document.querySelector("#note-highlights .ef-note-number")?.textContent).toBe("01");
+    // 本页目录同步新顺序
+    const toc = document.querySelector('.ef-toc a[href="#note-highlights"]')!;
+    expect(toc.querySelector(".mono")?.textContent).toBe("01");
+    expect(JSON.parse(localStorage.getItem("paper-field.note-layout")!).order[0]).toBe("highlights");
+    // 首块的上移禁用
+    expect(screen.getByRole("button", { name: "上移亮点" })).toBeDisabled();
+  });
+
+  it("重启（重新挂载）后按本机偏好恢复顺序与折叠", () => {
+    localStorage.setItem(
+      "paper-field.note-layout",
+      JSON.stringify({ order: ["remarks", "summary", "highlights", "weaknesses", "implications"], collapsed: { remarks: true } }),
+    );
+    useField.setState({ mode: "field", paper: paper({ remarks: "备注内容", summary: "总结内容" }), selectedPaperId: "p1" });
+    renderStage();
+    expect(noteHeadingTexts()).toEqual(["备注", "总结", "亮点", "不足", "启示"]);
+    expect(document.querySelector("#note-remarks .ef-note-text")).toBeNull();
+    expect(document.querySelector("#note-remarks .ef-note-collapsed-hint")).toBeTruthy();
+  });
+
+  it("编辑中不显示折叠开关", () => {
+    useField.setState({ mode: "field", paper: paper({ summary: "内容" }), selectedPaperId: "p1" });
+    renderStage();
+    fireEvent.click(screen.getByRole("button", { name: "编辑总结" }));
+    expect(screen.queryByRole("button", { name: "折叠总结" })).toBeNull();
+    expect(screen.getByLabelText("总结内容")).toBeInTheDocument();
   });
 });
 
