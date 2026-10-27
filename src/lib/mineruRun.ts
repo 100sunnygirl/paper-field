@@ -102,6 +102,25 @@ export async function stopBatch(batchId: number): Promise<number> {
   return stopped;
 }
 
+/**
+ * 「清空其余」：只保留下一篇还没开始的论文，其余排队论文全部移出本批（解析类写库 cancelled，
+ * AI 类只出列）。正在处理的一篇不动。返回移出的篇数。
+ */
+export async function clearBatchRest(batchId: number): Promise<number> {
+  const batch = getActivity().batches.find((item) => item.id === batchId);
+  if (!batch) return 0;
+  const pending = batch.paperIds.filter((id) => !batch.results[id] && id !== batch.currentPaperId);
+  const rest = pending.slice(1);
+  for (const id of rest) {
+    if (batch.kind === "mineru") await dequeueFromBatch(batchId, id);
+    else {
+      dequeued.add(queueKey(batchId, id));
+      endBatchItem(batchId, id, "cancelled");
+    }
+  }
+  return rest.length;
+}
+
 function enqueueOn(which: "mineru" | "meta", task: () => Promise<void>): void {
   const run = (chain: Promise<void>) =>
     chain.then(task).catch((err: unknown) => {
@@ -422,11 +441,23 @@ export async function runMineruBatch(
     let fail = 0;
     let consecutiveFails = 0;
     let pausedCount = 0;
-    for (const [index, paperId] of paperIds.entries()) {
+    // 每轮按批次「当前」的顺序取下一篇还没处理的论文：作业面板里的置顶 / 上移 / 下移
+    // 只改 activity 批次的 paperIds 顺序，这里跟着走，排队调整立即生效。
+    const handled = new Set<string>();
+    const remaining = (): string[] => {
+      const batch = getActivity().batches.find((item) => item.id === id);
+      const order = batch ? batch.paperIds : paperIds;
+      return order.filter((pid) => !handled.has(pid) && !batch?.results[pid]);
+    };
+    for (;;) {
+      const next = remaining();
+      if (!next.length) break;
       if (consecutiveFails >= CONSECUTIVE_FAIL_LIMIT) {
-        pausedCount = await pauseRemaining(id, paperIds.slice(index));
+        pausedCount = await pauseRemaining(id, next);
         break;
       }
+      const paperId = next[0];
+      handled.add(paperId);
       // 作业面板「移出队列」的论文：轮到时直接出列，不在面板上闪一下「处理中」；
       // 库里状态在出列时已写成 cancelled，重启或保存设置后不会被自动重新提交。
       if (dequeued.has(queueKey(id, paperId))) {
@@ -507,18 +538,29 @@ export async function backfillMeta(host: Host): Promise<void> {
   let state: "done" | "halted" = "halted";
   let filled = 0;
   let consecutiveFails = 0;
+  // 与解析批次同构：每轮按批次当前顺序取下一篇（面板里的置顶 / 上移 / 下移立即生效）。
+  const handled = new Set<string>();
+  const remaining = (): string[] => {
+    const batch = getActivity().batches.find((item) => item.id === batchId);
+    const order = batch ? batch.paperIds : ids;
+    return order.filter((pid) => !handled.has(pid) && !batch?.results[pid]);
+  };
   try {
-    for (const id of ids) {
-      if (dequeued.has(queueKey(batchId, id))) {
-        endBatchItem(batchId, id, "cancelled");
-        continue;
-      }
+    for (;;) {
+      const next = remaining();
+      if (!next.length) break;
       if (consecutiveFails >= META_FAIL_LIMIT) {
         host.flash(
           "error",
           `AI 补全连续失败 ${consecutiveFails} 篇，已暂停剩余论文。请在设置页检查 AI 服务（Key、地址、模型），之后保存设置会再试一次。`,
         );
         return;
+      }
+      const id = next[0];
+      handled.add(id);
+      if (dequeued.has(queueKey(batchId, id))) {
+        endBatchItem(batchId, id, "cancelled");
+        continue;
       }
       beginBatchItem(batchId, id);
       const result = await autoPrepare(host, id);

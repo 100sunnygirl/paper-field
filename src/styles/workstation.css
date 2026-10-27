@@ -3725,15 +3725,16 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   border: 1px solid var(--pf-divider);
 }
 .ef-queue-row {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   min-height: 36px;
   padding: 0 6px 0 12px;
   border-bottom: 1px solid var(--pf-divider);
   font-size: var(--pf-fs-caption);
 }
+/* 标题占满剩余宽度，把类型 / 调序 / 移出控件推到行尾（有无调序控件都对齐）。 */
+.ef-queue-row .ef-queue-title { flex: 1; }
 .ef-queue-row:last-child,
 .ef-hist-row:last-child { border-bottom: 0; }
 .ef-queue-index { font-size: var(--pf-fs-tag); color: var(--pf-muted); }
@@ -3746,6 +3747,44 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 }
 .ef-queue-meta { color: var(--pf-muted); white-space: nowrap; }
 .ef-queue-row.is-next .ef-queue-meta { color: var(--pf-ink); }
+/* 调序控件：置顶 / 上移 / 下移，只在同批排队 ≥ 2 篇时出现；text 按钮缩到行高内。 */
+.ef-queue-move { display: inline-flex; align-items: center; gap: 1px; }
+.ef-queue-move .ef-btn { min-height: 24px; padding: 0 4px; font-size: var(--pf-fs-tag); }
+.ef-queue-move .ef-ico { width: 12px; height: 12px; }
+/* 队列工具行：搜索 + 类型 / 领域筛选 + 命中计数；与日志筛选条同一套写法。 */
+.ef-queue-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ef-queue-tools input[type="search"] {
+  flex: 1;
+  min-width: 0;
+}
+.ef-queue-tools select { flex: none; }
+.ef-queue-match {
+  flex: none;
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-muted);
+  font-variant-numeric: tabular-nums;
+}
+.ef-queue-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.ef-queue-domains {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-muted);
+}
+.ef-queue-clear-note { flex: 1; min-width: 120px; font-size: var(--pf-fs-caption); color: var(--pf-secondary); }
+.ef-queue-clear { margin-left: auto; }
+.ef-queue-clear-note + .ef-btn-danger { flex: none; }
 .ef-queue-remove {
   display: inline-grid;
   place-items: center;

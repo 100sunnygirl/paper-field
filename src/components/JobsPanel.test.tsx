@@ -61,6 +61,8 @@ const actions = {
   selectPaper: vi.fn(async () => undefined),
   dequeueMineruPaper: vi.fn(),
   stopMineruBatch: vi.fn(async () => undefined),
+  reorderQueue: vi.fn(),
+  clearQueueRest: vi.fn(async () => undefined),
 };
 
 beforeEach(() => {
@@ -68,6 +70,7 @@ beforeEach(() => {
   useField.setState({ ...actions, jobsOpen: true });
   Object.values(actions).forEach((fn) => fn.mockClear());
   resetActivity();
+  localStorage.removeItem("paper-field.jobs-queue-expanded");
   vi.mocked(repo.paperBriefs).mockResolvedValue([]);
 });
 
@@ -204,6 +207,82 @@ describe("JobsPanel", () => {
     render(<JobsPanel />);
     expect(await screen.findByText("论文 EF01")).toBeInTheDocument();
     expect(getActivity().batches).toHaveLength(1);
+  });
+});
+
+describe("排队总览与调度", () => {
+  /** 10 篇排队（p1 处理中）：默认展示 6 篇，其余折叠并给领域分布。 */
+  async function setupQueue() {
+    const ids = Array.from({ length: 10 }, (_, i) => `p${i + 1}`);
+    vi.mocked(repo.paperBriefs).mockResolvedValue(
+      ids.slice(1).map((id, i) => ({
+        id,
+        title: `Title ${id}`,
+        titleZh: `第${id}篇`,
+        domainId: i < 7 ? "d-1" : "d-2",
+        domainName: i < 7 ? "多模态" : "指令对齐",
+        domainCode: "MM-01",
+      })),
+    );
+    const batchId = queueBatch("mineru", ids);
+    startBatch(batchId);
+    beginBatchItem(batchId, "p1");
+    render(<JobsPanel />);
+    const queue = await screen.findByRole("region", { name: "排队中的论文" });
+    return { batchId, queue };
+  }
+
+  it("默认 6 篇 + 「还有 N 篇」带领域分布；展开记住偏好", async () => {
+    const { queue } = await setupQueue();
+    // p1 处理中：队列里 9 篇，默认展示 6 篇。
+    expect(within(queue).getAllByText(/· 待解析/)).toHaveLength(6);
+    expect(within(queue).getByRole("button", { name: /还有 3 篇/ })).toBeInTheDocument();
+    // 折叠的 3 篇按领域计数（p8 多模态、p9/p10 指令对齐），按数量从多到少排。
+    expect(within(queue).getByText("指令对齐 2 · 多模态 1")).toBeInTheDocument();
+
+    fireEvent.click(within(queue).getByRole("button", { name: /还有 3 篇/ }));
+    expect(within(queue).getAllByText(/· 待解析/)).toHaveLength(9);
+    expect(within(queue).getByRole("button", { name: "收起" })).toBeInTheDocument();
+    // 展开偏好写入本机：重新挂载仍然全量展开。
+    expect(localStorage.getItem("paper-field.jobs-queue-expanded")).toBe("1");
+    fireEvent.click(within(queue).getByRole("button", { name: "收起" }));
+    expect(localStorage.getItem("paper-field.jobs-queue-expanded")).toBe(null);
+  });
+
+  it("标题搜索与类型筛选：命中全部列出，无命中给空态", async () => {
+    const { queue } = await setupQueue();
+    fireEvent.change(within(queue).getByRole("searchbox", { name: "搜索排队论文标题" }), {
+      target: { value: "p5" },
+    });
+    expect(within(queue).getAllByText(/· 待解析/)).toHaveLength(1);
+    expect(within(queue).getByText("1 / 9 篇")).toBeInTheDocument();
+
+    fireEvent.change(within(queue).getByRole("combobox", { name: "排队类型筛选" }), {
+      target: { value: "meta" },
+    });
+    expect(within(queue).getByText("没有符合条件的排队论文。")).toBeInTheDocument();
+
+    fireEvent.change(within(queue).getByRole("searchbox", { name: "搜索排队论文标题" }), {
+      target: { value: "" },
+    });
+    expect(within(queue).getByText("没有符合条件的排队论文。")).toBeInTheDocument();
+  });
+
+  it("置顶 / 上移 / 下移换位与「清空其余」二次确认", async () => {
+    const { batchId, queue } = await setupQueue();
+    // 排队第一篇（p2）只能下移；第二篇（p3）可置顶 / 上移 / 下移。
+    expect(within(queue).getAllByRole("button", { name: /置顶到下一篇/ }).length).toBeGreaterThan(0);
+    fireEvent.click(within(queue).getByRole("button", { name: "置顶到下一篇：第p3篇" }));
+    expect(actions.reorderQueue).toHaveBeenCalledWith(batchId, "p3", "top");
+    fireEvent.click(within(queue).getByRole("button", { name: "下移一位：第p2篇" }));
+    expect(actions.reorderQueue).toHaveBeenCalledWith(batchId, "p2", "down");
+    fireEvent.click(within(queue).getByRole("button", { name: "上移一位：第p3篇" }));
+    expect(actions.reorderQueue).toHaveBeenCalledWith(batchId, "p3", "up");
+
+    fireEvent.click(within(queue).getByRole("button", { name: "清空其余…" }));
+    expect(actions.clearQueueRest).not.toHaveBeenCalled();
+    fireEvent.click(within(queue).getByRole("button", { name: "确认清空" }));
+    expect(actions.clearQueueRest).toHaveBeenCalledWith(batchId);
   });
 });
 

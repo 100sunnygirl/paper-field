@@ -21,6 +21,7 @@ import {
 } from "./lib/mineru";
 import {
   cancelParses,
+  clearBatchRest,
   dequeueFromBatch,
   enqueueBackfill,
   enqueueMineru,
@@ -29,7 +30,7 @@ import {
   resumeMineru,
   stopBatch,
 } from "./lib/mineruRun";
-import { getActivity } from "./lib/activity";
+import { getActivity, reorderBatch } from "./lib/activity";
 import { cancelJob as cancelTrackedJob, jobDoneStep, runTracked } from "./lib/jobs";
 import { pickProviderFromHealths, providerLabel, summarizeHealths } from "./lib/mineruPlan";
 import { backupLibrary, restoreLibrary, writeLastBackup } from "./lib/backup";
@@ -203,6 +204,10 @@ interface FieldState {
   dequeueMineruPaper: (batchId: number, paperId: string) => void;
   /** 作业面板「停止批次」：取消正在解析的一篇，并把本批其余排队论文移出队列。 */
   stopMineruBatch: (batchId: number) => Promise<void>;
+  /** 作业面板排队调整：置顶 / 上移 / 下移该篇在本批的处理顺序（对等待中的批次同样生效）。 */
+  reorderQueue: (batchId: number, paperId: string, to: "top" | "up" | "down") => void;
+  /** 作业面板「清空其余」：保留下一篇，其余排队论文移出本批。 */
+  clearQueueRest: (batchId: number) => Promise<void>;
   runPrepareMeta: (paperId?: string, overwrite?: boolean, quiet?: boolean, options?: { llm?: boolean }) => Promise<void>;
   runRefreshLinks: (paperId?: string) => Promise<void>;
   runDraftNotes: (paperId?: string, overwrite?: boolean) => Promise<void>;
@@ -397,6 +402,24 @@ export const useField = create<FieldState>((set, get) => ({
     } else {
       log.info("llm", `作业面板停止 AI 补全批次：${stopped} 篇`);
       get().setFlash({ tone: "ok", text: `已停止补全，${stopped} 篇不再写入。` });
+    }
+  },
+
+  reorderQueue: (batchId, paperId, to) => {
+    reorderBatch(batchId, paperId, to);
+  },
+
+  clearQueueRest: async (batchId) => {
+    const kind = getActivity().batches.find((item) => item.id === batchId)?.kind;
+    const removed = await clearBatchRest(batchId);
+    await get().refresh();
+    if (!removed) return;
+    if (kind === "mineru") {
+      log.info("mineru", `作业面板清空其余：${removed} 篇移出解析队列`);
+      get().setFlash({ tone: "ok", text: `已移出 ${removed} 篇，保留下一篇继续解析。` });
+    } else {
+      log.info("llm", `作业面板清空其余：${removed} 篇移出补全队列`);
+      get().setFlash({ tone: "ok", text: `已移出 ${removed} 篇，保留下一篇继续补全。` });
     }
   },
   openDialog: (dialog, target) => {

@@ -27,6 +27,7 @@ vi.mock("./mineru", async (importOriginal) => {
 
 import { mineruCurrentFingerprint, mineruMarkdown, mineruParseStatuses, mineruSubmit } from "./mineru";
 import {
+  clearBatchRest,
   dequeueFromBatch,
   enqueueBackfill,
   enqueueMeta,
@@ -41,7 +42,7 @@ import {
   stopBatch,
 } from "./mineruRun";
 import { cancelJob, liveJobsFor, resetLiveJobs } from "./jobs";
-import { getActivity, queueBatch, resetActivity, subscribeActivity } from "./activity";
+import { getActivity, queueBatch, reorderBatch, resetActivity, subscribeActivity } from "./activity";
 import { repo } from "./repo";
 
 const FP = "pf-cred-v1:match";
@@ -928,6 +929,52 @@ describe("移出队列与停止批次", () => {
     await settle();
     expect(mineruParseStatuses).not.toHaveBeenCalled();
     expect(mineruSubmit).not.toHaveBeenCalled();
+  });
+});
+
+describe("排队调度：置顶 / 上移 / 下移 / 清空其余", () => {
+  it("处理循环按批次当前顺序取下一篇：中途置顶后，被置顶的论文先解析", async () => {
+    const ids = [await makePaper(), await makePaper(), await makePaper()];
+    const host = makeHost({ hasKey: false });
+    const aSubmit = hang<MineruSubmitResult>();
+    vi.mocked(mineruSubmit).mockImplementation(async (paperId) =>
+      paperId === ids[0] ? aSubmit.promise : submitResult({ status: "done", shortId: `doc-${paperId}` }),
+    );
+    markdownByDoc();
+
+    const batchId = queueBatch("mineru", ids);
+    const run = runMineruBatch(host, ids, true, batchId);
+    await vi.waitFor(() => expect(mineruSubmit).toHaveBeenCalledTimes(1));
+    // 第一篇解析中把第三篇置顶：后面的处理顺序跟着改。
+    reorderBatch(batchId, ids[2], "top");
+    aSubmit.release(submitResult({ status: "done", shortId: `doc-${ids[0]}` }));
+    await run;
+
+    expect(getActivity().batches[0].paperIds).toEqual([ids[0], ids[2], ids[1]]);
+    expect(vi.mocked(mineruSubmit).mock.calls.map(([paperId]) => paperId)).toEqual([ids[0], ids[2], ids[1]]);
+    expect(getActivity().batches[0].results).toEqual({ [ids[0]]: "ok", [ids[2]]: "ok", [ids[1]]: "ok" });
+  });
+
+  it("清空其余：保留下一篇，其余排队论文移出并落库为已取消", async () => {
+    const ids = [await makePaper(), await makePaper(), await makePaper()];
+    const host = makeHost({ hasKey: false });
+    const aSubmit = hang<MineruSubmitResult>();
+    vi.mocked(mineruSubmit).mockImplementation(async (paperId) =>
+      paperId === ids[0] ? aSubmit.promise : submitResult({ status: "done", shortId: `doc-${paperId}` }),
+    );
+    markdownByDoc();
+
+    const batchId = queueBatch("mineru", ids);
+    const run = runMineruBatch(host, ids, true, batchId);
+    await vi.waitFor(() => expect(mineruSubmit).toHaveBeenCalledTimes(1));
+    expect(await clearBatchRest(batchId)).toBe(1);
+    expect((await paperOf(ids[2])).mineruStatus).toBe("cancelled");
+    aSubmit.release(submitResult({ status: "done", shortId: `doc-${ids[0]}` }));
+    await run;
+
+    expect(getActivity().batches[0].results).toEqual({ [ids[0]]: "ok", [ids[2]]: "cancelled", [ids[1]]: "ok" });
+    expect(vi.mocked(mineruSubmit).mock.calls.map(([paperId]) => paperId)).toEqual([ids[0], ids[1]]);
+    expect((await paperOf(ids[1])).mineruStatus).toBe("done");
   });
 });
 

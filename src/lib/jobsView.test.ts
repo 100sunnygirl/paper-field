@@ -8,6 +8,7 @@ import {
   formatEta,
   formatSpan,
   stepsFor,
+  summarizeDomains,
 } from "./jobsView";
 import type { LlmJob, PaperBrief } from "./types";
 
@@ -285,6 +286,18 @@ describe("格式化", () => {
     expect(formatElapsed(0)).toBe("00:00");
     expect(formatElapsed(65_400)).toBe("01:05");
     expect(formatElapsed(3_725_000)).toBe("1:02:05");
+  });
+
+  it("summarizeDomains：按领域计数、取前三、其余合并；空列表返回 null", () => {
+    const items = [
+      ...Array.from({ length: 4 }, () => ({ domainName: "多模态" })),
+      ...Array.from({ length: 3 }, () => ({ domainName: "指令对齐" })),
+      ...Array.from({ length: 2 }, () => ({ domainName: "长文本" })),
+      { domainName: null },
+    ];
+    expect(summarizeDomains(items)).toBe("多模态 4 · 指令对齐 3 · 长文本 2 · 其他 1");
+    expect(summarizeDomains([{ domainName: "多模态" }, { domainName: "多模态" }])).toBe("多模态 2");
+    expect(summarizeDomains([])).toBe(null);
   });
 
   it("formatSpan：口语化用时", () => {

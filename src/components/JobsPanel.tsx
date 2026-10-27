@@ -14,6 +14,7 @@ import {
   formatElapsed,
   formatEta,
   formatSpan,
+  summarizeDomains,
   type ActiveJobView,
   type BatchView,
   type HistoryItemView,
@@ -415,6 +416,32 @@ function JobCard({
   );
 }
 
+/** 展开偏好存本机（localStorage）：下次打开面板仍然记住。读写失败（隐私模式等）静默忽略。 */
+const QUEUE_EXPANDED_KEY = "paper-field.jobs-queue-expanded";
+
+function readQueueExpanded(): boolean {
+  try {
+    return localStorage.getItem(QUEUE_EXPANDED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeQueueExpanded(value: boolean): void {
+  try {
+    if (value) localStorage.setItem(QUEUE_EXPANDED_KEY, "1");
+    else localStorage.removeItem(QUEUE_EXPANDED_KEY);
+  } catch {
+    // 存不下不影响功能：本次会话内仍然展开。
+  }
+}
+
+const QUEUE_KIND_FILTERS: Array<{ value: "all" | "mineru" | "meta"; label: string }> = [
+  { value: "all", label: "全部类型" },
+  { value: "mineru", label: "待解析" },
+  { value: "meta", label: "待补全" },
+];
+
 function QueueList({
   queue,
   onJump,
@@ -423,56 +450,216 @@ function QueueList({
   onJump: (paperId: string, domainId: string | null) => Promise<void>;
 }) {
   const dequeueMineruPaper = useField((s) => s.dequeueMineruPaper);
-  const [expanded, setExpanded] = useState(false);
-  const shown = expanded ? queue : queue.slice(0, QUEUE_PREVIEW);
-  const hidden = queue.length - shown.length;
+  const reorderQueue = useField((s) => s.reorderQueue);
+  const clearQueueRest = useField((s) => s.clearQueueRest);
+  const [expanded, setExpanded] = useState(readQueueExpanded);
+  const [query, setQuery] = useState("");
+  const [kind, setKind] = useState<"all" | "mineru" | "meta">("all");
+  const [domain, setDomain] = useState("all");
+  const [confirmClear, setConfirmClear] = useState(false);
+
+  const q = query.trim().toLowerCase();
+  const filtering = Boolean(q) || kind !== "all" || domain !== "all";
+  const domains = useMemo(() => {
+    const names = [...new Set(queue.map((item) => item.domainName?.trim()).filter(Boolean))] as string[];
+    return names.sort((a, b) => a.localeCompare(b, "zh"));
+  }, [queue]);
+  const matched = queue.filter(
+    (item) =>
+      (kind === "all" || item.kind === kind) &&
+      (domain === "all" || item.domainName === domain) &&
+      (!q || item.title.toLowerCase().includes(q)),
+  );
+  // 筛选中直接列出全部命中（不受预览条数限制）；平时仍按偏好折叠。
+  const shown = expanded || filtering ? matched : matched.slice(0, QUEUE_PREVIEW);
+  const hidden = matched.length - shown.length;
+  // 折叠的「还有 N 篇」带领域分布，先看全貌再决定要不要展开。
+  const hiddenSummary = hidden > 0 && !filtering ? summarizeDomains(queue.slice(QUEUE_PREVIEW)) : null;
+  // 各批次内排队项的实时位置：置顶 / 上移 / 下移按这个顺序换位（与本批处理顺序同一口径）。
+  const pendingIndexOf = useMemo(() => {
+    const index = new Map<string, number>();
+    const size = new Map<number, number>();
+    // queue 顺序 = 各批次 paperIds 的顺序：给每批的排队项按出现顺序编号。
+    for (const item of queue) {
+      const key = `${item.batchId}:${item.paperId}`;
+      if (index.has(key)) continue;
+      const next = size.get(item.batchId) ?? 0;
+      index.set(key, next);
+      size.set(item.batchId, next + 1);
+    }
+    return { index, size };
+  }, [queue]);
+  const firstBatchId = queue.find((item) => !item.waiting)?.batchId ?? queue[0]?.batchId;
+
+  function toggleExpanded() {
+    setExpanded((value) => {
+      writeQueueExpanded(!value);
+      return !value;
+    });
+  }
+
   return (
     <section className="ef-jobs-section" aria-label="排队中的论文">
       <h3 className="ef-jobs-sub">
         排队
         <span className="ef-count mono">{pad2(queue.length)}</span>
       </h3>
-      <ol className="ef-queue">
-        {shown.map((item, index) => (
-          <li key={item.paperId} className={`ef-queue-row${index === 0 && !item.waiting ? " is-next" : ""}`}>
-            <span className="ef-queue-index mono">{pad2(index + 1)}</span>
-            <button
-              type="button"
-              className="ef-queue-title"
-              title="在阅读页打开这篇论文"
-              onClick={() => void onJump(item.paperId, item.domainId)}
-            >
-              {item.title}
-            </button>
-            <span className="ef-queue-meta">
-              {index === 0 && !item.waiting ? "下一篇" : item.waiting ? "下一批" : "排队"}
-              {item.kind === "mineru" ? " · 待解析" : " · 待补全"}
+      {queue.length > 1 ? (
+        <div className="ef-queue-tools">
+          <input
+            type="search"
+            value={query}
+            placeholder="搜索排队论文标题"
+            aria-label="搜索排队论文标题"
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") setQuery("");
+            }}
+          />
+          <select aria-label="排队类型筛选" value={kind} onChange={(e) => setKind(e.target.value as typeof kind)}>
+            {QUEUE_KIND_FILTERS.map((item) => (
+              <option key={item.value} value={item.value}>
+                {item.label}
+              </option>
+            ))}
+          </select>
+          {domains.length > 1 ? (
+            <select aria-label="排队领域筛选" value={domain} onChange={(e) => setDomain(e.target.value)}>
+              <option value="all">全部领域</option>
+              {domains.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          ) : null}
+          {filtering ? (
+            <span className="ef-queue-match">
+              {matched.length} / {queue.length} 篇
             </span>
-            {item.kind === "mineru" ? (
-              <button
+          ) : null}
+        </div>
+      ) : null}
+      {matched.length ? (
+        <ol className="ef-queue">
+          {shown.map((item, index) => {
+            const position = pendingIndexOf.index.get(`${item.batchId}:${item.paperId}`) ?? index;
+            const batchPending = pendingIndexOf.size.get(item.batchId) ?? 1;
+            const movable = batchPending > 1;
+            return (
+              <li key={item.paperId} className={`ef-queue-row${index === 0 && !item.waiting ? " is-next" : ""}`}>
+                <span className="ef-queue-index mono">{pad2(index + 1)}</span>
+                <button
+                  type="button"
+                  className="ef-queue-title"
+                  title="在阅读页打开这篇论文"
+                  onClick={() => void onJump(item.paperId, item.domainId)}
+                >
+                  {item.title}
+                </button>
+                <span className="ef-queue-meta">
+                  {index === 0 && !item.waiting ? "下一篇" : item.waiting ? "下一批" : "排队"}
+                  {item.kind === "mineru" ? " · 待解析" : " · 待补全"}
+                </span>
+                {movable ? (
+                  <span className="ef-queue-move">
+                    {position > 0 ? (
+                      <>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="text"
+                          aria-label={`置顶到下一篇：${item.title}`}
+                          title="置顶到下一篇（本批先解析它）"
+                          onClick={() => reorderQueue(item.batchId, item.paperId, "top")}
+                        >
+                          置顶
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="text"
+                          aria-label={`上移一位：${item.title}`}
+                          title="上移一位"
+                          onClick={() => reorderQueue(item.batchId, item.paperId, "up")}
+                        >
+                          <Icon name="up" />
+                        </Button>
+                      </>
+                    ) : null}
+                    {position < batchPending - 1 ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="text"
+                        aria-label={`下移一位：${item.title}`}
+                        title="下移一位"
+                        onClick={() => reorderQueue(item.batchId, item.paperId, "down")}
+                      >
+                        <Icon name="down" />
+                      </Button>
+                    ) : null}
+                  </span>
+                ) : null}
+                {item.kind === "mineru" ? (
+                  <button
+                    type="button"
+                    className="ef-queue-remove"
+                    aria-label={`移出队列：${item.title}`}
+                    title="移出队列（不提交解析）"
+                    onClick={() => dequeueMineruPaper(item.batchId, item.paperId)}
+                  >
+                    <Icon name="close" />
+                  </button>
+                ) : null}
+              </li>
+            );
+          })}
+        </ol>
+      ) : (
+        <p className="ef-jobs-empty">没有符合条件的排队论文。</p>
+      )}
+      {hidden > 0 || expanded || queue.length > 1 ? (
+        <div className="ef-queue-foot">
+          {hidden > 0 || expanded ? (
+            <Button type="button" size="sm" variant="text" className="ef-queue-more" onClick={toggleExpanded}>
+              {expanded ? "收起" : `还有 ${hidden} 篇`}
+              <Icon name={expanded ? "up" : "down"} />
+            </Button>
+          ) : null}
+          {hiddenSummary && !expanded ? <span className="ef-queue-domains">{hiddenSummary}</span> : null}
+          {queue.length > 1 && firstBatchId !== undefined ? (
+            confirmClear ? (
+              <>
+                <span className="ef-queue-clear-note">只保留下一篇，其余移出本批。</span>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="danger"
+                  onClick={() => {
+                    setConfirmClear(false);
+                    void clearQueueRest(firstBatchId);
+                  }}
+                >
+                  确认清空
+                </Button>
+                <Button type="button" size="sm" variant="text" onClick={() => setConfirmClear(false)}>
+                  取消
+                </Button>
+              </>
+            ) : (
+              <Button
                 type="button"
-                className="ef-queue-remove"
-                aria-label={`移出队列：${item.title}`}
-                title="移出队列（不提交解析）"
-                onClick={() => dequeueMineruPaper(item.batchId, item.paperId)}
+                size="sm"
+                variant="text"
+                className="ef-queue-clear"
+                onClick={() => setConfirmClear(true)}
               >
-                <Icon name="close" />
-              </button>
-            ) : null}
-          </li>
-        ))}
-      </ol>
-      {hidden > 0 || expanded ? (
-        <Button
-          type="button"
-          size="sm"
-          variant="text"
-          className="ef-queue-more"
-          onClick={() => setExpanded((value) => !value)}
-        >
-          {expanded ? "收起" : `还有 ${hidden} 篇`}
-          <Icon name={expanded ? "up" : "down"} />
-        </Button>
+                清空其余…
+              </Button>
+            )
+          ) : null}
+        </div>
       ) : null}
     </section>
   );

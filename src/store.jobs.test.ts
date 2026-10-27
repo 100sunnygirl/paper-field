@@ -210,6 +210,32 @@ describe("作业面板的队列操作", () => {
     expect(useField.getState().flash?.text).toBe("已停止补全，2 篇不再写入。");
   });
 
+  it("清空其余：保留下一篇排队论文，其余移出并落库为已取消", async () => {
+    const [p1, p2, p3, p4] = [
+      await makePaper(true),
+      await makePaper(true),
+      await makePaper(true),
+      await makePaper(true),
+    ];
+    await repo.resetMineru([p1, p2, p3, p4]);
+    const batchId = queueBatch("mineru", [p1, p2, p3, p4]);
+    startBatch(batchId);
+    beginBatchItem(batchId, p1); // p1 处理中，p2 是下一篇
+    await useField.getState().clearQueueRest(batchId);
+    expect(getActivity().batches[0].results).toEqual({ [p3]: "cancelled", [p4]: "cancelled" });
+    expect(getActivity().batches[0].paperIds).toEqual([p1, p2, p3, p4]);
+    for (const id of [p3, p4]) expect((await repo.getPaper(id))!.mineruStatus).toBe("cancelled");
+    expect(useField.getState().flash?.text).toBe("已移出 2 篇，保留下一篇继续解析。");
+  });
+
+  it("reorderQueue 调整批次内排队顺序（置顶后 p3 排在 p2 前面）", () => {
+    const batchId = queueBatch("mineru", ["p1", "p2", "p3"]);
+    startBatch(batchId);
+    beginBatchItem(batchId, "p1");
+    useField.getState().reorderQueue(batchId, "p3", "top");
+    expect(getActivity().batches[0].paperIds).toEqual(["p1", "p3", "p2"]);
+  });
+
   it("删除论文先取消它的在途作业", async () => {
     const id = await makePaper();
     const reply = deferred<string>();

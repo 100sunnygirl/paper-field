@@ -405,6 +405,25 @@ export function formatElapsed(msValue: number): string {
   return hours ? `${hours}:${pad2(minutes)}:${pad2(seconds)}` : `${pad2(minutes)}:${pad2(seconds)}`;
 }
 
+/**
+ * 排队论文的领域分布（折叠处的一句话概览）：按领域计数、取前 max 个，
+ * 形如「多模态 18 · 指令对齐 5 · 其他 2」。没有论文时返回 null。
+ */
+export function summarizeDomains(items: Array<{ domainName: string | null }>, max = 3): string | null {
+  if (!items.length) return null;
+  const counts = new Map<string, number>();
+  for (const item of items) {
+    const key = item.domainName?.trim() || "未分领域";
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], "zh"));
+  const shown = ranked.slice(0, max);
+  const rest = ranked.slice(max).reduce((sum, [, count]) => sum + count, 0);
+  const parts = shown.map(([name, count]) => `${name} ${count}`);
+  if (rest > 0) parts.push(`其他 ${rest}`);
+  return parts.join(" · ");
+}
+
 /** 已结束作业的用时：口语化写法，避免与「结束时刻」的时:分混淆。 */
 export function formatSpan(msValue: number): string {
   const total = Math.max(0, Math.round(msValue / 1000));
