@@ -1,4 +1,5 @@
 """Tests the verifier itself; this is not native desktop coverage."""
+from contextlib import closing
 import pathlib
 import shutil
 import sqlite3
@@ -16,7 +17,8 @@ class VerifierTest(unittest.TestCase):
             library.mkdir(parents=True)
             shutil.copyfile(pathlib.Path(__file__).parent / "fixtures" / "smoke.pdf", root / "smoke.pdf")
             shutil.copyfile(root / "smoke.pdf", library / "copied.pdf")
-            with sqlite3.connect(root / "profile" / "paper-field.db") as db:
+            # Close explicitly before subprocess verification and Windows cleanup.
+            with closing(sqlite3.connect(root / "profile" / "paper-field.db")) as db:
                 db.executescript("""
                     CREATE TABLE domains (id, name);
                     CREATE TABLE papers (id, domain_id, title, pdf_path);
@@ -26,6 +28,9 @@ class VerifierTest(unittest.TestCase):
                     INSERT INTO notes VALUES (2, 'summary',
                       'Native SQLite note survives a complete process restart.', 'manual');
                 """)
+                db.commit()
+            with self.assertRaises(sqlite3.ProgrammingError):
+                db.execute("SELECT 1")
             command = [sys.executable, str(pathlib.Path(__file__).with_name("verify.py")), str(root)]
             good = subprocess.run(command, capture_output=True)
             self.assertEqual(good.returncode, 0, good.stderr)

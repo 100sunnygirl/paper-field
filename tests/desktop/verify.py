@@ -1,4 +1,5 @@
 """Read the real closed app's SQLite database and copied PDF, never seed state."""
+from contextlib import closing
 import hashlib
 import pathlib
 import sqlite3
@@ -6,7 +7,8 @@ import sys
 
 root = pathlib.Path(sys.argv[1]).resolve()
 profile = root / "profile"
-with sqlite3.connect((profile / "paper-field.db").as_uri() + "?mode=ro", uri=True) as db:
+# Connection.__exit__ ends a transaction; it does not close the file handle.
+with closing(sqlite3.connect((profile / "paper-field.db").as_uri() + "?mode=ro", uri=True)) as db:
     rows = db.execute("""
         SELECT p.pdf_path, n.content, n.source
         FROM domains d JOIN papers p ON p.domain_id = d.id
