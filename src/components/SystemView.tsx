@@ -36,7 +36,7 @@ import {
 } from "../lib/keymap";
 import { checkAppUpdateInfo, installAppUpdate, type AppUpdateInfo } from "../lib/updater";
 import { openExternal } from "../lib/urls";
-import { formatDate, isTauri, pad2, uid } from "../lib/util";
+import { formatDate, isTauri, modLabel, pad2, uid } from "../lib/util";
 import { useField } from "../store";
 import { LogPanel } from "./LogPanel";
 import { PreRestoreList } from "./PreRestoreList";
@@ -746,6 +746,15 @@ function ShortcutsBlock({ focused }: { focused: boolean }) {
         .catch(() => {});
     } else if (id === "jobs") {
       setJobsOpen(!useField.getState().jobsOpen);
+    } else if (id === "saveNote") {
+      // 「保存笔记」只在笔记编辑框内生效：试用 = 回到阅读页并给出指引，而不是空跑一次保存。
+      void setMode("field")
+        .then(() =>
+          useField
+            .getState()
+            .setFlash({ tone: "ok", text: "已回到阅读页。打开任一笔记块的编辑框，按下「保存笔记」快捷键即可保存该块。" }),
+        )
+        .catch(() => {});
     } else if (id === "esc") {
       closeDialog();
       setJobsOpen(false);
@@ -757,6 +766,14 @@ function ShortcutsBlock({ focused }: { focused: boolean }) {
     markRead: "标记已读",
     search: "搜索",
     jobsPanel: "作业面板",
+    saveNote: "保存当前笔记块（在笔记编辑框内）",
+  };
+  const tryId: Record<KeymapAction, string> = {
+    addPaper: "add",
+    markRead: "read",
+    search: "search",
+    jobsPanel: "jobs",
+    saveNote: "saveNote",
   };
 
   const q = query.trim().toLowerCase();
@@ -770,7 +787,8 @@ function ShortcutsBlock({ focused }: { focused: boolean }) {
   })).filter((row) => match(row.label));
   const fixedRows = [
     { label: "在论文列表中移动", keys: <><span className="kbd">↑</span><span className="kbd">↓</span></> },
-    { label: "关闭对话框 / 抽屉 / 退出批量模式", keys: <span className="kbd">Esc</span> },
+    { label: "保存当前笔记块并写下一空块（笔记编辑框内）", keys: <span className="kbd">{modLabel()} Enter</span> },
+    { label: "关闭对话框 / 抽屉 / 收起笔记编辑器（保留草稿）", keys: <span className="kbd">Esc</span> },
   ].filter((row) => match(row.label));
   const hasCustom = customizable.some((row) => !row.isDefault);
 
@@ -782,7 +800,10 @@ function ShortcutsBlock({ focused }: { focused: boolean }) {
     >
       <header className="ef-block-head">
         <h3>快捷键</h3>
-        <p>全部全局快捷键。字母组合键（⌘/Ctrl + N / R / K / J）可按习惯改绑，冲突会提示；只保存在本机。</p>
+        <p>
+          全部全局快捷键。字母组合键（⌘/Ctrl + N / R / K / J / S）可按习惯改绑，冲突会提示；只保存在本机。
+          「保存当前笔记块」只在笔记编辑框内生效，另有固定的 ⌘/Ctrl + Enter（保存并写下一块）与 Esc（收起编辑器、保留草稿）。
+        </p>
       </header>
       <label className="ef-shortcut-search">
         <span>查找快捷键</span>
@@ -813,7 +834,7 @@ function ShortcutsBlock({ focused }: { focused: boolean }) {
                 type="button"
                 className="ef-kbd-try"
                 aria-label={`试用：${row.label}`}
-                onClick={() => tryShortcut(row.action === "addPaper" ? "add" : row.action === "markRead" ? "read" : row.action === "search" ? "search" : "jobs")}
+                onClick={() => tryShortcut(tryId[row.action])}
               >
                 试用
               </button>

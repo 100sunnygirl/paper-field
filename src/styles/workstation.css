@@ -1556,13 +1556,25 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   color: var(--pf-body);
   margin: 0;
 }
-.ef-notes-heading { margin-top: 0; }
-.ef-notes-heading .ef-section-label { margin-bottom: 6px; }
+.ef-notes-heading { margin-top: 0; display: flex; align-items: flex-start; gap: 10px; }
+.ef-notes-heading .ef-section-label { margin-bottom: 6px; flex: 1; min-width: 0; }
+/* 「保存本篇全部」：有草稿时出现在阅读笔记标题行右端的统一出口。 */
+.ef-notes-heading .ef-save-all { flex: none; margin-top: 2px; }
 .ef-notes-caption {
   font-size: var(--pf-fs-caption);
   margin: 0 0 4px;
   color: var(--pf-muted);
   line-height: 1.6;
+}
+/* Esc 收起编辑器后的常驻提示：草稿还在，块头可见。 */
+.ef-note-draft-chip {
+  padding: 1px 7px;
+  border: 1px dashed var(--pf-line-strong);
+  font-size: var(--pf-fs-tag);
+  font-weight: 500;
+  color: var(--pf-secondary);
+  line-height: 1.6;
+  white-space: nowrap;
 }
 .ef-note {
   position: relative;

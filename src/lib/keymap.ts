@@ -4,7 +4,7 @@ import { shortcut } from "./util";
  * 可自定义的全局快捷键（方向键 / Esc 固定，不做绑定编辑）。
  * 默认键位与历史行为完全一致（⌘/Ctrl + N/R/K/J）；自定义只存本机 localStorage。
  */
-export type KeymapAction = "addPaper" | "markRead" | "search" | "jobsPanel";
+export type KeymapAction = "addPaper" | "markRead" | "search" | "jobsPanel" | "saveNote";
 
 export interface KeyBinding {
   /** 单个小写字母或数字。 */
@@ -18,6 +18,7 @@ export const KEYMAP_ACTIONS: Array<{ id: KeymapAction; label: string }> = [
   { id: "markRead", label: "标记已读" },
   { id: "search", label: "搜索" },
   { id: "jobsPanel", label: "作业面板" },
+  { id: "saveNote", label: "保存当前笔记块（在笔记编辑框内）" },
 ];
 
 export const DEFAULT_KEYMAP: Record<KeymapAction, KeyBinding> = {
@@ -25,6 +26,7 @@ export const DEFAULT_KEYMAP: Record<KeymapAction, KeyBinding> = {
   markRead: { key: "r", meta: true },
   search: { key: "k", meta: true },
   jobsPanel: { key: "j", meta: true },
+  saveNote: { key: "s", meta: true },
 };
 
 const KEYMAP_KEY = "paper-field.keymap";

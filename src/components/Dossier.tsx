@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { bindingLabel, currentKeymap, eventMatchesBinding } from "../lib/keymap";
 import { onMarkdownClick, renderMarkdown } from "../lib/markdown";
 import { openLocalPdf } from "../lib/mineru";
 import {
@@ -17,7 +18,7 @@ import {
 } from "../lib/types";
 import { hasUsableProvider } from "../lib/settings";
 import { arxivAbsUrl, arxivPdfUrl, doiUrl, openExternal, safeHttpUrl } from "../lib/urls";
-import { formatDate, pad2 } from "../lib/util";
+import { formatDate, modLabel, pad2 } from "../lib/util";
 import { useField } from "../store";
 import { Button, Dialog, Empty, ExternalResource, Icon, SourceBadge } from "./ui";
 
@@ -26,17 +27,24 @@ function NoteEditor({
   index,
   paper,
   onStart,
+  onSavedNext,
 }: {
   kind: NoteKind;
   index: number;
   paper: PaperDetail;
   onStart: () => void;
+  /** ⌘Enter 保存成功后跳到下一块空笔记继续写。 */
+  onSavedNext: () => void;
 }) {
   const saveNote = useField((s) => s.saveNote);
   const setNoteDraft = useField((s) => s.setNoteDraft);
+  const setFlash = useField((s) => s.setFlash);
   // 草稿存在 store 里（按论文、按块）：切换论文、搜索、后台刷新都不会丢，切回来编辑框还在。
   const draft = useField((s) => s.drafts[paper.id]?.[kind]);
-  const editing = draft !== undefined;
+  const hasDraft = draft !== undefined;
+  // Esc 只收起编辑器：草稿原样保留（本地 + store），再点「继续编辑」可接着写。
+  const [dismissed, setDismissed] = useState(false);
+  const editing = hasDraft && !dismissed;
   const block = paper.notes[kind];
   const value = editing ? draft : block.content;
   const [saving, setSaving] = useState(false);
@@ -48,16 +56,24 @@ function NoteEditor({
     else setFailed(false);
   }, [editing]);
 
-  const label = NOTE_LABELS[kind];
+  useEffect(() => {
+    // 草稿落库（保存 / 放弃）后收起状态复位，下次进入编辑从干净状态开始。
+    if (!hasDraft) setDismissed(false);
+  }, [hasDraft]);
 
-  async function commit() {
-    if (saving) return;
+  const label = NOTE_LABELS[kind];
+  const saveHint = `${bindingLabel(currentKeymap().saveNote)} 保存 · ${modLabel()}+Enter 保存并写下一块 · Esc 收起`;
+
+  async function commit(): Promise<boolean> {
+    if (saving) return false;
     setSaving(true);
     setFailed(false);
     try {
       await saveNote(paper.id, kind, value);
+      return true;
     } catch {
       setFailed(true);
+      return false;
     } finally {
       setSaving(false);
     }
@@ -66,6 +82,30 @@ function NoteEditor({
   function cancel() {
     setFailed(false);
     setNoteDraft(paper.id, kind, null);
+  }
+
+  function onEditorKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === "Escape") {
+      // 首次 Esc 只收起编辑器：草稿留在 store 与本地，不丢弃。
+      event.preventDefault();
+      event.stopPropagation();
+      setDismissed(true);
+      setFlash({ tone: "ok", text: `已收起${label.zh}编辑器，草稿已保留。` });
+      return;
+    }
+    if (eventMatchesBinding(event.nativeEvent, currentKeymap().saveNote)) {
+      event.preventDefault();
+      event.stopPropagation();
+      void commit();
+      return;
+    }
+    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+      event.preventDefault();
+      event.stopPropagation();
+      void commit().then((ok) => {
+        if (ok) onSavedNext();
+      });
+    }
   }
 
   return (
@@ -78,14 +118,29 @@ function NoteEditor({
           {pad2(index + 1)}
         </span>
         <h3>{label.zh}</h3>
+        {/* Esc 收起后草稿仍在：块头常驻一枚提示，避免忘掉没写完的内容。 */}
+        {hasDraft && !editing ? <span className="ef-note-draft-chip">草稿保留中</span> : null}
         {/* 来源标签只对写了内容的块有意义；空块不标「手动笔记」。 */}
         {value.trim() ? <span className={`ef-note-source is-${block.source}`}>{noteSourceLabel(block)}</span> : null}
-        {editing || !value.trim() ? null : (
+        {editing ? null : hasDraft ? (
+          <button
+            type="button"
+            className="ef-note-edit"
+            aria-label={`继续编辑${label.zh}`}
+            onClick={() => {
+              setDismissed(false);
+              onStart();
+            }}
+          >
+            <Icon name="edit" />
+            继续编辑
+          </button>
+        ) : value.trim() ? (
           <button type="button" className="ef-note-edit" onClick={onStart} aria-label={`编辑${label.zh}`}>
             <Icon name="edit" />
             编辑
           </button>
-        )}
+        ) : null}
       </div>
       {editing ? (
         <>
@@ -93,11 +148,16 @@ function NoteEditor({
             ref={textareaRef}
             value={value}
             onChange={(e) => setNoteDraft(paper.id, kind, e.target.value)}
+            onKeyDown={onEditorKeyDown}
             aria-label={`${label.zh}内容`}
           />
           <div className="ef-edit-actions">
             <span className="ef-edit-hint">
-              {saving ? "保存中…" : failed ? "保存失败，输入已保留，可重试。" : "编辑中 · 尚未保存"}
+              {saving
+                ? "保存中…"
+                : failed
+                  ? "保存失败，输入已保留，可重试。"
+                  : `编辑中 · 尚未保存 · ${saveHint}`}
             </span>
             <Button type="button" size="sm" onClick={cancel} disabled={saving}>
               取消
@@ -415,6 +475,8 @@ export function ReadingStage({
   const openDialog = useField((s) => s.openDialog);
   const setNoteDraft = useField((s) => s.setNoteDraft);
   const setFlash = useField((s) => s.setFlash);
+  const saveAllNoteDrafts = useField((s) => s.saveAllNoteDrafts);
+  const drafts = useField((s) => s.drafts);
   const papers = useField((s) => s.papers);
   const archive = useField((s) => s.archive);
   const intake = useField((s) => s.intake);
@@ -498,6 +560,20 @@ export function ReadingStage({
     requestAnimationFrame(() => jump(`note-${kind}`));
   }
 
+  /** ⌘Enter 保存成功后：跳到当前块之后的下一块空笔记（写完的块不再打扰）。 */
+  function startNextEmptyNote(fromKind: NoteKind) {
+    if (!paper) return;
+    const start = NOTE_DISPLAY_ORDER.indexOf(fromKind);
+    for (let step = 1; step <= NOTE_DISPLAY_ORDER.length; step += 1) {
+      const kind = NOTE_DISPLAY_ORDER[(start + step) % NOTE_DISPLAY_ORDER.length];
+      const content = useField.getState().drafts[paper.id]?.[kind] ?? paper.notes[kind].content;
+      if (!content.trim()) {
+        startEdit(kind);
+        return;
+      }
+    }
+  }
+
   if (!paper) {
     const searching = mode === "field" && search.trim().length > 0;
     const emptyDomain = mode === "field" && !searching;
@@ -540,6 +616,7 @@ export function ReadingStage({
   const outOfList = mode !== "system" && !visibleList.some((item) => item.id === paper.id);
   const readingStatusLabel = READING_STATUS_LABELS[paper.readingStatus];
   const notesWritten = NOTE_DISPLAY_ORDER.filter((kind) => paper.notes[kind].content.trim()).length;
+  const draftCount = NOTE_DISPLAY_ORDER.filter((kind) => drafts[paper.id]?.[kind] !== undefined).length;
   const fulltextStatus = paper.parsedMarkdown.trim()
     ? "MinerU 已解析"
     : paper.mineruStatus
@@ -747,6 +824,18 @@ export function ReadingStage({
                 </small>
                 <i className="ef-section-rule" aria-hidden="true" />
               </h2>
+              {/* 有草稿时常驻统一出口：逐块保存不再需要挨个点。 */}
+              {draftCount ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  className="ef-save-all"
+                  title="保存这篇论文当前全部未保存的笔记草稿"
+                  onClick={() => void saveAllNoteDrafts(paper.id)}
+                >
+                  保存本篇全部（{draftCount} 处草稿）
+                </Button>
+              ) : null}
             </div>
             <p className="ef-notes-caption">每块笔记都标注来源：手动笔记或 AI 起草；AI 不会静默覆盖你改过的笔记。</p>
             {NOTE_DISPLAY_ORDER.map((kind, index) => (
@@ -756,6 +845,7 @@ export function ReadingStage({
                 index={index}
                 paper={paper}
                 onStart={() => startEdit(kind)}
+                onSavedNext={() => startNextEmptyNote(kind)}
               />
             ))}
             <details className="ef-fulltext" id="fulltext">

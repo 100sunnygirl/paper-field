@@ -795,10 +795,18 @@ describe("SystemView · 锚点目录、查找设置与深链", () => {
   it("快捷键卡列出全部快捷键并可按动作名过滤", () => {
     render(<SystemView />);
     const block = screen.getByRole("heading", { level: 3, name: "快捷键" }).closest("article") as HTMLElement;
-    for (const label of ["在论文列表中移动", "标记已读", "搜索", "作业面板", "关闭对话框 / 抽屉 / 退出批量模式"]) {
+    for (const label of [
+      "在论文列表中移动",
+      "标记已读",
+      "搜索",
+      "作业面板",
+      "保存当前笔记块（在笔记编辑框内）",
+      "保存当前笔记块并写下一空块（笔记编辑框内）",
+      "关闭对话框 / 抽屉 / 收起笔记编辑器（保留草稿）",
+    ]) {
       expect(within(block).getByText(label)).toBeInTheDocument();
     }
-    for (const label of ["改键：标记已读", "改键：搜索", "改键：作业面板", "改键：添加论文（导入 PDF / 手动录入）"]) {
+    for (const label of ["改键：标记已读", "改键：搜索", "改键：作业面板", "改键：添加论文（导入 PDF / 手动录入）", "改键：保存当前笔记块（在笔记编辑框内）"]) {
       expect(within(block).getByRole("button", { name: label })).toBeInTheDocument();
     }
     fireEvent.change(within(block).getByLabelText("查找快捷键"), { target: { value: "已读" } });

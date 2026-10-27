@@ -57,7 +57,7 @@ import type {
   PaperDetail,
   PaperListItem,
 } from "./lib/types";
-import { NOTE_KINDS } from "./lib/types";
+import { NOTE_DISPLAY_ORDER, NOTE_KINDS, NOTE_LABELS } from "./lib/types";
 import { extractJson } from "./lib/util";
 
 
@@ -205,6 +205,8 @@ interface FieldState {
   savePaperPatch: (paperId: string, patch: Parameters<typeof repo.updatePaper>[1]) => Promise<void>;
   saveAuthors: (paperId: string, authors: PaperDetail["authors"]) => Promise<void>;
   saveNote: (paperId: string, kind: NoteKind, content: string) => Promise<void>;
+  /** 一键保存这篇论文当前全部笔记草稿：逐块落库，失败的块保留草稿并汇总提示。 */
+  saveAllNoteDrafts: (paperId?: string) => Promise<void>;
   /** 写入 / 清除（null）一块笔记草稿。 */
   setNoteDraft: (paperId: string, kind: NoteKind, value: string | null) => void;
   markRead: (paperId?: string) => Promise<void>;
@@ -1011,6 +1013,38 @@ export const useField = create<FieldState>((set, get) => ({
       });
       throw err;
     }
+  },
+
+  saveAllNoteDrafts: async (paperId) => {
+    const id = paperId ?? get().paper?.id ?? get().selectedPaperId;
+    if (!id) return;
+    const drafts = get().drafts[id];
+    const kinds = NOTE_DISPLAY_ORDER.filter((kind) => drafts?.[kind] !== undefined);
+    if (!kinds.length) {
+      get().setFlash({ tone: "warn", text: "这篇论文没有未保存的笔记草稿。" });
+      return;
+    }
+    let saved = 0;
+    const failed: NoteKind[] = [];
+    for (const kind of kinds) {
+      try {
+        await repo.updateNote(id, kind, drafts![kind]!, "manual", true);
+        get().setNoteDraft(id, kind, null);
+        saved += 1;
+      } catch (err) {
+        log.error("store", "保存本篇全部笔记：单块失败", err);
+        failed.push(kind);
+      }
+    }
+    await get().refresh().catch(() => {});
+    if (failed.length) {
+      get().setFlash({
+        tone: "warn",
+        text: `已保存 ${saved} 块笔记；${failed.length} 块保存失败（${failed.map((kind) => NOTE_LABELS[kind].zh).join("、")}），草稿已保留可重试。`,
+      });
+      return;
+    }
+    get().setFlash({ tone: "ok", text: `已保存本篇全部笔记（${saved} 块）。` });
   },
 
   markRead: async (paperId) => {

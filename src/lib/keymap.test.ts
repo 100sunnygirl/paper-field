@@ -20,13 +20,14 @@ afterEach(() => {
 });
 
 describe("keymap · 默认与持久化", () => {
-  it("默认键位与历史行为一致（⌘/Ctrl + N/R/K/J）", () => {
+  it("默认键位与历史行为一致（⌘/Ctrl + N/R/K/J，笔记保存为 ⌘S）", () => {
     expect(loadKeymap()).toEqual(DEFAULT_KEYMAP);
     expect(DEFAULT_KEYMAP).toEqual({
       addPaper: { key: "n", meta: true },
       markRead: { key: "r", meta: true },
       search: { key: "k", meta: true },
       jobsPanel: { key: "j", meta: true },
+      saveNote: { key: "s", meta: true },
     });
   });
 
@@ -68,6 +69,13 @@ describe("keymap · 冲突检测", () => {
   it("bindingConflicts 不把动作自身算作冲突", () => {
     expect(bindingConflicts(DEFAULT_KEYMAP, "search", { key: "k", meta: true })).toBeNull();
     expect(bindingConflicts(DEFAULT_KEYMAP, "search", { key: "j", meta: true })).toBe("jobsPanel");
+  });
+
+  it("笔记保存键参与冲突检测：改绑到 ⌘K 被搜索占用拒绝", () => {
+    const result = saveKeyBinding("saveNote", { key: "k", meta: true });
+    expect(result.ok).toBe(false);
+    expect(result.conflict).toBe("search");
+    expect(currentKeymap().saveNote).toEqual(DEFAULT_KEYMAP.saveNote);
   });
 });
 
