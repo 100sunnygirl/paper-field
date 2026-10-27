@@ -110,6 +110,14 @@ interface FieldState {
   loadError: string | null;
   /** 作业面板（状态条「作业」入口 / ⌘J）：非模态浮层，不拦截阅读区操作。 */
   jobsOpen: boolean;
+  /**
+   * 深链：跳到设置页某张卡片（anchor = 卡片 id，见 SystemView 的 SYSTEM_CARDS）。
+   * returnTo 记录跳转前的位置，设置页据此提供「返回原论文」入口；null 表示自然进入。
+   */
+  systemFocus: { anchor: string; returnTo: { mode: AppMode; paperId: string | null } | null } | null;
+  /** 从任意模式跳到设置页指定卡片（通知里的「去设置」等入口）。 */
+  openSystemCard: (anchor: string) => void;
+  clearSystemFocus: () => void;
   init: () => Promise<void>;
   setMode: (mode: AppMode) => Promise<void>;
   selectDomain: (id: string | null) => Promise<void>;
@@ -268,6 +276,7 @@ export const useField = create<FieldState>((set, get) => ({
   drafts: loadDrafts(),
   loadError: null,
   jobsOpen: false,
+  systemFocus: null,
 
   // 【通知唯一入口 / 日志唯一收口】flash 字段的唯一写入口就是本函数：写入镜像的同时
   // 桥接 toasts 层（评审裁定的收口层）——非 null 走 notify（emit / refresh 等事件与
@@ -290,6 +299,20 @@ export const useField = create<FieldState>((set, get) => ({
     persistDrafts(drafts);
   },
   setJobsOpen: (open) => set({ jobsOpen: open }),
+
+  openSystemCard: (anchor) => {
+    const state = get();
+    // 已在设置页时保留上一次的 returnTo（连续跳转不丢失「返回原论文」的锚点）。
+    const returnTo =
+      state.mode !== "system"
+        ? { mode: state.mode, paperId: state.selectedPaperId }
+        : (state.systemFocus?.returnTo ?? null);
+    set({ mode: "system", systemFocus: { anchor, returnTo } });
+    // 列表数据与设置页无关，刷新失败不影响跳转（测试环境无引擎）。
+    get().refresh().catch(() => {});
+  },
+
+  clearSystemFocus: () => set({ systemFocus: null }),
 
   dequeueMineruPaper: (batchId, paperId) => {
     // 只移出这一批；库里状态写成 cancelled，重启或保存 MinerU 设置后不会被重新提交。
@@ -565,6 +588,7 @@ export const useField = create<FieldState>((set, get) => ({
         get().setFlash({
           tone: "warn",
           text: `已导入 ${created.length} 篇${skippedText}。当前没有可用的 MinerU 解析源，论文已入库但未解析，可到设置页启用解析源。`,
+          action: { label: "去设置", run: () => get().openSystemCard("mineru") },
         });
         return;
       }
@@ -617,7 +641,11 @@ export const useField = create<FieldState>((set, get) => ({
 
   retryMineru: async (paperId) => {
     if (!get().mineru.configured) {
-      get().setFlash({ tone: "warn", text: "尚未启用任何 MinerU 解析源。可到设置页配置本地 / SSH / 官方 API。" });
+      get().setFlash({
+        tone: "warn",
+        text: "尚未启用任何 MinerU 解析源。可到设置页配置本地 / SSH / 官方 API。",
+        action: { label: "去设置", run: () => get().openSystemCard("mineru") },
+      });
       return;
     }
     // 探测结果可能过期：无生效源时先重探一次再下结论。
@@ -629,6 +657,7 @@ export const useField = create<FieldState>((set, get) => ({
         text: detail
           ? `当前没有可用的 MinerU 解析源（${detail}）。可到设置页查看失败原因。`
           : "当前没有可用的 MinerU 解析源（本地 / SSH / 官方 API 均未通过探测），可到设置页配置或查看失败原因。",
+        action: { label: "去设置", run: () => get().openSystemCard("mineru") },
       });
       return;
     }
@@ -659,7 +688,11 @@ export const useField = create<FieldState>((set, get) => ({
       return;
     }
     if (!get().mineru.configured) {
-      get().setFlash({ tone: "warn", text: "尚未启用任何 MinerU 解析源。可到设置页配置本地 / SSH / 官方 API。" });
+      get().setFlash({
+        tone: "warn",
+        text: "尚未启用任何 MinerU 解析源。可到设置页配置本地 / SSH / 官方 API。",
+        action: { label: "去设置", run: () => get().openSystemCard("mineru") },
+      });
       return;
     }
     try {
@@ -896,7 +929,11 @@ export const useField = create<FieldState>((set, get) => ({
       } else if (result.outcome === "done" && !quiet) {
         if (useLlm) get().setFlash({ tone: "ok", text: "AI 作业完成。阅读状态未改动。" });
         else if (!foundMeta) {
-          get().setFlash({ tone: "warn", text: "尚未配置可用的 AI 服务。可到设置页添加提供商，或继续手动录入。" });
+          get().setFlash({
+            tone: "warn",
+            text: "尚未配置可用的 AI 服务。可到设置页添加提供商，或继续手动录入。",
+            action: { label: "去设置", run: () => get().openSystemCard("llm") },
+          });
         }
       }
     } catch (err) {
@@ -959,7 +996,11 @@ export const useField = create<FieldState>((set, get) => ({
     const id = paperId ?? get().selectedPaperId;
     if (!id || draftInflight.has(id)) return;
     if (!hasUsableProvider(get().settings)) {
-      get().setFlash({ tone: "warn", text: "尚未配置可用的 AI 服务。可到设置页添加提供商后再起草阅读笔记。" });
+      get().setFlash({
+        tone: "warn",
+        text: "尚未配置可用的 AI 服务。可到设置页添加提供商后再起草阅读笔记。",
+        action: { label: "去设置", run: () => get().openSystemCard("llm") },
+      });
       return;
     }
     // 先占在途锁再读库：双击时第二次调用在这里就返回。

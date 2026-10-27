@@ -1964,6 +1964,90 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   max-width: 1040px;
   counter-reset: pf-block;
 }
+/* 设置页两栏：左侧「查找设置 + 锚点目录」常驻吸顶，右侧是卡片列；窄屏隐藏目录。 */
+.ef-system-layout {
+  display: grid;
+  grid-template-columns: 216px minmax(0, 1fr);
+  gap: 28px;
+  align-items: start;
+  max-width: 1280px;
+}
+@media (max-width: 1100px) {
+  .ef-system-layout { grid-template-columns: minmax(0, 1fr); }
+  .ef-system-nav { display: none; }
+}
+.ef-system-nav {
+  position: sticky;
+  top: 0;
+  padding: 6px 0 24px;
+}
+.ef-system-search span {
+  display: block;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
+  margin-bottom: 6px;
+}
+.ef-system-search input {
+  width: 100%;
+  height: var(--pf-control-height-sm);
+  padding: 0 10px;
+  font-size: var(--pf-fs-ui);
+  color: var(--pf-body);
+  background: var(--pf-surface);
+  border: 1px solid var(--pf-line-strong);
+}
+.ef-system-nav ul {
+  list-style: none;
+  margin: 14px 0 0;
+  padding: 0;
+  border-left: 1px solid var(--pf-divider);
+}
+.ef-system-nav a {
+  display: block;
+  padding: 7px 12px;
+  font-size: var(--pf-fs-ui);
+  color: var(--pf-secondary);
+  text-decoration: none;
+  border-left: 2px solid transparent;
+  margin-left: -1px;
+}
+.ef-system-nav a:hover { color: var(--pf-ink); background: var(--pf-hover-flat); }
+.ef-system-nav a.is-active {
+  color: var(--pf-ink);
+  font-weight: 600;
+  border-left-color: var(--pf-ink);
+}
+.ef-system-no-match {
+  margin: 0;
+  padding: 22px 24px;
+  background: var(--pf-surface);
+  border: 1px dashed var(--pf-divider);
+  color: var(--pf-muted);
+  font-size: var(--pf-fs-ui);
+}
+.ef-system-back { margin: 14px 0 0; padding-left: 20px; }
+/* 深链定位：目标卡片短暂描边提示（装饰承载「跳到这里」的真实信息）。 */
+@keyframes pf-system-focus {
+  0% { box-shadow: 0 0 0 3px rgba(25, 25, 25, 0.22); }
+  100% { box-shadow: 0 0 0 3px rgba(25, 25, 25, 0); }
+}
+.page-block.is-focused {
+  border-color: var(--pf-ink);
+  animation: pf-system-focus 1.8s var(--pf-direct) 1;
+}
+/* 快捷键行内的「试用」按钮：与 kbd 键帽同高，弱化为次要动作。 */
+.ef-kbd-try {
+  margin-left: 8px;
+  height: 22px;
+  padding: 0 8px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
+  background: transparent;
+  border: 1px solid var(--pf-line-strong);
+  border-radius: var(--pf-radius);
+  cursor: pointer;
+}
+.ef-kbd-try:hover { color: var(--pf-ink); border-color: var(--pf-ink); }
 .ef-llm-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

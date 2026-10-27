@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { ModelCombobox } from "./ModelCombobox";
 import {
   testMineru,
@@ -18,6 +18,7 @@ import {
   type LlmSaveInput,
 } from "../lib/settings";
 import type { LlmProviderView } from "../lib/types";
+import { MODE_LABELS } from "../lib/types";
 import { biblioEmailConfigured, type BiblioSaveInput } from "../lib/biblio";
 import { checkForAppUpdate } from "../lib/updater";
 import { openExternal } from "../lib/urls";
@@ -31,81 +32,223 @@ function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/**
+ * 设置页卡片清单：锚点目录、搜索过滤与深链（openSystemCard 的 anchor）共用的
+ * 唯一事实来源，顺序即页面顺序。keywords 是搜索的补充词表（标题之外的常用叫法）。
+ */
+const SYSTEM_CARDS = [
+  {
+    id: "llm",
+    title: "AI 服务设置",
+    keywords: ["AI", "Key", "API Key", "提供商", "模型", "Base URL", "用量", "补全", "openai", "deepseek", "ollama"],
+  },
+  { id: "export", title: "数据导出", keywords: ["导出", "Markdown", "分享", "md"] },
+  { id: "backup", title: "备份与恢复", keywords: ["备份", "恢复", "zip", "原数据", "文库"] },
+  { id: "shortcuts", title: "快捷键", keywords: ["快捷键", "键盘", "⌘", "shortcut"] },
+  { id: "update", title: "软件更新", keywords: ["更新", "版本", "升级", "重启"] },
+  {
+    id: "mineru",
+    title: "MinerU 解析源",
+    keywords: ["MinerU", "解析", "PDF", "SSH", "Token", "doclib", "回退", "本地"],
+  },
+  {
+    id: "biblio",
+    title: "文献库",
+    keywords: ["文献库", "OpenAlex", "Crossref", "Semantic Scholar", "arXiv", "邮箱", "著录", "API Key"],
+  },
+  { id: "logs", title: "运行日志", keywords: ["日志", "log", "错误", "警告", "排查", "复制"] },
+] as const;
+
+type SystemCardId = (typeof SYSTEM_CARDS)[number]["id"];
+
+/** 搜索匹配：标题或关键词任一命中即保留该卡片；空查询保留全部。 */
+export function settingsCardMatches(
+  card: { title: string; keywords: readonly string[] },
+  query: string,
+): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return (
+    card.title.toLowerCase().includes(q) ||
+    card.keywords.some((keyword) => keyword.toLowerCase().includes(q))
+  );
+}
+
+/** 与 App 的 ⌘K 同款：等列表栏挂载后再聚焦论文搜索框（设置页会先切回阅读模式）。 */
+function focusGlobalSearchSoon(): void {
+  const step = () => {
+    const input = document.getElementById("global-search") as HTMLInputElement | null;
+    input?.focus();
+    input?.select();
+  };
+  if (typeof requestAnimationFrame === "function") {
+    requestAnimationFrame(() => requestAnimationFrame(step));
+  } else {
+    window.setTimeout(step, 32);
+  }
+}
+
 export function SystemView() {
   const exportCurrentDomain = useField((s) => s.exportCurrentDomain);
   const domains = useField((s) => s.domains);
   const selectedDomainId = useField((s) => s.selectedDomainId);
   const domain = domains.find((d) => d.id === selectedDomainId);
 
+  const systemFocus = useField((s) => s.systemFocus);
+  const setMode = useField((s) => s.setMode);
+  const selectPaper = useField((s) => s.selectPaper);
+  const clearSystemFocus = useField((s) => s.clearSystemFocus);
+
+  const [query, setQuery] = useState("");
+  const [activeCard, setActiveCard] = useState<SystemCardId>("llm");
+  const [focusedCard, setFocusedCard] = useState<SystemCardId | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+
+  const visibleCards = SYSTEM_CARDS.filter((card) => settingsCardMatches(card, query));
+  const show = (id: SystemCardId) => visibleCards.some((card) => card.id === id);
+
+  // 滚动高亮当前卡片（目录 is-active）。jsdom 没有 IntersectionObserver：跳过高亮，目录仍可点击。
+  useEffect(() => {
+    if (typeof IntersectionObserver === "undefined") return;
+    const root = scrollRef.current;
+    if (!root) return;
+    const elements = SYSTEM_CARDS.filter((card) => settingsCardMatches(card, query))
+      .map((card) => document.getElementById(`settings-${card.id}`))
+      .filter((el): el is HTMLElement => el !== null);
+    if (!elements.length) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visible = entries
+          .filter((entry) => entry.isIntersecting)
+          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+        const top = visible[0]?.target.id;
+        if (top) setActiveCard(top.replace("settings-", "") as SystemCardId);
+      },
+      { root, rootMargin: "0px 0px -70% 0px" },
+    );
+    elements.forEach((el) => observer.observe(el));
+    return () => observer.disconnect();
+  }, [query]);
+
+  // 深链：从通知「去设置」等入口跳进来时，滚动到对应卡片并短暂高亮。
+  useEffect(() => {
+    if (!systemFocus) return;
+    const el = document.getElementById(`settings-${systemFocus.anchor}`);
+    if (!el) return;
+    el.scrollIntoView?.({ block: "start" });
+    setFocusedCard(systemFocus.anchor as SystemCardId);
+    const timer = window.setTimeout(() => setFocusedCard(null), 2400);
+    return () => window.clearTimeout(timer);
+  }, [systemFocus]);
+
+  async function returnToPrevious() {
+    const target = systemFocus?.returnTo;
+    if (!target) return;
+    clearSystemFocus();
+    try {
+      await setMode(target.mode);
+      if (target.paperId) await selectPaper(target.paperId);
+    } catch {
+      // 返回途中出错不影响已清除的深链状态；模式切换失败有各自的提示。
+    }
+  }
+
+  const backLabel = systemFocus?.returnTo
+    ? systemFocus.returnTo.paperId
+      ? "返回原论文"
+      : `返回${MODE_LABELS[systemFocus.returnTo.mode].zh}模式`
+    : "";
+
   return (
     <section className="ef-read" id="stage" aria-labelledby="system-title">
-      <div className="ef-system">
+      <div className="ef-system" ref={scrollRef}>
         <div className="ef-system-inner">
           <div className="ef-system-head">
             <h1 id="system-title">设置</h1>
             <p className="lede">
               AI Key 与 MinerU Token 只保存在本机。没有 AI Key 也能完整手动录入论文与笔记；AI 不会自动把论文标成已读。
             </p>
+            {systemFocus?.returnTo ? (
+              <p className="ef-system-back">
+                <Button type="button" size="sm" onClick={() => void returnToPrevious()}>
+                  ← {backLabel}
+                </Button>
+              </p>
+            ) : null}
           </div>
 
-          <div className="ef-system-blocks">
-            <LlmSettingsBlock />
-
-              <article className="page-block pf-stagger" style={{ "--pf-i": 3 } as CSSProperties}>
-                <header className="ef-block-head">
-                  <h3>数据导出</h3>
-                  <p>将当前领域导出为 Markdown 文件夹（README + 每篇论文一个文件）。</p>
-                </header>
-                <Button type="button" onClick={() => void exportCurrentDomain()}>
-                  导出 {domain?.name ?? "当前领域"}
-                </Button>
-              </article>
-
-              <BackupBlock />
-
-              <article className="page-block pf-stagger" style={{ "--pf-i": 4 } as CSSProperties}>
-                <header className="ef-block-head">
-                  <h3>快捷键</h3>
-                </header>
-                <ul className="ef-kbd-list">
-                  <li>
-                    <span>在论文列表中移动</span>
-                    <span>
-                      <span className="kbd">↑</span>
-                      <span className="kbd">↓</span>
-                    </span>
+          <div className="ef-system-layout">
+            <nav className="ef-system-nav" aria-label="设置目录">
+              <label className="ef-system-search">
+                <span>查找设置</span>
+                <input
+                  type="search"
+                  value={query}
+                  placeholder="关键词定位卡片"
+                  aria-label="查找设置"
+                  onChange={(e) => setQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") setQuery("");
+                  }}
+                />
+              </label>
+              <ul>
+                {visibleCards.map((card) => (
+                  <li key={card.id}>
+                    <a
+                      href={`#settings-${card.id}`}
+                      className={activeCard === card.id ? "is-active" : ""}
+                      aria-current={activeCard === card.id ? "true" : undefined}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        document.getElementById(`settings-${card.id}`)?.scrollIntoView?.({ block: "start" });
+                        setActiveCard(card.id);
+                      }}
+                    >
+                      {card.title}
+                    </a>
                   </li>
-                  <li>
-                    <span>添加论文（导入 PDF / 手动录入）</span>
-                    <span className="kbd">{shortcut("N")}</span>
-                  </li>
-                  <li>
-                    <span>标记已读</span>
-                    <span className="kbd">{shortcut("R")}</span>
-                  </li>
-                  <li>
-                    <span>搜索</span>
-                    <span className="kbd">{shortcut("K")}</span>
-                  </li>
-                  <li>
-                    <span>作业面板</span>
-                    <span className="kbd">{shortcut("J")}</span>
-                  </li>
-                  <li>
-                    <span>关闭对话框 / 抽屉</span>
-                    <span className="kbd">Esc</span>
-                  </li>
-                </ul>
-                <p className="ef-kbd-note">在设置页按 {shortcut("K")} 会先切回阅读模式，再聚焦论文列表上方的搜索框。</p>
-              </article>
+                ))}
+              </ul>
+            </nav>
 
-              <UpdateBlock />
+            <div className="ef-system-blocks">
+              {visibleCards.length === 0 ? (
+                <p className="ef-system-no-match" role="status">
+                  没有找到与「{query.trim()}」相关的设置项。试试「Key」「导出」「解析」等关键词。
+                </p>
+              ) : null}
 
-              <MineruSettings />
+              {show("llm") ? <LlmSettingsBlock focused={focusedCard === "llm"} /> : null}
 
-              <BiblioSettings />
+              {show("export") ? (
+                <article
+                  id="settings-export"
+                  className="page-block pf-stagger"
+                  style={{ "--pf-i": 3 } as CSSProperties}
+                >
+                  <header className="ef-block-head">
+                    <h3>数据导出</h3>
+                    <p>将当前领域导出为 Markdown 文件夹（README + 每篇论文一个文件）。</p>
+                  </header>
+                  <Button type="button" onClick={() => void exportCurrentDomain()}>
+                    导出 {domain?.name ?? "当前领域"}
+                  </Button>
+                </article>
+              ) : null}
 
-              <LogPanel />
+              {show("backup") ? <BackupBlock focused={focusedCard === "backup"} /> : null}
+
+              {show("shortcuts") ? <ShortcutsBlock focused={focusedCard === "shortcuts"} /> : null}
+
+              {show("update") ? <UpdateBlock focused={focusedCard === "update"} /> : null}
+
+              {show("mineru") ? <MineruSettings focused={focusedCard === "mineru"} /> : null}
+
+              {show("biblio") ? <BiblioSettings focused={focusedCard === "biblio"} /> : null}
+
+              {show("logs") ? <LogPanel focused={focusedCard === "logs"} /> : null}
+            </div>
           </div>
         </div>
       </div>
@@ -113,12 +256,93 @@ export function SystemView() {
   );
 }
 
-function BackupBlock() {
+/**
+ * 快捷键说明卡：固定展示全部全局快捷键，可点击「试用」直接触发同一行为
+ * （需要论文上下文的动作会先切回阅读模式）。
+ */
+function ShortcutsBlock({ focused }: { focused: boolean }) {
+  const openDialog = useField((s) => s.openDialog);
+  const closeDialog = useField((s) => s.closeDialog);
+  const setMode = useField((s) => s.setMode);
+  const setJobsOpen = useField((s) => s.setJobsOpen);
+  const markRead = useField((s) => s.markRead);
+
+  function tryShortcut(id: string) {
+    if (id === "add") {
+      openDialog("paper");
+    } else if (id === "read") {
+      void setMode("field")
+        .then(() => {
+          const state = useField.getState();
+          if (state.paper) void markRead(state.paper.id);
+          else state.setFlash({ tone: "warn", text: "当前没有选中的论文，无法试用「标记已读」。" });
+        })
+        .catch(() => {});
+    } else if (id === "search") {
+      void setMode("field")
+        .then(focusGlobalSearchSoon)
+        .catch(() => {});
+    } else if (id === "jobs") {
+      setJobsOpen(!useField.getState().jobsOpen);
+    } else if (id === "esc") {
+      closeDialog();
+      setJobsOpen(false);
+    }
+  }
+
+  const rows: Array<{ id?: string; label: string; keys: ReactNode }> = [
+    { label: "在论文列表中移动", keys: <><span className="kbd">↑</span><span className="kbd">↓</span></> },
+    { id: "add", label: "添加论文（导入 PDF / 手动录入）", keys: <span className="kbd">{shortcut("N")}</span> },
+    { id: "read", label: "标记已读", keys: <span className="kbd">{shortcut("R")}</span> },
+    { id: "search", label: "搜索", keys: <span className="kbd">{shortcut("K")}</span> },
+    { id: "jobs", label: "作业面板", keys: <span className="kbd">{shortcut("J")}</span> },
+    { label: "关闭对话框 / 抽屉", keys: <span className="kbd">Esc</span> },
+  ];
+
+  return (
+    <article
+      id="settings-shortcuts"
+      className={`page-block pf-stagger${focused ? " is-focused" : ""}`}
+      style={{ "--pf-i": 4 } as CSSProperties}
+    >
+      <header className="ef-block-head">
+        <h3>快捷键</h3>
+      </header>
+      <ul className="ef-kbd-list">
+        {rows.map((row) => (
+          <li key={row.id ?? row.label}>
+            <span>{row.label}</span>
+            <span>
+              {row.keys}
+              {row.id ? (
+                <button
+                  type="button"
+                  className="ef-kbd-try"
+                  aria-label={`试用：${row.label}`}
+                  onClick={() => tryShortcut(row.id!)}
+                >
+                  试用
+                </button>
+              ) : null}
+            </span>
+          </li>
+        ))}
+      </ul>
+      <p className="ef-kbd-note">在设置页按 {shortcut("K")} 会先切回阅读模式，再聚焦论文列表上方的搜索框。</p>
+    </article>
+  );
+}
+
+function BackupBlock({ focused }: { focused: boolean }) {
   const backup = useField((s) => s.backupLibrary);
   const restore = useField((s) => s.restoreLibrary);
   const [confirming, setConfirming] = useState(false);
   return (
-    <article className="page-block pf-stagger" style={{ "--pf-i": 4 } as CSSProperties}>
+    <article
+      id="settings-backup"
+      className={`page-block pf-stagger${focused ? " is-focused" : ""}`}
+      style={{ "--pf-i": 4 } as CSSProperties}
+    >
       <header className="ef-block-head">
         <h3>备份与恢复</h3>
         <p>打包数据库、文库中的 PDF 和设置。API Key 与 MinerU Token 不写入压缩包。恢复前会先另存当前数据库。</p>
@@ -186,7 +410,7 @@ function formatUsedAt(lastUsedAt: number | null | undefined): string {
   return `${formatDate(date.toISOString())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
 }
 
-function LlmSettingsBlock() {
+function LlmSettingsBlock({ focused }: { focused: boolean }) {
   const saved = useField((s) => s.settings);
   const saveLlmSettings = useField((s) => s.saveLlmSettings);
   const llmLoadError = useField((s) => s.settingsLoadError.llm);
@@ -372,7 +596,11 @@ function LlmSettingsBlock() {
   const statusTone = firstUsable ? "is-ok" : rows.length ? "is-error" : "";
 
   return (
-    <article className="page-block pf-stagger" style={{ "--pf-i": 0 } as CSSProperties}>
+    <article
+      id="settings-llm"
+      className={`page-block pf-stagger${focused ? " is-focused" : ""}`}
+      style={{ "--pf-i": 0 } as CSSProperties}
+    >
       <header className="ef-block-head">
         <h3>AI 服务设置</h3>
         <p>
@@ -668,7 +896,7 @@ function SettingsLoadError({ which }: { which: "mineru" | "biblio" }) {
   );
 }
 
-function BiblioSettings() {
+function BiblioSettings({ focused }: { focused: boolean }) {
   const saved = useField((s) => s.biblio);
   const saveBiblio = useField((s) => s.saveBiblioSettings);
   const [email, setEmail] = useState(saved.email);
@@ -690,7 +918,11 @@ function BiblioSettings() {
   const remaining = saved.openalexRemainingUsd;
 
   return (
-    <article className="page-block pf-stagger" style={{ "--pf-i": 2 } as CSSProperties}>
+    <article
+      id="settings-biblio"
+      className={`page-block pf-stagger${focused ? " is-focused" : ""}`}
+      style={{ "--pf-i": 2 } as CSSProperties}
+    >
       <header className="ef-block-head">
         <h3>文献库</h3>
         <p>不填写也能查询。邮箱和 Key 只改变请求走哪条通道、多快、每天能查多少，不改变查哪些库、按什么顺序查。</p>
@@ -797,7 +1029,7 @@ function BiblioSettings() {
   );
 }
 
-function MineruSettings() {
+function MineruSettings({ focused }: { focused: boolean }) {
   const saved = useField((s) => s.mineru);
   const healths = useField((s) => s.mineruHealth);
   const effective = useField((s) => s.effectiveProvider);
@@ -980,7 +1212,11 @@ function MineruSettings() {
   const apiEnabled = saved.api.hasToken || Boolean(apiToken.trim());
 
   return (
-    <article className="page-block pf-stagger" style={{ "--pf-i": 1 } as CSSProperties}>
+    <article
+      id="settings-mineru"
+      className={`page-block pf-stagger${focused ? " is-focused" : ""}`}
+      style={{ "--pf-i": 1 } as CSSProperties}
+    >
       <header className="ef-block-head">
         <h3>MinerU 解析源</h3>
         <p>导入 PDF 后自动送解析：按回退顺序探测，上方解析源不可用时自动切到下一个。</p>
@@ -1291,12 +1527,16 @@ function MineruSettings() {
   );
 }
 
-function UpdateBlock() {
+function UpdateBlock({ focused }: { focused: boolean }) {
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   return (
-    <article className="page-block pf-stagger" style={{ "--pf-i": 5 } as CSSProperties}>
+    <article
+      id="settings-update"
+      className={`page-block pf-stagger${focused ? " is-focused" : ""}`}
+      style={{ "--pf-i": 5 } as CSSProperties}
+    >
       <header className="ef-block-head">
         <h3>软件更新</h3>
         <p>从 GitHub Releases 检查新版本。未配置签名公钥时不会联网。</p>

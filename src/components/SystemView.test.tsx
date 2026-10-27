@@ -167,7 +167,7 @@ describe("SystemView · 回退顺序调整", () => {
     const saveMineruSettings = vi.fn(async (_input: MineruSaveInput) => undefined);
     useField.setState({ mineru: mineruState(), effectiveProvider: "local", saveMineruSettings });
     render(<SystemView />);
-    const mineruBlock = screen.getByText("MinerU 解析源").closest("article") as HTMLElement;
+    const mineruBlock = screen.getByRole("heading", { level: 3, name: "MinerU 解析源" }).closest("article") as HTMLElement;
     fireEvent.click(within(mineruBlock).getByRole("button", { name: "保存设置" }));
     await waitFor(() => expect(saveMineruSettings).toHaveBeenCalledTimes(1));
     expect(await screen.findByText(/MinerU 设置已保存（已启用 3 个解析源）/)).toBeInTheDocument();
@@ -235,7 +235,7 @@ function primeLlmBrowser() {
 }
 
 function llmBlock(): HTMLElement {
-  return screen.getByText("AI 服务设置").closest("article") as HTMLElement;
+  return screen.getByRole("heading", { level: 3, name: "AI 服务设置" }).closest("article") as HTMLElement;
 }
 
 function jsonResponse(status: number, body: unknown): Response {
@@ -560,6 +560,113 @@ describe("SystemView · 设置页顺序与 MinerU 高级项", () => {
     render(<SystemView />);
     fireEvent.click(screen.getByRole("button", { name: "检查更新" }));
     expect(await screen.findByText(/检查更新只在桌面应用里可用/)).toBeInTheDocument();
+  });
+});
+
+describe("SystemView · 锚点目录、查找设置与深链", () => {
+  beforeEach(() => {
+    useField.setState(useField.getInitialState(), true);
+    localStorage.clear();
+  });
+
+  it("锚点目录列出全部卡片，点击滚动到对应卡片并高亮为当前项", () => {
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    try {
+      render(<SystemView />);
+      const nav = screen.getByRole("navigation", { name: "设置目录" });
+      const titles = Array.from(nav.querySelectorAll("a")).map((a) => a.textContent);
+      expect(titles).toEqual([
+        "AI 服务设置",
+        "数据导出",
+        "备份与恢复",
+        "快捷键",
+        "软件更新",
+        "MinerU 解析源",
+        "文献库",
+        "运行日志",
+      ]);
+      // 每张卡片都带锚点 id
+      for (const id of ["llm", "export", "backup", "shortcuts", "update", "mineru", "biblio", "logs"]) {
+        expect(document.getElementById(`settings-${id}`)).not.toBeNull();
+      }
+      fireEvent.click(within(nav).getByRole("link", { name: "备份与恢复" }));
+      expect(scrollIntoView).toHaveBeenCalled();
+      expect(within(nav).getByRole("link", { name: "备份与恢复" }).className).toContain("is-active");
+    } finally {
+      delete (Element.prototype as Partial<Element>).scrollIntoView;
+    }
+  });
+
+  it("查找设置：输入「备份」只保留备份卡片，其他卡片隐藏", () => {
+    render(<SystemView />);
+    fireEvent.change(screen.getByLabelText("查找设置"), { target: { value: "备份" } });
+    expect(document.getElementById("settings-backup")).not.toBeNull();
+    expect(document.getElementById("settings-shortcuts")).toBeNull();
+    expect(document.getElementById("settings-llm")).toBeNull();
+    // 清空恢复全部卡片
+    fireEvent.change(screen.getByLabelText("查找设置"), { target: { value: "" } });
+    expect(document.getElementById("settings-llm")).not.toBeNull();
+    expect(document.getElementById("settings-shortcuts")).not.toBeNull();
+  });
+
+  it("查找设置：按关键词命中（「key」同时命中 AI 与文献库），无命中给出提示", () => {
+    render(<SystemView />);
+    fireEvent.change(screen.getByLabelText("查找设置"), { target: { value: "key" } });
+    expect(document.getElementById("settings-llm")).not.toBeNull();
+    expect(document.getElementById("settings-biblio")).not.toBeNull();
+    expect(document.getElementById("settings-logs")).toBeNull();
+    fireEvent.change(screen.getByLabelText("查找设置"), { target: { value: "不存在的词" } });
+    expect(screen.getByText(/没有找到与「不存在的词」相关的设置项/)).toBeInTheDocument();
+  });
+
+  it("深链：systemFocus 滚动定位并高亮卡片，提供「返回原论文」入口", async () => {
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    const setMode = vi.fn(async () => undefined);
+    const selectPaper = vi.fn(async () => undefined);
+    useField.setState({
+      mode: "system",
+      systemFocus: { anchor: "mineru", returnTo: { mode: "field", paperId: "p-1" } },
+      setMode,
+      selectPaper,
+    });
+    try {
+      render(<SystemView />);
+      expect(scrollIntoView).toHaveBeenCalled();
+      const card = document.getElementById("settings-mineru");
+      expect(card?.className).toContain("is-focused");
+      fireEvent.click(screen.getByRole("button", { name: /返回原论文/ }));
+      await waitFor(() => expect(setMode).toHaveBeenCalledWith("field"));
+      expect(selectPaper).toHaveBeenCalledWith("p-1");
+      expect(useField.getState().systemFocus).toBeNull();
+    } finally {
+      delete (Element.prototype as Partial<Element>).scrollIntoView;
+    }
+  });
+
+  it("openSystemCard：从阅读模式跳设置页指定卡片，并记录返回位置", () => {
+    const refresh = vi.fn(async () => undefined);
+    useField.setState({ mode: "field", selectedPaperId: "p-9", refresh });
+    useField.getState().openSystemCard("mineru");
+    const state = useField.getState();
+    expect(state.mode).toBe("system");
+    expect(state.systemFocus).toEqual({ anchor: "mineru", returnTo: { mode: "field", paperId: "p-9" } });
+  });
+
+  it("快捷键说明卡：「试用」可直接触发动作（作业面板开合）", () => {
+    render(<SystemView />);
+    expect(useField.getState().jobsOpen).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "试用：作业面板" }));
+    expect(useField.getState().jobsOpen).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "试用：作业面板" }));
+    expect(useField.getState().jobsOpen).toBe(false);
+  });
+
+  it("快捷键说明卡：「试用添加论文」打开论文对话框", () => {
+    render(<SystemView />);
+    fireEvent.click(screen.getByRole("button", { name: "试用：添加论文（导入 PDF / 手动录入）" }));
+    expect(useField.getState().dialog).toBe("paper");
   });
 });
 
