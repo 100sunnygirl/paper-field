@@ -19,6 +19,8 @@ import {
   type BatchItemResult,
 } from "./activity";
 import { cancelJob, cancelJobsForPapers, JobCancelled, liveJobsFor, runTracked, type JobCtx } from "./jobs";
+import { loadJobNotifyPrefs, systemNotify, type JobNotifyPrefs } from "./notifyPrefs";
+import { formatSpan } from "./jobsView";
 import { log } from "./logger";
 import { repo } from "./repo";
 import { nowIso } from "./util";
@@ -32,6 +34,8 @@ interface Host {
   prepare: (paperId: string, overwrite: boolean, quiet: boolean) => Promise<void>;
   /** 通知里的结果直达：打开该论文的解析全文（自动展开）或字段编辑。 */
   reveal?: (what: "fulltext" | "fields", paperId: string) => void;
+  /** 「去看失败的那几篇」：跳到能看到解析失败论文的页面（入库页）。 */
+  showFailures?: () => void;
 }
 
 /**
@@ -432,6 +436,28 @@ async function pauseRemaining(batchId: number, paperIds: string[], error = PAUSE
   return paused;
 }
 
+/**
+ * 窗口失焦时的系统级通知（用户开启「失焦系统通知」后）。「仅失败」口径下没有失败就不发；
+ * 权限 / 环境不满足由 systemNotify 内部静默兜底。
+ */
+function notifyAway(prefs: JobNotifyPrefs, title: string, body: string, hasFailure: boolean): void {
+  if (!prefs.enabled || !prefs.system) return;
+  if (prefs.mode === "failures" && !hasFailure) return;
+  systemNotify(title, body);
+}
+
+/** 逐篇提醒口径下的一篇收尾通知（标题优先中文）。 */
+async function perItemFlash(
+  host: Host,
+  paperId: string,
+  verb: string,
+  outcome: "ok" | "fail",
+): Promise<void> {
+  const paper = await repo.getPaper(paperId);
+  const title = paper?.titleZh?.trim() || paper?.title.trim() || "这一篇";
+  host.flash(outcome === "ok" ? "ok" : "error", `「${title}」${verb}${outcome === "ok" ? "完成" : "失败"}。`);
+}
+
 export async function runMineruBatch(
   host: Host,
   paperIds: string[],
@@ -446,6 +472,8 @@ export async function runMineruBatch(
   }
   const id = batchId ?? queueBatch("mineru", paperIds);
   startBatch(id);
+  const startedAtMs = Date.now();
+  const prefs = loadJobNotifyPrefs();
   // 正常走完记 done；熔断提前返回或意外抛错记 halted（剩余论文在面板上显示为已暂停）。
   let state: "done" | "halted" = "halted";
   try {
@@ -495,6 +523,10 @@ export async function runMineruBatch(
         consecutiveFails += 1;
       }
       // cancelled / skip 不计入连续失败，也不打断计数。
+      // 「逐篇」提醒口径：每篇收尾即通知（成功绿 / 失败红）。
+      if (prefs.enabled && prefs.mode === "perItem" && (result === "ok" || result === "fail")) {
+        await perItemFlash(host, paperId, "解析", result);
+      }
     }
     if (pausedCount) {
       if (pausedByUser) {
@@ -507,21 +539,47 @@ export async function runMineruBatch(
         "error",
         `MinerU 解析连续失败 ${consecutiveFails} 篇，已暂停剩余 ${pausedCount} 篇。解析源可能繁忙或不可用，可在设置页测试连接，稍后在 INTAKE 页重试。`,
       );
+      notifyAway(prefs, "MinerU 解析已暂停", `连续失败 ${consecutiveFails} 篇，剩余 ${pausedCount} 篇未处理`, true);
       return;
     }
     state = "done";
     log.info("mineru", `解析批次结束：成功 ${ok} 篇，失败 ${fail} 篇`);
+    // 批次收尾反馈：大批次（≥3 篇）的完成通知带总数与用时，并附直达入口；
+    // 「仅失败」口径下成功批次不弹通知（结果仍在面板批次卡里）。
+    const elapsedText = formatSpan(Date.now() - startedAtMs);
+    const big = paperIds.length >= 3;
+    const finished = getActivity().batches.find((item) => item.id === id);
+    const firstOk = finished?.paperIds.find((pid) => finished.results[pid] === "ok") ?? null;
     if (fail) {
-      host.flash("error", `MinerU 解析失败 ${fail} 篇，可在资料栏重试。`);
+      const action =
+        big && host.showFailures ? { label: "去看失败的那几篇", run: () => host.showFailures!() } : undefined;
+      host.flash(
+        "error",
+        big
+          ? `MinerU 解析失败 ${fail} 篇（成功 ${ok} · 用时 ${elapsedText}），可在资料栏重试。`
+          : `MinerU 解析失败 ${fail} 篇，可在资料栏重试。`,
+        ...(action ? [action] : []),
+      );
     } else if (ok && !host.hasKey()) {
       host.flash("warn", "解析完成。尚未配置 AI，书目仍使用文件名，可稍后补全。");
-    } else if (ok) {
-      // 单篇完成的通知直接给「查看全文」直达（大批次的汇总入口见批次小结）。
-      const single = ok === 1 && paperIds.length === 1 ? paperIds[0] : null;
-      const action =
-        host.reveal && single ? { label: "查看全文", run: () => host.reveal!("fulltext", single) } : undefined;
-      host.flash("ok", `MinerU 解析完成 ${ok} 篇。阅读状态未改动。`, ...(action ? [action] : []));
+    } else if (ok && !(prefs.enabled && prefs.mode === "failures")) {
+      if (big) {
+        const action =
+          host.reveal && firstOk ? { label: "去读第一篇", run: () => host.reveal!("fulltext", firstOk) } : undefined;
+        host.flash(
+          "ok",
+          `MinerU 解析完成 ${ok} 篇 · 用时 ${elapsedText}。阅读状态未改动。`,
+          ...(action ? [action] : []),
+        );
+      } else {
+        // 单篇完成的通知直接给「查看全文」直达（大批次的汇总入口见批次小结）。
+        const single = ok === 1 && paperIds.length === 1 ? paperIds[0] : null;
+        const action =
+          host.reveal && single ? { label: "查看全文", run: () => host.reveal!("fulltext", single) } : undefined;
+        host.flash("ok", `MinerU 解析完成 ${ok} 篇。阅读状态未改动。`, ...(action ? [action] : []));
+      }
     }
+    notifyAway(prefs, "MinerU 解析批次结束", `成功 ${ok} · 失败 ${fail} · 用时 ${elapsedText}`, fail > 0);
   } finally {
     for (const paperId of paperIds) dequeued.delete(queueKey(id, paperId));
     pauseAfterCurrent.delete(id);
@@ -565,8 +623,11 @@ export async function backfillMeta(host: Host): Promise<void> {
   if (!ids.length) return;
   const batchId = queueBatch("meta", ids);
   startBatch(batchId);
+  const startedAtMs = Date.now();
+  const prefs = loadJobNotifyPrefs();
   let state: "done" | "halted" = "halted";
   let filled = 0;
+  let failed = 0;
   let consecutiveFails = 0;
   // 「当前篇完成后暂停」：剩余论文保持待补全（不写任何状态），下一轮「继续本批」再续。
   let pausedByUser = false;
@@ -605,7 +666,12 @@ export async function backfillMeta(host: Host): Promise<void> {
         filled += 1;
         consecutiveFails = 0;
       } else if (result === "fail") {
+        failed += 1;
         consecutiveFails += 1;
+      }
+      // 「逐篇」提醒口径：每篇收尾即通知。
+      if (prefs.enabled && prefs.mode === "perItem" && (result === "ok" || result === "fail")) {
+        await perItemFlash(host, id, "补全", result);
       }
     }
     // 用户暂停（break 出循环）保持 halted；正常跑完才记 done。
@@ -619,13 +685,29 @@ export async function backfillMeta(host: Host): Promise<void> {
     host.flash("ok", "已按要求暂停补全，剩余论文可稍后在作业面板「继续本批」。");
     return;
   }
-  if (filled) {
-    // 单篇补全完成的通知给「查看字段」直达。
-    const single = filled === 1 && ids.length === 1 ? ids[0] : null;
-    const action =
-      host.reveal && single ? { label: "查看字段", run: () => host.reveal!("fields", single) } : undefined;
-    host.flash("ok", `已为 ${filled} 篇论文补全信息。阅读状态未改动。`, ...(action ? [action] : []));
+  const elapsedText = formatSpan(Date.now() - startedAtMs);
+  const big = ids.length >= 3;
+  if (filled && !(prefs.enabled && prefs.mode === "failures")) {
+    if (big) {
+      // 大批次收尾：带用时与「去读第一篇」直达；「仅失败」口径下成功不打扰。
+      const finished = getActivity().batches.find((item) => item.id === batchId);
+      const firstOk = finished?.paperIds.find((pid) => finished.results[pid] === "ok") ?? null;
+      const action =
+        host.reveal && firstOk ? { label: "去读第一篇", run: () => host.reveal!("fulltext", firstOk) } : undefined;
+      host.flash(
+        "ok",
+        `已为 ${filled} 篇论文补全信息 · 用时 ${elapsedText}。阅读状态未改动。`,
+        ...(action ? [action] : []),
+      );
+    } else {
+      // 单篇补全完成的通知给「查看字段」直达。
+      const single = filled === 1 && ids.length === 1 ? ids[0] : null;
+      const action =
+        host.reveal && single ? { label: "查看字段", run: () => host.reveal!("fields", single) } : undefined;
+      host.flash("ok", `已为 ${filled} 篇论文补全信息。阅读状态未改动。`, ...(action ? [action] : []));
+    }
   }
+  notifyAway(prefs, "AI 补全批次结束", `已补全 ${filled} · 失败 ${failed} · 用时 ${elapsedText}`, failed > 0);
 }
 
 /** 删除论文前调用：取消它们的在途作业并从所有等待中的批次里移出。 */

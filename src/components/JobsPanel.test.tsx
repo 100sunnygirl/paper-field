@@ -79,6 +79,7 @@ beforeEach(() => {
   Object.values(actions).forEach((fn) => fn.mockClear());
   resetActivity();
   localStorage.removeItem("paper-field.jobs-queue-expanded");
+  localStorage.removeItem("paper-field.job-notify");
   vi.mocked(repo.paperBriefs).mockResolvedValue([]);
 });
 
@@ -343,6 +344,42 @@ describe("JobsPanel", () => {
 
     // 刷新链接的完成不提供专门入口（结果在资料栏，标题本身可跳转）。
     expect(within(history).queryByRole("button", { name: "查看资料" })).toBeNull();
+  });
+
+  it("完成提醒偏好：默认开启汇总，切换口径与关闭都落本机", () => {
+    render(<JobsPanel />);
+    const bar = screen.getByRole("contentinfo", { name: "完成提醒偏好" });
+
+    // 默认：开启 + 批次汇总 + 不开系统通知。
+    const enabled = within(bar).getByRole("checkbox", { name: "完成时提醒我" }) as HTMLInputElement;
+    expect(enabled.checked).toBe(true);
+    const system = within(bar).getByRole("checkbox", { name: "失焦系统通知" }) as HTMLInputElement;
+    expect(system.checked).toBe(false);
+
+    // 切换口径 → localStorage 保存；关闭总开关后口径与系统通知都不再可用。
+    fireEvent.change(within(bar).getByRole("combobox", { name: "完成提醒口径" }), { target: { value: "perItem" } });
+    expect(localStorage.getItem("paper-field.job-notify")).toContain('"mode":"perItem"');
+
+    fireEvent.click(enabled);
+    expect(JSON.parse(localStorage.getItem("paper-field.job-notify")!)).toMatchObject({
+      enabled: false,
+      mode: "perItem",
+    });
+    expect((within(bar).getByRole("combobox", { name: "完成提醒口径" }) as HTMLSelectElement).disabled).toBe(true);
+    expect(system.disabled).toBe(true);
+  });
+
+  it("失焦系统通知在当前环境不支持时给出提示并保持关闭", async () => {
+    render(<JobsPanel />);
+    const bar = screen.getByRole("contentinfo", { name: "完成提醒偏好" });
+    fireEvent.click(within(bar).getByRole("checkbox", { name: "失焦系统通知" }));
+    await waitFor(() =>
+      expect(useField.getState().flash?.text).toContain("当前环境不支持系统通知"),
+    );
+    // 不支持的开关保持关闭，不写入偏好。
+    expect(localStorage.getItem("paper-field.job-notify")).toBe(null);
+    const system = within(bar).getByRole("checkbox", { name: "失焦系统通知" }) as HTMLInputElement;
+    expect(system.checked).toBe(false);
   });
 
   it("查不到书目（旧版 repo / 查询失败）时退回短编号，不报错", async () => {

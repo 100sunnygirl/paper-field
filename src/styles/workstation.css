@@ -3902,6 +3902,37 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 .ef-hist-retry { grid-column: 2 / 4; justify-self: start; margin-top: 2px; }
 .ef-jobs-link { align-self: flex-start; min-height: 28px; font-size: var(--pf-fs-caption); }
 
+/* 完成提醒偏好条：面板底部常驻（本机 localStorage，批次收尾即时生效）。 */
+.ef-jobs-notify {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 8px 16px 10px;
+  border-top: 1px solid var(--pf-divider);
+  background: var(--pf-surface);
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-secondary);
+}
+.ef-notify-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ef-notify-toggle input { margin: 0; accent-color: var(--pf-ink); }
+.ef-jobs-notify select {
+  min-height: 22px;
+  padding: 0 4px;
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-body);
+  background: var(--pf-surface);
+  border: 1px solid var(--pf-line-strong);
+}
+.ef-jobs-notify select:disabled,
+.ef-notify-toggle input:disabled { opacity: 0.45; cursor: not-allowed; }
+
 /* ---- Keyframes ---- */
 /* Entrance keyframes: opacity + ≤8px shift only, mount-played, exit is instant. */
 @keyframes pf-fade {

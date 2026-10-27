@@ -22,6 +22,13 @@ import {
   type SegmentState,
 } from "../lib/jobsView";
 import { repo } from "../lib/repo";
+import {
+  loadJobNotifyPrefs,
+  requestSystemNotifyPermission,
+  saveJobNotifyPrefs,
+  type JobNotifyMode,
+  type JobNotifyPrefs,
+} from "../lib/notifyPrefs";
 import type { LlmProviderView, PaperBrief } from "../lib/types";
 import { pad2, shortcut } from "../lib/util";
 import { useField } from "../store";
@@ -214,8 +221,81 @@ function JobsPanelBody() {
         {view.queue.length ? <QueueList queue={view.queue} onJump={jump} /> : null}
 
         <HistoryList history={view.history} now={now} onJump={jump} />
+
+        <NotifyPrefsBar />
       </div>
     </section>
+  );
+}
+
+const NOTIFY_MODES: Array<{ value: JobNotifyMode; label: string }> = [
+  { value: "summary", label: "批次汇总" },
+  { value: "failures", label: "仅失败" },
+  { value: "perItem", label: "逐篇" },
+];
+
+/** 完成提醒偏好：本机 localStorage 保存，批次收尾时即时生效（mineruRun 每次收尾现读）。 */
+function NotifyPrefsBar() {
+  const setFlash = useField((s) => s.setFlash);
+  const [prefs, setPrefs] = useState(loadJobNotifyPrefs);
+
+  function update(next: Partial<JobNotifyPrefs>) {
+    setPrefs((prev) => {
+      const merged = { ...prev, ...next };
+      saveJobNotifyPrefs(merged);
+      return merged;
+    });
+  }
+
+  async function toggleSystem(on: boolean) {
+    if (!on) {
+      update({ system: false });
+      return;
+    }
+    const permission = await requestSystemNotifyPermission();
+    if (permission === "granted") {
+      update({ system: true });
+      return;
+    }
+    if (permission === "unsupported") {
+      setFlash({ tone: "warn", text: "当前环境不支持系统通知（浏览器预览受限），完成提醒将只在面板内弹出。" });
+      return;
+    }
+    setFlash({ tone: "warn", text: "系统通知权限被拒绝，无法在窗口失焦时提醒。可在浏览器设置里允许后重试。" });
+  }
+
+  return (
+    <footer className="ef-jobs-notify" aria-label="完成提醒偏好">
+      <label className="ef-notify-toggle">
+        <input
+          type="checkbox"
+          checked={prefs.enabled}
+          onChange={(e) => update({ enabled: e.target.checked })}
+        />
+        完成时提醒我
+      </label>
+      <select
+        aria-label="完成提醒口径"
+        value={prefs.mode}
+        disabled={!prefs.enabled}
+        onChange={(e) => update({ mode: e.target.value as JobNotifyMode })}
+      >
+        {NOTIFY_MODES.map((item) => (
+          <option key={item.value} value={item.value}>
+            {item.label}
+          </option>
+        ))}
+      </select>
+      <label className="ef-notify-toggle" title="窗口失焦时发系统级通知（需通知权限）">
+        <input
+          type="checkbox"
+          checked={prefs.system}
+          disabled={!prefs.enabled}
+          onChange={(e) => void toggleSystem(e.target.checked)}
+        />
+        失焦系统通知
+      </label>
+    </footer>
   );
 }
 

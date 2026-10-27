@@ -46,6 +46,7 @@ import {
 } from "./mineruRun";
 import { cancelJob, liveJobsFor, resetLiveJobs } from "./jobs";
 import { getActivity, queueBatch, reorderBatch, resetActivity, subscribeActivity } from "./activity";
+import { resetJobNotifyPrefs, saveJobNotifyPrefs } from "./notifyPrefs";
 import { repo } from "./repo";
 
 const FP = "pf-cred-v1:match";
@@ -99,6 +100,7 @@ beforeEach(async () => {
   holder.engine = handle.engine;
   resetActivity();
   resetLiveJobs();
+  resetJobNotifyPrefs();
   setMineruTiming({ pollMs: 1, retryMs: 1 });
   vi.mocked(mineruSubmit).mockReset();
   vi.mocked(mineruParseStatuses).mockReset();
@@ -158,6 +160,7 @@ function makeHost(
     configured?: boolean;
     prepare?: (paperId: string, overwrite: boolean, quiet: boolean) => Promise<void>;
     reveal?: (what: "fulltext" | "fields", paperId: string) => void;
+    showFailures?: () => void;
   } = {},
 ) {
   return {
@@ -167,6 +170,7 @@ function makeHost(
     flash: vi.fn(),
     prepare: vi.fn(options.prepare ?? (async (paperId: string) => markPrepared(paperId))),
     reveal: options.reveal,
+    showFailures: options.showFailures,
   };
 }
 
@@ -1059,6 +1063,107 @@ describe("排队调度：置顶 / 上移 / 下移 / 清空其余", () => {
     expect(host.prepare).toHaveBeenCalledTimes(1);
     expect(await paperOf(b)).toMatchObject({ llmPreparedAt: null });
     expect(host.flash).toHaveBeenCalledWith("ok", "已按要求暂停补全，剩余论文可稍后在作业面板「继续本批」。");
+  });
+});
+
+describe("批次收尾反馈与通知偏好", () => {
+  /** 3 篇全部成功的大批次。 */
+  async function bigOkBatch(host = makeHost()) {
+    const ids = [await makePaper(), await makePaper(), await makePaper()];
+    vi.mocked(mineruSubmit).mockImplementation(async (paperId) => submitResult({ status: "done", shortId: `doc-${paperId}` }));
+    markdownByDoc();
+    await runMineruBatch(host, ids, true);
+    return { host, ids };
+  }
+
+  it("大批次（≥3 篇）完成：汇总带用时与「去读第一篇」直达", async () => {
+    const reveal = vi.fn();
+    const { host, ids } = await bigOkBatch(makeHost({ reveal }));
+
+    const last = vi.mocked(host.flash).mock.calls.at(-1)!;
+    expect(last[0]).toBe("ok");
+    expect(last[1]).toMatch(/^MinerU 解析完成 3 篇 · 用时 .+。阅读状态未改动。$/);
+    expect(last[2]).toMatchObject({ label: "去读第一篇" });
+    last[2]!.run();
+    expect(reveal).toHaveBeenCalledWith("fulltext", ids[0]);
+  });
+
+  it("大批次有失败：失败汇总带成功数与用时，附「去看失败的那几篇」", async () => {
+    const ids = [await makePaper(), await makePaper(), await makePaper()];
+    const host = makeHost({ hasKey: false, showFailures: vi.fn() });
+    vi.mocked(mineruSubmit)
+      .mockResolvedValueOnce(submitResult({ status: "done", shortId: "doc-a" }))
+      .mockRejectedValueOnce(new Error("busy"))
+      .mockResolvedValueOnce(submitResult({ status: "done", shortId: "doc-c" }));
+    markdownByDoc();
+    await runMineruBatch(host, ids, true);
+
+    const last = vi.mocked(host.flash).mock.calls.at(-1)!;
+    expect(last[0]).toBe("error");
+    expect(last[1]).toMatch(/解析失败 1 篇（成功 2 · 用时 .+），可在资料栏重试。/);
+    expect(last[2]).toMatchObject({ label: "去看失败的那几篇" });
+    last[2]!.run();
+    expect(host.showFailures).toHaveBeenCalled();
+  });
+
+  it("「仅失败」口径：成功的大批次不弹完成通知", async () => {
+    saveJobNotifyPrefs({ enabled: true, mode: "failures", system: false });
+    const { host } = await bigOkBatch();
+    expect(host.flash).not.toHaveBeenCalled();
+  });
+
+  it("「逐篇」口径：每篇收尾即通知（成功与失败各自成条）", async () => {
+    saveJobNotifyPrefs({ enabled: true, mode: "perItem", system: false });
+    const ids = [await makePaper(), await makePaper()];
+    const host = makeHost({ hasKey: false });
+    vi.mocked(mineruSubmit)
+      .mockResolvedValueOnce(submitResult({ status: "done", shortId: "doc-a" }))
+      .mockRejectedValueOnce(new Error("busy"));
+    markdownByDoc();
+    await runMineruBatch(host, ids, true);
+
+    const texts = vi.mocked(host.flash).mock.calls.map((call) => call[1]);
+    // 标题来自文件名（titleFromPdf）：第一篇成功、第二篇失败各播一条。
+    const t1 = (await paperOf(ids[0])).title;
+    const t2 = (await paperOf(ids[1])).title;
+    expect(texts).toContain(`「${t1}」解析完成。`);
+    expect(texts).toContain(`「${t2}」解析失败。`);
+  });
+
+  it("关闭「完成时提醒我」：回到简洁文案（小批次原样）", async () => {
+    saveJobNotifyPrefs({ enabled: false, mode: "summary", system: false });
+    const id = await makePaper();
+    const host = makeHost();
+    vi.mocked(mineruSubmit).mockResolvedValue(submitResult({ status: "done" }));
+    markdownByDoc();
+    await runMineruBatch(host, [id], true);
+    expect(host.flash).toHaveBeenCalledWith("ok", "MinerU 解析完成 1 篇。阅读状态未改动。");
+  });
+
+  it("开启失焦系统通知：批次收尾发系统级通知（仅失败口径无失败不发）", async () => {
+    saveJobNotifyPrefs({ enabled: true, mode: "summary", system: true });
+    const created: Array<{ title: string; body: string }> = [];
+    vi.stubGlobal("Notification", class {
+      static permission = "granted";
+      constructor(public title: string, public options?: { body?: string }) {
+        created.push({ title, body: options?.body ?? "" });
+      }
+      onclick: (() => void) | null = null;
+      close() {}
+    });
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+
+    await bigOkBatch();
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({ title: "MinerU 解析批次结束" });
+    expect(created[0].body).toMatch(/成功 3 · 失败 0 · 用时 /);
+
+    created.length = 0;
+    saveJobNotifyPrefs({ enabled: true, mode: "failures", system: true });
+    await bigOkBatch();
+    expect(created).toEqual([]);
+
+    hasFocus.mockRestore();
   });
 });
 

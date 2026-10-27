@@ -1588,6 +1588,9 @@ function mineruHost() {
       if (what === "fulltext") void useField.getState().openPaperFulltext(paperId);
       else useField.getState().openDialog("edit-paper", paperId);
     },
+    showFailures: () => {
+      void useField.getState().setMode("intake");
+    },
   };
 }
 
