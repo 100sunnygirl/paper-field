@@ -364,3 +364,77 @@ describe("ReadingStage · 正文阅读外观（A−/A+、行宽）", () => {
     expect(persisted.papers.p1).toBeUndefined();
   });
 });
+
+describe("ReadingStage · 资料栏「本篇状态卡」", () => {
+  function completePaper(filled: Partial<Record<NoteKind, string>>): PaperDetail {
+    const base = paper(filled);
+    return {
+      ...base,
+      year: 2021,
+      venue: "ICLR",
+      doi: "10.5555/12345678",
+      authors: [{ id: "a1", name: "甲作者", affiliation: null, lab: null, isCorresponding: false }] as PaperDetail["authors"],
+      pdfPath: "/library/a.pdf",
+      parsedMarkdown: "# 全文\n\n一段正文。",
+    } as PaperDetail;
+  }
+
+  function card() {
+    return screen.getByRole("region", { name: "本篇状态" });
+  }
+
+  it("无 PDF 的论文：解析显示「未关联 PDF」，下一步「关联 PDF」打开编辑论文信息", () => {
+    useField.setState({ mode: "field", paper: paper({}), selectedPaperId: "p1" });
+    renderStage();
+    expect(within(card()).getByText("未关联 PDF")).toBeInTheDocument();
+    expect(within(card()).getByText("0 / 5")).toBeInTheDocument();
+    fireEvent.click(within(card()).getByRole("button", { name: "关联 PDF" }));
+    expect(useField.getState().dialog).toBe("edit-paper");
+  });
+
+  it("著录缺项且未配置 AI：下一步「补著录信息」，提示缺几项", () => {
+    // 已解析但著录不全（摘要/年份有，出处/标识符/作者缺 → 2/5）
+    const parsed = { ...paper({}), pdfPath: "/library/a.pdf", parsedMarkdown: "# 全文\n\n正文。" } as PaperDetail;
+    useField.setState({ mode: "field", paper: parsed, selectedPaperId: "p1" });
+    renderStage();
+    expect(within(card()).getByText("2 / 5")).toBeInTheDocument();
+    fireEvent.click(within(card()).getByRole("button", { name: "补著录信息" }));
+    expect(useField.getState().dialog).toBe("edit-paper");
+    expect(within(card()).getByText(/著录还缺 3 项/)).toBeInTheDocument();
+  });
+
+  it("解析完成且著录齐全：下一步指向第一块空笔记并跳转过去", () => {
+    useField.setState({
+      mode: "field",
+      paper: completePaper({ summary: "总结已写" }),
+      selectedPaperId: "p1",
+    });
+    renderStage();
+    expect(within(card()).getByText("已完成")).toBeInTheDocument();
+    expect(within(card()).getByText("5 / 5")).toBeInTheDocument(); // 著录齐全（笔记行是 1 / 5）
+    fireEvent.click(within(card()).getByRole("button", { name: "写亮点" }));
+    expect(document.querySelector('.ef-toc a[href="#note-highlights"]')).toHaveClass("is-active");
+  });
+
+  it("五块笔记写满且未读：下一步「标记已读」走 markRead", () => {
+    const markRead = vi.fn(async () => undefined);
+    useField.setState({
+      mode: "field",
+      paper: completePaper({ summary: "s", highlights: "h", weaknesses: "w", implications: "i", remarks: "r" }),
+      selectedPaperId: "p1",
+      markRead,
+    });
+    renderStage();
+    fireEvent.click(within(card()).getByRole("button", { name: "标记已读" }));
+    expect(markRead).toHaveBeenCalledWith("p1");
+  });
+
+  it("已读且五块写满：显示「本篇已完成」，不再给动作按钮", () => {
+    const done = completePaper({ summary: "s", highlights: "h", weaknesses: "w", implications: "i", remarks: "r" });
+    (done as { readingStatus: "read" }).readingStatus = "read";
+    useField.setState({ mode: "field", paper: done, selectedPaperId: "p1" });
+    renderStage();
+    expect(within(card()).getByText("本篇已完成")).toBeInTheDocument();
+    expect(within(card()).queryByRole("button")).toBeNull();
+  });
+});

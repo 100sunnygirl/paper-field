@@ -599,12 +599,82 @@ function ContextPanel({
   const lookupHint = useField((s) => s.lookupHint);
   const openDialog = useField((s) => s.openDialog);
   const setFlash = useField((s) => s.setFlash);
+  const markRead = useField((s) => s.markRead);
+  const setJobsOpen = useField((s) => s.setJobsOpen);
   const active = jobs.filter(
     (job) => job.paperId === paper.id && (job.status === "running" || job.status === "queued"),
   );
   // 解析全文的小节标题 → 本页目录的二级导航；过长时截断显示并注明其余节数。
   const fulltextHeadings = useMemo(() => extractFulltextHeadings(paper.parsedMarkdown), [paper.parsedMarkdown]);
   const visibleHeadings = fulltextHeadings.slice(0, TOC_SECTION_LIMIT);
+
+  // ---- 本篇状态卡：解析 / 著录 / 笔记三条进度 + 推荐的下一步 ----
+  const parseDone = paper.parsedMarkdown.trim().length > 0;
+  const parseRunning =
+    paper.mineruStatus === "queued" || paper.mineruStatus === "submitted" || paper.mineruStatus === "parsing";
+  const parseFailed = paper.mineruStatus === "error" || paper.mineruStatus === "cancelled";
+  const metaFlags = [
+    Boolean(paper.abstract.trim()),
+    paper.year != null,
+    Boolean(paper.venue),
+    Boolean(paper.doi || paper.arxivId),
+    paper.authors.length > 0,
+  ];
+  const metaDone = metaFlags.filter(Boolean).length;
+  const notesWritten = NOTE_DISPLAY_ORDER.filter((kind) => paper.notes[kind].content.trim()).length;
+  const parseLabel = parseDone
+    ? "已完成"
+    : parseFailed
+      ? "解析失败"
+      : parseRunning
+        ? "解析中"
+        : paper.pdfPath
+          ? mineru.configured
+            ? "待解析"
+            : "未配置解析源"
+          : paper.pdfUrl
+            ? "在线 PDF"
+            : "未关联 PDF";
+  const nextEmptyKind = noteOrder.find((kind) => !paper.notes[kind].content.trim());
+  let nextAction: { label: string; run: () => void } | null;
+  let nextHint: string;
+  if (!paper.pdfPath && !paper.pdfUrl) {
+    nextAction = { label: "关联 PDF", run: () => openDialog("edit-paper", paper.id) };
+    nextHint = "先给这篇论文关联 PDF，才能解析全文。";
+  } else if (parseFailed) {
+    nextAction = { label: "重新解析", run: () => void retryMineru(paper.id) };
+    nextHint = "上一次解析没有成功，可重试。";
+  } else if (parseRunning) {
+    nextAction = { label: "查看作业进度", run: () => setJobsOpen(true) };
+    nextHint = "正在解析，稍候即可阅读全文。";
+  } else if (!parseDone && paper.pdfPath && !mineru.configured) {
+    nextAction = { label: "配置解析源", run: () => void setMode("system") };
+    nextHint = "配置 MinerU 解析源后可解析全文。";
+  } else if (!parseDone && paper.pdfPath) {
+    nextAction = { label: "发送到 MinerU 解析", run: () => void retryMineru(paper.id) };
+    nextHint = "解析出全文后，摘录与引用都更方便。";
+  } else if (metaDone < metaFlags.length) {
+    nextAction = hasUsableProvider(settings)
+      ? {
+          label: "补全论文信息",
+          run: () => {
+            // 与 AI 助手同规则：手改过的论文信息先经确认对话框，不静默覆盖。
+            if (paper.userMetaTouched) openDialog("confirm-meta", paper.id);
+            else void runPrepareMeta(paper.id, false);
+          },
+        }
+      : { label: "补著录信息", run: () => openDialog("edit-paper", paper.id) };
+    nextHint = `著录还缺 ${metaFlags.length - metaDone} 项（摘要 / 年份 / 出处 / 标识符 / 作者）。`;
+  } else if (nextEmptyKind) {
+    nextAction = { label: `写${NOTE_LABELS[nextEmptyKind].zh}`, run: () => onJump(`note-${nextEmptyKind}`) };
+    nextHint = `笔记已写 ${notesWritten} / ${NOTE_DISPLAY_ORDER.length} 块。`;
+  } else if (paper.readingStatus !== "read") {
+    nextAction = { label: "标记已读", run: () => void markRead(paper.id) };
+    nextHint = "五块笔记已写满，读完由你亲手标记。";
+  } else {
+    nextAction = null;
+    nextHint = "解析、著录与五块笔记都已就绪。";
+  }
 
   async function copySectionCitation(heading: (typeof fulltextHeadings)[number]) {
     const title = paper.titleZh || paper.title;
@@ -629,6 +699,45 @@ function ContextPanel({
 
   return (
     <aside className="ef-context" aria-label="论文资料与目录">
+      {/* 本篇状态卡：三条进度 + 推荐的下一步动作（低频但一眼拼出全貌）。 */}
+      <section className="ef-card" aria-label="本篇状态">
+        <h2 className="ef-card-title">本篇状态</h2>
+        <ul className="ef-card-progress">
+          <li>
+            <span>解析</span>
+            <b className={parseDone ? "is-done" : parseFailed ? "is-failed" : ""}>{parseLabel}</b>
+          </li>
+          <li>
+            <span>著录</span>
+            <span className="ef-card-bar" aria-hidden="true">
+              <i style={{ width: `${Math.round((metaDone / metaFlags.length) * 100)}%` }} />
+            </span>
+            <b>
+              {metaDone} / {metaFlags.length}
+            </b>
+          </li>
+          <li>
+            <span>笔记</span>
+            <span className="ef-card-bar" aria-hidden="true">
+              <i style={{ width: `${Math.round((notesWritten / NOTE_DISPLAY_ORDER.length) * 100)}%` }} />
+            </span>
+            <b>
+              {notesWritten} / {NOTE_DISPLAY_ORDER.length}
+            </b>
+          </li>
+        </ul>
+        <div className="ef-card-next">
+          <span className="ef-card-next-label">下一步</span>
+          {nextAction ? (
+            <button type="button" onClick={nextAction.run}>
+              {nextAction.label}
+            </button>
+          ) : (
+            <b className="is-done">本篇已完成</b>
+          )}
+          <p>{nextHint}</p>
+        </div>
+      </section>
       <section className="ef-context-block">
         <h2 className="ef-context-title">阅读状态</h2>
         <label className="ef-status-select">

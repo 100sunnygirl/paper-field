@@ -2217,6 +2217,91 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   line-height: 1.6;
 }
 
+/* ---- 本篇状态卡 ----
+   资料栏顶部的汇总卡：解析 / 著录 / 笔记三条进度 + 推荐的下一步。
+   白纸面 + 墨顶线（对话同族、无信号黄——它是信息卡不是动作焦点）。 */
+.ef-card {
+  border: 1px solid var(--pf-ink);
+  border-top-width: 3px;
+  background: var(--pf-surface);
+  padding: 12px 12px 10px;
+  margin-bottom: 18px;
+}
+.ef-card-title {
+  margin: 0 0 10px;
+  font-size: var(--pf-fs-ui);
+  line-height: 1.3;
+  font-weight: 700;
+  color: var(--pf-ink);
+}
+.ef-card-progress {
+  list-style: none;
+  margin: 0 0 10px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ef-card-progress li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
+}
+.ef-card-progress li > span:first-child { flex: none; width: 30px; }
+.ef-card-progress b {
+  flex: none;
+  margin-left: auto;
+  font-size: var(--pf-fs-caption);
+  font-weight: 600;
+  color: var(--pf-ink);
+}
+.ef-card-progress b.is-done { color: var(--pf-success); }
+.ef-card-progress b.is-failed { color: var(--pf-danger); }
+.ef-card-bar {
+  flex: 1;
+  min-width: 24px;
+  height: 3px;
+  overflow: hidden;
+  background: #dcdfd5;
+}
+.ef-card-bar i {
+  display: block;
+  height: 100%;
+  background: var(--pf-ink);
+}
+.ef-card-next { border-top: 1px dashed var(--pf-divider); padding-top: 8px; }
+.ef-card-next-label {
+  margin-right: 6px;
+  font-size: var(--pf-fs-tag);
+  letter-spacing: var(--pf-tracking-tag);
+  color: var(--pf-muted);
+}
+.ef-card-next button {
+  min-height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--pf-ink);
+  background: var(--pf-ink);
+  color: var(--pf-on-dark);
+  font-size: var(--pf-fs-caption);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color var(--pf-motion);
+}
+.ef-card-next button:hover { background: var(--pf-ink-2); }
+.ef-card-next b.is-done {
+  font-size: var(--pf-fs-caption);
+  font-weight: 600;
+  color: var(--pf-success);
+}
+.ef-card-next p {
+  margin: 6px 0 0;
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-muted);
+  line-height: 1.6;
+}
+
 /* ---- System ---- */
 .ef-system {
   height: 100%;
