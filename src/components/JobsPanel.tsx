@@ -1020,6 +1020,24 @@ function HistoryList({
   const dismissable = visible.filter((item) => item.status === "done").map((item) => item.id);
   const parseRetryIds = matched.filter((item) => item.retryable).map((item) => item.paperId);
   const metaRetryIds = matched.filter((item) => item.aiRetry === "prepareMeta").map((item) => item.paperId);
+  const setFlash = useField((s) => s.setFlash);
+
+  /** 一键复制失败原因与作业 id：反馈求助时不用对着浮层手抄。 */
+  async function copyFailure(item: HistoryItemView) {
+    const text = [
+      `作业类型：${item.typeLabel}`,
+      `作业 ID：${item.id}`,
+      `论文：${item.title}`,
+      `失败原因：${item.note ?? "（无详细信息）"}`,
+    ].join("\n");
+    try {
+      await navigator.clipboard.writeText(text);
+      setFlash({ tone: "ok", text: "已复制失败原因与作业 ID 到剪贴板。" });
+    } catch {
+      // 非安全上下文 / 无剪贴板权限时降级提示（与日志复制同口径）。
+      setFlash({ tone: "warn", text: "复制失败：当前环境无法访问剪贴板。" });
+    }
+  }
 
   return (
     <section className="ef-jobs-section" aria-label="最近结束的作业">
@@ -1102,41 +1120,55 @@ function HistoryList({
                   <span title="结束时间">{formatClock(item.finishedAt, now)}</span>
                   <span title="用时">{item.durationMs !== null ? `用时 ${formatSpan(item.durationMs)}` : "—"}</span>
                 </span>
-                {item.retryable ? (
-                  <Button
-                    type="button"
-                    size="sm"
-                    className="ef-hist-retry"
-                    onClick={() => void retryMineru(item.paperId)}
-                  >
-                    重新解析
-                  </Button>
-                ) : item.aiRetry ? (
-                  <Button
-                    type="button"
-                    size="sm"
-                    className="ef-hist-retry"
-                    title="不覆盖手动改过的字段 / 笔记"
-                    onClick={() => void retryHistoryJob(item.paperId, item.aiRetry!)}
-                  >
-                    {AI_RETRY_LABELS[item.aiRetry]}
-                  </Button>
-                ) : item.status === "done" && RESULT_ENTRIES[item.type] ? (
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="text"
-                    className="ef-hist-retry"
-                    onClick={() => {
-                      const entry = RESULT_ENTRIES[item.type]!;
-                      if (entry.kind === "fulltext") void openPaperFulltext(item.paperId);
-                      else if (entry.kind === "fields") openDialog("edit-paper", item.paperId);
-                      else void onJump(item.paperId, item.domainId);
-                    }}
-                  >
-                    {RESULT_ENTRIES[item.type]!.label}
-                  </Button>
-                ) : null}
+                <div className="ef-hist-actions">
+                  {item.retryable ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="ef-hist-retry"
+                      onClick={() => void retryMineru(item.paperId)}
+                    >
+                      重新解析
+                    </Button>
+                  ) : item.aiRetry ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="ef-hist-retry"
+                      title="不覆盖手动改过的字段 / 笔记"
+                      onClick={() => void retryHistoryJob(item.paperId, item.aiRetry!)}
+                    >
+                      {AI_RETRY_LABELS[item.aiRetry]}
+                    </Button>
+                  ) : item.status === "done" && RESULT_ENTRIES[item.type] ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="text"
+                      className="ef-hist-retry"
+                      onClick={() => {
+                        const entry = RESULT_ENTRIES[item.type]!;
+                        if (entry.kind === "fulltext") void openPaperFulltext(item.paperId);
+                        else if (entry.kind === "fields") openDialog("edit-paper", item.paperId);
+                        else void onJump(item.paperId, item.domainId);
+                      }}
+                    >
+                      {RESULT_ENTRIES[item.type]!.label}
+                    </Button>
+                  ) : null}
+                  {item.status === "error" ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="text"
+                      title="复制失败原因与作业 ID，便于反馈求助"
+                      onClick={() => void copyFailure(item)}
+                    >
+                      <Icon name="copy" />
+                      复制错误信息
+                    </Button>
+                  ) : null}
+                </div>
               </li>
             ))}
           </ol>

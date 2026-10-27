@@ -469,6 +469,31 @@ describe("JobsPanel", () => {
     expect(screen.queryByRole("region", { name: "本机批次记录" })).toBeNull();
   });
 
+  it("失败作业一键复制错误信息与作业 id", async () => {
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    useField.setState({
+      jobs: [
+        job({
+          id: "job-42",
+          paperId: "p9",
+          status: "error",
+          error: "SSH 远程：curl: (28) Operation timed out",
+          finishedAt: new Date().toISOString(),
+        }),
+      ],
+    });
+    render(<JobsPanel />);
+    const history = screen.getByRole("region", { name: "最近结束的作业" });
+
+    fireEvent.click(within(history).getByRole("button", { name: "复制错误信息" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    const copied = writeText.mock.calls[0][0] as string;
+    expect(copied).toContain("作业 ID：job-42");
+    expect(copied).toContain("失败原因：SSH 远程：curl: (28) Operation timed out");
+    expect(useField.getState().flash?.text).toContain("已复制失败原因与作业 ID");
+  });
+
   it("查不到书目（旧版 repo / 查询失败）时退回短编号，不报错", async () => {
     vi.mocked(repo.paperBriefs).mockRejectedValue(new Error("boom"));
     const batchId = queueBatch("mineru", ["abcd-1234", "ef01-5678"]);
