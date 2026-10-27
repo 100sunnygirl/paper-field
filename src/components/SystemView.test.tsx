@@ -1279,6 +1279,27 @@ describe("SystemView · 浏览器预览的桌面专属能力标注", () => {
   });
 });
 
+describe("SystemView · 统一保存规则标注", () => {
+  beforeEach(() => {
+    useField.setState(useField.getInitialState(), true);
+    localStorage.clear();
+  });
+
+  it("三块表单与导出卡都标注了生效规则（立即生效项 vs 等保存）", () => {
+    render(<SystemView />);
+    const llm = llmBlock();
+    expect(within(llm).getByText(/字段修改需点「保存设置」；提供商排序 ↑↓、测试连接、获取模型列表与清除 Key 立即生效/)).toBeInTheDocument();
+    const mineru = screen.getByRole("heading", { level: 3, name: "MinerU 解析源" }).closest("article") as HTMLElement;
+    expect(within(mineru).getByText(/字段修改需点「保存设置」；回退顺序调整、测试连接与清除 Token 立即生效/)).toBeInTheDocument();
+    const biblio = screen.getByRole("heading", { level: 3, name: "文献库" }).closest("article") as HTMLElement;
+    expect(within(biblio).getByText(/邮箱与 Key 的修改均需点「保存文献库设置」后生效/)).toBeInTheDocument();
+    const exportCard = screen.getByRole("heading", { level: 3, name: "数据导出" }).closest("article") as HTMLElement;
+    expect(within(exportCard).getByText(/导出立即执行，只读不改动库内数据/)).toBeInTheDocument();
+    const secrets = screen.getByRole("article", { name: "密钥与令牌" });
+    expect(within(secrets).getByText(/清除立即生效/)).toBeInTheDocument();
+  });
+});
+
 describe("SystemView · 文献库", () => {
   beforeEach(() => {
     useField.setState(useField.getInitialState(), true);

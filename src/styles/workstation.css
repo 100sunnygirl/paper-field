@@ -2078,6 +2078,13 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   border: 1px solid var(--pf-ink);
 }
 .ef-kbd-note .ef-btn { margin-left: 8px; }
+/* 各设置卡的生效规则说明：哪些立即生效、哪些等保存按钮。 */
+.ef-save-rules {
+  margin: 0 0 14px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
+  line-height: 1.7;
+}
 /* 数据导出卡：范围 + 内容选择 + 导出前预览。 */
 .ef-export-content {
   display: flex;

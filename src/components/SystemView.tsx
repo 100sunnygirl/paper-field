@@ -674,6 +674,7 @@ function ExportBlock({ focused }: { focused: boolean }) {
       >
         导出{scope === "current" ? ` ${domain?.name ?? "当前领域"}` : ""}
       </Button>
+      <p className="ef-save-rules">导出立即执行，只读不改动库内数据；密钥与令牌永不写入导出文件。</p>
     </article>
   );
 }
@@ -1521,6 +1522,9 @@ function LlmSettingsBlock({ focused }: { focused: boolean }) {
         </div>
       ) : null}
 
+      <p className="ef-save-rules">
+        生效规则：字段修改需点「保存设置」；提供商排序 ↑↓、测试连接、获取模型列表与清除 Key 立即生效并落盘。
+      </p>
       <footer className="ef-block-foot">
         <Button
           variant="primary"
@@ -1749,6 +1753,7 @@ function BiblioSettings({ focused }: { focused: boolean }) {
           清除已保存的 Semantic Scholar Key
         </label>
       ) : null}
+      <p className="ef-save-rules">生效规则：邮箱与 Key 的修改均需点「保存文献库设置」后生效。</p>
       <footer className="ef-block-foot">
         <Button
           type="button"
@@ -2350,6 +2355,9 @@ function MineruSettings({ focused }: { focused: boolean }) {
         </div>
       ) : null}
 
+      <p className="ef-save-rules">
+        生效规则：字段修改需点「保存设置」；回退顺序调整、测试连接与清除 Token 立即生效并落盘。
+      </p>
       {deferredResume ? (
         <p className="ef-probe-line">
           测试通过，配置已保存。未自动续跑解析{pendingParseCount === null ? "" : `（待解析 ${pendingParseCount} 篇）`}。
