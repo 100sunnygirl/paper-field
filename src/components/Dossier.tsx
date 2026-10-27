@@ -14,6 +14,7 @@ import {
 } from "../lib/fulltext";
 import { onMarkdownClick, renderMarkdown } from "../lib/markdown";
 import { loadNoteLayout, moveNoteKind as moveNoteKindInOrder, saveNoteLayout, type NoteLayout } from "../lib/noteLayout";
+import { loadReadingSpots, saveReadingSpot } from "../lib/readingSpot";
 import { openLocalPdf } from "../lib/mineru";
 import {
   JOB_STATUS_LABELS,
@@ -37,6 +38,21 @@ import { Button, Dialog, Empty, ExternalResource, Icon, SourceBadge } from "./ui
 
 /** 本页目录里解析全文章节二级项的显示上限：更长的全文只列前若干节并注明其余节数。 */
 const TOC_SECTION_LIMIT = 30;
+
+/** 把区段锚点 id 转成浮标 / 提示里可读的中文标签。 */
+function spotSectionLabel(section: string, headings: ReturnType<typeof extractFulltextHeadings>): string {
+  if (section === "abstract") return "摘要";
+  if (section === "fulltext") return "解析全文";
+  if (section.startsWith("note-")) {
+    const kind = section.slice(5) as NoteKind;
+    return NOTE_LABELS[kind]?.zh ?? section;
+  }
+  if (section.startsWith("ft-sec-")) {
+    const heading = headings.find((item) => item.id === section);
+    return heading ? `§${heading.number} ${heading.text}` : "解析全文";
+  }
+  return section;
+}
 
 function NoteEditor({
   kind,
@@ -854,6 +870,79 @@ export function ReadingStage({
     saveNoteLayout(noteLayout);
   }, [noteLayout]);
 
+  // ---- 每篇论文的阅读现场：滚动位置 / 所在小节 / 解析全文展开状态 ----
+  // spotRef 由滚动监听与目录高亮共同维护；离开（切论文 / 卸载）时兜底存一次。
+  const spotRef = useRef<{ top: number; section: string }>({ top: 0, section: "abstract" });
+  // 恢复现场后短暂显示「已回到上次阅读位置」浮标（回到顶部 / 关闭，8 秒自动收起）。
+  const [spotChip, setSpotChip] = useState(false);
+
+  useEffect(() => {
+    spotRef.current.section = activeSection;
+  }, [activeSection]);
+
+  // 滚动时节流记现场（400ms 一次，不做逐帧写 localStorage）。
+  useEffect(() => {
+    const root = scrollRef.current;
+    if (!root || !paper) return;
+    let lastSave = 0;
+    const persist = (force: boolean) => {
+      const now = Date.now();
+      if (!force && now - lastSave < 400) return;
+      lastSave = now;
+      saveReadingSpot(paper.id, {
+        top: root.scrollTop,
+        section: spotRef.current.section,
+        fulltextOpen: Boolean(document.getElementById("fulltext")?.hasAttribute("open")),
+        at: now,
+      });
+    };
+    const onScroll = () => {
+      spotRef.current.top = root.scrollTop;
+      persist(false);
+    };
+    root.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      root.removeEventListener("scroll", onScroll);
+      // 离开这篇论文前兜底存一次（切论文 / 切模式 / 关窗前的最后一次位置）。
+      persist(true);
+    };
+  }, [paper?.id]);
+
+  // 打开论文：恢复上次的滚动位置与小节（目录高亮该节），并短暂提示可回到顶部。
+  useEffect(() => {
+    setSpotChip(false);
+    if (!paper) return;
+    const spot = loadReadingSpots()[paper.id];
+    if (!spot) return;
+    spotRef.current = { top: spot.top, section: spot.section };
+    const root = scrollRef.current;
+    const frame = requestAnimationFrame(() => {
+      if (root && spot.top > 0) root.scrollTop = spot.top;
+      if (spot.fulltextOpen) document.getElementById("fulltext")?.setAttribute("open", "");
+      setActiveSection(spot.section);
+      if (spot.top > 0) setSpotChip(true);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [paper?.id]);
+
+  // 浮标 8 秒后自动收起（不依赖 timer 的显式按钮路径见渲染处）。
+  useEffect(() => {
+    if (!spotChip) return;
+    const timer = window.setTimeout(() => setSpotChip(false), 8000);
+    return () => window.clearTimeout(timer);
+  }, [spotChip]);
+
+  function backToTop() {
+    setSpotChip(false);
+    const root = scrollRef.current;
+    if (!root) return;
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    // jsdom 等无布局环境没有 Element.scrollTo：退化为直接置顶。
+    if (typeof root.scrollTo === "function") root.scrollTo({ top: 0, behavior: reduce ? "auto" : "smooth" });
+    else root.scrollTop = 0;
+    setActiveSection("abstract");
+  }
+
   function toggleNoteCollapsed(kind: NoteKind) {
     setNoteLayout((prev) => ({
       ...prev,
@@ -1316,6 +1405,18 @@ export function ReadingStage({
           </article>
         </div>
       </div>
+      {/* 恢复阅读现场后短暂出现的浮标：告知回到上次位置，并可一键回到顶部。 */}
+      {spotChip ? (
+        <div className="ef-read-spot" role="status">
+          <span>已回到上次阅读位置 · {spotSectionLabel(activeSection, fulltextHeadings)}</span>
+          <button type="button" onClick={backToTop}>
+            回到顶部
+          </button>
+          <button type="button" className="ef-read-spot-close" aria-label="收起提示" onClick={() => setSpotChip(false)}>
+            <Icon name="close" />
+          </button>
+        </div>
+      ) : null}
       {/* 专注模式收起列表与资料栏后，正文区只靠 ↑↓ 翻页：底部保留一条极简翻页条，
           上一篇 / 标已读 / 下一篇 + 位置读数，给出可视出口。 */}
       {focus ? (

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { NOTE_DISPLAY_ORDER, type NoteKind, type PaperDetail } from "../lib/types";
 import { useField } from "../store";
@@ -60,6 +60,7 @@ beforeAll(() => {
 
 beforeEach(() => {
   useField.setState(useField.getInitialState(), true);
+  localStorage.removeItem("paper-field.reading-spot");
 });
 
 describe("ReadingStage · 笔记与论文信息的入口不重复", () => {
@@ -170,5 +171,66 @@ describe("ReadingStage · 专注模式极简翻页条", () => {
     useField.setState({ mode: "field", paper: paper({}), papers: [listItem("p1")] });
     renderStage();
     expect(screen.queryByRole("navigation", { name: "专注模式翻页" })).toBeNull();
+  });
+});
+
+describe("ReadingStage · 按论文记忆阅读位置与现场", () => {
+  it("重新打开：恢复滚动位置、目录高亮该节、展开解析全文并出现浮标", async () => {
+    localStorage.setItem(
+      "paper-field.reading-spot",
+      JSON.stringify({ p1: { top: 320, section: "note-highlights", fulltextOpen: true, at: Date.now() - 1000 } }),
+    );
+    useField.setState({ mode: "field", paper: paper({ summary: "已写" }), selectedPaperId: "p1" });
+    renderStage();
+    await waitFor(() => expect(document.getElementById("read-scroll")?.scrollTop).toBe(320));
+    expect(screen.getByText(/已回到上次阅读位置/)).toBeInTheDocument();
+    expect(document.getElementById("fulltext")).toHaveAttribute("open");
+    // 目录高亮恢复到离开时的小节
+    expect(document.querySelector('.ef-toc a[href="#note-highlights"]')).toHaveClass("is-active");
+    // 回到顶部收起浮标并把滚动归零
+    fireEvent.click(screen.getByRole("button", { name: "回到顶部" }));
+    expect(document.getElementById("read-scroll")?.scrollTop).toBe(0);
+    expect(screen.queryByText(/已回到上次阅读位置/)).toBeNull();
+  });
+
+  it("没有现场记录时不显示浮标、不滚动", async () => {
+    useField.setState({ mode: "field", paper: paper({}), selectedPaperId: "p1" });
+    renderStage();
+    expect(screen.queryByText(/已回到上次阅读位置/)).toBeNull();
+    expect(document.getElementById("read-scroll")?.scrollTop).toBe(0);
+  });
+
+  it("滚动时节流写入现场（含所在小节与全文展开状态）", async () => {
+    useField.setState({ mode: "field", paper: paper({ summary: "已写" }), selectedPaperId: "p1" });
+    renderStage();
+    const root = document.getElementById("read-scroll")!;
+    root.scrollTop = 480;
+    fireEvent.scroll(root);
+    await waitFor(() => {
+      const saved = JSON.parse(localStorage.getItem("paper-field.reading-spot")!) as { p1: { top: number } };
+      expect(saved.p1.top).toBe(480);
+    });
+    // 节流：400ms 内的第二次滚动不落盘
+    root.scrollTop = 100;
+    fireEvent.scroll(root);
+    const saved = JSON.parse(localStorage.getItem("paper-field.reading-spot")!) as { p1: { top: number } };
+    expect(saved.p1.top).toBe(480);
+  });
+
+  it("卸载（切论文 / 离开阅读页）时兜底保存最后的现场", async () => {
+    useField.setState({ mode: "field", paper: paper({ summary: "内容" }), selectedPaperId: "p1" });
+    const { unmount } = renderStage();
+    const root = document.getElementById("read-scroll")!;
+    root.scrollTop = 640;
+    fireEvent.scroll(root);
+    await waitFor(() => {
+      const saved = JSON.parse(localStorage.getItem("paper-field.reading-spot")!) as { p1: { top: number } };
+      expect(saved.p1.top).toBe(640);
+    });
+    // 之后又滚了一段但没触发新的落盘（节流窗口内）：卸载时兜底存最后一次位置
+    root.scrollTop = 900;
+    unmount();
+    const saved = JSON.parse(localStorage.getItem("paper-field.reading-spot")!) as { p1: { top: number } };
+    expect(saved.p1.top).toBe(900);
   });
 });

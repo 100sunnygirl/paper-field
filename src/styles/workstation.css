@@ -5072,6 +5072,56 @@ mark.ef-ft-hit.is-current { background: var(--pf-signal); }
   color: var(--pf-muted);
 }
 
+/* ---- 「已回到上次阅读位置」浮标 ----
+   打开论文恢复滚动现场后短暂出现（8 秒自动收起）：一行说明 + 回到顶部 + 关闭。
+   与翻页条同族的胶囊浮层，不挡正文，motion 由全局 reduced-motion 兜底接管。 */
+.ef-read-spot {
+  position: absolute;
+  left: 50%;
+  top: 72px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px 4px 12px;
+  background: var(--pf-surface);
+  border: 1px solid var(--pf-ink);
+  border-radius: 999px;
+  box-shadow: var(--pf-elev-1);
+  z-index: 12;
+  max-width: min(92%, 480px);
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+  animation: pf-pop var(--pf-t-enter) backwards;
+}
+.ef-read-spot span {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ef-read-spot button {
+  flex: none;
+  min-height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--pf-control-border);
+  background: var(--pf-surface);
+  color: var(--pf-secondary);
+  font-size: var(--pf-fs-caption);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: border-color var(--pf-motion), color var(--pf-motion), background-color var(--pf-motion);
+}
+.ef-read-spot button:hover { border-color: var(--pf-ink); color: var(--pf-ink); background: var(--pf-hover-flat); }
+.ef-read-spot-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  padding: 0;
+}
+.ef-read-spot-close .ef-ico { width: 12px; height: 12px; }
+
 /* Model id combobox (replaces <datalist>, see ModelCombobox.tsx). */
 .ef-combobox { position: relative; display: flex; }
 .ef-combobox > input { flex: 1; min-width: 0; padding-right: 28px; }
