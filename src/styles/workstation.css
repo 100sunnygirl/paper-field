@@ -3933,6 +3933,33 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 .ef-jobs-notify select:disabled,
 .ef-notify-toggle input:disabled { opacity: 0.45; cursor: not-allowed; }
 
+/* 本机批次记录：跨会话的批次清单（localStorage journal），行内给计数与状态。 */
+.ef-journal {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  background: var(--pf-surface);
+  border: 1px solid var(--pf-divider);
+}
+.ef-journal-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--pf-divider);
+  font-size: var(--pf-fs-caption);
+}
+.ef-journal-row:last-child { border-bottom: 0; }
+.ef-journal-row > b { flex: none; font-weight: 600; color: var(--pf-secondary); }
+.ef-journal-row > .mono { flex: none; color: var(--pf-muted); font-variant-numeric: tabular-nums; }
+.ef-journal-row > span { color: var(--pf-secondary); white-space: nowrap; }
+.ef-journal-state { margin-left: auto; }
+.ef-journal-state.is-done { color: var(--pf-success); }
+.ef-journal-state.is-halted { color: var(--pf-danger); }
+.ef-journal-state.is-interrupted { color: var(--pf-muted); }
+.ef-journal-export { align-self: flex-start; min-height: 26px; font-size: var(--pf-fs-caption); }
+
 /* ---- Keyframes ---- */
 /* Entrance keyframes: opacity + ≤8px shift only, mount-played, exit is instant. */
 @keyframes pf-fade {

@@ -23,6 +23,13 @@ import {
 } from "../lib/jobsView";
 import { repo } from "../lib/repo";
 import {
+  JOURNAL_STATE_LABELS,
+  exportJobJournal,
+  listJobBatches,
+} from "../lib/jobJournal";
+import { exportStamp } from "../lib/export";
+import { isTauri } from "../lib/util";
+import {
   loadJobNotifyPrefs,
   requestSystemNotifyPermission,
   saveJobNotifyPrefs,
@@ -222,8 +229,99 @@ function JobsPanelBody() {
 
         <HistoryList history={view.history} now={now} onJump={jump} />
 
+        <JournalSection />
+
         <NotifyPrefsBar />
       </div>
+    </section>
+  );
+}
+
+/** 本机批次记录的时间列：MM-DD HH:mm（最近 7 天，跨天才有意义）。 */
+function journalWhen(at: number): string {
+  const d = new Date(at);
+  return `${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
+/**
+ * 本机批次记录：重启也能回看的批次清单与逐篇结果计数（localStorage，不随备份走——
+ * 口径说明见 jobJournal.ts）。逐篇作业明细以「最近结束」（llm_jobs）为准。
+ */
+function JournalSection() {
+  const setFlash = useField((s) => s.setFlash);
+  const activity = useSyncExternalStore(subscribeActivity, getActivity);
+  const entries = useMemo(() => listJobBatches(7), [activity]);
+  if (!entries.length) return null;
+  const interrupted = entries.some((entry) => entry.state === "interrupted");
+
+  async function exportJournal() {
+    const name = `paper-field-jobs-${exportStamp(new Date())}.txt`;
+    const content = exportJobJournal(entries);
+    try {
+      if (isTauri()) {
+        const { invoke } = await import("@tauri-apps/api/core");
+        // 保存目录由系统对话框弹出；取消返回 null。
+        const dir = await invoke<string | null>("export_files", {
+          files: [{ relativePath: name, content }],
+        });
+        if (!dir) return;
+        setFlash({ tone: "ok", text: `批次记录已保存到 ${dir}` });
+        return;
+      }
+      if (typeof URL.createObjectURL !== "function") {
+        setFlash({ tone: "warn", text: "当前环境不支持下载文件，可展开面板逐条查看。" });
+        return;
+      }
+      const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name;
+      a.click();
+      URL.revokeObjectURL(url);
+      setFlash({ tone: "ok", text: `批次记录已下载为 ${name}` });
+    } catch (err) {
+      setFlash({ tone: "warn", text: `保存批次记录失败：${err instanceof Error ? err.message : String(err)}` });
+    }
+  }
+
+  return (
+    <section className="ef-jobs-section" aria-label="本机批次记录">
+      <h3 className="ef-jobs-sub">
+        本机批次记录
+        <span className="ef-count mono">{pad2(entries.length)}</span>
+      </h3>
+      <p className="ef-jobs-note">最近 7 天的批次（含重启前的会话），存在本机、不随备份走；逐篇明细见「最近结束」。</p>
+      {interrupted ? (
+        <p className="ef-jobs-note">
+          「应用退出中断」的批次：远端任务可能仍在解析，本机续跑时同源恢复或重新提交（与启动清扫口径一致）。
+        </p>
+      ) : null}
+      <ol className="ef-journal">
+        {entries.map((entry) => {
+          const ok = Object.values(entry.results).filter((result) => result === "ok").length;
+          const fail = Object.values(entry.results).filter((result) => result === "fail").length;
+          const elapsed =
+            entry.startedAt !== null && entry.finishedAt !== null
+              ? formatSpan(entry.finishedAt - entry.startedAt)
+              : "未收尾";
+          return (
+            <li key={entry.id} className={`ef-journal-row is-${entry.state}`}>
+              <b>{entry.kind === "mineru" ? "MinerU 解析" : "AI 补全"}</b>
+              <span className="mono">{journalWhen(entry.queuedAt)}</span>
+              <span>
+                {entry.paperIds.length} 篇 · 成功 {ok}
+                {fail ? ` · 失败 ${fail}` : ""}
+              </span>
+              <span>用时 {elapsed}</span>
+              <span className={`ef-journal-state is-${entry.state}`}>{JOURNAL_STATE_LABELS[entry.state]}</span>
+            </li>
+          );
+        })}
+      </ol>
+      <Button type="button" size="sm" variant="text" className="ef-journal-export" onClick={() => void exportJournal()}>
+        导出本机记录
+      </Button>
     </section>
   );
 }

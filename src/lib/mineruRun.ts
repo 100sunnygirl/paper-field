@@ -20,6 +20,7 @@ import {
 } from "./activity";
 import { cancelJob, cancelJobsForPapers, JobCancelled, liveJobsFor, runTracked, type JobCtx } from "./jobs";
 import { loadJobNotifyPrefs, systemNotify, type JobNotifyPrefs } from "./notifyPrefs";
+import { journalBegin, journalFinish, journalItem } from "./jobJournal";
 import { formatSpan } from "./jobsView";
 import { log } from "./logger";
 import { repo } from "./repo";
@@ -472,6 +473,8 @@ export async function runMineruBatch(
   }
   const id = batchId ?? queueBatch("mineru", paperIds);
   startBatch(id);
+  // 本机批次记录：清单、逐篇结果与起止时间（localStorage，重启可回看；见 jobJournal.ts 的口径说明）。
+  const journalId = journalBegin("mineru", paperIds);
   const startedAtMs = Date.now();
   const prefs = loadJobNotifyPrefs();
   // 正常走完记 done；熔断提前返回或意外抛错记 halted（剩余论文在面板上显示为已暂停）。
@@ -510,11 +513,13 @@ export async function runMineruBatch(
       // 库里状态在出列时已写成 cancelled，重启或保存设置后不会被自动重新提交。
       if (dequeued.has(queueKey(id, paperId))) {
         endBatchItem(id, paperId, "cancelled");
+        journalItem(journalId, paperId, "cancelled");
         continue;
       }
       beginBatchItem(id, paperId);
       const result = await processOne(host, paperId, force, id);
       endBatchItem(id, paperId, result);
+      journalItem(journalId, paperId, result);
       if (result === "ok") {
         ok += 1;
         consecutiveFails = 0;
@@ -584,6 +589,7 @@ export async function runMineruBatch(
     for (const paperId of paperIds) dequeued.delete(queueKey(id, paperId));
     pauseAfterCurrent.delete(id);
     finishBatch(id, state);
+    journalFinish(journalId, state);
   }
 }
 
@@ -623,6 +629,7 @@ export async function backfillMeta(host: Host): Promise<void> {
   if (!ids.length) return;
   const batchId = queueBatch("meta", ids);
   startBatch(batchId);
+  const journalId = journalBegin("meta", ids);
   const startedAtMs = Date.now();
   const prefs = loadJobNotifyPrefs();
   let state: "done" | "halted" = "halted";
@@ -657,11 +664,13 @@ export async function backfillMeta(host: Host): Promise<void> {
       handled.add(id);
       if (dequeued.has(queueKey(batchId, id))) {
         endBatchItem(batchId, id, "cancelled");
+        journalItem(journalId, id, "cancelled");
         continue;
       }
       beginBatchItem(batchId, id);
       const result = await autoPrepare(host, id);
       endBatchItem(batchId, id, result);
+      journalItem(journalId, id, result);
       if (result === "ok") {
         filled += 1;
         consecutiveFails = 0;
@@ -680,6 +689,7 @@ export async function backfillMeta(host: Host): Promise<void> {
     for (const id of ids) dequeued.delete(queueKey(batchId, id));
     pauseAfterCurrent.delete(batchId);
     finishBatch(batchId, state);
+    journalFinish(journalId, state);
   }
   if (pausedByUser) {
     host.flash("ok", "已按要求暂停补全，剩余论文可稍后在作业面板「继续本批」。");

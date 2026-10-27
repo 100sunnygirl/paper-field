@@ -32,6 +32,7 @@ import {
   startBatch,
   trackJob,
 } from "../lib/activity";
+import { journalBegin, journalFinish, journalItem, resetJobJournal } from "../lib/jobJournal";
 import { repo } from "../lib/repo";
 import { useField } from "../store";
 import { JobsPanel } from "./JobsPanel";
@@ -80,6 +81,8 @@ beforeEach(() => {
   resetActivity();
   localStorage.removeItem("paper-field.jobs-queue-expanded");
   localStorage.removeItem("paper-field.job-notify");
+  localStorage.removeItem("paper-field.job-journal");
+  resetJobJournal();
   vi.mocked(repo.paperBriefs).mockResolvedValue([]);
 });
 
@@ -380,6 +383,31 @@ describe("JobsPanel", () => {
     expect(localStorage.getItem("paper-field.job-notify")).toBe(null);
     const system = within(bar).getByRole("checkbox", { name: "失焦系统通知" }) as HTMLInputElement;
     expect(system.checked).toBe(false);
+  });
+
+  it("本机批次记录：跨会话批次可回看、含中断口径说明，并可导出", () => {
+    const done = journalBegin("mineru", ["a", "b"]);
+    journalItem(done, "a", "ok");
+    journalItem(done, "b", "fail");
+    journalFinish(done, "done");
+    journalBegin("meta", ["c"]); // 未收尾 → 应用退出中断
+
+    render(<JobsPanel />);
+    const section = screen.getByRole("region", { name: "本机批次记录" });
+    expect(within(section).getByText(/2 篇 · 成功 1 · 失败 1/)).toBeInTheDocument();
+    expect(within(section).getByText("已完成")).toBeInTheDocument();
+    expect(within(section).getByText("应用退出中断")).toBeInTheDocument();
+    expect(within(section).getByText(/远端任务可能仍在解析/)).toBeInTheDocument();
+
+    // 导出走浏览器下载路径（jsdom 提供 createObjectURL）：给成功提示与文件名。
+    fireEvent.click(within(section).getByRole("button", { name: "导出本机记录" }));
+    expect(useField.getState().flash?.tone).toBe("ok");
+    expect(useField.getState().flash?.text).toContain("批次记录已下载为 paper-field-jobs-");
+  });
+
+  it("没有批次记录时不渲染「本机批次记录」区", () => {
+    render(<JobsPanel />);
+    expect(screen.queryByRole("region", { name: "本机批次记录" })).toBeNull();
   });
 
   it("查不到书目（旧版 repo / 查询失败）时退回短编号，不报错", async () => {

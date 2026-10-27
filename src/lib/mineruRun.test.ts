@@ -47,6 +47,7 @@ import {
 import { cancelJob, liveJobsFor, resetLiveJobs } from "./jobs";
 import { getActivity, queueBatch, reorderBatch, resetActivity, subscribeActivity } from "./activity";
 import { resetJobNotifyPrefs, saveJobNotifyPrefs } from "./notifyPrefs";
+import { journalBegin, listJobBatches, resetJobJournal } from "./jobJournal";
 import { repo } from "./repo";
 
 const FP = "pf-cred-v1:match";
@@ -101,6 +102,7 @@ beforeEach(async () => {
   resetActivity();
   resetLiveJobs();
   resetJobNotifyPrefs();
+  resetJobJournal();
   setMineruTiming({ pollMs: 1, retryMs: 1 });
   vi.mocked(mineruSubmit).mockReset();
   vi.mocked(mineruParseStatuses).mockReset();
@@ -1164,6 +1166,27 @@ describe("批次收尾反馈与通知偏好", () => {
     expect(created).toEqual([]);
 
     hasFocus.mockRestore();
+  });
+
+  it("批次全程写进本机记录：逐篇结果与终态可跨会话回看", async () => {
+    const ids = [await makePaper(), await makePaper()];
+    const host = makeHost({ hasKey: false });
+    vi.mocked(mineruSubmit).mockImplementation(async (paperId) => submitResult({ status: "done", shortId: `doc-${paperId}` }));
+    markdownByDoc();
+    await runMineruBatch(host, ids, true);
+
+    const entries = listJobBatches();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ kind: "mineru", state: "done", paperIds: ids });
+    expect(entries[0].results).toEqual({ [ids[0]]: "ok", [ids[1]]: "ok" });
+    expect(entries[0].finishedAt).not.toBeNull();
+  });
+
+  it("应用退出时未收尾的批次在记录里显示为中断", () => {
+    // 只 begin 不 finish：模拟进程退出（重启后读取侧会标成 interrupted）。
+    journalBegin("meta", ["a", "b"]);
+    const entries = listJobBatches();
+    expect(entries[0].state).toBe("interrupted");
   });
 });
 
