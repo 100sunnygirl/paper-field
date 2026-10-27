@@ -26,7 +26,7 @@ import type { ExportContentOptions } from "../lib/export";
 import { repo } from "../lib/repo";
 import { checkAppUpdateInfo, installAppUpdate, type AppUpdateInfo } from "../lib/updater";
 import { openExternal } from "../lib/urls";
-import { formatDate, pad2, shortcut, uid } from "../lib/util";
+import { formatDate, isTauri, pad2, shortcut, uid } from "../lib/util";
 import { useField } from "../store";
 import { LogPanel } from "./LogPanel";
 import { PreRestoreList } from "./PreRestoreList";
@@ -297,6 +297,20 @@ export function SystemView() {
               </p>
             ) : null}
           </div>
+
+          {!isTauri() ? (
+            <div className="ef-browser-note" role="note">
+              <b>浏览器预览模式</b>
+              <p>
+                备份 / 恢复、检查更新、MinerU 连接、钥匙串密钥存储与本地 PDF 导入是桌面版能力，
+                在浏览器预览中不可用或只会给出说明。当前数据存放在本机浏览器的 IndexedDB 里。
+              </p>
+              <p>
+                替代动作：下方「数据导出」可直接下载 Markdown / BibTeX 留存论文与笔记；
+                桌面安装包见 GitHub Releases（README 有从源码打包的说明）。
+              </p>
+            </div>
+          ) : null}
 
           <div className="ef-system-layout">
             <nav className="ef-system-nav" aria-label="设置目录">
@@ -759,6 +773,8 @@ function BackupBlock({ focused }: { focused: boolean }) {
   const days = lastBackup ? daysSinceBackup(lastBackup.at) : null;
   const stale = days !== null && days >= BACKUP_STALE_DAYS;
   const lastBackupAt = lastBackup ? new Date(lastBackup.at) : null;
+  // 浏览器预览提前标注：桌面专属按钮直接禁用并说明原因，而不是点了才弹警告。
+  const browserPreview = !isTauri();
 
   async function runBackup() {
     await backup();
@@ -792,13 +808,26 @@ function BackupBlock({ focused }: { focused: boolean }) {
         剩余空间由桌面端在写入时校验，空间不足会失败并提示，不会产生半个备份。
       </p>
       <div className="ef-ai-buttons">
-        <Button type="button" onClick={() => void runBackup()}>
+        <Button
+          type="button"
+          disabled={browserPreview}
+          title={browserPreview ? "备份仅在桌面版可用" : undefined}
+          onClick={() => void runBackup()}
+        >
           备份
         </Button>
-        <Button type="button" onClick={() => setConfirming(true)}>
+        <Button
+          type="button"
+          disabled={browserPreview}
+          title={browserPreview ? "恢复仅在桌面版可用" : undefined}
+          onClick={() => setConfirming(true)}
+        >
           恢复
         </Button>
       </div>
+      {browserPreview ? (
+        <p className="ef-probe-line">浏览器预览不能备份 / 恢复；可用上方「数据导出」下载 Markdown 留存。</p>
+      ) : null}
       {confirming ? (
         <div className="ef-ai-buttons">
           <p>恢复会替换当前文库。当前数据库会先复制一份。</p>

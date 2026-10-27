@@ -915,18 +915,15 @@ describe("SystemView · 备份状态与预检", () => {
     expect(status.textContent).toContain("已超过 7 天，建议再备份一次");
   });
 
-  it("备份成功后写入本机记录并刷新状态行", async () => {
+  it("备份成功后写入本机记录（桌面端路径；状态行下次进入设置页可见）", async () => {
     useField.setState({ stats: { read: 0, total: 2, openSource: 0, queued: 0, running: 0 } });
-    render(<SystemView />);
-    fireEvent.click(screen.getByRole("button", { name: "备份" }));
-    await waitFor(() => {
-      const raw = localStorage.getItem("paper-field.last-backup");
-      expect(raw).toBeTruthy();
-      const record = JSON.parse(raw!) as { where: string; papers: number };
-      expect(record.where).toBe("/mock/backup/paper-field.zip");
-      expect(record.papers).toBe(2);
-    });
-    expect(await within(backupBlock()).findByText(/上次备份/)).toBeInTheDocument();
+    // 备份按钮在浏览器预览禁用；这里直接走 store 动作验证「成功后写记录」。
+    await useField.getState().backupLibrary();
+    const raw = localStorage.getItem("paper-field.last-backup");
+    expect(raw).toBeTruthy();
+    const record = JSON.parse(raw!) as { where: string; papers: number };
+    expect(record.where).toBe("/mock/backup/paper-field.zip");
+    expect(record.papers).toBe(2);
   });
 });
 
@@ -1208,6 +1205,30 @@ describe("SystemView · 测试连接与启用自动处理分离", () => {
     fireEvent.click(within(block).getByRole("button", { name: "继续未完成的解析" }));
     await waitFor(() => expect(resumeMineruParses).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(within(block).queryByText(/未自动续跑解析/)).not.toBeInTheDocument());
+  });
+});
+
+describe("SystemView · 浏览器预览的桌面专属能力标注", () => {
+  beforeEach(() => {
+    useField.setState(useField.getInitialState(), true);
+    localStorage.clear();
+  });
+
+  it("顶部显示浏览器预览说明，指明桌面专属能力与替代动作", () => {
+    render(<SystemView />);
+    const note = screen.getByRole("note");
+    expect(note.textContent).toContain("浏览器预览模式");
+    expect(note.textContent).toContain("备份 / 恢复、检查更新、MinerU 连接");
+    expect(note.textContent).toContain("数据导出");
+    expect(note.textContent).toContain("GitHub Releases");
+  });
+
+  it("备份 / 恢复按钮禁用并给出可见原因（不再点了才弹警告）", () => {
+    render(<SystemView />);
+    const block = screen.getByRole("heading", { level: 3, name: "备份与恢复" }).closest("article") as HTMLElement;
+    expect(within(block).getByRole("button", { name: "备份" })).toBeDisabled();
+    expect(within(block).getByRole("button", { name: "恢复" })).toBeDisabled();
+    expect(within(block).getByText(/浏览器预览不能备份 \/ 恢复/)).toBeInTheDocument();
   });
 });
 

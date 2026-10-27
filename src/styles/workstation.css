@@ -2207,6 +2207,28 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   overflow-wrap: anywhere;
 }
 .ef-update-install-msg { margin: 12px 0 0; font-size: var(--pf-fs-ui); color: var(--pf-secondary); }
+/* 浏览器预览说明条：桌面专属能力提前标注 + 替代动作。 */
+.ef-browser-note {
+  margin: 0 0 24px;
+  padding: 14px 18px;
+  background: var(--pf-panel);
+  border: 1px solid var(--pf-divider);
+  border-left: 3px solid var(--pf-ink);
+}
+.ef-browser-note b {
+  display: block;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
+  letter-spacing: 0.04em;
+  margin-bottom: 6px;
+}
+.ef-browser-note p {
+  margin: 0 0 8px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+  line-height: 1.7;
+}
+.ef-browser-note p:last-child { margin-bottom: 0; }
 .ef-llm-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
