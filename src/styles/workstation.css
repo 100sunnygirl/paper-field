@@ -4672,6 +4672,91 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 .ef-fulltext .ef-note-text { margin-top: 6px; animation: pf-fade var(--pf-t-enter); }
 .ef-fulltext .ef-empty-note { margin: 6px 0 0; }
 
+/* ---- 全文并读（半高分屏面板）----
+   阅读滚动区改为上下两行：上=解析全文面板（自带小节目录、独立滚动），
+   下=摘要与笔记（原 .ef-reading-grid，独立滚动）；工具条「全文并读」一键折回单栏。 */
+.ef-read.is-fulltext-split .ef-read-scroll {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+  overflow: hidden;
+}
+.ef-read.is-fulltext-split .ef-reading-grid {
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #b1b5a9 transparent;
+}
+.ef-fulltext-panel {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  background: var(--pf-surface);
+  border-bottom: 1px solid var(--pf-ink);
+}
+.ef-fulltext-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 8px 20px;
+  background: #f9faf6;
+  border-bottom: 1px solid var(--pf-divider);
+}
+.ef-fulltext-panel-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: var(--pf-fs-title);
+  line-height: 1.3;
+  font-weight: 700;
+  color: var(--pf-ink);
+}
+.ef-fulltext-panel-title::before {
+  content: "";
+  flex: none;
+  width: 5px;
+  height: 0.9em;
+  background: var(--pf-heading-marker);
+}
+.ef-fulltext-panel-head small {
+  flex: none;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
+}
+.ef-fulltext-panel-spacer { flex: 1; min-width: 8px; }
+.ef-fulltext-panel-toc {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+}
+.ef-fulltext-panel-toc select {
+  max-width: 260px;
+  min-height: 30px;
+  border: 1px solid var(--pf-control-border);
+  border-radius: var(--pf-radius);
+  background: var(--pf-surface);
+  padding: 0 8px;
+  color: var(--pf-ink);
+  font-size: var(--pf-fs-caption);
+}
+.ef-fulltext-panel-toc select:hover { border-color: var(--pf-ink); }
+.ef-fulltext-panel-body {
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #b1b5a9 transparent;
+  padding: 18px 20px 30px;
+}
+/* 面板正文行宽与文档一致，居中；长文的标题/段落沿用 .ef-md 排版。 */
+.ef-fulltext-panel-body .ef-md {
+  max-width: calc(var(--pf-document-max-width) + 2 * var(--pf-document-pad));
+  margin-inline: auto;
+}
+
 /* ---- 解析全文选中浮出的「摘到笔记」条 ----
    跟随选区上方浮出（fixed 定位，随滚动收起）；信号黄只作为选中提示的顶线。 */
 .ef-excerpt-bar {

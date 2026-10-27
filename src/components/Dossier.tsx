@@ -345,12 +345,16 @@ function FulltextDoc({
     };
     // 容器滚动后浮条会漂离选中位置：跟随收起（选区本身不受影响）。
     const hide = () => setBar(null);
-    const scroller = rootRef.current?.closest(".ef-read-scroll");
+    // 单栏时滚的是 .ef-read-scroll；并读时滚的是面板正文，两处都听。
+    const scrollers = [
+      rootRef.current?.closest(".ef-read-scroll"),
+      rootRef.current?.closest(".ef-fulltext-panel-body"),
+    ].filter((node): node is Element => Boolean(node));
     document.addEventListener("selectionchange", report);
-    scroller?.addEventListener("scroll", hide, { passive: true });
+    scrollers.forEach((node) => node.addEventListener("scroll", hide, { passive: true }));
     return () => {
       document.removeEventListener("selectionchange", report);
-      scroller?.removeEventListener("scroll", hide);
+      scrollers.forEach((node) => node.removeEventListener("scroll", hide));
     };
   }, [headings, onPick]);
 
@@ -772,6 +776,12 @@ export function ReadingStage({
   const [fulltextPick, setFulltextPick] = useState<FulltextSelection | null>(null);
   // 五块笔记的显示布局（顺序 + 折叠）：本机偏好，改动即存。
   const [noteLayout, setNoteLayout] = useState<NoteLayout>(() => loadNoteLayout());
+  // 全文并读（半高分屏）：上半屏解析全文、下半屏摘要与笔记，边读全文边写笔记。
+  const [fulltextSplit, setFulltextSplit] = useState(false);
+  const fulltextHeadings = useMemo(
+    () => (paper ? extractFulltextHeadings(paper.parsedMarkdown) : []),
+    [paper?.parsedMarkdown],
+  );
   const scrollRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -944,7 +954,13 @@ export function ReadingStage({
   );
 
   return (
-    <section className="ef-read has-context" id="stage" aria-labelledby="paper-title">
+    <section
+      className={["ef-read has-context", fulltextSplit && paper.parsedMarkdown.trim() ? "is-fulltext-split" : ""]
+        .filter(Boolean)
+        .join(" ")}
+      id="stage"
+      aria-labelledby="paper-title"
+    >
       <div className="ef-toolbar">
         <Button
           type="button"
@@ -994,6 +1010,19 @@ export function ReadingStage({
           <Icon name="inbox" />
           资料
         </Button>
+        {paper.parsedMarkdown.trim() ? (
+          <Button
+            type="button"
+            variant="text"
+            className="ef-split-btn"
+            aria-pressed={fulltextSplit}
+            title={fulltextSplit ? "收起解析全文面板，回到单栏" : "上半屏解析全文、下半屏摘要与笔记，边读全文边写笔记"}
+            onClick={() => setFulltextSplit((value) => !value)}
+          >
+            <Icon name="grid" />
+            {fulltextSplit ? "退出并读" : "全文并读"}
+          </Button>
+        ) : null}
         <span className="ef-toolbar-divider" aria-hidden="true" />
         {paper.pdfPath ? (
           <Button
@@ -1088,6 +1117,42 @@ export function ReadingStage({
       </div>
 
       <div className="ef-read-scroll" ref={scrollRef} id="read-scroll">
+        {/* 全文并读面板：置顶半高分区（自带小节目录），与摘要/笔记同一舞台、互不遮挡。 */}
+        {fulltextSplit && paper.parsedMarkdown.trim() ? (
+          <section className="ef-fulltext-panel" aria-label="解析全文并读面板">
+            <header className="ef-fulltext-panel-head">
+              <h2 className="ef-fulltext-panel-title">解析全文</h2>
+              <small>{fulltextStatus}</small>
+              <span className="ef-fulltext-panel-spacer" aria-hidden="true" />
+              {fulltextHeadings.length ? (
+                <label className="ef-fulltext-panel-toc" title="按小节跳转">
+                  <span>小节</span>
+                  <select
+                    aria-label="跳到小节"
+                    value=""
+                    onChange={(e) => {
+                      const id = e.target.value;
+                      if (id) jump(id);
+                    }}
+                  >
+                    <option value="">跳到小节…</option>
+                    {fulltextHeadings.map((heading) => (
+                      <option key={heading.id} value={heading.id}>
+                        §{heading.number} {heading.text}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+              <Button type="button" size="sm" variant="text" onClick={() => setFulltextSplit(false)}>
+                收起
+              </Button>
+            </header>
+            <div className="ef-fulltext-panel-body">
+              <FulltextDoc paper={paper} onPick={setFulltextPick} />
+            </div>
+          </section>
+        ) : null}
         <div className="ef-reading-grid">
           <article className="ef-document" id="document" key={paper.id}>
             <div className="ef-paper-category">
@@ -1167,19 +1232,22 @@ export function ReadingStage({
                 canMoveDown={index < noteLayout.order.length - 1}
               />
             ))}
-            <details className="ef-fulltext" id="fulltext">
-              <summary className="ef-section-label">
-                <span>解析全文</span>
-                <small>{fulltextStatus}</small>
-                <i className="ef-section-rule" aria-hidden="true" />
-                <Icon name="right" />
-              </summary>
-              {paper.parsedMarkdown.trim() ? (
-                <FulltextDoc paper={paper} onPick={setFulltextPick} />
-              ) : (
-                <p className="ef-empty-note">尚未解析出全文。导入 PDF 并启用解析源后，这里会显示解析结果。</p>
-              )}
-            </details>
+            {/* 并读模式下全文在上方面板里，折叠区不重复渲染（锚点由面板提供）。 */}
+            {!fulltextSplit ? (
+              <details className="ef-fulltext" id="fulltext">
+                <summary className="ef-section-label">
+                  <span>解析全文</span>
+                  <small>{fulltextStatus}</small>
+                  <i className="ef-section-rule" aria-hidden="true" />
+                  <Icon name="right" />
+                </summary>
+                {paper.parsedMarkdown.trim() ? (
+                  <FulltextDoc paper={paper} onPick={setFulltextPick} />
+                ) : (
+                  <p className="ef-empty-note">尚未解析出全文。导入 PDF 并启用解析源后，这里会显示解析结果。</p>
+                )}
+              </details>
+            ) : null}
           </article>
         </div>
       </div>

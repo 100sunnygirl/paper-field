@@ -244,6 +244,58 @@ describe("本页目录 · 解析全文章节二级导航", () => {
   });
 });
 
+describe("解析全文并读面板（半高分屏）", () => {
+  it("「全文并读」一键开合：面板出现、折叠区不再重复渲染", () => {
+    useField.setState({ mode: "field", paper: paper(), selectedPaperId: "p1" });
+    renderStage();
+    const toggle = screen.getByRole("button", { name: /全文并读/ });
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    expect(document.getElementById("fulltext")).toBeTruthy();
+    fireEvent.click(toggle);
+    const panel = screen.getByRole("region", { name: "解析全文并读面板" });
+    expect(panel).toBeInTheDocument();
+    // 面板渲染全文，正文里的折叠区隐藏（锚点由面板提供，不重复）
+    expect(panel.querySelector(".ef-md h1")?.id).toBe("ft-sec-0");
+    expect(document.getElementById("fulltext")).toBeNull();
+    expect(screen.getByRole("button", { name: /退出并读/ })).toHaveAttribute("aria-pressed", "true");
+    // 一键折回单栏
+    fireEvent.click(screen.getByRole("button", { name: "收起" }));
+    expect(screen.queryByRole("region", { name: "解析全文并读面板" })).toBeNull();
+    expect(document.getElementById("fulltext")).toBeTruthy();
+  });
+
+  it("面板自带小节目录：选择小节跳到对应锚点", () => {
+    useField.setState({ mode: "field", paper: paper(), selectedPaperId: "p1" });
+    renderStage();
+    fireEvent.click(screen.getByRole("button", { name: /全文并读/ }));
+    const scrollSpy = vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(() => {});
+    fireEvent.change(screen.getByLabelText("跳到小节"), { target: { value: "ft-sec-1" } });
+    expect(scrollSpy).toHaveBeenCalled();
+    const anchor = document.getElementById("ft-sec-1");
+    expect(anchor?.textContent).toBe("方法");
+    scrollSpy.mockRestore();
+  });
+
+  it("没有解析全文时不出现「全文并读」入口", () => {
+    const detail = paper();
+    (detail as { parsedMarkdown: string }).parsedMarkdown = "";
+    useField.setState({ mode: "field", paper: detail, selectedPaperId: "p1" });
+    renderStage();
+    expect(screen.queryByRole("button", { name: /全文并读/ })).toBeNull();
+  });
+
+  it("本页目录的小节链接在并读模式下滚动面板内锚点", () => {
+    useField.setState({ mode: "field", paper: paper(), selectedPaperId: "p1" });
+    renderStage();
+    fireEvent.click(screen.getByRole("button", { name: /全文并读/ }));
+    const scrollSpy = vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(() => {});
+    fireEvent.click(document.querySelector('.ef-toc a[href="#ft-sec-1"]')!);
+    expect(scrollSpy).toHaveBeenCalled();
+    expect(document.querySelector(".ef-fulltext-panel-body #ft-sec-1")).toBeTruthy();
+    scrollSpy.mockRestore();
+  });
+});
+
 afterAll(() => {
   vi.restoreAllMocks();
 });
