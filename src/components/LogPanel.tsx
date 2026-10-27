@@ -1,4 +1,5 @@
 import { useState, useSyncExternalStore, type CSSProperties } from "react";
+import { buildDiagnosticsReport, readAppVersion } from "../lib/diagnostics";
 import { exportStamp } from "../lib/export";
 import { clear, getEntries, getVersion, subscribe, type LogEntry, type LogLevel, type LogScope } from "../lib/logger";
 import { isTauri, pad2 } from "../lib/util";
@@ -41,6 +42,9 @@ function asText(entries: LogEntry[]): string {
 
 export function LogPanel({ focused = false }: { focused?: boolean }) {
   const setFlash = useField((s) => s.setFlash);
+  const settings = useField((s) => s.settings);
+  const mineru = useField((s) => s.mineru);
+  const biblio = useField((s) => s.biblio);
   const [filter, setFilter] = useState<LogFilter>("all");
   const [scope, setScope] = useState<LogScope | "all">("all");
   const [keyword, setKeyword] = useState("");
@@ -100,6 +104,26 @@ export function LogPanel({ focused = false }: { focused?: boolean }) {
     }
   }
 
+  /** 一键诊断包：版本 + 平台 + 去密钥设置摘要 + 最近日志，复制后可直接贴进 issue。 */
+  async function copyDiagnostics() {
+    try {
+      const version = await readAppVersion();
+      const report = buildDiagnosticsReport({
+        version,
+        platform: typeof navigator !== "undefined" ? navigator.platform : "未知",
+        runtime: isTauri() ? "桌面版" : "浏览器预览",
+        llm: settings,
+        mineru,
+        biblio,
+        logs: all,
+      });
+      await navigator.clipboard.writeText(report);
+      setFlash({ tone: "ok", text: "诊断包已复制到剪贴板，可直接粘贴到 issue。" });
+    } catch {
+      setFlash({ tone: "warn", text: "复制诊断包失败：当前环境无法访问剪贴板。" });
+    }
+  }
+
   async function clearLogs() {
     setConfirmClear(false);
     await clear();
@@ -153,6 +177,9 @@ export function LogPanel({ focused = false }: { focused?: boolean }) {
           ))}
         </div>
         <span className="ef-log-actions">
+          <Button type="button" size="sm" onClick={() => void copyDiagnostics()}>
+            复制诊断包
+          </Button>
           <Button type="button" size="sm" onClick={() => void copyResults()}>
             复制当前结果
           </Button>

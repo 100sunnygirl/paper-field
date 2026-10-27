@@ -617,6 +617,26 @@ describe("SystemView · 运行日志面板", () => {
     await waitFor(() => expect(revokeObjectURL).toHaveBeenCalledTimes(1));
     vi.unstubAllGlobals();
   });
+
+  it("「复制诊断包」：版本 + 去密钥设置摘要 + 日志一次复制", async () => {
+    log.info("app", "DIAG-LOG-ROW");
+    useField.setState({ settings: llmSettings() });
+    const writeText = vi.fn(async (_text: string) => undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    render(<SystemView />);
+    fireEvent.click(screen.getByRole("button", { name: "复制诊断包" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    const text = writeText.mock.calls[0]![0];
+    expect(text).toContain("# Paper Field 诊断信息");
+    expect(text).toContain("DeepSeek");
+    expect(text).toContain("Key 已保存");
+    expect(text).toContain("DIAG-LOG-ROW");
+    expect(text).toContain("浏览器预览");
+    expect(text).not.toMatch(/sk-[A-Za-z0-9]/);
+  });
 });
 
 describe("SystemView · 设置页顺序与 MinerU 高级项", () => {
