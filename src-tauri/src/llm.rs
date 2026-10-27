@@ -2219,3 +2219,143 @@ mod tests {
         assert!(!is_response_format_rejection(400, "invalid model"));
     }
 }
+
+#[cfg(test)]
+mod client_contract_tests {
+    use super::*;
+    use crate::test_util::http::{bounded, Response, Server};
+
+    fn provider(base: &str, key: &str) -> ProviderCfg {
+        ProviderCfg {
+            id: "fixture".into(), preset_id: None, label: "Loopback fixture".into(),
+            base_url: format!("{base}/v1/"), model: "fixture-model".into(), enabled: true,
+            requires_key: !key.is_empty(), api_key: key.into(), key_origin: key_origin(base),
+        }
+    }
+
+    fn success() -> Response {
+        Response::json(200, json!({"choices":[{"finish_reason":"stop","message":{"content":"{\"ok\":true}"}}],
+            "usage":{"prompt_tokens":12,"completion_tokens":5}}))
+    }
+
+    #[tokio::test]
+    async fn normal_request_preserves_auth_messages_options_and_usage() {
+        bounded(async {
+            let server = Server::start(|_| vec![success()]).await;
+            let p = provider(&server.base, "fixture-key");
+            let result = chat_once(&p, Some("Return JSON"), "论文摘要", true, 0.25, Some(64)).await
+                .unwrap_or_else(|_| panic!("fixture completion should succeed"));
+            assert_eq!(result.content, "{\"ok\":true}");
+            assert_eq!(result.input_tokens, Some(12));
+            assert_eq!(result.output_tokens, Some(5));
+            let requests = server.finish().await;
+            assert_eq!(requests[0].method, "POST");
+            assert_eq!(requests[0].path, "/v1/chat/completions");
+            assert_eq!(requests[0].header("authorization"), Some("Bearer fixture-key"));
+            assert_eq!(requests[0].header("content-type"), Some("application/json"));
+            assert_eq!(requests[0].json(), json!({"model":"fixture-model","temperature":0.25,"max_tokens":64,
+                "messages":[{"role":"system","content":"Return JSON"},{"role":"user","content":"论文摘要"}],
+                "response_format":{"type":"json_object"}}));
+            // This client is non-streaming. Do not claim SSE support by testing a parallel client.
+            assert!(requests[0].json().get("stream").is_none());
+        }).await;
+    }
+
+    #[tokio::test]
+    async fn json_mode_rejection_retries_actual_request_without_response_format() {
+        bounded(async {
+            let server = Server::start(|_| vec![
+                Response::json(400, json!({"error":{"message":"response_format unsupported"}})), success(),
+            ]).await;
+            let result = call_provider(&provider(&server.base, ""), None, "hello").await
+                .unwrap_or_else(|e| panic!("JSON fallback failed: {}", e.message));
+            assert_eq!(result.content, "{\"ok\":true}");
+            let requests = server.finish().await;
+            assert_eq!(requests.len(), 2);
+            assert_eq!(requests[0].json()["response_format"], json!({"type":"json_object"}));
+            let mut first = requests[0].json();
+            first.as_object_mut().unwrap().remove("response_format");
+            assert_eq!(requests[1].json(), first, "fallback changes only JSON mode");
+            assert!(requests.iter().all(|r| r.header("authorization").is_none()));
+        }).await;
+    }
+
+    #[tokio::test]
+    async fn http_errors_keep_status_body_and_retry_after() {
+        bounded(async {
+            for status in [401, 429, 503] {
+                let server = Server::start(|_| vec![Response {
+                    status, headers: vec![("Retry-After".into(), "31".into())],
+                    body: br#"{"error":{"message":"fixture failure"}}"#.to_vec(),
+                }]).await;
+                let result = chat_once(&provider(&server.base, "fixture-key"), None, "hi", false, 0.0, None).await;
+                match result {
+                    Err(ChatError::Http { status: actual, body, retry_after }) => {
+                        assert_eq!(actual, status);
+                        assert!(body.contains("fixture failure"));
+                        assert_eq!(retry_after, Some(31));
+                    }
+                    _ => panic!("expected HTTP error for {status}"),
+                }
+                assert_eq!(server.finish().await.len(), 1);
+            }
+        }).await;
+    }
+
+    #[tokio::test]
+    async fn quota_wait_is_not_retried_and_auth_failure_is_actionable() {
+        bounded(async {
+            for status in [401, 429] {
+                let server = Server::start(|_| vec![Response {
+                    status, headers: if status == 429 { vec![("Retry-After".into(), "31".into())] } else { vec![] },
+                    body: br#"{"error":{"message":"fixture failure"}}"#.to_vec(),
+                }]).await;
+                let result = call_provider(&provider(&server.base, "fixture-key"), None, "hi").await;
+                match result {
+                    Err(error) => {
+                        assert!(error.http_failure);
+                        assert!(error.message.contains(if status == 401 { "API Key" } else { "已停止重试" }), "{}", error.message);
+                    }
+                    Ok(_) => panic!("expected provider failure"),
+                }
+                assert_eq!(server.finish().await.len(), 1);
+            }
+        }).await;
+    }
+
+    #[tokio::test]
+    async fn malformed_and_incomplete_success_bodies_are_not_accepted() {
+        bounded(async {
+            let bodies = [
+                b"not-json".to_vec(),
+                serde_json::to_vec(&json!({"choices":[{"finish_reason":"length","message":{"content":"partial"}}]})).unwrap(),
+                serde_json::to_vec(&json!({"choices":[{"finish_reason":"content_filter"}]})).unwrap(),
+                serde_json::to_vec(&json!({"choices":[{"finish_reason":"stop","message":{"content":"  "}}]})).unwrap(),
+            ];
+            for (index, body) in bodies.into_iter().enumerate() {
+                let server = Server::start(|_| vec![Response { status: 200, headers: vec![], body }]).await;
+                let result = chat_once(&provider(&server.base, ""), None, "hi", false, 0.0, None).await;
+                assert!(matches!((index, result),
+                    (0, Err(ChatError::Network(_))) | (1, Err(ChatError::Truncated)) |
+                    (2, Err(ChatError::ContentFilter)) | (3, Err(ChatError::EmptyContent))));
+                server.finish().await;
+            }
+        }).await;
+    }
+    #[tokio::test]
+    async fn transient_server_failure_retries_the_same_production_request() {
+        bounded(async {
+            let server = Server::start(|_| vec![
+                Response::json(503, json!({"error":{"message":"temporarily unavailable"}})), success(),
+            ]).await;
+            let result = call_provider(&provider(&server.base, "fixture-key"), None, "hello").await
+                .unwrap_or_else(|e| panic!("transient retry failed: {}", e.message));
+            assert_eq!(result.input_tokens, Some(12));
+            let requests = server.finish().await;
+            assert_eq!(requests.len(), 2);
+            assert_eq!(requests[0].json(), requests[1].json());
+            assert!(requests.iter().all(|r| r.header("authorization") == Some("Bearer fixture-key")));
+        }).await;
+    }
+
+}

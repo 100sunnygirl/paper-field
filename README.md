@@ -68,6 +68,10 @@ npm install
 npm run dev
 ```
 
+## Continuous integration
+
+See [CI coverage and rollout notes](.github/CI.md) for the frontend checks, native Windows/macOS Rust matrix, stable CI Gate, and remaining desktop E2E/install coverage. The existing Desktop packaging and release workflow is unchanged.
+
 ## Set API key
 
 1. Open **系统**
