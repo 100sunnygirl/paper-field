@@ -7,6 +7,7 @@ import {
   buildSectionCitation,
   extractFulltextHeadings,
   headingForSelection,
+  highlightFulltextMatches,
   insertQuoteAtCursor,
   selectionInRoot,
   type FulltextSelection,
@@ -323,11 +324,31 @@ function FulltextDoc({
   const rootRef = useRef<HTMLDivElement>(null);
   const headings = useMemo(() => extractFulltextHeadings(paper.parsedMarkdown), [paper.parsedMarkdown]);
   const [bar, setBar] = useState<{ pick: FulltextSelection; top: number; left: number } | null>(null);
+  // 全文内检索：输入即高亮 + 命中计数 + 上一处/下一处跳转。
+  const [searchQuery, setSearchQuery] = useState("");
+  const [hitIndex, setHitIndex] = useState(-1);
+  const [hitCount, setHitCount] = useState(0);
+  const scrollNextHit = useRef(false);
 
   // innerHTML 每次更新后重新挂锚点；无依赖（幂等），渲染多少次都安全。
   useEffect(() => {
     assignFulltextAnchors(rootRef.current, headings);
   });
+
+  // 输入或跳转后重新高亮；导航（上一处/下一处）时才滚动到当前命中。
+  useEffect(() => {
+    const scroll = scrollNextHit.current;
+    scrollNextHit.current = false;
+    const count = highlightFulltextMatches(rootRef.current, searchQuery, hitIndex, { scroll });
+    setHitCount(count);
+    if (hitIndex >= count) setHitIndex(count ? count - 1 : -1);
+  }, [searchQuery, hitIndex, paper.parsedMarkdown]);
+
+  function searchNext(direction: 1 | -1) {
+    if (!hitCount) return;
+    scrollNextHit.current = true;
+    setHitIndex((index) => (index + direction + hitCount) % hitCount);
+  }
 
   useEffect(() => {
     const report = () => {
@@ -391,6 +412,50 @@ function FulltextDoc({
 
   return (
     <>
+      <div className="ef-ft-search" role="search">
+        <Icon name="search" />
+        <input
+          type="search"
+          value={searchQuery}
+          placeholder="检索全文…"
+          aria-label="检索解析全文"
+          onChange={(e) => {
+            setSearchQuery(e.target.value);
+            setHitIndex(e.target.value.trim() ? 0 : -1);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              searchNext(1);
+            }
+          }}
+        />
+        {searchQuery.trim() ? (
+          <>
+            <span className="ef-ft-search-count mono" aria-live="polite">
+              {hitCount ? `第 ${hitIndex < 0 ? 0 : hitIndex + 1} / ${hitCount} 处` : "0 处"}
+            </span>
+            <button
+              type="button"
+              aria-label="上一处命中"
+              title="上一处命中"
+              disabled={!hitCount}
+              onClick={() => searchNext(-1)}
+            >
+              <Icon name="up" />
+            </button>
+            <button
+              type="button"
+              aria-label="下一处命中"
+              title="下一处命中"
+              disabled={!hitCount}
+              onClick={() => searchNext(1)}
+            >
+              <Icon name="down" />
+            </button>
+          </>
+        ) : null}
+      </div>
       <div
         ref={rootRef}
         className="ef-note-text ef-md"

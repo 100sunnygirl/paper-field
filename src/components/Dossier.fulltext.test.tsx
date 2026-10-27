@@ -296,6 +296,63 @@ describe("解析全文并读面板（半高分屏）", () => {
   });
 });
 
+describe("解析全文内检索：输入即高亮 + 命中计数 + 跳下一处", () => {
+  function openFulltext() {
+    document.getElementById("fulltext")?.setAttribute("open", "");
+  }
+
+  it("输入即高亮：命中全部标 mark、计数显示「第 1 / N 处」", () => {
+    useField.setState({ mode: "field", paper: paper(), selectedPaperId: "p1" });
+    renderStage();
+    openFulltext();
+    fireEvent.change(screen.getByLabelText("检索解析全文"), { target: { value: "方法" } });
+    const root = document.querySelector(".ef-fulltext .ef-md") as HTMLElement;
+    expect(root.querySelectorAll("mark.ef-ft-hit").length).toBe(2);
+    expect(screen.getByText("第 1 / 2 处")).toBeInTheDocument();
+  });
+
+  it("「下一处」把当前命中推进并滚动；Enter 也可跳下一处", () => {
+    useField.setState({ mode: "field", paper: paper(), selectedPaperId: "p1" });
+    renderStage();
+    openFulltext();
+    const input = screen.getByLabelText("检索解析全文");
+    fireEvent.change(input, { target: { value: "方法" } });
+    const scrollSpy = vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(() => {});
+    fireEvent.click(screen.getByRole("button", { name: "下一处命中" }));
+    expect(screen.getByText("第 2 / 2 处")).toBeInTheDocument();
+    const marks = document.querySelectorAll(".ef-fulltext .ef-md mark.ef-ft-hit");
+    expect(marks[1].classList.contains("is-current")).toBe(true);
+    expect(marks[0].classList.contains("is-current")).toBe(false);
+    expect(scrollSpy).toHaveBeenCalled();
+    // Enter 回到第一处（回绕）
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(screen.getByText("第 1 / 2 处")).toBeInTheDocument();
+    scrollSpy.mockRestore();
+  });
+
+  it("无命中显示「0 处」、跳转按钮禁用；清空检索词后高亮清除", () => {
+    useField.setState({ mode: "field", paper: paper(), selectedPaperId: "p1" });
+    renderStage();
+    openFulltext();
+    const input = screen.getByLabelText("检索解析全文");
+    fireEvent.change(input, { target: { value: "不存在的词" } });
+    expect(screen.getByText("0 处")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "下一处命中" })).toBeDisabled();
+    fireEvent.change(input, { target: { value: "" } });
+    expect(document.querySelectorAll(".ef-fulltext .ef-md mark.ef-ft-hit").length).toBe(0);
+    expect(screen.queryByText("0 处")).toBeNull();
+  });
+
+  it("并读面板内同样可以检索全文", () => {
+    useField.setState({ mode: "field", paper: paper(), selectedPaperId: "p1" });
+    renderStage();
+    fireEvent.click(screen.getByRole("button", { name: /全文并读/ }));
+    fireEvent.change(screen.getByLabelText("检索解析全文"), { target: { value: "引言" } });
+    expect(document.querySelectorAll(".ef-fulltext-panel mark.ef-ft-hit").length).toBe(2);
+    expect(screen.getByText("第 1 / 2 处")).toBeInTheDocument();
+  });
+});
+
 afterAll(() => {
   vi.restoreAllMocks();
 });

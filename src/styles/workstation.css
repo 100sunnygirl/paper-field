@@ -4757,6 +4757,58 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   margin-inline: auto;
 }
 
+/* ---- 解析全文内检索 ----
+   全文区顶部的检索行：输入即高亮（mark），命中计数 + 上一处/下一处跳转；
+   信号黄只用于当前命中与命中底色（选中提示语义）。 */
+.ef-ft-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 480px;
+  margin: 0 0 12px;
+  padding: 3px 6px;
+  border: 1px solid var(--pf-control-border);
+  border-radius: var(--pf-radius);
+  background: var(--pf-surface);
+  transition: border-color var(--pf-motion);
+}
+.ef-ft-search:focus-within { border-color: var(--pf-ink); }
+.ef-ft-search .ef-ico { width: 14px; height: 14px; color: var(--pf-muted); flex: none; }
+.ef-ft-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  padding: 4px 0;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-ink);
+}
+.ef-ft-search input:focus { outline: none; }
+.ef-ft-search-count { flex: none; font-size: var(--pf-fs-tag); color: var(--pf-muted); white-space: nowrap; }
+.ef-ft-search > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--pf-muted);
+  border-radius: var(--pf-radius);
+  transition: background-color var(--pf-motion), color var(--pf-motion);
+}
+.ef-ft-search > button .ef-ico { width: 13px; height: 13px; }
+.ef-ft-search > button:hover:not(:disabled) { background: var(--pf-hover-flat); color: var(--pf-ink); }
+.ef-ft-search > button:disabled { opacity: 0.35; cursor: default; }
+mark.ef-ft-hit {
+  background: color-mix(in srgb, var(--pf-signal) 45%, transparent);
+  color: var(--pf-ink);
+  padding: 0 1px;
+  border-radius: 2px;
+}
+mark.ef-ft-hit.is-current { background: var(--pf-signal); }
+
 /* ---- 解析全文选中浮出的「摘到笔记」条 ----
    跟随选区上方浮出（fixed 定位，随滚动收起）；信号黄只作为选中提示的顶线。 */
 .ef-excerpt-bar {

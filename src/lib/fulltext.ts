@@ -172,3 +172,61 @@ export function insertQuoteAtCursor(value: string, position: number, quote: stri
   const tail = after === "" || after.startsWith("\n") ? "" : "\n";
   return `${before}${lead}${quote}${tail}${after}`;
 }
+
+/**
+ * 全文内检索的命中高亮：在渲染容器的文本节点里大小写不敏感地找 query，
+ * 包成 <mark class="ef-ft-hit">；currentOrdinal 指定的命中加 is-current。
+ * 先清掉上一轮的 mark（拆回文本节点并 normalize），空 query 只清不标。
+ * 返回命中总数。
+ */
+export function highlightFulltextMatches(
+  root: ParentNode | null,
+  query: string,
+  currentOrdinal = -1,
+  options?: { scroll?: boolean },
+): number {
+  if (!root || typeof document === "undefined") return 0;
+  for (const mark of Array.from(root.querySelectorAll("mark.ef-ft-hit"))) {
+    const parent = mark.parentNode;
+    if (!parent) continue;
+    parent.replaceChild(document.createTextNode(mark.textContent ?? ""), mark);
+    parent.normalize();
+  }
+  const needle = query.trim();
+  if (!needle) return 0;
+  const lowerNeedle = needle.toLowerCase();
+  const hits: Element[] = [];
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode: (node) =>
+      node.parentElement?.closest("script, style") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
+  });
+  const textNodes: Text[] = [];
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) textNodes.push(node as Text);
+  for (const textNode of textNodes) {
+    const text = textNode.nodeValue ?? "";
+    const lowerText = text.toLowerCase();
+    if (!lowerText.includes(lowerNeedle)) continue;
+    const fragment = document.createDocumentFragment();
+    let cursor = 0;
+    let index = lowerText.indexOf(lowerNeedle, cursor);
+    while (index >= 0) {
+      if (index > cursor) fragment.append(document.createTextNode(text.slice(cursor, index)));
+      const mark = document.createElement("mark");
+      mark.className = "ef-ft-hit";
+      mark.textContent = text.slice(index, index + needle.length);
+      fragment.append(mark);
+      hits.push(mark);
+      cursor = index + needle.length;
+      index = lowerText.indexOf(lowerNeedle, cursor);
+    }
+    if (cursor < text.length) fragment.append(document.createTextNode(text.slice(cursor)));
+    textNode.parentNode?.replaceChild(fragment, textNode);
+  }
+  if (currentOrdinal >= 0 && hits[currentOrdinal]) {
+    hits.forEach((mark, ordinal) => mark.classList.toggle("is-current", ordinal === currentOrdinal));
+    if (options?.scroll && typeof hits[currentOrdinal].scrollIntoView === "function") {
+      hits[currentOrdinal].scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+  }
+  return hits.length;
+}

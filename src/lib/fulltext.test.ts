@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   appendExcerpt,
   assignFulltextAnchors,
@@ -6,6 +6,7 @@ import {
   buildSectionCitation,
   extractFulltextHeadings,
   headingForSelection,
+  highlightFulltextMatches,
   insertQuoteAtCursor,
 } from "./fulltext";
 
@@ -134,5 +135,56 @@ describe("摘录写入笔记的拼接", () => {
     expect(insertQuoteAtCursor("开头", 2, "> 原文：A")).toBe("开头\n\n> 原文：A");
     expect(insertQuoteAtCursor("第一行\n第二行", 4, "> 原文：A")).toBe("第一行\n> 原文：A\n第二行");
     expect(insertQuoteAtCursor("已有\n\n", 4, "> 原文：A")).toBe("已有\n\n> 原文：A");
+  });
+});
+
+describe("highlightFulltextMatches · 全文内检索高亮", () => {
+  function mount(markup: string): HTMLElement {
+    const root = document.createElement("div");
+    root.innerHTML = markup;
+    document.body.appendChild(root);
+    return root;
+  }
+
+  it("大小写不敏感命中全部包成 mark，返回命中数", () => {
+    const root = mount("<p>We propose a Method. The method works.</p>");
+    expect(highlightFulltextMatches(root, "method")).toBe(2);
+    const marks = root.querySelectorAll("mark.ef-ft-hit");
+    expect(marks[0].textContent).toBe("Method");
+    expect(marks[1].textContent).toBe("method");
+  });
+
+  it("一段内多次命中逐个包裹，未命中文本保持原样", () => {
+    const root = mount("<p>数据集A与数据集B与数据集C</p>");
+    expect(highlightFulltextMatches(root, "数据集")).toBe(3);
+    expect(root.textContent).toBe("数据集A与数据集B与数据集C");
+  });
+
+  it("currentOrdinal 标记当前命中并滚动；其余命中不带 is-current", () => {
+    const root = mount("<p>第一处命中 第二处命中 第三处命中</p>");
+    Element.prototype.scrollIntoView ??= () => {};
+    const spy = vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(() => {});
+    highlightFulltextMatches(root, "命中", 1, { scroll: true });
+    const marks = root.querySelectorAll("mark.ef-ft-hit");
+    expect(marks[1].classList.contains("is-current")).toBe(true);
+    expect(marks[0].classList.contains("is-current")).toBe(false);
+    expect(spy).toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it("空 query 只清除上一轮高亮（文本节点还原），不再有 mark", () => {
+    const root = mount("<p>命中一次</p>");
+    highlightFulltextMatches(root, "命中");
+    expect(root.querySelectorAll("mark.ef-ft-hit").length).toBe(1);
+    expect(highlightFulltextMatches(root, "  ")).toBe(0);
+    expect(root.querySelectorAll("mark.ef-ft-hit").length).toBe(0);
+    expect(root.textContent).toBe("命中一次");
+  });
+
+  it("换 query 重新高亮：旧命中清干净、新命中计数正确", () => {
+    const root = mount("<p>alpha beta gamma</p>");
+    highlightFulltextMatches(root, "beta");
+    expect(highlightFulltextMatches(root, "ma")).toBe(1);
+    expect(root.querySelectorAll("mark.ef-ft-hit").length).toBe(1);
   });
 });
