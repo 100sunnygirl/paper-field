@@ -781,19 +781,22 @@ export const repo = {
     }
   },
 
-  async setReadingStatus(id: string, status: ReadingStatus): Promise<void> {
+  async setReadingStatus(id: string, status: ReadingStatus, restoreReadAt?: string | null): Promise<void> {
     const engine = await getEngine();
     const at = nowIso();
     // read → reading → read 的往返不应把最初标记已读的时间覆盖成新时间：
     // 已读取历史值（无则记现在），在读保留历史值，未读清空。
+    // restoreReadAt（撤销路径）：精确写回撤销前库里的已读时间戳（含 null），不重新起算。
     const rows = await engine.select<PaperRow>("SELECT * FROM papers WHERE id = ?", [id]);
     const prev = rows[0];
     const readAt =
-      status === "read"
-        ? prev?.read_at ?? at
-        : status === "reading"
-          ? prev?.read_at ?? null
-          : null;
+      restoreReadAt !== undefined
+        ? restoreReadAt
+        : status === "read"
+          ? prev?.read_at ?? at
+          : status === "reading"
+            ? prev?.read_at ?? null
+            : null;
     await engine.execute(
       "UPDATE papers SET reading_status = ?, read_at = ?, updated_at = ? WHERE id = ?",
       [status, readAt, at, id],

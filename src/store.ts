@@ -214,7 +214,11 @@ interface FieldState {
   markRead: (paperId?: string) => Promise<void>;
   markReading: (paperId?: string) => Promise<void>;
   markUnread: (paperId?: string) => Promise<void>;
-  setReadingStatus: (status: "unread" | "reading" | "read", paperId?: string) => Promise<void>;
+  /**
+   * 修改阅读状态（只有用户入口会调用）。restoreReadAt 为撤销路径专用：
+   * 精确写回撤销前库里的已读时间戳（含 null），不重新起算。
+   */
+  setReadingStatus: (status: "unread" | "reading" | "read", paperId?: string, restoreReadAt?: string | null) => Promise<void>;
   movePaper: (domainId: string, paperId?: string) => Promise<void>;
   deletePaper: (paperId?: string) => Promise<void>;
   setBatchMode: (on: boolean) => void;
@@ -1075,14 +1079,31 @@ export const useField = create<FieldState>((set, get) => ({
     await get().setReadingStatus("unread", paperId);
   },
 
-  setReadingStatus: async (status, paperId) => {
+  setReadingStatus: async (status, paperId, restoreReadAt) => {
     const id = paperId ?? get().paper?.id ?? null;
     if (!id) return;
     try {
-      await repo.setReadingStatus(id, status);
+      // 撤销要恢复的是「改之前」的状态与已读时间戳：写库前先取一次当前值。
+      const current = await repo.getPaper(id);
+      const prevStatus = current?.readingStatus ?? null;
+      const prevReadAt = current?.readAt ?? null;
+      // 常规路径保持两参调用（既有测试与语义不变）；撤销路径显式带回归档时间戳。
+      if (restoreReadAt === undefined) await repo.setReadingStatus(id, status);
+      else await repo.setReadingStatus(id, status, restoreReadAt);
       await get().refresh();
       const labels = { unread: "未读", reading: "在读", read: "已读" };
-      get().setFlash({ tone: "ok", text: `阅读状态已更新为${labels[status]}。` });
+      const flash: Flash = { tone: "ok", text: `阅读状态已更新为${labels[status]}。` };
+      // 误触挽回：真的发生了状态变化时，提示里带「撤销」——恢复上一个状态，
+      // 且已读时间戳沿用撤销前的值（read→unread→撤销 不会把首次已读时间改成现在）。
+      if (prevStatus && prevStatus !== status) {
+        flash.action = {
+          label: "撤销",
+          run: () => {
+            void get().setReadingStatus(prevStatus, id, prevReadAt);
+          },
+        };
+      }
+      get().setFlash(flash);
     } catch (err) {
       get().setFlash({ tone: "error", text: `更新阅读状态失败：${errText(err)}，数据未改动。` });
       throw err;

@@ -14,6 +14,7 @@ vi.mock("./lib/repo", () => ({
     listIntake: vi.fn(async () => []),
     listFailedMineru: vi.fn(async () => [] as string[]),
     createDomain: vi.fn(),
+    setReadingStatus: vi.fn(async () => undefined),
     setMineruState: vi.fn(async () => undefined),
     resetMineru: vi.fn(async () => undefined),
     activeJobIds: vi.fn(async () => []),
@@ -77,9 +78,52 @@ beforeEach(() => {
   vi.mocked(repo.listIntake).mockClear();
   vi.mocked(repo.listPapers).mockClear();
   vi.mocked(repo.listFailedMineru).mockReset();
+  vi.mocked(repo.setReadingStatus).mockReset();
   vi.mocked(repo.setMineruState).mockReset();
   vi.mocked(repo.createDomain).mockReset();
   vi.mocked(repo.deletePapers).mockReset();
+});
+
+describe("setReadingStatus 轻量撤销（含已读时间戳恢复）", () => {
+  function statusDetail(id: string, readingStatus: PaperDetail["readingStatus"], readAt: string | null): PaperDetail {
+    return { ...detailOf(id), readingStatus, readAt };
+  }
+
+  it("状态变化后提示带「撤销」：点击恢复上一个状态并写回归档的已读时间戳", async () => {
+    const historic = "2020-01-01T00:00:00.000Z";
+    vi.mocked(repo.getPaper).mockImplementation(async () => statusDetail("p-1", "read", historic));
+    useField.setState({ mode: "field" });
+    await useField.getState().setReadingStatus("unread", "p-1");
+    expect(repo.setReadingStatus).toHaveBeenCalledWith("p-1", "unread");
+    const flash = useField.getState().flash;
+    expect(flash?.text).toBe("阅读状态已更新为未读。");
+    expect(flash?.action?.label).toBe("撤销");
+    flash!.action!.run();
+    await vi.waitFor(() =>
+      expect(repo.setReadingStatus).toHaveBeenCalledWith("p-1", "read", historic),
+    );
+  });
+
+  it("撤销回「在读」时把 read_at 恢复为归档的 null，不沿用已读时间", async () => {
+    // 场景：在读（read_at 为 null）被误改成未读，撤销应原样回到「在读 + null」。
+    vi.mocked(repo.getPaper).mockImplementation(async () => statusDetail("p-1", "reading", null));
+    useField.setState({ mode: "field" });
+    await useField.getState().setReadingStatus("unread", "p-1");
+    useField.getState().flash!.action!.run();
+    await vi.waitFor(() => expect(repo.setReadingStatus).toHaveBeenCalledWith("p-1", "reading", null));
+  });
+
+  it("状态没变（重选同一项）或读不到当前论文时不提供撤销", async () => {
+    vi.mocked(repo.getPaper).mockImplementation(async () => statusDetail("p-1", "reading", null));
+    useField.setState({ mode: "field" });
+    await useField.getState().setReadingStatus("reading", "p-1");
+    expect(useField.getState().flash?.text).toBe("阅读状态已更新为在读。");
+    expect(useField.getState().flash?.action).toBeUndefined();
+
+    vi.mocked(repo.getPaper).mockImplementation(async () => null);
+    await useField.getState().setReadingStatus("read", "p-missing");
+    expect(useField.getState().flash?.action).toBeUndefined();
+  });
 });
 
 describe("navigatePapers（缺陷 9：未选中时的首末落点）", () => {
