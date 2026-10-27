@@ -1,5 +1,20 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
 import { bindingLabel, currentKeymap, eventMatchesBinding } from "../lib/keymap";
+import {
+  FONT_STEPS,
+  FONT_STEP_LABELS,
+  WIDTH_SCALES,
+  WIDTH_STEP_LABELS,
+  clearPaperAppearance,
+  getAppearance,
+  hasPaperAppearance,
+  loadAppearanceStore,
+  setDefaultAppearance,
+  setPaperAppearance,
+  type AppearanceStore,
+  type ReadWidthStep,
+  type ReadingAppearance,
+} from "../lib/readingAppearance";
 import {
   setContextFolded,
   subscribeContextFold,
@@ -551,12 +566,24 @@ function ContextPanel({
   activeSection,
   onJump,
   noteOrder,
+  appearance,
+  appearanceOverride,
+  onChangeAppearance,
+  onResetAppearance,
+  onApplyAppearanceDefault,
 }: {
   paper: PaperDetail;
   activeSection: string;
   onJump: (id: string) => void;
   /** 笔记块的自定义显示顺序（本页目录与正文保持一致）。 */
   noteOrder: NoteKind[];
+  /** 本篇生效的阅读外观（字号/行宽档位）。 */
+  appearance: ReadingAppearance;
+  /** 本篇是否有覆盖档位（「恢复默认」的可见依据）。 */
+  appearanceOverride: boolean;
+  onChangeAppearance: (next: ReadingAppearance) => void;
+  onResetAppearance: () => void;
+  onApplyAppearanceDefault: () => void;
 }) {
   const settings = useField((s) => s.settings);
   const jobs = useField((s) => s.jobs);
@@ -845,6 +872,65 @@ function ContextPanel({
         </nav>
       </ContextBlock>
 
+      <section className="ef-context-block">
+        <h2 className="ef-context-title">阅读外观</h2>
+        <div className="ef-appearance">
+          <div className="ef-appearance-row" role="group" aria-label="正文字号">
+            <span className="ef-appearance-label">字号</span>
+            <button
+              type="button"
+              className="ef-appearance-step mono"
+              aria-label="减小正文字号"
+              title="减小正文字号"
+              disabled={appearance.fontStep <= 0}
+              onClick={() => onChangeAppearance({ ...appearance, fontStep: Math.max(0, appearance.fontStep - 1) })}
+            >
+              A−
+            </button>
+            <span className="ef-appearance-value" aria-live="polite">
+              {FONT_STEP_LABELS[appearance.fontStep]}
+            </span>
+            <button
+              type="button"
+              className="ef-appearance-step mono"
+              aria-label="增大正文字号"
+              title="增大正文字号"
+              disabled={appearance.fontStep >= FONT_STEPS.length - 1}
+              onClick={() =>
+                onChangeAppearance({ ...appearance, fontStep: Math.min(FONT_STEPS.length - 1, appearance.fontStep + 1) })
+              }
+            >
+              A+
+            </button>
+          </div>
+          <div className="ef-appearance-row" role="group" aria-label="正文行宽">
+            <span className="ef-appearance-label">行宽</span>
+            {(Object.keys(WIDTH_SCALES) as ReadWidthStep[]).map((step) => (
+              <button
+                key={step}
+                type="button"
+                className="ef-appearance-width"
+                aria-pressed={appearance.width === step}
+                onClick={() => onChangeAppearance({ ...appearance, width: step })}
+              >
+                {WIDTH_STEP_LABELS[step]}
+              </button>
+            ))}
+          </div>
+          <div className="ef-appearance-actions">
+            {appearanceOverride ? (
+              <button type="button" onClick={onResetAppearance}>
+                恢复默认
+              </button>
+            ) : null}
+            <button type="button" onClick={onApplyAppearanceDefault}>
+              应用到所有论文
+            </button>
+          </div>
+          <p className="ef-appearance-hint">本篇调过的档位只记住这一篇；「应用到所有论文」改本机默认。</p>
+        </div>
+      </section>
+
       <ContextBlock id="ai" title="AI 助手" icon="spark" className="ef-ai-context ef-dark-surface">
         {hasUsableProvider(settings) ? (
           <p>用于补全论文信息或起草阅读笔记。AI 不会自动把论文标成已读。</p>
@@ -946,6 +1032,8 @@ export function ReadingStage({
   const [fulltextPick, setFulltextPick] = useState<FulltextSelection | null>(null);
   // 五块笔记的显示布局（顺序 + 折叠）：本机偏好，改动即存。
   const [noteLayout, setNoteLayout] = useState<NoteLayout>(() => loadNoteLayout());
+  // 正文阅读外观（字号/行宽）：本机默认 + 按论文覆盖，改动即存（lib 写穿 localStorage）。
+  const [appearanceStore, setAppearanceStore] = useState<AppearanceStore>(() => loadAppearanceStore());
   // 全文并读（半高分屏）：上半屏解析全文、下半屏摘要与笔记，边读全文边写笔记。
   const [fulltextSplit, setFulltextSplit] = useState(false);
   const fulltextHeadings = useMemo(
@@ -1041,6 +1129,20 @@ export function ReadingStage({
 
   function moveNoteBlock(kind: NoteKind, direction: "up" | "down") {
     setNoteLayout((prev) => ({ ...prev, order: moveNoteKindInOrder(prev.order, kind, direction) }));
+  }
+
+  function changeAppearance(next: ReadingAppearance) {
+    if (!paper) return;
+    setAppearanceStore((prev) => setPaperAppearance(prev, paper.id, next));
+  }
+
+  function resetAppearance() {
+    if (!paper) return;
+    setAppearanceStore((prev) => clearPaperAppearance(prev, paper.id));
+  }
+
+  function applyAppearanceDefault() {
+    setAppearanceStore((prev) => setDefaultAppearance(prev, getAppearance(prev, paper?.id)));
   }
 
   useEffect(() => {
@@ -1187,12 +1289,27 @@ export function ReadingStage({
     : paper.mineruStatus
       ? `MinerU · ${MINERU_STATUS_LABELS[paper.mineruStatus]}`
       : "尚未解析";
+  // 本篇生效的阅读外观：字号/行宽缩放变量写到舞台上（正文阶梯随动，界面控件不动）。
+  const appearance = getAppearance(appearanceStore, paper.id);
+  const appearanceOverride = hasPaperAppearance(appearanceStore, paper.id);
+  const appearanceStyle = {
+    "--pf-read-scale": String(FONT_STEPS[appearance.fontStep]),
+    "--pf-read-width-scale": String(WIDTH_SCALES[appearance.width]),
+  } as CSSProperties;
+  const appearanceProps = {
+    appearance,
+    appearanceOverride,
+    onChangeAppearance: changeAppearance,
+    onResetAppearance: resetAppearance,
+    onApplyAppearanceDefault: applyAppearanceDefault,
+  };
   const context = (
     <ContextPanel
       paper={paper}
       activeSection={activeSection}
       onJump={jump}
       noteOrder={noteLayout.order}
+      {...appearanceProps}
     />
   );
 
@@ -1203,6 +1320,7 @@ export function ReadingStage({
         .join(" ")}
       id="stage"
       aria-labelledby="paper-title"
+      style={appearanceStyle}
     >
       <div className="ef-toolbar">
         <Button
@@ -1555,7 +1673,7 @@ export function ReadingStage({
         onClose={onToggleContext}
         className="context-drawer"
       >
-        <ContextPanel paper={paper} activeSection={activeSection} onJump={jump} noteOrder={noteLayout.order} />
+        <ContextPanel paper={paper} activeSection={activeSection} onJump={jump} noteOrder={noteLayout.order} {...appearanceProps} />
       </Dialog>
     </section>
   );

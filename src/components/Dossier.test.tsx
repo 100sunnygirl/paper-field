@@ -309,3 +309,58 @@ describe("ReadingStage · 资料栏折叠记忆与标识符一键复制", () => 
     expect(useField.getState().flash?.text).toContain("复制失败");
   });
 });
+
+describe("ReadingStage · 正文阅读外观（A−/A+、行宽）", () => {
+  function stageStyle(): CSSStyleDeclaration {
+    return document.getElementById("stage")!.style;
+  }
+
+  beforeEach(() => {
+    localStorage.removeItem("paper-field.read-appearance");
+  });
+
+  it("默认标准字号与行宽（缩放变量为 1）", () => {
+    useField.setState({ mode: "field", paper: paper({}), selectedPaperId: "p1" });
+    renderStage();
+    expect(stageStyle().getPropertyValue("--pf-read-scale")).toBe("1");
+    expect(stageStyle().getPropertyValue("--pf-read-width-scale")).toBe("1");
+  });
+
+  it("A+ 增大字号：舞台变量与本篇覆盖一起更新，A− 边界禁用", () => {
+    useField.setState({ mode: "field", paper: paper({}), selectedPaperId: "p1" });
+    renderStage();
+    fireEvent.click(screen.getByRole("button", { name: "增大正文字号" }));
+    expect(stageStyle().getPropertyValue("--pf-read-scale")).toBe("1.1");
+    const persisted = JSON.parse(localStorage.getItem("paper-field.read-appearance")!) as {
+      papers: Record<string, { fontStep: number }>;
+    };
+    expect(persisted.papers.p1.fontStep).toBe(3);
+    // 调过之后出现「恢复默认」
+    expect(screen.getByRole("button", { name: "恢复默认" })).toBeInTheDocument();
+    // 顶格后 A+ 禁用；连续 A− 回到 0 后 A− 禁用
+    fireEvent.click(screen.getByRole("button", { name: "增大正文字号" }));
+    expect(screen.getByRole("button", { name: "增大正文字号" })).toBeDisabled();
+    for (let i = 0; i < 4; i += 1) fireEvent.click(screen.getByRole("button", { name: "减小正文字号" }));
+    expect(screen.getByRole("button", { name: "减小正文字号" })).toBeDisabled();
+    expect(stageStyle().getPropertyValue("--pf-read-scale")).toBe("0.85");
+  });
+
+  it("行宽三段切换与「应用到所有论文」", () => {
+    useField.setState({ mode: "field", paper: paper({}), selectedPaperId: "p1" });
+    renderStage();
+    const group = screen.getByRole("group", { name: "正文行宽" });
+    fireEvent.click(within(group).getByRole("button", { name: "宽" }));
+    expect(stageStyle().getPropertyValue("--pf-read-width-scale")).toBe("1.2");
+    expect(within(group).getByRole("button", { name: "宽" })).toHaveAttribute("aria-pressed", "true");
+    // 应用到所有论文：本机默认更新；恢复本篇默认后仍是大字号宽行（因为默认已变）
+    fireEvent.click(screen.getByRole("button", { name: "应用到所有论文" }));
+    fireEvent.click(screen.getByRole("button", { name: "恢复默认" }));
+    expect(stageStyle().getPropertyValue("--pf-read-width-scale")).toBe("1.2");
+    const persisted = JSON.parse(localStorage.getItem("paper-field.read-appearance")!) as {
+      default: { width: string };
+      papers: Record<string, unknown>;
+    };
+    expect(persisted.default.width).toBe("wide");
+    expect(persisted.papers.p1).toBeUndefined();
+  });
+});

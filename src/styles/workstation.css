@@ -52,8 +52,11 @@
   --pf-fs-h1: 28px;
   --pf-fs-display: clamp(34px, 20px + 1.2vw, 46px);
   /* 阅读阶梯：正文 16px（~1600px 宽）到 18px（~2100px 宽）流式；
-     区段标题 ×1.375、笔记小标题 ×1.125，随正文同步缩放、永不倒挂。 */
-  --pf-body-size: clamp(16px, 9.6px + 0.4vw, 18px);
+     区段标题 ×1.375、笔记小标题 ×1.125，随正文同步缩放、永不倒挂。
+     --pf-body-size-base 是这条流式基线；正文外观（A−/A+/行宽）在 .ef-read
+     上用 --pf-read-scale / --pf-read-width-scale 缩放它，不引入新阶梯。 */
+  --pf-body-size-base: clamp(16px, 9.6px + 0.4vw, 18px);
+  --pf-body-size: var(--pf-body-size-base);
   --pf-doc-h2: calc(var(--pf-body-size) * 1.375);
   --pf-doc-h3: calc(var(--pf-body-size) * 1.125);
   --pf-body-leading: 1.85;
@@ -61,6 +64,9 @@
   --pf-lh-snug: 1.45;
   --pf-lh-ui: 1.6;
   --pf-tracking-tag: 0.08em;
+  /* 阅读外观档位（.ef-read 上由内联样式覆盖）：字号 0.85–1.2，行宽窄 0.85 / 宽 1.2。 */
+  --pf-read-scale: 1;
+  --pf-read-width-scale: 1;
 
   /* ---- Geometry ---- */
   --pf-radius: 2px;
@@ -70,8 +76,10 @@
   /* Side columns grow gently with the window so wide screens are not all canvas. */
   --pf-paper-list-width: clamp(292px, 15vw, 340px);
   --pf-context-width: clamp(256px, 14.5vw, 336px);
-  /* 正文栏稳定行长。更宽的窗口把多余宽度留成页边；收窄时行长只减不增。 */
+  /* 正文栏稳定行长。更宽的窗口把多余宽度留成页边；收窄时行长只减不增。
+     --pf-read-width-base 是各断点的基础行长（阅读外观的行宽档位在此基础上缩放）。 */
   --pf-document-max-width: 760px;
+  --pf-read-width-base: 760px;
   --pf-stage-pad-x: clamp(24px, 2vw, 48px);
   --pf-stage-pad-y: clamp(28px, 1.6vw, 40px);
   --pf-document-pad: clamp(30px, 2.4vw, 56px);
@@ -1153,6 +1161,10 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   min-height: 0;
   background: var(--pf-canvas);
   z-index: 1;
+  /* 阅读外观（A−/A+/行宽）：只缩放正文阶梯与正文栏宽，界面控件字号不动。
+     --pf-read-scale / --pf-read-width-scale 由 ReadingStage 按本机+本篇记忆内联写入。 */
+  --pf-body-size: calc(var(--pf-body-size-base) * var(--pf-read-scale, 1));
+  --pf-document-max-width: calc(var(--pf-read-width-base, 760px) * var(--pf-read-width-scale, 1));
 }
 .ef-read.has-context {
   grid-template-columns: minmax(0, 1fr) var(--pf-context-width);
@@ -2142,6 +2154,68 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   border-color: var(--pf-divider);
 }
 .ef-author-copy-row { margin: 0 0 8px; }
+
+/* ---- 阅读外观 ----
+   字号 A−/A+ 与行宽 窄/标准/宽：安静的分段控件，只作用于正文（--pf-read-* 缩放）。 */
+.ef-appearance { display: flex; flex-direction: column; gap: 8px; }
+.ef-appearance-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+}
+.ef-appearance-label {
+  flex: none;
+  width: 34px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
+}
+.ef-appearance-step,
+.ef-appearance-width {
+  min-height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--pf-control-border);
+  background: var(--pf-surface);
+  color: var(--pf-secondary);
+  font-size: var(--pf-fs-caption);
+  border-radius: var(--pf-radius);
+  cursor: pointer;
+  transition: border-color var(--pf-motion), color var(--pf-motion), background-color var(--pf-motion);
+}
+.ef-appearance-step:disabled { opacity: 0.35; cursor: default; }
+.ef-appearance-step:hover:not(:disabled),
+.ef-appearance-width:hover { border-color: var(--pf-ink); color: var(--pf-ink); }
+.ef-appearance-width[aria-pressed="true"] {
+  border-color: var(--pf-ink);
+  background: var(--pf-ink);
+  color: var(--pf-on-dark);
+}
+.ef-appearance-value {
+  flex: 1;
+  min-width: 34px;
+  text-align: center;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-ink);
+}
+.ef-appearance-actions { display: flex; gap: 6px; }
+.ef-appearance-actions button {
+  min-height: 24px;
+  padding: 0 8px;
+  border: 0;
+  background: none;
+  color: var(--pf-secondary);
+  font-size: var(--pf-fs-caption);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.ef-appearance-actions button:hover { color: var(--pf-ink); }
+.ef-appearance-hint {
+  margin: 0;
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-muted);
+  line-height: 1.6;
+}
 
 /* ---- System ---- */
 .ef-system {
@@ -4658,8 +4732,8 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
       "scroll";
   }
   /* 资料栏收起后不要把行长拉回去。1400px 三栏时正文大约只有 650px，
-     这里把上限钉在同一数值，收窄窗口时行长只减不增。 */
-  .ef-read { --pf-document-max-width: 650px; }
+     这里把基础行长钉在同一数值，收窄窗口时行长只减不增（外观行宽档位仍在此基础上缩放）。 */
+  .ef-read { --pf-read-width-base: 650px; }
   .ef-context { display: none; }
   .ef-context-toggle { display: inline-flex; }
   .ef-toolbar { padding: 0 24px; }
@@ -4696,7 +4770,7 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   .ef-toolbar-label { display: none; }
   .ef-toolbar { gap: 7px; }
   /* 列表收进抽屉后，行长不超过收起前（1101px）那一档。 */
-  .ef-read { --pf-document-max-width: 620px; --pf-stage-pad-x: 28px; }
+  .ef-read { --pf-read-width-base: 620px; --pf-stage-pad-x: 28px; }
   .ef-reading-grid { padding: 28px; }
   /* 插入草稿入口（第 4 格）后：窄屏仍只留 已读 / 开源 / 作业 / 搜索提示。 */
   .ef-status > span:nth-child(4),
@@ -4707,7 +4781,7 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 @media (max-width: 700px) {
   :root { --pf-rail-width: 0px; }
   /* 底栏出现、侧轨消失时，行长不超过 701px 那一档。 */
-  .ef-read { --pf-document-max-width: 490px; --pf-document-pad: 19px; }
+  .ef-read { --pf-read-width-base: 490px; --pf-document-pad: 19px; }
   .ef-shell,
   .ef-shell.is-focus,
   .ef-shell[data-mode="system"] {
