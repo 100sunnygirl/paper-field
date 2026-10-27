@@ -40,6 +40,8 @@ export interface BatchSegment {
   paperId: string;
   title: string;
   state: SegmentState;
+  /** 失败原因（该篇最近一次失败作业的 error）；其余状态为 null。 */
+  note: string | null;
 }
 
 export interface BatchView {
@@ -213,7 +215,12 @@ function historyNote(job: LlmJob): string | null {
   return job.error?.trim() || "未知错误";
 }
 
-function batchView(batch: ActivityBatch, lookup: (id: string) => Lookup, now: number): BatchView {
+function batchView(
+  batch: ActivityBatch,
+  lookup: (id: string) => Lookup,
+  now: number,
+  errorByPaper: Map<string, string>,
+): BatchView {
   let ok = 0;
   let fail = 0;
   let cancelled = 0;
@@ -232,7 +239,12 @@ function batchView(batch: ActivityBatch, lookup: (id: string) => Lookup, now: nu
         : finished
           ? "paused"
           : "pending";
-    return { paperId, title: lookup(paperId).title, state };
+    return {
+      paperId,
+      title: lookup(paperId).title,
+      state,
+      note: result === "fail" ? errorByPaper.get(paperId) ?? null : null,
+    };
   });
   const total = batch.paperIds.length;
   const processed = ok + fail + cancelled + skipped;
@@ -345,7 +357,17 @@ export function deriveJobsView(input: {
   const latestMineru = new Map<string, LlmJob>();
   // 每篇论文每个类型的最近一次作业：AI 类（补全 / 起草 / 刷新链接）失败或被取消时可就地重试。
   const latestOfType = new Map<string, LlmJob>();
+  // 逐篇失败原因（该篇最近一次失败作业的 error）：批次色块 / 列表视图展示用。
+  const errorByPaper = new Map<string, string>();
+  const errorAt = new Map<string, number>();
   for (const job of jobs) {
+    if (job.status === "error" && job.error) {
+      const at = ms(job.createdAt) ?? 0;
+      if (at >= (errorAt.get(job.paperId) ?? -1)) {
+        errorAt.set(job.paperId, at);
+        errorByPaper.set(job.paperId, job.error);
+      }
+    }
     if (job.type === "mineruParse") {
       const prev = latestMineru.get(job.paperId);
       if (!prev || (ms(job.createdAt) ?? 0) > (ms(prev.createdAt) ?? 0)) latestMineru.set(job.paperId, job);
@@ -397,7 +419,7 @@ export function deriveJobsView(input: {
   const queuedCount = active.filter((job) => job.status === "queued").length + queue.length;
   return {
     active,
-    batch: shown ? batchView(shown, lookup, now) : null,
+    batch: shown ? batchView(shown, lookup, now, errorByPaper) : null,
     waitingBatches: {
       count: waiting.length,
       papers: waiting.reduce((sum, batch) => sum + batch.paperIds.length, 0),

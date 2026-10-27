@@ -3465,6 +3465,89 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 /* 逐篇色块：一篇一格。完成 = 墨、失败 = 红、取消 / 跳过 = 斜线、处理中 = 信号黄 + 爬行斜纹、
    排队 = 空格、熔断后未处理 = 虚线空格。悬停看标题与状态（title）。 */
 .ef-segments {
+  /* 色块改为可点的按钮：每格铺满 li，悬停 / 聚焦亮边。 */
+  position: relative;
+}
+.ef-segment-btn {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.ef-segment-btn:focus-visible {
+  outline: 2px solid var(--pf-ink);
+  outline-offset: 1px;
+}
+.ef-segment-btn:hover { filter: brightness(1.08); }
+
+/* 视图切换（色块 / 文字列表）：右对齐的小切换组。 */
+.ef-batchcard-views {
+  display: flex;
+  justify-content: flex-end;
+  gap: 2px;
+  margin: -6px 0 6px;
+}
+.ef-batchcard-views .ef-btn { min-height: 22px; padding: 0 6px; font-size: var(--pf-fs-tag); }
+.ef-batchcard-views .ef-btn[aria-pressed="true"] {
+  border: 1px solid var(--pf-ink);
+  background: var(--pf-ink);
+  color: var(--pf-on-dark);
+}
+
+/* 逐篇文字列表：编号 + 标题 + 状态（失败原因另起一行），整行可点跳转。 */
+.ef-seglist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--pf-divider);
+  background: var(--pf-surface);
+  max-height: 280px;
+  overflow: auto;
+  scrollbar-width: thin;
+}
+.ef-seglist li { border-bottom: 1px solid var(--pf-divider); }
+.ef-seglist li:last-child { border-bottom: 0; }
+.ef-seglist-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 0;
+  background: none;
+  text-align: left;
+  font-size: var(--pf-fs-caption);
+  cursor: pointer;
+}
+.ef-seglist-row:hover { background: var(--pf-hover-flat); }
+.ef-seglist-row:focus-visible { outline: 2px solid var(--pf-ink); outline-offset: -2px; }
+.ef-seglist-row .mono { flex: none; color: var(--pf-muted); font-size: var(--pf-fs-tag); }
+.ef-seglist-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--pf-ink);
+}
+.ef-seglist-state { flex: none; color: var(--pf-muted); font-size: var(--pf-fs-tag); }
+.ef-seglist li.is-ok .ef-seglist-state { color: var(--pf-success); }
+.ef-seglist li.is-fail .ef-seglist-state { color: var(--pf-danger); }
+.ef-seglist li.is-current .ef-seglist-state { color: var(--pf-ink); font-weight: 600; }
+.ef-seglist-note {
+  display: block;
+  padding: 0 10px 6px 34px;
+  overflow-wrap: anywhere;
+  font-size: var(--pf-fs-tag);
+  line-height: 1.5;
+  color: var(--pf-danger);
+}
+.ef-segments {
   list-style: none;
   margin: 0;
   padding: 0;

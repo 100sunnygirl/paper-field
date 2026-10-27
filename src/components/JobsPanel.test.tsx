@@ -157,7 +157,7 @@ describe("JobsPanel", () => {
     render(<JobsPanel />);
 
     const card = screen.getByRole("article", { name: "MinerU 解析批次" });
-    expect(within(card).getByRole("img", { name: /已处理 1 \/ 3 篇/ })).toBeInTheDocument();
+    expect(within(card).getByRole("list", { name: /已处理 1 \/ 3 篇/ })).toBeInTheDocument();
     expect(card.querySelectorAll(".ef-segments li")).toHaveLength(3);
     expect(card.querySelector(".ef-segments li.is-current")).not.toBeNull();
     expect(within(card).getByText("排队 1")).toBeInTheDocument();
@@ -166,6 +166,65 @@ describe("JobsPanel", () => {
     expect(actions.stopMineruBatch).not.toHaveBeenCalled();
     fireEvent.click(within(card).getByRole("button", { name: "确认停止" }));
     expect(actions.stopMineruBatch).toHaveBeenCalledWith(batchId);
+  });
+
+  it("批次色块可访问：每格带标题/状态/失败原因的 aria-label，点击跳转该论文", async () => {
+    const batchId = queueBatch("mineru", ["p1", "p2", "p3"]);
+    startBatch(batchId);
+    beginBatchItem(batchId, "p1");
+    endBatchItem(batchId, "p1", "fail");
+    beginBatchItem(batchId, "p2");
+    useField.setState({
+      jobs: [
+        job({
+          id: "e1",
+          paperId: "p1",
+          status: "error",
+          error: "SSH 连接中断",
+          finishedAt: new Date().toISOString(),
+        }),
+      ],
+    });
+    render(<JobsPanel />);
+    const card = screen.getByRole("article", { name: "MinerU 解析批次" });
+
+    const failBlock = within(card).getByRole("button", {
+      name: "01 · Title p1 — 失败：SSH 连接中断",
+    });
+    expect(failBlock).toBeInTheDocument();
+    const okBlock = within(card).getByRole("button", { name: "02 · 论文 P2 — 处理中" });
+    expect(okBlock).toBeInTheDocument();
+
+    fireEvent.click(failBlock);
+    await waitFor(() => expect(actions.selectPaper).toHaveBeenCalledWith("p1"));
+  });
+
+  it("逐篇文字列表：可键盘聚焦的替代视图，失败原因成行展示", async () => {
+    const batchId = queueBatch("mineru", ["p1", "p2"]);
+    startBatch(batchId);
+    beginBatchItem(batchId, "p1");
+    endBatchItem(batchId, "p1", "fail");
+    beginBatchItem(batchId, "p2");
+    useField.setState({
+      jobs: [job({ id: "e1", paperId: "p1", status: "error", error: "Token 过期", finishedAt: new Date().toISOString() })],
+    });
+    render(<JobsPanel />);
+    const card = screen.getByRole("article", { name: "MinerU 解析批次" });
+
+    fireEvent.click(within(card).getByRole("button", { name: "文字列表" }));
+    const list = within(card).getByRole("list", { name: /逐篇列表/ });
+    expect(within(list).getByText("Title p1")).toBeInTheDocument();
+    expect(within(list).getByText("失败")).toBeInTheDocument();
+    expect(within(list).getByText("Token 过期")).toBeInTheDocument();
+    expect(within(list).getByText("论文 P2")).toBeInTheDocument();
+    expect(within(list).getByText("处理中")).toBeInTheDocument();
+
+    fireEvent.click(within(list).getByRole("button", { name: /Title p1/ }));
+    await waitFor(() => expect(actions.selectPaper).toHaveBeenCalledWith("p1"));
+
+    // 切回色块。
+    fireEvent.click(within(card).getByRole("button", { name: "色块" }));
+    expect(card.querySelector(".ef-segments")).not.toBeNull();
   });
 
   it("运行中批次：当前篇完成后暂停（不打断当前一篇）", () => {

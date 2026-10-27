@@ -208,6 +208,21 @@ describe("deriveJobsView · 批次与排队", () => {
     expect(view.busy).toBe(false);
   });
 
+  it("失败色块带失败原因：取该篇最近一次失败作业的 error", () => {
+    const view = deriveJobsView({
+      jobs: [
+        job({ id: "old", paperId: "p1", status: "error", error: "旧错误", createdAt: iso(300_000), finishedAt: iso(290_000) }),
+        job({ id: "new", paperId: "p1", status: "error", error: "新错误", createdAt: iso(50_000), finishedAt: iso(40_000) }),
+      ],
+      activity: activity({
+        batches: [batch({ id: 1, paperIds: ["p1", "p2"], results: { p1: "fail" }, currentPaperId: "p2" })],
+      }),
+      now: NOW,
+    });
+    expect(view.batch?.segments[0]).toMatchObject({ state: "fail", note: "新错误" });
+    expect(view.batch?.segments[1]).toMatchObject({ state: "current", note: null });
+  });
+
   it("标题优先取轻量书目（中文标题优先），其次作业行，最后用短编号兜底", () => {
     const briefs: Record<string, PaperBrief> = {
       p1: { id: "p1", title: "English", titleZh: "中文标题", domainId: "d-2", domainName: "指令对齐", domainCode: "AL-02" },

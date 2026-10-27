@@ -201,7 +201,7 @@ function JobsPanelBody() {
       </dl>
 
       <div className="ef-jobs-scroll">
-        {view.batch ? <BatchCard batch={view.batch} /> : null}
+        {view.batch ? <BatchCard batch={view.batch} onJump={jump} /> : null}
         {view.waitingBatches.count ? (
           <p className="ef-jobs-note">
             另有 {view.waitingBatches.count} 个批次（{view.waitingBatches.papers} 篇）在后面排队，当前批次结束后依次开始。
@@ -397,11 +397,27 @@ function NotifyPrefsBar() {
   );
 }
 
-function BatchCard({ batch }: { batch: BatchView }) {
+function BatchCard({
+  batch,
+  onJump,
+}: {
+  batch: BatchView;
+  onJump: (paperId: string, domainId: string | null) => Promise<void>;
+}) {
   const stopMineruBatch = useField((s) => s.stopMineruBatch);
   const pauseBatchAfterCurrent = useField((s) => s.pauseBatchAfterCurrent);
   const resumeHaltedBatch = useField((s) => s.resumeHaltedBatch);
   const [confirmStop, setConfirmStop] = useState(false);
+  /** 逐篇进度视图：色块（默认）/ 可键盘聚焦的文字列表。 */
+  const [view, setView] = useState<"blocks" | "list">("blocks");
+  // 关键阶段变化用文字播报（ polite live region）：处理到第几篇。
+  const [announce, setAnnounce] = useState("");
+  const prevProcessed = useRef(batch.processed);
+  useEffect(() => {
+    if (batch.processed === prevProcessed.current) return;
+    prevProcessed.current = batch.processed;
+    setAnnounce(`${batch.label}：已处理 ${batch.processed} / ${batch.total} 篇`);
+  }, [batch.processed, batch.label, batch.total]);
   const running = batch.state === "running";
   const summary = [
     `成功 ${batch.ok}`,
@@ -413,6 +429,8 @@ function BatchCard({ batch }: { batch: BatchView }) {
     .join(" · ");
   const unfinished = batch.total - batch.processed;
   const hasWork = Boolean(batch.pending || batch.currentPaperId);
+  const segmentLabel = (segment: BatchView["segments"][number], index: number) =>
+    `${pad2(index + 1)} · ${segment.title} — ${SEGMENT_LABELS[segment.state]}${segment.note ? `：${segment.note}` : ""}`;
   return (
     <article className={`ef-batchcard is-${batch.state}`} aria-label={`${batch.label}批次`}>
       <header className="ef-batchcard-head">
@@ -424,26 +442,68 @@ function BatchCard({ batch }: { batch: BatchView }) {
         </span>
       </header>
 
-      {batch.total <= SEGMENT_LIMIT ? (
+      <div className="ef-batchcard-views" role="group" aria-label="逐篇进度视图">
+        <Button
+          type="button"
+          size="sm"
+          variant="text"
+          aria-pressed={view === "blocks"}
+          onClick={() => setView("blocks")}
+        >
+          色块
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="text"
+          aria-pressed={view === "list"}
+          onClick={() => setView("list")}
+        >
+          文字列表
+        </Button>
+      </div>
+
+      {view === "list" ? (
+        <ol className="ef-seglist" aria-label={`逐篇列表：已处理 ${batch.processed} / ${batch.total} 篇，${summary}`}>
+          {batch.segments.map((segment, index) => (
+            <li key={segment.paperId} className={`is-${segment.state}`}>
+              <button
+                type="button"
+                className="ef-seglist-row"
+                title="在阅读页打开这篇论文"
+                onClick={() => void onJump(segment.paperId, null)}
+              >
+                <span className="mono">{pad2(index + 1)}</span>
+                <span className="ef-seglist-title">{segment.title}</span>
+                <span className="ef-seglist-state">{SEGMENT_LABELS[segment.state]}</span>
+              </button>
+              {segment.note ? <span className="ef-seglist-note">{segment.note}</span> : null}
+            </li>
+          ))}
+        </ol>
+      ) : batch.total <= SEGMENT_LIMIT ? (
         <ol
           className="ef-segments"
           style={{ "--pf-seg-count": batch.total } as CSSProperties}
-          role="img"
           aria-label={`逐篇进度：已处理 ${batch.processed} / ${batch.total} 篇，${summary}`}
         >
           {batch.segments.map((segment, index) => (
-            <li
-              key={segment.paperId}
-              className={`is-${segment.state}`}
-              title={`${pad2(index + 1)} · ${segment.title} — ${SEGMENT_LABELS[segment.state]}`}
-            />
+            <li key={segment.paperId} className={`is-${segment.state}`}>
+              <button
+                type="button"
+                className="ef-segment-btn"
+                aria-label={segmentLabel(segment, index)}
+                title={segmentLabel(segment, index)}
+                onClick={() => void onJump(segment.paperId, null)}
+              />
+            </li>
           ))}
         </ol>
       ) : (
         <div
           className="ef-segbar"
           role="img"
-          aria-label={`逐篇进度：已处理 ${batch.processed} / ${batch.total} 篇，${summary}`}
+          aria-label={`逐篇进度：已处理 ${batch.processed} / ${batch.total} 篇，${summary}。逐篇标题与失败原因可切到「文字列表」查看`}
         >
           {(["ok", "fail", "cancelled", "skip"] as const).map((key) => {
             const count = batch.segments.filter((segment) => segment.state === key).length;
@@ -454,6 +514,10 @@ function BatchCard({ batch }: { batch: BatchView }) {
           {batch.currentPaperId ? <i className="is-current" style={{ width: `${100 / batch.total}%` }} /> : null}
         </div>
       )}
+      {/* 读屏播报：处理到第几篇（色块本身只有颜色，关键变化用文字补）。 */}
+      <p className="sr-only" aria-live="polite">
+        {announce}
+      </p>
 
       <p className="ef-batchcard-stats">
         <span>{summary}</span>
