@@ -537,7 +537,19 @@ function BatchCard({
         {running && batch.pending ? <span>排队 {batch.pending}</span> : null}
         <span className="mono">用时 {formatElapsed(batch.elapsedMs)}</span>
         {running ? (
-          <span>{batch.etaMs !== null ? `预计还需 ${formatEta(batch.etaMs)}` : "完成首篇后估算剩余时间"}</span>
+          batch.etaMs !== null ? (
+            <span>
+              {batch.etaInfo?.caveat === "current"
+                ? `当前篇耗时远超均值，估算更新中（按 ${batch.etaInfo.samples} 篇约 ${formatEta(batch.etaMs)}）`
+                : batch.etaInfo?.caveat === "spread"
+                  ? `各篇耗时差异大（可能切换过解析源），估算仅供参考：约 ${formatEta(batch.etaMs)}`
+                  : `预计还需 ${formatEta(batch.etaMs)}（按 ${batch.etaInfo?.samples ?? 0} 篇 · 区间 ${formatEta(
+                      batch.etaInfo?.lowMs ?? batch.etaMs,
+                    )}–${formatEta(batch.etaInfo?.highMs ?? batch.etaMs)}）`}
+            </span>
+          ) : (
+            <span>完成首篇后估算剩余时间</span>
+          )
         ) : null}
       </p>
 

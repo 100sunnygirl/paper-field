@@ -238,6 +238,28 @@ describe("JobsPanel", () => {
     expect(actions.pauseBatchAfterCurrent).toHaveBeenCalledWith(batchId);
   });
 
+  it("剩余时间估算展示样本篇数与区间", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-08T10:00:00.000Z"));
+    try {
+      const batchId = queueBatch("mineru", ["p1", "p2", "p3"]);
+      startBatch(batchId);
+      // 两篇各耗时 60s / 40s（样本 2），第三篇刚开始。
+      beginBatchItem(batchId, "p1");
+      vi.advanceTimersByTime(60_000);
+      endBatchItem(batchId, "p1", "ok");
+      beginBatchItem(batchId, "p2");
+      vi.advanceTimersByTime(40_000);
+      endBatchItem(batchId, "p2", "ok");
+      beginBatchItem(batchId, "p3");
+      render(<JobsPanel />);
+      const card = screen.getByRole("article", { name: "MinerU 解析批次" });
+      expect(within(card).getByText(/预计还需 .+（按 2 篇 · 区间 .+–.+）/)).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("暂停批次：提示剩余篇数并给「继续本批」", () => {
     const batchId = queueBatch("mineru", ["p1", "p2", "p3"]);
     startBatch(batchId);

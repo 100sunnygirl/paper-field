@@ -64,6 +64,11 @@ export interface BatchView {
   elapsedMs: number;
   /** 按已完成各篇平均耗时估算的剩余时间；无样本或已结束时为 null。 */
   etaMs: number | null;
+  /**
+   * 剩余时间估算的置信信息：样本篇数、按最快 / 最慢各篇推得的区间，
+   * 以及估算偏不确定的原因（当前篇远超均值 / 各篇耗时差异大，可能切换过解析源）。
+   */
+  etaInfo: { samples: number; lowMs: number; highMs: number; caveat: "current" | "spread" | null } | null;
   finishedAt: number | null;
 }
 
@@ -252,11 +257,27 @@ function batchView(
   const started = batch.startedAt ?? batch.queuedAt;
   const elapsedMs = Math.max(0, (batch.finishedAt ?? now) - started);
   let etaMs: number | null = null;
+  let etaInfo: BatchView["etaInfo"] = null;
   if (!finished && batch.durations.length) {
     const avg = batch.durations.reduce((sum, value) => sum + value, 0) / batch.durations.length;
+    const fastest = Math.min(...batch.durations);
+    const slowest = Math.max(...batch.durations);
     const currentElapsed = batch.currentStartedAt !== null ? now - batch.currentStartedAt : 0;
     const currentLeft = batch.currentPaperId ? Math.max(0, avg - currentElapsed) : 0;
     etaMs = Math.round(currentLeft + avg * pending);
+    // 区间按最快 / 最慢各篇推：少量样本时均值显得过度确定，区间更诚实。
+    const leftBy = (per: number) => Math.max(0, per - currentElapsed) + per * pending;
+    etaInfo = {
+      samples: batch.durations.length,
+      lowMs: Math.round(batch.currentPaperId ? leftBy(fastest) : fastest * pending),
+      highMs: Math.round(batch.currentPaperId ? leftBy(slowest) : slowest * pending),
+      caveat:
+        batch.currentPaperId && currentElapsed > avg * 2
+          ? "current"
+          : batch.durations.length >= 2 && slowest > fastest * 3
+            ? "spread"
+            : null,
+    };
   }
   return {
     id: batch.id,
@@ -275,6 +296,7 @@ function batchView(
     currentPaperId: batch.currentPaperId,
     elapsedMs,
     etaMs,
+    etaInfo,
     finishedAt: batch.finishedAt,
   };
 }

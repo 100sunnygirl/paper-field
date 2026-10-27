@@ -161,9 +161,56 @@ describe("deriveJobsView · 批次与排队", () => {
       // 平均 50s：当前篇还剩 30s + 2 篇排队 × 50s。
       etaMs: 130_000,
     });
+    // 区间按最快 / 最慢各篇推（40s / 60s），样本 2 篇、无 caveat。
+    expect(view.batch?.etaInfo).toEqual({
+      samples: 2,
+      lowMs: 100_000,
+      highMs: 160_000,
+      caveat: null,
+    });
     expect(view.batch?.segments.map((s) => s.state)).toEqual(["ok", "fail", "current", "pending", "pending"]);
     expect(view.queue.map((q) => q.paperId)).toEqual(["p4", "p5"]);
     expect(view.counts.queued).toBe(2);
+  });
+
+  it("剩余时间估算的置信提示：当前篇远超均值 / 各篇耗时差异大（可能切换过解析源）", () => {
+    // 当前篇已跑 120s（均值的 2 倍以上）→ 估算更新中。
+    const current = deriveJobsView({
+      jobs: [],
+      activity: activity({
+        batches: [
+          batch({
+            id: 1,
+            paperIds: ["p1", "p2", "p3", "p4"],
+            results: { p1: "ok" },
+            durations: [50_000],
+            currentPaperId: "p2",
+            currentStartedAt: NOW - 120_000,
+          }),
+        ],
+      }),
+      now: NOW,
+    });
+    expect(current.batch?.etaInfo).toMatchObject({ samples: 1, caveat: "current" });
+
+    // 两篇耗时差 10 倍 → 速度差异大（可能切换过解析源），估算仅供参考。
+    const spread = deriveJobsView({
+      jobs: [],
+      activity: activity({
+        batches: [
+          batch({
+            id: 1,
+            paperIds: ["p1", "p2", "p3", "p4"],
+            results: { p1: "ok", p2: "ok" },
+            durations: [10_000, 100_000],
+            currentPaperId: "p3",
+            currentStartedAt: NOW - 5_000,
+          }),
+        ],
+      }),
+      now: NOW,
+    });
+    expect(spread.batch?.etaInfo).toMatchObject({ samples: 2, caveat: "spread", lowMs: 15_000, highMs: 195_000 });
   });
 
   it("等待中的批次论文接在运行批次之后排队；同一篇不重复、已有进行中作业的不列入", () => {
