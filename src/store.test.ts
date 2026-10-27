@@ -124,6 +124,23 @@ describe("setReadingStatus 轻量撤销（含已读时间戳恢复）", () => {
     await useField.getState().setReadingStatus("read", "p-missing");
     expect(useField.getState().flash?.action).toBeUndefined();
   });
+
+  it("改为在读时本机记下「在读起点」（在读第 N 天的数据源）", async () => {
+    localStorage.removeItem("paper-field.reading-since");
+    vi.mocked(repo.getPaper).mockImplementation(async () => statusDetail("p-1", "unread", null));
+    useField.setState({ mode: "field" });
+    await useField.getState().setReadingStatus("reading", "p-1");
+    const records = JSON.parse(localStorage.getItem("paper-field.reading-since") ?? "{}") as Record<string, string>;
+    expect(records["p-1"]).toBeTypeOf("string");
+    // 再改已读：起点保留；改未读：清除
+    vi.mocked(repo.getPaper).mockImplementation(async () => statusDetail("p-1", "reading", null));
+    await useField.getState().setReadingStatus("read", "p-1");
+    expect(JSON.parse(localStorage.getItem("paper-field.reading-since")!)["p-1"]).toBe(records["p-1"]);
+    vi.mocked(repo.getPaper).mockImplementation(async () => statusDetail("p-1", "read", records["p-1"]));
+    await useField.getState().setReadingStatus("unread", "p-1");
+    expect(JSON.parse(localStorage.getItem("paper-field.reading-since") ?? "{}")["p-1"]).toBeUndefined();
+    localStorage.removeItem("paper-field.reading-since");
+  });
 });
 
 describe("navigatePapers（缺陷 9：未选中时的首末落点）", () => {

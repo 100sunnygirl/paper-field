@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { setContextFolded } from "../lib/contextFold";
 import { NOTE_DISPLAY_ORDER, type NoteKind, type PaperDetail } from "../lib/types";
@@ -29,6 +29,7 @@ function paper(filled: Partial<Record<NoteKind, string>>, abstract = "An abstrac
     projectPage: null,
     readingStatus: "unread",
     readAt: null,
+    createdAt: "2024-01-01T00:00:00.000Z",
     authors: [],
     notes,
     domain: { id: "d1", name: "多模态", code: "MM-01", summary: null, sortOrder: 0, createdAt: "2024-01-01T00:00:00.000Z" },
@@ -436,5 +437,83 @@ describe("ReadingStage · 资料栏「本篇状态卡」", () => {
     renderStage();
     expect(within(card()).getByText("本篇已完成")).toBeInTheDocument();
     expect(within(card()).queryByRole("button")).toBeNull();
+  });
+});
+
+describe("ReadingStage · 阅读状态三段条与「在读第 N 天」", () => {
+  function steps() {
+    return Array.from(document.querySelectorAll(".ef-read-steps span")).map((el) => ({
+      text: el.textContent ?? "",
+      current: el.classList.contains("is-current"),
+      reached: el.classList.contains("is-reached"),
+    }));
+  }
+
+  beforeEach(() => {
+    localStorage.removeItem("paper-field.reading-since");
+  });
+
+  it("三段状态条高亮当前段：未读 / 在读 / 已读", () => {
+    useField.setState({ mode: "field", paper: paper({}), selectedPaperId: "p1" });
+    renderStage();
+    expect(steps()).toEqual([
+      { text: "未读", current: true, reached: false },
+      { text: "在读", current: false, reached: false },
+      { text: "已读", current: false, reached: false },
+    ]);
+
+    const reading = paper({});
+    (reading as { readingStatus: "reading" }).readingStatus = "reading";
+    act(() => {
+      useField.setState({ paper: reading });
+    });
+    expect(steps()).toEqual([
+      { text: "未读", current: false, reached: true },
+      { text: "在读", current: true, reached: false },
+      { text: "已读", current: false, reached: false },
+    ]);
+
+    const read = paper({});
+    (read as { readingStatus: "read" }).readingStatus = "read";
+    act(() => {
+      useField.setState({ paper: read });
+    });
+    expect(steps()).toEqual([
+      { text: "未读", current: false, reached: true },
+      { text: "在读", current: false, reached: true },
+      { text: "已读", current: true, reached: false },
+    ]);
+  });
+
+  it("修改阅读状态仍走原生 select（表单语义不变）", () => {
+    const setReadingStatus = vi.fn(async () => undefined);
+    useField.setState({ mode: "field", paper: paper({}), selectedPaperId: "p1", setReadingStatus });
+    renderStage();
+    const select = screen.getByLabelText("修改阅读状态") as HTMLSelectElement;
+    expect(select.tagName).toBe("SELECT");
+    expect(select.value).toBe("unread");
+    fireEvent.change(select, { target: { value: "reading" } });
+    expect(setReadingStatus).toHaveBeenCalledWith("reading", "p1");
+  });
+
+  it("在读论文显示「在读第 N 天」（本机记录）或「入库第 N 天」（无记录回落）", () => {
+    const reading = paper({});
+    (reading as { readingStatus: "reading" }).readingStatus = "reading";
+    useField.setState({ mode: "field", paper: reading, selectedPaperId: "p1" });
+    renderStage();
+    // 无本机记录：回落入库时间（夹具 createdAt 是 2024-01-01，远超一天 → 入库第 N 天）
+    expect(screen.getByText(/入库第 \d+ 天/)).toBeInTheDocument();
+
+    // 有本机记录：三天前开始读 → 在读第 4 天
+    localStorage.setItem(
+      "paper-field.reading-since",
+      JSON.stringify({ p1: new Date(Date.now() - 3 * 86_400_000).toISOString() }),
+    );
+    const fresh = paper({});
+    (fresh as { readingStatus: "reading" }).readingStatus = "reading";
+    act(() => {
+      useField.setState({ paper: fresh });
+    });
+    expect(screen.getByText("在读第 4 天")).toBeInTheDocument();
   });
 });

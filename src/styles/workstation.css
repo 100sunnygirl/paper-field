@@ -1856,6 +1856,38 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   align-items: center;
   gap: 8px;
 }
+/* 三段状态条（未读 → 在读 → 已读）：核心仪式状态一眼可见；纯展示，
+   修改仍走原生 select。已到达的段浅墨，当前段实墨。 */
+.ef-read-steps {
+  display: flex;
+  gap: 2px;
+  margin-bottom: 10px;
+}
+.ef-read-steps span {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 24px;
+  padding: 0 2px;
+  border: 1px solid var(--pf-control-border);
+  border-radius: var(--pf-radius);
+  color: var(--pf-muted);
+  font-size: var(--pf-fs-caption);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.ef-read-steps span.is-reached {
+  background: var(--pf-hover-quiet);
+  border-color: var(--pf-line-strong);
+  color: var(--pf-secondary);
+}
+.ef-read-steps span.is-current {
+  background: var(--pf-ink);
+  border-color: var(--pf-ink);
+  color: var(--pf-on-dark);
+  font-weight: 600;
+}
 .ef-status-select .ef-ico { width: 16px; height: 16px; color: var(--pf-ink); }
 .ef-status-select select,
 .ef-os-select select {

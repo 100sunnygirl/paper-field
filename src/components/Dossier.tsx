@@ -36,6 +36,7 @@ import {
 import { onMarkdownClick, renderMarkdown } from "../lib/markdown";
 import { loadNoteLayout, moveNoteKind as moveNoteKindInOrder, saveNoteLayout, type NoteLayout } from "../lib/noteLayout";
 import { loadReadingSpots, saveReadingSpot } from "../lib/readingSpot";
+import { daysInto, readingSinceFor } from "../lib/readingSince";
 import { openLocalPdf } from "../lib/mineru";
 import {
   JOB_STATUS_LABELS,
@@ -73,6 +74,18 @@ function spotSectionLabel(section: string, headings: ReturnType<typeof extractFu
     return heading ? `§${heading.number} ${heading.text}` : "解析全文";
   }
   return section;
+}
+
+/**
+ * 「在读第 N 天」的文案：优先本机记录的在读起点；没有记录（功能上线前就在读、
+ * 或换机器）诚实回落入库时间——措辞用「入库第 N 天」，不冒充在读时长。
+ */
+function readingDayLine(paperId: string, createdAt: string): string {
+  const since = readingSinceFor(paperId);
+  const days = daysInto(since);
+  if (since && days) return `在读第 ${days} 天`;
+  const fromCreated = daysInto(createdAt);
+  return fromCreated ? `入库第 ${fromCreated} 天` : "阅读状态由你手动标记";
 }
 
 function NoteEditor({
@@ -740,6 +753,21 @@ function ContextPanel({
       </section>
       <section className="ef-context-block">
         <h2 className="ef-context-title">阅读状态</h2>
+        {/* 三段状态条（未读 → 在读 → 已读）：核心仪式状态一眼可见；
+            修改仍走下面的原生 select（表单语义 / 键盘 / 读屏 / 旅程契约都保持）。 */}
+        <div className="ef-read-steps" aria-hidden="true">
+          {(["unread", "reading", "read"] as const).map((status, index) => {
+            const stage = ["unread", "reading", "read"].indexOf(paper.readingStatus);
+            return (
+              <span
+                key={status}
+                className={index === stage ? "is-current" : index < stage ? "is-reached" : ""}
+              >
+                {READING_STATUS_LABELS[status]}
+              </span>
+            );
+          })}
+        </div>
         <label className="ef-status-select">
           <Icon name={paper.readingStatus === "read" ? "check" : "file"} />
           <select
@@ -757,7 +785,9 @@ function ContextPanel({
         <p className="ef-read-date">
           {paper.readingStatus === "read" && paper.readAt
             ? `标记于 ${formatDate(paper.readAt)}`
-            : "阅读状态由你手动标记"}
+            : paper.readingStatus === "reading"
+              ? readingDayLine(paper.id, paper.createdAt)
+              : "阅读状态由你手动标记"}
         </p>
       </section>
 

@@ -41,6 +41,7 @@ import { filledFrom, lookupPaper, type LookupResult, verifyReachable } from "./l
 import { normalizeArxivId, normalizeDoi, safeHttpUrl, withDefaultScheme } from "./lib/urls";
 import { DRAFT_NOTES_SYSTEM, PREPARE_META_SYSTEM, draftNotesUserPrompt, normalizeMeta, normalizeNotes, prepareMetaUserPrompt } from "./lib/prompts";
 import { redactSecrets } from "./lib/redact";
+import { noteReadingStatus } from "./lib/readingSince";
 import { repo } from "./lib/repo";
 import { cancelChat, completeChat, hasUsableProvider, loadSettings, readLlmSettings, saveSettings, type LlmSaveInput } from "./lib/settings";
 import { log } from "./lib/logger";
@@ -1090,6 +1091,8 @@ export const useField = create<FieldState>((set, get) => ({
       // 常规路径保持两参调用（既有测试与语义不变）；撤销路径显式带回归档时间戳。
       if (restoreReadAt === undefined) await repo.setReadingStatus(id, status);
       else await repo.setReadingStatus(id, status, restoreReadAt);
+      // 「在读起点」本机记账（在读第 N 天用；库里没有状态变更时间戳）。
+      noteReadingStatus(id, status);
       await get().refresh();
       const labels = { unread: "未读", reading: "在读", read: "已读" };
       const flash: Flash = { tone: "ok", text: `阅读状态已更新为${labels[status]}。` };
