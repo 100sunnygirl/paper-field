@@ -1442,6 +1442,11 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   color: var(--pf-on-dark);
 }
 .ef-note-pill.is-full .mono { color: var(--pf-on-dark-2); }
+/* 写满那一刻的轻庆祝：胶囊弹一下（约 1s，reduced-motion 下由全局兜底关闭），
+   不打断阅读、不引入新色。 */
+.ef-note-pill.is-celebrate {
+  animation: pf-celebrate-pop 1s var(--pf-ease-out);
+}
 .ef-out-of-list {
   margin: -8px 0 16px;
   font-size: var(--pf-fs-caption);
@@ -4793,6 +4798,14 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   0% { transform: translateY(0); }
   35% { transform: translateY(-3px); }
   100% { transform: translateY(0); }
+}
+/* 五块笔记写满的轻庆祝：胶囊一次性弹跳。 */
+@keyframes pf-celebrate-pop {
+  0% { transform: scale(1); }
+  30% { transform: scale(1.22); }
+  55% { transform: scale(0.94); }
+  75% { transform: scale(1.06); }
+  100% { transform: scale(1); }
 }
 .ef-shell .ef-nav,
 .ef-shell .ef-read,

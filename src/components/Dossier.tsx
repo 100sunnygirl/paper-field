@@ -1191,6 +1191,9 @@ export function ReadingStage({
   const spotRef = useRef<{ top: number; section: string }>({ top: 0, section: "abstract" });
   // 恢复现场后短暂显示「已回到上次阅读位置」浮标（回到顶部 / 关闭，8 秒自动收起）。
   const [spotChip, setSpotChip] = useState(false);
+  // 五块笔记写满的一次性轻庆祝（同篇只在 4→5 的转变时触发，重开已写满的论文不庆祝）。
+  const [noteCelebration, setNoteCelebration] = useState(false);
+  const lastNotesSeen = useRef<{ paperId: string | null; written: number }>({ paperId: null, written: -1 });
 
   useEffect(() => {
     spotRef.current.section = activeSection;
@@ -1247,6 +1250,32 @@ export function ReadingStage({
     const timer = window.setTimeout(() => setSpotChip(false), 8000);
     return () => window.clearTimeout(timer);
   }, [spotChip]);
+
+  // 五块笔记写满的轻庆祝：只有「同一篇论文内补上最后一块」这一次转变触发
+  // （打开一篇本来就写满的论文不算——那不是刚完成的喜悦）。
+  useEffect(() => {
+    const id = paper?.id ?? null;
+    if (!paper) {
+      lastNotesSeen.current = { paperId: null, written: -1 };
+      return;
+    }
+    const written = NOTE_DISPLAY_ORDER.filter((kind) => paper.notes[kind].content.trim()).length;
+    const last = lastNotesSeen.current;
+    const samePaper = last.paperId === id;
+    if (
+      samePaper &&
+      last.written >= 0 &&
+      last.written < NOTE_DISPLAY_ORDER.length &&
+      written === NOTE_DISPLAY_ORDER.length
+    ) {
+      setNoteCelebration(true);
+      setFlash({ tone: "ok", text: "五块阅读笔记都写满了——这一篇被你完整读过。" });
+      const timer = window.setTimeout(() => setNoteCelebration(false), 1200);
+      lastNotesSeen.current = { paperId: id, written };
+      return () => window.clearTimeout(timer);
+    }
+    lastNotesSeen.current = { paperId: id, written };
+  }, [paper]);
 
   function backToTop() {
     setSpotChip(false);
@@ -1666,10 +1695,11 @@ export function ReadingStage({
               <span>{paper.domain.name}</span>
               <i className="ef-category-rule" aria-hidden="true" />
               <span>{readingStatusLabel}</span>
-              {/* 常驻笔记进度胶囊：一眼看到整体完成度；点击跳到下一块空笔记开写。 */}
+              {/* 常驻笔记进度胶囊：一眼看到整体完成度；点击跳到下一块空笔记开写。
+                  写满的那一刻做一次轻量庆祝（scale 弹一下，见 is-celebrate）。 */}
               <button
                 type="button"
-                className={`ef-note-pill${notesFull ? " is-full" : ""}`}
+                className={`ef-note-pill${notesFull ? " is-full" : ""}${noteCelebration ? " is-celebrate" : ""}`}
                 aria-label={
                   notesFull
                     ? "五块笔记已写满"

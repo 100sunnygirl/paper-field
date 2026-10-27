@@ -544,3 +544,33 @@ describe("ReadingStage · 标题旁的笔记进度胶囊", () => {
     expect(document.querySelector('.ef-toc a[href="#note-summary"]')).toHaveClass("is-active");
   });
 });
+
+describe("ReadingStage · 五块笔记写满的轻量庆祝", () => {
+  it("补上最后一块（4→5）时：弹一次提示、胶囊做庆祝动画", () => {
+    useField.setState({
+      mode: "field",
+      paper: paper({ summary: "s", highlights: "h", weaknesses: "w", implications: "i" }),
+      selectedPaperId: "p1",
+    });
+    renderStage();
+    expect(useField.getState().flash).toBeNull();
+    // 保存最后一块后 store 刷新出新的 paper 对象
+    act(() => {
+      useField.setState({ paper: paper({ summary: "s", highlights: "h", weaknesses: "w", implications: "i", remarks: "最后一块" }) });
+    });
+    expect(useField.getState().flash?.tone).toBe("ok");
+    expect(useField.getState().flash?.text).toContain("五块阅读笔记都写满了");
+    expect(screen.getByRole("button", { name: "五块笔记已写满" })).toHaveClass("is-celebrate");
+  });
+
+  it("打开一篇本来就写满的论文不庆祝", () => {
+    useField.setState({
+      mode: "field",
+      paper: paper({ summary: "s", highlights: "h", weaknesses: "w", implications: "i", remarks: "r" }),
+      selectedPaperId: "p1",
+    });
+    renderStage();
+    expect(useField.getState().flash).toBeNull();
+    expect(screen.getByRole("button", { name: "五块笔记已写满" })).not.toHaveClass("is-celebrate");
+  });
+});
