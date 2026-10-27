@@ -259,8 +259,13 @@ describe("deriveJobsView · 最近结束", () => {
       job({ id: "p4", paperId: "p4", status: "error", finishedAt: iso(20_000) }),
       // p5：用户取消 → 可重新解析。
       job({ id: "p5", paperId: "p5", status: "cancelled", error: "cancelled", finishedAt: iso(10_000) }),
-      // p6：AI 作业失败不在这里重试（可能覆盖手改字段，交给资料栏的确认流程）。
+      // p6：AI 作业失败不进解析重试（retryable），但提供 AI 类的就地重试。
       job({ id: "p6", paperId: "p6", type: "prepareMeta", status: "error", finishedAt: iso(5_000) }),
+      // p7：起草被用户取消 → 可重新起草。
+      job({ id: "p7", paperId: "p7", type: "draftNotes", status: "cancelled", error: "cancelled", finishedAt: iso(6_000) }),
+      // p8：旧的补全失败已被后来的成功覆盖 → 不可重试。
+      job({ id: "p8-old", paperId: "p8", type: "prepareMeta", status: "error", createdAt: iso(400_000), finishedAt: iso(350_000) }),
+      job({ id: "p8-new", paperId: "p8", type: "prepareMeta", status: "done", createdAt: iso(90_000), finishedAt: iso(80_000) }),
     ];
     const view = deriveJobsView({
       jobs,
@@ -269,6 +274,24 @@ describe("deriveJobsView · 最近结束", () => {
     });
     const retryable = view.history.filter((h) => h.retryable).map((h) => h.id);
     expect(retryable.sort()).toEqual(["p2", "p5"]);
+    // AI 类：该篇该类型最近一次失败 / 取消即可就地重试（overwrite=false 不覆盖手改）；
+    // 被后来的成功覆盖（p8）不再提供。
+    expect(view.history.filter((h) => h.aiRetry).map((h) => [h.id, h.aiRetry])).toEqual([
+      ["p6", "prepareMeta"],
+      ["p7", "draftNotes"],
+    ]);
+  });
+
+  it("AI 作业有进行中的同篇作业时不给就地重试；被替换的取消同样不给", () => {
+    const jobs = [
+      job({ id: "run", paperId: "p1", type: "draftNotes", status: "running" }),
+      job({ id: "old-fail", paperId: "p1", type: "draftNotes", status: "error", finishedAt: iso(10_000) }),
+      job({ id: "replaced", paperId: "p2", type: "prepareMeta", status: "cancelled", error: "replaced", finishedAt: iso(5_000) }),
+    ];
+    const view = deriveJobsView({ jobs, activity: activity(), now: NOW });
+    const byId = new Map(view.history.map((h) => [h.id, h]));
+    expect(byId.get("old-fail")?.aiRetry).toBeNull();
+    expect(byId.get("replaced")?.aiRetry).toBeNull();
   });
 
   it("会话计数直接取实况 tally", () => {

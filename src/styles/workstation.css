@@ -3825,6 +3825,8 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   border: 1px solid var(--pf-line-strong);
 }
 .ef-hist-clear { margin-left: auto; min-height: 24px; font-size: var(--pf-fs-tag); }
+/* 批量重试行：失败解析 / 失败补全分开给入口（各按类型成批，单篇的就地按钮已够用）。 */
+.ef-hist-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .ef-hist-row {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;

@@ -264,6 +264,69 @@ describe("retryFailedMineru（INTAKE 批量重试）", () => {
   });
 });
 
+describe("作业面板批量与分型重试", () => {
+  const configuredMineru = {
+    ...DEFAULT_MINERU,
+    ssh: { ...DEFAULT_MINERU.ssh, enabled: true },
+    configured: true,
+  };
+  const usableSettings = {
+    version: 2 as const,
+    usage: {},
+    providers: [
+      {
+        id: "a",
+        presetId: "deepseek",
+        label: "DeepSeek",
+        baseUrl: "https://api.deepseek.com/v1",
+        model: "deepseek-chat",
+        enabled: true,
+        hasKey: true,
+        requiresKey: true,
+      },
+    ],
+  };
+
+  it("retryMineruPapers：去重后一次事务重置并整批重新排队", async () => {
+    useField.setState({ mineru: configuredMineru });
+
+    await useField.getState().retryMineruPapers(["e1", "e2", "e2"]);
+
+    expect(repo.resetMineru).toHaveBeenCalledWith(["e1", "e2"]);
+    expect(useField.getState().flash?.tone).toBe("ok");
+    expect(useField.getState().flash?.text).toContain("已将 2 篇重新发送到 MinerU 解析");
+  });
+
+  it("retryHistoryJob：按作业类型分派，AI 类一律 overwrite=false", async () => {
+    const draft = vi.fn(async () => undefined);
+    const prepare = vi.fn(async () => undefined);
+    useField.setState({ runDraftNotes: draft, runPrepareMeta: prepare });
+
+    await useField.getState().retryHistoryJob("p1", "draftNotes");
+    await useField.getState().retryHistoryJob("p2", "prepareMeta");
+    await useField.getState().retryHistoryJob("p3", "mineruParse");
+
+    expect(draft).toHaveBeenCalledWith("p1", false);
+    expect(prepare).toHaveBeenCalledWith("p2", false, false);
+  });
+
+  it("retryFailedMetaJobs：无可用 AI 时给设置页指引，不排队", async () => {
+    await useField.getState().retryFailedMetaJobs(["p1"]);
+
+    expect(useField.getState().flash?.tone).toBe("warn");
+    expect(useField.getState().flash?.text).toContain("尚未配置可用的 AI 服务");
+  });
+
+  it("retryFailedMetaJobs：有可用提供商时排队静默重跑并提示", async () => {
+    useField.setState({ settings: usableSettings });
+
+    await useField.getState().retryFailedMetaJobs(["p1", "p2"]);
+
+    expect(useField.getState().flash?.tone).toBe("ok");
+    expect(useField.getState().flash?.text).toBe("已重新提交 2 篇补全（进度见作业面板）。");
+  });
+});
+
 describe("批量选择与批量删除（batchMode / deleteCheckedPapers）", () => {
   it("deleteCheckedPapers：按勾选批量删除、退出批量模式、清空勾选并提示", async () => {
     vi.mocked(repo.listPapers).mockResolvedValue([]);

@@ -686,6 +686,13 @@ const HISTORY_FILTERS: Array<{ value: HistoryFilter; label: string }> = [
   { value: "failed", label: "失败" },
 ];
 
+/** AI 类失败 / 取消的就地重试文案（解析类沿用「重新解析」）。 */
+const AI_RETRY_LABELS: Record<NonNullable<HistoryItemView["aiRetry"]>, string> = {
+  prepareMeta: "重新补全",
+  draftNotes: "重新起草",
+  refreshLinks: "重新刷新链接",
+};
+
 function historyMatches(item: HistoryItemView, filter: HistoryFilter, query: string): boolean {
   if (filter === "mineru" && item.type !== "mineruParse") return false;
   if (filter === "ai" && item.type === "mineruParse") return false;
@@ -705,6 +712,9 @@ function HistoryList({
   onJump: (paperId: string, domainId: string | null) => Promise<void>;
 }) {
   const retryMineru = useField((s) => s.retryMineru);
+  const retryHistoryJob = useField((s) => s.retryHistoryJob);
+  const retryMineruPapers = useField((s) => s.retryMineruPapers);
+  const retryFailedMetaJobs = useField((s) => s.retryFailedMetaJobs);
   const [filter, setFilter] = useState<HistoryFilter>("all");
   const [query, setQuery] = useState("");
   /** 「清除已完成」隐藏的作业 id（本次会话有效，重启后恢复全部）。 */
@@ -714,6 +724,8 @@ function HistoryList({
   const matched = visible.filter((item) => historyMatches(item, filter, query));
   const filtering = filter !== "all" || Boolean(query.trim());
   const dismissable = visible.filter((item) => item.status === "done").map((item) => item.id);
+  const parseRetryIds = matched.filter((item) => item.retryable).map((item) => item.paperId);
+  const metaRetryIds = matched.filter((item) => item.aiRetry === "prepareMeta").map((item) => item.paperId);
 
   return (
     <section className="ef-jobs-section" aria-label="最近结束的作业">
@@ -805,6 +817,16 @@ function HistoryList({
                   >
                     重新解析
                   </Button>
+                ) : item.aiRetry ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="ef-hist-retry"
+                    title="不覆盖手动改过的字段 / 笔记"
+                    onClick={() => void retryHistoryJob(item.paperId, item.aiRetry!)}
+                  >
+                    {AI_RETRY_LABELS[item.aiRetry]}
+                  </Button>
                 ) : null}
               </li>
             ))}
@@ -815,6 +837,20 @@ function HistoryList({
       ) : (
         <p className="ef-jobs-empty">还没有结束的作业。</p>
       )}
+      {parseRetryIds.length > 1 || metaRetryIds.length > 1 ? (
+        <div className="ef-hist-foot">
+          {parseRetryIds.length > 1 ? (
+            <Button type="button" size="sm" onClick={() => void retryMineruPapers(parseRetryIds)}>
+              重试失败解析（{parseRetryIds.length} 篇）
+            </Button>
+          ) : null}
+          {metaRetryIds.length > 1 ? (
+            <Button type="button" size="sm" onClick={() => void retryFailedMetaJobs(metaRetryIds)}>
+              重试失败补全（{metaRetryIds.length} 篇）
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
     </section>
   );
 }

@@ -24,6 +24,7 @@ import {
   clearBatchRest,
   dequeueFromBatch,
   enqueueBackfill,
+  enqueueMeta,
   enqueueMineru,
   enqueueMineruBatch,
   forgetPapers,
@@ -47,6 +48,7 @@ import type {
   AppMode,
   Domain,
   FieldStats,
+  JobType,
   LlmJob,
   LlmSettings,
   NoteKind,
@@ -183,6 +185,15 @@ interface FieldState {
   retryMineru: (paperId: string) => Promise<void>;
   /** INTAKE 页批量重试：把全部解析失败（error）论文重新提交给 MinerU。 */
   retryFailedMineru: () => Promise<void>;
+  /** 作业面板批量重试：把指定论文重新提交给 MinerU（一次事务重置、一个批次入链）。 */
+  retryMineruPapers: (paperIds: string[]) => Promise<void>;
+  /**
+   * 作业面板单条重试：按作业类型分派到对应重跑入口。AI 类一律 overwrite=false：
+   * 字段由 meta_rev + fieldSources 锁保护、笔记由 user_edited / 确认对话框保护，不覆盖手改。
+   */
+  retryHistoryJob: (paperId: string, type: JobType) => Promise<void>;
+  /** 作业面板批量重试失败的补全：排到 AI 串行链上逐篇静默重跑（与回填同一队列）。 */
+  retryFailedMetaJobs: (paperIds: string[]) => Promise<void>;
   savePaperPatch: (paperId: string, patch: Parameters<typeof repo.updatePaper>[1]) => Promise<void>;
   saveAuthors: (paperId: string, authors: PaperDetail["authors"]) => Promise<void>;
   saveNote: (paperId: string, kind: NoteKind, content: string) => Promise<void>;
@@ -788,6 +799,12 @@ export const useField = create<FieldState>((set, get) => ({
       get().setFlash({ tone: "warn", text: "没有解析失败的论文。" });
       return;
     }
+    await get().retryMineruPapers(failedIds);
+  },
+
+  retryMineruPapers: async (paperIds) => {
+    const ids = [...new Set(paperIds)].filter(Boolean);
+    if (!ids.length) return;
     if (!get().mineru.configured) {
       get().setFlash({
         tone: "warn",
@@ -798,15 +815,51 @@ export const useField = create<FieldState>((set, get) => ({
     }
     try {
       // 与单篇重试同构：重置解析状态后重新提交；连续失败由批次熔断兜底提示。
-      await cancelParses(failedIds);
-      await repo.resetMineru(failedIds);
+      await cancelParses(ids);
+      await repo.resetMineru(ids);
       await get().refresh();
-      get().setFlash({ tone: "ok", text: `已将 ${failedIds.length} 篇重新发送到 MinerU 解析。` });
-      enqueueMineruBatch(mineruHost(), failedIds, true);
+      get().setFlash({ tone: "ok", text: `已将 ${ids.length} 篇重新发送到 MinerU 解析。` });
+      enqueueMineruBatch(mineruHost(), ids, true);
     } catch (err) {
       get().setFlash({ tone: "error", text: `批量重试失败：${errText(err)}，数据未改动。` });
       throw err;
     }
+  },
+
+  retryHistoryJob: async (paperId, type) => {
+    if (type === "mineruParse") {
+      await get().retryMineru(paperId);
+      return;
+    }
+    // AI 类重试都是 overwrite=false：请求期间与历史的手改都由落库侧的条件写入保护。
+    if (type === "draftNotes") {
+      await get().runDraftNotes(paperId, false);
+      return;
+    }
+    if (type === "refreshLinks") {
+      await get().runRefreshLinks(paperId);
+      return;
+    }
+    await get().runPrepareMeta(paperId, false, false);
+  },
+
+  retryFailedMetaJobs: async (paperIds) => {
+    const ids = [...new Set(paperIds)].filter(Boolean);
+    if (!ids.length) return;
+    if (!hasUsableProvider(get().settings)) {
+      get().setFlash({
+        tone: "warn",
+        text: "尚未配置可用的 AI 服务。可到设置页添加提供商后再重试补全。",
+        action: { label: "去设置", run: () => get().openSystemCard("llm") },
+      });
+      return;
+    }
+    // 排到 AI 串行链上逐篇重跑（与自动回填同一队列，不会并发打满提供商）；
+    // quiet=true：单篇不再逐条弹通知，失败会重新出现在「最近结束」里。
+    enqueueMeta(async () => {
+      for (const id of ids) await get().runPrepareMeta(id, false, true);
+    });
+    get().setFlash({ tone: "ok", text: `已重新提交 ${ids.length} 篇补全（进度见作业面板）。` });
   },
 
   savePaperPatch: async (paperId, patch) => {

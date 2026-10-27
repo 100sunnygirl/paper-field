@@ -91,6 +91,11 @@ export interface HistoryItemView {
   note: string | null;
   /** 可在面板里直接重新解析：该篇最近一次 MinerU 作业失败或被取消，且当前没有进行中的作业。 */
   retryable: boolean;
+  /**
+   * 可在面板里直接重试的 AI 作业类型（该篇该类型最近一次失败 / 被取消，且没有进行中的作业）。
+   * 重试入口一律 overwrite=false：手改字段与笔记由 meta_rev / user_edited 锁保护，不覆盖。
+   */
+  aiRetry: "prepareMeta" | "draftNotes" | "refreshLinks" | null;
 }
 
 export interface JobsView {
@@ -338,10 +343,16 @@ export function deriveJobsView(input: {
 
   // 每篇论文最近一次 MinerU 作业（按创建时间）：只有它失败 / 被取消时才提供「重新解析」。
   const latestMineru = new Map<string, LlmJob>();
+  // 每篇论文每个类型的最近一次作业：AI 类（补全 / 起草 / 刷新链接）失败或被取消时可就地重试。
+  const latestOfType = new Map<string, LlmJob>();
   for (const job of jobs) {
-    if (job.type !== "mineruParse") continue;
-    const prev = latestMineru.get(job.paperId);
-    if (!prev || (ms(job.createdAt) ?? 0) > (ms(prev.createdAt) ?? 0)) latestMineru.set(job.paperId, job);
+    if (job.type === "mineruParse") {
+      const prev = latestMineru.get(job.paperId);
+      if (!prev || (ms(job.createdAt) ?? 0) > (ms(prev.createdAt) ?? 0)) latestMineru.set(job.paperId, job);
+    }
+    const key = `${job.paperId}:${job.type}`;
+    const prev = latestOfType.get(key);
+    if (!prev || (ms(job.createdAt) ?? 0) > (ms(prev.createdAt) ?? 0)) latestOfType.set(key, job);
   }
 
   const history: HistoryItemView[] = jobs
@@ -352,6 +363,7 @@ export function deriveJobsView(input: {
       const info = lookup(job.paperId);
       const start = ms(job.startedAt) ?? ms(job.createdAt);
       const end = ms(job.finishedAt);
+      const latestOfKind = latestOfType.get(`${job.paperId}:${job.type}`);
       return {
         id: job.id,
         type: job.type,
@@ -371,6 +383,13 @@ export function deriveJobsView(input: {
           !activePaperIds.has(job.paperId) &&
           !seen.has(job.paperId) &&
           running?.currentPaperId !== job.paperId,
+        aiRetry:
+          job.type !== "mineruParse" &&
+          (job.status === "error" || (job.status === "cancelled" && job.error !== "replaced")) &&
+          latestOfKind?.id === job.id &&
+          !activePaperIds.has(job.paperId)
+            ? (job.type as HistoryItemView["aiRetry"])
+            : null,
       };
     });
 

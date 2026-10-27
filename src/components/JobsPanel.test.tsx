@@ -57,6 +57,9 @@ function job(overrides: Partial<LlmJob> & Pick<LlmJob, "id" | "paperId">): LlmJo
 const actions = {
   cancelJob: vi.fn(async () => undefined),
   retryMineru: vi.fn(async () => undefined),
+  retryHistoryJob: vi.fn(async () => undefined),
+  retryMineruPapers: vi.fn(async () => undefined),
+  retryFailedMetaJobs: vi.fn(async () => undefined),
   selectDomain: vi.fn(async () => undefined),
   selectPaper: vi.fn(async () => undefined),
   dequeueMineruPaper: vi.fn(),
@@ -242,6 +245,34 @@ describe("JobsPanel", () => {
     expect(within(history).getByText("Token 过期")).toBeInTheDocument();
     // 已完成清掉后不再显示「清除已完成」入口。
     expect(within(history).queryByRole("button", { name: "清除已完成" })).toBeNull();
+  });
+
+  it("失败与取消的 AI 作业可就地重试；失败成批时给批量重试入口", () => {
+    useField.setState({
+      jobs: [
+        job({ id: "m1", paperId: "p1", status: "error", error: "解析失败", finishedAt: new Date(Date.now() - 1_000).toISOString() }),
+        job({ id: "m2", paperId: "p2", status: "error", error: "解析失败", finishedAt: new Date(Date.now() - 2_000).toISOString() }),
+        job({ id: "a1", paperId: "p3", type: "prepareMeta", status: "error", error: "LLM HTTP 429", finishedAt: new Date(Date.now() - 3_000).toISOString() }),
+        job({ id: "a2", paperId: "p4", type: "prepareMeta", status: "error", error: "LLM HTTP 429", finishedAt: new Date(Date.now() - 4_000).toISOString() }),
+        job({ id: "a3", paperId: "p5", type: "draftNotes", status: "cancelled", error: "cancelled", finishedAt: new Date(Date.now() - 5_000).toISOString() }),
+      ],
+    });
+    render(<JobsPanel />);
+    const history = screen.getByRole("region", { name: "最近结束的作业" });
+
+    // 单条：解析失败「重新解析」、补全失败「重新补全」、起草取消「重新起草」。
+    expect(within(history).getAllByRole("button", { name: "重新解析" })).toHaveLength(2);
+    expect(within(history).getAllByRole("button", { name: "重新补全" })).toHaveLength(2);
+    fireEvent.click(within(history).getAllByRole("button", { name: "重新补全" })[0]);
+    expect(actions.retryHistoryJob).toHaveBeenCalledWith("p3", "prepareMeta");
+    fireEvent.click(within(history).getByRole("button", { name: "重新起草" }));
+    expect(actions.retryHistoryJob).toHaveBeenCalledWith("p5", "draftNotes");
+
+    // 成批：失败解析 / 失败补全分开一键重试。
+    fireEvent.click(within(history).getByRole("button", { name: "重试失败解析（2 篇）" }));
+    expect(actions.retryMineruPapers).toHaveBeenCalledWith(["p1", "p2"]);
+    fireEvent.click(within(history).getByRole("button", { name: "重试失败补全（2 篇）" }));
+    expect(actions.retryFailedMetaJobs).toHaveBeenCalledWith(["p3", "p4"]);
   });
 
   it("查不到书目（旧版 repo / 查询失败）时退回短编号，不报错", async () => {
