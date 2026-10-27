@@ -1777,6 +1777,38 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 .ef-empty-note { margin: 0; color: var(--pf-muted); font-size: var(--pf-fs-ui); }
 .ef-empty-note .ef-btn-link { display: inline-flex; min-height: 0; margin-left: 4px; }
 /* 空笔记块的就地入口：虚线框占位，点击即在原位打开编辑框。 */
+.ef-note-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+/* 研究问题提示：caption 档的一行切入点 + 右侧收起钮；点「写…」仍从空白开写。 */
+.ef-note-question {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
+  line-height: 1.7;
+}
+.ef-note-question button {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin-top: 2px;
+  border: 0;
+  background: transparent;
+  color: var(--pf-muted);
+  border-radius: var(--pf-radius);
+  cursor: pointer;
+  transition: background-color var(--pf-motion), color var(--pf-motion);
+}
+.ef-note-question button .ef-ico { width: 11px; height: 11px; }
+.ef-note-question button:hover { background: var(--pf-hover-flat); color: var(--pf-ink); }
 .ef-note-start {
   display: flex;
   align-items: center;

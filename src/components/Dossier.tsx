@@ -34,6 +34,7 @@ import {
   type FulltextSelection,
 } from "../lib/fulltext";
 import { onMarkdownClick, renderMarkdown } from "../lib/markdown";
+import { isNoteHintDismissed, NOTE_HINT_QUESTIONS, setNoteHintDismissed } from "../lib/noteHints";
 import { loadNoteLayout, moveNoteKind as moveNoteKindInOrder, saveNoteLayout, type NoteLayout } from "../lib/noteLayout";
 import { loadReadingSpots, saveReadingSpot } from "../lib/readingSpot";
 import { daysInto, readingSinceFor } from "../lib/readingSince";
@@ -131,6 +132,8 @@ function NoteEditor({
   const [saving, setSaving] = useState(false);
   const [failed, setFailed] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // 空块的研究问题提示：可关闭（本机记住，按块独立）。
+  const [hintDismissed, setHintDismissed] = useState(() => isNoteHintDismissed(kind));
 
   useEffect(() => {
     if (editing) textareaRef.current?.focus();
@@ -348,10 +351,29 @@ function NoteEditor({
         <div className="ef-note-text ef-md" onClick={onMarkdownClick} dangerouslySetInnerHTML={{ __html: renderMarkdown(value) }} />
       ) : (
         // 空块本身就是入口：点这里就地开写，不必去工具条或右上角找按钮。
-        <button type="button" className="ef-note-start" onClick={onStart}>
-          <Icon name="plus" />
-          写{label.zh}
-        </button>
+        // 上方一行可关闭的研究问题，给「不知从哪下笔」一个切入点。
+        <div className="ef-note-empty">
+          {!hintDismissed && !hasDraft ? (
+            <p className="ef-note-question">
+              <span>{NOTE_HINT_QUESTIONS[kind]}</span>
+              <button
+                type="button"
+                aria-label={`收起${label.zh}的提示问题`}
+                title="收起这条提示（之后不再显示）"
+                onClick={() => {
+                  setHintDismissed(true);
+                  setNoteHintDismissed(kind, true);
+                }}
+              >
+                <Icon name="close" />
+              </button>
+            </p>
+          ) : null}
+          <button type="button" className="ef-note-start" onClick={onStart}>
+            <Icon name="plus" />
+            写{label.zh}
+          </button>
+        </div>
       )}
     </section>
   );

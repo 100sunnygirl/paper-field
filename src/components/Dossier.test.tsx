@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { setContextFolded } from "../lib/contextFold";
+import { NOTE_HINT_QUESTIONS } from "../lib/noteHints";
 import { NOTE_DISPLAY_ORDER, type NoteKind, type PaperDetail } from "../lib/types";
 import { useField } from "../store";
 import { ReadingStage } from "./Dossier";
@@ -572,5 +573,47 @@ describe("ReadingStage · 五块笔记写满的轻量庆祝", () => {
     renderStage();
     expect(useField.getState().flash).toBeNull();
     expect(screen.getByRole("button", { name: "五块笔记已写满" })).not.toHaveClass("is-celebrate");
+  });
+});
+
+describe("ReadingStage · 空笔记块的研究问题提示", () => {
+  beforeEach(() => {
+    localStorage.removeItem("paper-field.note-hints");
+  });
+
+  it("空块显示提示问题与「写…」入口；点「写总结」仍从空白开写", () => {
+    useField.setState({ mode: "field", paper: paper({}), selectedPaperId: "p1" });
+    renderStage();
+    expect(screen.getByText(NOTE_HINT_QUESTIONS.summary)).toBeInTheDocument();
+    expect(screen.getByText(NOTE_HINT_QUESTIONS.weaknesses)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "写总结" }));
+    expect(screen.getByLabelText("总结内容")).toHaveValue("");
+  });
+
+  it("收起提示：当块隐藏并写进本机记忆，重新挂载不再出现", () => {
+    useField.setState({ mode: "field", paper: paper({}), selectedPaperId: "p1" });
+    const { unmount } = renderStage();
+    fireEvent.click(screen.getByRole("button", { name: "收起总结的提示问题" }));
+    expect(screen.queryByText(NOTE_HINT_QUESTIONS.summary)).toBeNull();
+    // 其他块的提示不受影响
+    expect(screen.getByText(NOTE_HINT_QUESTIONS.highlights)).toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem("paper-field.note-hints")!).summary).toBe(true);
+    unmount();
+
+    useField.setState({ mode: "field", paper: paper({}), selectedPaperId: "p1" });
+    renderStage();
+    expect(screen.queryByText(NOTE_HINT_QUESTIONS.summary)).toBeNull();
+    expect(screen.getByText(NOTE_HINT_QUESTIONS.highlights)).toBeInTheDocument();
+  });
+
+  it("有内容或有草稿的块不显示提示", () => {
+    useField.setState({ mode: "field", paper: paper({ summary: "已写" }), selectedPaperId: "p1" });
+    renderStage();
+    expect(screen.queryByText(NOTE_HINT_QUESTIONS.summary)).toBeNull();
+    // Esc 收起留草稿的块也不算「空块」
+    fireEvent.click(screen.getByRole("button", { name: "写亮点" }));
+    fireEvent.change(screen.getByLabelText("亮点内容"), { target: { value: "写了一半" } });
+    fireEvent.keyDown(screen.getByLabelText("亮点内容"), { key: "Escape", bubbles: true, cancelable: true });
+    expect(screen.queryByText(NOTE_HINT_QUESTIONS.highlights)).toBeNull();
   });
 });
