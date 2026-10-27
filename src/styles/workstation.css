@@ -1400,6 +1400,34 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 .ef-row-draft {
   color: var(--pf-danger);
 }
+/* 常驻笔记进度胶囊（分类行右端）：墨框计数；写满后实墨 + 对勾。 */
+.ef-paper-category .ef-note-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  min-height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--pf-ink);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--pf-ink);
+  font-size: var(--pf-fs-tag);
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color var(--pf-motion), color var(--pf-motion);
+}
+.ef-note-pill .ef-ico { width: 12px; height: 12px; }
+.ef-note-pill .mono { color: var(--pf-muted); font-weight: 500; }
+.ef-note-pill:hover { background: var(--pf-ink); color: var(--pf-on-dark); }
+.ef-note-pill:hover .mono { color: var(--pf-on-dark-2); }
+.ef-note-pill.is-full {
+  background: var(--pf-ink);
+  color: var(--pf-on-dark);
+}
+.ef-note-pill.is-full .mono { color: var(--pf-on-dark-2); }
 .ef-out-of-list {
   margin: -8px 0 16px;
   font-size: var(--pf-fs-caption);

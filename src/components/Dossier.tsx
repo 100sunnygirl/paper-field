@@ -1419,6 +1419,12 @@ export function ReadingStage({
   const outOfList = mode !== "system" && !visibleList.some((item) => item.id === paper.id);
   const readingStatusLabel = READING_STATUS_LABELS[paper.readingStatus];
   const notesWritten = NOTE_DISPLAY_ORDER.filter((kind) => paper.notes[kind].content.trim()).length;
+  const notesFull = notesWritten === NOTE_DISPLAY_ORDER.length;
+  // 下一块空笔记（草稿优先于已存内容）：进度胶囊点击的落点。
+  const nextEmptyNote = noteLayout.order.find((kind) => {
+    const content = drafts[paper.id]?.[kind] ?? paper.notes[kind].content;
+    return !content.trim();
+  });
   const draftCount = NOTE_DISPLAY_ORDER.filter((kind) => drafts[paper.id]?.[kind] !== undefined).length;
   // 翻页条的位置读数：当前论文在可见列表中的序号（被搜索挡在列表外时读数退化为 —）。
   const pagerIndex = visibleList.findIndex((item) => item.id === paper.id);
@@ -1660,6 +1666,25 @@ export function ReadingStage({
               <span>{paper.domain.name}</span>
               <i className="ef-category-rule" aria-hidden="true" />
               <span>{readingStatusLabel}</span>
+              {/* 常驻笔记进度胶囊：一眼看到整体完成度；点击跳到下一块空笔记开写。 */}
+              <button
+                type="button"
+                className={`ef-note-pill${notesFull ? " is-full" : ""}`}
+                aria-label={
+                  notesFull
+                    ? "五块笔记已写满"
+                    : `本篇已完成 ${notesWritten} / ${NOTE_DISPLAY_ORDER.length} 块笔记，跳到下一块空笔记`
+                }
+                title={notesFull ? "五块笔记已写满" : "跳到下一块空笔记"}
+                onClick={() => {
+                  if (nextEmptyNote) startEdit(nextEmptyNote);
+                  else jump(`note-${noteLayout.order[0]}`);
+                }}
+              >
+                {notesFull ? <Icon name="check" /> : null}
+                笔记 {notesWritten}
+                <span className="mono">/{NOTE_DISPLAY_ORDER.length}</span>
+              </button>
             </div>
             {outOfList ? (
               <p className="ef-out-of-list" role="note">

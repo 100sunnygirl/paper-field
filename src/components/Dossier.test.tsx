@@ -517,3 +517,30 @@ describe("ReadingStage · 阅读状态三段条与「在读第 N 天」", () => 
     expect(screen.getByText("在读第 4 天")).toBeInTheDocument();
   });
 });
+
+describe("ReadingStage · 标题旁的笔记进度胶囊", () => {
+  it("常驻显示 x/5：点击跳到下一块空笔记并就地打开编辑器", () => {
+    useField.setState({ mode: "field", paper: paper({ summary: "已写的总结" }), selectedPaperId: "p1" });
+    renderStage();
+    const pill = screen.getByRole("button", { name: /本篇已完成 1 \/ 5 块笔记/ });
+    expect(pill.textContent).toContain("笔记 1/5");
+    expect(pill).not.toHaveClass("is-full");
+    fireEvent.click(pill);
+    // 下一块空笔记是亮点：就地打开编辑框
+    expect(screen.getByLabelText("亮点内容")).toBeInTheDocument();
+  });
+
+  it("五块写满：胶囊带对勾、aria 标注已写满；点击只滚动到笔记区", () => {
+    useField.setState({
+      mode: "field",
+      paper: paper({ summary: "s", highlights: "h", weaknesses: "w", implications: "i", remarks: "r" }),
+      selectedPaperId: "p1",
+    });
+    renderStage();
+    const pill = screen.getByRole("button", { name: "五块笔记已写满" });
+    expect(pill).toHaveClass("is-full");
+    fireEvent.click(pill);
+    expect(screen.queryByLabelText(/内容/)).toBeNull();
+    expect(document.querySelector('.ef-toc a[href="#note-summary"]')).toHaveClass("is-active");
+  });
+});
