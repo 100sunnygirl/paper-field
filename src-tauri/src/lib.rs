@@ -1,8 +1,13 @@
+#[cfg(all(feature = "desktop-e2e", not(debug_assertions)))]
+compile_error!("desktop-e2e instrumentation is forbidden in release builds");
+
 mod appdir;
 mod applog;
 mod backup;
 mod biblio;
 mod db;
+#[cfg(feature = "desktop-e2e")]
+mod desktop_e2e;
 mod instance;
 mod io_util;
 mod library;
@@ -23,6 +28,7 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+#[cfg(not(feature = "desktop-e2e"))]
 use tauri::path::BaseDirectory;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -33,6 +39,12 @@ struct ExportFile {
     content: String,
 }
 
+#[cfg(feature = "desktop-e2e")]
+pub(crate) fn app_config_dir(_app: &AppHandle) -> Result<PathBuf, String> {
+    desktop_e2e::profile_dir()
+}
+
+#[cfg(not(feature = "desktop-e2e"))]
 pub(crate) fn app_config_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app
         .path()
@@ -263,7 +275,15 @@ fn navigation_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    // Fail before any plugin can touch a profile if the test sandbox is absent.
+    #[cfg(feature = "desktop-e2e")]
+    desktop_e2e::profile_dir().expect("desktop-e2e requires an isolated test root");
+
+    let context = tauri::generate_context!();
+    #[cfg(feature = "desktop-e2e")]
+    assert_eq!(context.config().identifier, "com.paperfield.e2e", "desktop-e2e requires the test-only Tauri config");
+
+    let builder = tauri::Builder::default()
         // 必须最先注册：第二次启动只把已有窗口带到前台然后退出，不跑任何启动任务。
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
@@ -271,7 +291,11 @@ pub fn run() {
                 let _ = window.show();
                 let _ = window.set_focus();
             }
-        }))
+        }));
+    #[cfg(feature = "desktop-e2e")]
+    let builder = builder.plugin(tauri_plugin_wdio_webdriver::init());
+
+    builder
         // Copy com.paperfield.app → com.paperfield.notes before the database layer opens it.
         .plugin(appdir::migration_plugin())
         .plugin(tauri_plugin_opener::init())
@@ -284,6 +308,8 @@ pub fn run() {
         .manage(mineru::MineruCredBook::default())
         .manage(library::PdfGrants::default())
         .setup(|app| {
+            #[cfg(feature = "desktop-e2e")]
+            desktop_e2e::record_process().map_err(std::io::Error::other)?;
             let menu = build_menu(app)?;
             app.set_menu(menu)?;
             Ok(())
@@ -335,7 +361,7 @@ pub fn run() {
             platform::reveal_pre_restore,
             import_pdf_to_library
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while running Paper Field")
         .run(|app, event| {
             // 退出前关闭连接池：最后一个连接关闭时 SQLite 做检查点，不留 -wal。

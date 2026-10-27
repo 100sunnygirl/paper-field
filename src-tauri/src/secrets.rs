@@ -242,12 +242,12 @@ impl SecretStore for KeyringStore {
 
 /// Linux builds (this dev VM) have no macOS Keychain. Secrets stay out of the
 /// settings JSON, in a mode-0600 file. macOS and Windows use the keyring crate.
-#[cfg(any(test, not(any(target_os = "macos", target_os = "windows"))))]
+#[cfg(any(test, feature = "desktop-e2e", not(any(target_os = "macos", target_os = "windows"))))]
 pub struct FileSecretStore {
     path: std::path::PathBuf,
 }
 
-#[cfg(any(test, not(any(target_os = "macos", target_os = "windows"))))]
+#[cfg(any(test, feature = "desktop-e2e", not(any(target_os = "macos", target_os = "windows"))))]
 impl FileSecretStore {
     pub fn new(dir: &Path) -> Self {
         Self {
@@ -272,7 +272,7 @@ impl FileSecretStore {
     }
 }
 
-#[cfg(any(test, not(any(target_os = "macos", target_os = "windows"))))]
+#[cfg(any(test, feature = "desktop-e2e", not(any(target_os = "macos", target_os = "windows"))))]
 impl SecretStore for FileSecretStore {
     fn get(&self, account: &str) -> Result<Option<String>, String> {
         with_file_lock(&self.path, || Ok(self.load()?.get(account).cloned()))
@@ -296,19 +296,19 @@ impl SecretStore for FileSecretStore {
     }
 }
 
-/// Tests never reach the real OS keychain: under `cfg(test)` every platform
+/// Tests never reach the real OS keychain: under `cfg(test)` or `desktop-e2e` every platform
 /// uses the file store inside `dir` (a per-test temp dir).
 ///
 /// Caveat: `cfg(test)` only covers this crate's unit tests. Integration tests
 /// under `tests/`, other features, or bins calling `store_for` still compile
 /// without `cfg(test)` and would hit the real keychain on macOS/Windows.
 pub fn store_for(dir: &Path) -> Box<dyn SecretStore> {
-    #[cfg(all(any(target_os = "macos", target_os = "windows"), not(test)))]
+    #[cfg(all(any(target_os = "macos", target_os = "windows"), not(test), not(feature = "desktop-e2e")))]
     {
         let _ = dir;
         Box::new(KeyringStore)
     }
-    #[cfg(any(test, not(any(target_os = "macos", target_os = "windows"))))]
+    #[cfg(any(test, feature = "desktop-e2e", not(any(target_os = "macos", target_os = "windows"))))]
     {
         Box::new(FileSecretStore::new(dir))
     }
