@@ -12,6 +12,7 @@ vi.mock("../lib/repo", async (importOriginal) => {
   return { repo: { ...actual.repo, pdfCount: vi.fn(async () => { throw new Error("no engine in jsdom"); }) } };
 });
 import { SystemView } from "./SystemView";
+import * as mineruModule from "../lib/mineru";
 import * as updater from "../lib/updater";
 import { useField } from "../store";
 import { DEFAULT_MINERU, type MineruSaveInput, type MineruSettingsV2 } from "../lib/mineru";
@@ -1139,6 +1140,74 @@ describe("SystemView · 软件更新（版本预览 / 下载 / 稍后）", () =>
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+});
+
+describe("SystemView · 测试连接与启用自动处理分离", () => {
+  beforeEach(() => {
+    useField.setState(useField.getInitialState(), true);
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("AI 测试连接：脏表单按 deferBackfill 落盘，成功后提供显式「启用自动补全」", async () => {
+    const saveLlmSettings = vi.fn(async () => undefined);
+    const startMetaBackfill = vi.fn(async () => 3);
+    useField.setState({ settings: llmSettings(), saveLlmSettings, startMetaBackfill });
+    primeLlmBrowser();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse(200, { choices: [{ message: { content: "ok" } }] })),
+    );
+    render(<SystemView />);
+    const first = screen.getByRole("region", { name: "DeepSeek" });
+    fireEvent.change(within(first).getByLabelText("Base URL"), { target: { value: "https://api2.deepseek.com/v1" } });
+    fireEvent.click(within(first).getByRole("button", { name: "测试连接" }));
+    await waitFor(() => expect(saveLlmSettings).toHaveBeenCalledTimes(1));
+    expect(saveLlmSettings.mock.calls[0]![1]).toEqual({ deferBackfill: true });
+    expect(await within(llmBlock()).findByText(/自动补全暂未启动/)).toBeInTheDocument();
+    fireEvent.click(within(llmBlock()).getByRole("button", { name: "启用自动补全" }));
+    await waitFor(() => expect(startMetaBackfill).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(within(llmBlock()).queryByText(/自动补全暂未启动/)).not.toBeInTheDocument());
+  });
+
+  it("AI 测试连接：表单不脏时不保存也不出现启用入口", async () => {
+    const saveLlmSettings = vi.fn(async () => undefined);
+    useField.setState({ settings: llmSettings(), saveLlmSettings });
+    primeLlmBrowser();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse(200, { choices: [{ message: { content: "ok" } }] })),
+    );
+    render(<SystemView />);
+    fireEvent.click(within(screen.getByRole("region", { name: "DeepSeek" })).getByRole("button", { name: "测试连接" }));
+    await waitFor(() =>
+      expect(within(screen.getByRole("region", { name: "DeepSeek" })).getByText(/连接正常/)).toBeInTheDocument(),
+    );
+    expect(saveLlmSettings).not.toHaveBeenCalled();
+    expect(within(llmBlock()).queryByText(/自动补全暂未启动/)).not.toBeInTheDocument();
+  });
+
+  it("MinerU 测试连接：脏表单按 deferJobs 落盘，成功后提供显式「继续未完成的解析」", async () => {
+    const saveMineruSettings = vi.fn(async () => undefined);
+    const resumeMineruParses = vi.fn(async () => 2);
+    useField.setState({ mineru: mineruState(), effectiveProvider: null, saveMineruSettings, resumeMineruParses });
+    vi.spyOn(mineruModule, "testMineru").mockResolvedValue("连接正常");
+    render(<SystemView />);
+    const ssh = screen.getByRole("region", { name: "SSH 远程" });
+    fireEvent.click(within(ssh).getByRole("button", { name: "高级" }));
+    fireEvent.change(within(ssh).getByLabelText("主机"), { target: { value: "new-imac" } });
+    fireEvent.click(within(ssh).getByRole("button", { name: "测试连接" }));
+    await waitFor(() => expect(saveMineruSettings).toHaveBeenCalledTimes(1));
+    expect(saveMineruSettings.mock.calls[0]![1]).toEqual({ deferJobs: true });
+    const block = screen.getByRole("heading", { level: 3, name: "MinerU 解析源" }).closest("article") as HTMLElement;
+    expect(await within(block).findByText(/未自动续跑解析/)).toBeInTheDocument();
+    fireEvent.click(within(block).getByRole("button", { name: "继续未完成的解析" }));
+    await waitFor(() => expect(resumeMineruParses).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(within(block).queryByText(/未自动续跑解析/)).not.toBeInTheDocument());
   });
 });
 

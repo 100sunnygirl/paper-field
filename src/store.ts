@@ -207,10 +207,19 @@ interface FieldState {
   runRefreshLinks: (paperId?: string) => Promise<void>;
   runDraftNotes: (paperId?: string, overwrite?: boolean) => Promise<void>;
   cancelJob: (jobId: string, options?: { silent?: boolean }) => Promise<void>;
-  saveLlmSettings: (input: LlmSaveInput) => Promise<void>;
-  saveMineruSettings: (input: MineruSaveInput) => Promise<void>;
+  /**
+   * deferBackfill：测试连接 / 拉模型等“只查不启动”的保存暂不排自动补全，
+   * 由用户在测试通过后点「启用自动补全」显式启动（startMetaBackfill）。
+   */
+  saveLlmSettings: (input: LlmSaveInput, options?: { deferBackfill?: boolean }) => Promise<void>;
+  /** deferJobs：同上，测试类保存不自动续跑解析（resumeMineruParses 显式启动）。 */
+  saveMineruSettings: (input: MineruSaveInput, options?: { deferJobs?: boolean }) => Promise<void>;
   saveBiblioSettings: (input: BiblioSaveInput) => Promise<void>;
   probeMineru: () => Promise<ProviderHealth[]>;
+  /** 显式启动被暂存的自动补全；返回待补全篇数（读不到为 null）。 */
+  startMetaBackfill: () => Promise<number | null>;
+  /** 显式续跑被暂存的解析；返回待解析篇数（读不到为 null）。 */
+  resumeMineruParses: () => Promise<number | null>;
   exportCurrentDomain: () => Promise<void>;
   /** 导出范围与内容选择（全库 / 仅已读 / 勾选集 / 单篇 / 当前领域）。 */
   exportPapers: (plan: ExportPlan) => Promise<void>;
@@ -1125,7 +1134,7 @@ export const useField = create<FieldState>((set, get) => ({
     await get().refresh();
   },
 
-  saveLlmSettings: async (input) => {
+  saveLlmSettings: async (input, options) => {
     try {
       await saveSettings(input);
       const settings = await loadSettings();
@@ -1134,10 +1143,12 @@ export const useField = create<FieldState>((set, get) => ({
       get().setFlash({
         tone: usable ? "ok" : "warn",
         text: usable
-          ? "AI 服务设置已保存。"
+          ? options?.deferBackfill
+            ? "AI 服务设置已保存。自动补全暂未启动，可在测试通过后启用。"
+            : "AI 服务设置已保存。"
           : "已保存提供商列表，但当前没有可用的 AI 服务：请启用并填写 API Key，或使用免 Key 的本地服务。",
       });
-      if (usable) enqueueBackfill(mineruHost());
+      if (usable && !options?.deferBackfill) enqueueBackfill(mineruHost());
     } catch (err) {
       get().setFlash({ tone: "error", text: `保存 AI 服务设置失败：${errText(err)}，数据未改动。` });
       throw err;
@@ -1162,7 +1173,7 @@ export const useField = create<FieldState>((set, get) => ({
     }
   },
 
-  saveMineruSettings: async (input) => {
+  saveMineruSettings: async (input, options) => {
     try {
       const mineru = await saveMineruSettings(input);
       set({ mineru });
@@ -1172,7 +1183,8 @@ export const useField = create<FieldState>((set, get) => ({
       });
       // 保存成功后重探（异步，不阻塞返回）；浏览器预览 resolve [] 不抛错。
       void get().probeMineru();
-      if (mineru.configured) enqueueMineru(() => resumeMineru(mineruHost()));
+      // 测试连接类的保存（deferJobs）不静默续跑解析：由「继续未完成的解析」显式启动。
+      if (mineru.configured && !options?.deferJobs) enqueueMineru(() => resumeMineru(mineruHost()));
     } catch (err) {
       get().setFlash({ tone: "error", text: `保存 MinerU 设置失败：${errText(err)}，数据未改动。` });
       throw err;
@@ -1187,6 +1199,36 @@ export const useField = create<FieldState>((set, get) => ({
       effectiveProvider: pickProviderFromHealths(mineru.order, healths),
     });
     return healths;
+  },
+
+  startMetaBackfill: async () => {
+    let count: number | null = null;
+    try {
+      count = (await repo.listReadyForMeta()).length;
+    } catch {
+      count = null;
+    }
+    enqueueBackfill(mineruHost());
+    get().setFlash({
+      tone: "ok",
+      text: count ? `已开始自动补全，共 ${count} 篇待处理（进度见作业面板）。` : "已开始自动补全（进度见作业面板）。",
+    });
+    return count;
+  },
+
+  resumeMineruParses: async () => {
+    let count: number | null = null;
+    try {
+      count = (await repo.listPendingMineru()).length;
+    } catch {
+      count = null;
+    }
+    enqueueMineru(() => resumeMineru(mineruHost()));
+    get().setFlash({
+      tone: count ? "ok" : "warn",
+      text: count ? `已继续未完成的解析，共 ${count} 篇（进度见作业面板）。` : "没有待解析的论文。",
+    });
+    return count;
   },
 
   backupLibrary: async () => {

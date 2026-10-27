@@ -871,6 +871,9 @@ function LlmSettingsBlock({ focused }: { focused: boolean }) {
   const [confirmClearKeyId, setConfirmClearKeyId] = useState<string | null>(null);
   const [addChoice, setAddChoice] = useState(LLM_PRESETS[0]?.id ?? CUSTOM_PRESET);
   const [draftRestored, setDraftRestored] = useState(false);
+  // 「测试连接」保存了配置但按用户意图暂不启动自动补全；测试通过后提供显式启用入口。
+  const [deferredBackfill, setDeferredBackfill] = useState(false);
+  const [backfillCount, setBackfillCount] = useState<number | null>(null);
 
   useEffect(() => {
     setRows(saved.providers.map(toRow));
@@ -1054,8 +1057,10 @@ function LlmSettingsBlock({ focused }: { focused: boolean }) {
     setMessage(null);
     setTestingId(row.id);
     try {
-      // 表单有未保存修改时先落盘，测试的才是用户眼前这份配置。
-      if (isDirty()) await saveLlmSettings(currentInput());
+      // 表单有未保存修改时先落盘，测试的才是用户眼前这份配置；
+      // 但测试连接不等于启用：自动补全暂不启动，测试通过后由用户显式启用。
+      const wasDirty = isDirty();
+      if (wasDirty) await saveLlmSettings(currentInput(), { deferBackfill: true });
       const result = await testLlmProvider(row.id);
       setTestResults((prev) => ({
         ...prev,
@@ -1063,10 +1068,27 @@ function LlmSettingsBlock({ focused }: { focused: boolean }) {
           ? { tone: "ok", text: `${result.message} · ${result.latencyMs}ms` }
           : { tone: "error", text: result.message },
       }));
+      if (result.ok && wasDirty) {
+        setDeferredBackfill(true);
+        // 篇数只作预览参考：读不到（引擎不可用）就不显示数字。
+        void repo
+          .listReadyForMeta()
+          .then((ids) => setBackfillCount(ids.length))
+          .catch(() => setBackfillCount(null));
+      }
     } catch (err) {
       setTestResults((prev) => ({ ...prev, [row.id]: { tone: "error", text: errText(err) } }));
     } finally {
       setTestingId(null);
+    }
+  }
+
+  async function enableBackfill() {
+    try {
+      await useField.getState().startMetaBackfill();
+      setDeferredBackfill(false);
+    } catch (err) {
+      setMessage({ tone: "error", text: `启用自动补全失败：${errText(err)}。` });
     }
   }
 
@@ -1309,6 +1331,15 @@ function LlmSettingsBlock({ focused }: { focused: boolean }) {
           添加提供商
         </Button>
       </div>
+
+      {deferredBackfill ? (
+        <p className="ef-probe-line">
+          测试通过，配置已保存。自动补全暂未启动{backfillCount === null ? "" : `（待补全 ${backfillCount} 篇）`}。
+          <Button type="button" size="sm" onClick={() => void enableBackfill()}>
+            启用自动补全
+          </Button>
+        </p>
+      ) : null}
 
       {saved.providers.length ? (
         <div className="ef-usage">
@@ -1623,6 +1654,9 @@ function MineruSettings({ focused }: { focused: boolean }) {
   const [probing, setProbing] = useState(false);
   const [confirmClearToken, setConfirmClearToken] = useState(false);
   const [draftRestored, setDraftRestored] = useState(false);
+  // 「测试连接」保存了配置但不静默续跑解析；测试通过后提供显式续跑入口。
+  const [deferredResume, setDeferredResume] = useState(false);
+  const [pendingParseCount, setPendingParseCount] = useState<number | null>(null);
 
   function resetFromSaved(): void {
     writeSettingsDraft(MINERU_DRAFT_KEY, null);
@@ -1771,26 +1805,44 @@ function MineruSettings({ focused }: { focused: boolean }) {
     );
   });
 
-  async function save(input: MineruSaveInput): Promise<void> {
-    await saveMineru(input);
+  async function save(input: MineruSaveInput, options?: { deferJobs?: boolean }): Promise<void> {
+    await saveMineru(input, options);
   }
 
   async function testProvider(provider: MineruProviderKind) {
     setMessage(null);
     setTesting(provider);
     try {
-      // 表单有未保存修改时先落盘，测试的才是用户眼前这份配置。
-      if (isDirty()) await save(currentInput());
+      // 表单有未保存修改时先落盘，测试的才是用户眼前这份配置；
+      // 测试连接不等于启用：未完成的解析不自动续跑，测试通过后由用户显式续跑。
+      const wasDirty = isDirty();
+      if (wasDirty) await save(currentInput(), { deferJobs: true });
       const started = Date.now();
       const text = await testMineru(provider);
       setTestResults((prev) => ({
         ...prev,
         [provider]: { tone: "ok", text: `${text} · ${Date.now() - started}ms` },
       }));
+      if (wasDirty) {
+        setDeferredResume(true);
+        void repo
+          .listPendingMineru()
+          .then((ids) => setPendingParseCount(ids.length))
+          .catch(() => setPendingParseCount(null));
+      }
     } catch (err) {
       setTestResults((prev) => ({ ...prev, [provider]: { tone: "error", text: errText(err) } }));
     } finally {
       setTesting(null);
+    }
+  }
+
+  async function enableParses() {
+    try {
+      await useField.getState().resumeMineruParses();
+      setDeferredResume(false);
+    } catch (err) {
+      setMessage({ tone: "error", text: `续跑解析失败：${errText(err)}。` });
     }
   }
 
@@ -2149,6 +2201,15 @@ function MineruSettings({ focused }: { focused: boolean }) {
           </Field>
           </AdvancedFields>
         </div>
+      ) : null}
+
+      {deferredResume ? (
+        <p className="ef-probe-line">
+          测试通过，配置已保存。未自动续跑解析{pendingParseCount === null ? "" : `（待解析 ${pendingParseCount} 篇）`}。
+          <Button type="button" size="sm" onClick={() => void enableParses()}>
+            继续未完成的解析
+          </Button>
+        </p>
       ) : null}
 
       <footer className="ef-block-foot">
