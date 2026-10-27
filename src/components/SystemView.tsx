@@ -24,7 +24,7 @@ import { biblioEmailConfigured, type BiblioSaveInput } from "../lib/biblio";
 import { BACKUP_STALE_DAYS, daysSinceBackup, readLastBackup, type BackupRecord } from "../lib/backup";
 import type { ExportContentOptions } from "../lib/export";
 import { repo } from "../lib/repo";
-import { checkForAppUpdate } from "../lib/updater";
+import { checkAppUpdateInfo, installAppUpdate, type AppUpdateInfo } from "../lib/updater";
 import { openExternal } from "../lib/urls";
 import { formatDate, pad2, shortcut, uid } from "../lib/util";
 import { useField } from "../store";
@@ -2177,8 +2177,39 @@ function MineruSettings({ focused }: { focused: boolean }) {
 }
 
 function UpdateBlock({ focused }: { focused: boolean }) {
-  const [message, setMessage] = useState<string | null>(null);
+  const jobs = useField((s) => s.jobs);
+  const drafts = useField((s) => s.drafts);
+  const [info, setInfo] = useState<AppUpdateInfo | null>(null);
   const [busy, setBusy] = useState(false);
+  const [installing, setInstalling] = useState(false);
+  const [installMessage, setInstallMessage] = useState<string | null>(null);
+
+  const runningJobs = jobs.filter((job) => job.status === "queued" || job.status === "running").length;
+  const draftCount = Object.keys(drafts).length;
+  const busyWork = runningJobs > 0 || draftCount > 0;
+
+  async function check() {
+    setBusy(true);
+    setInstallMessage(null);
+    try {
+      setInfo(await checkAppUpdateInfo());
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function install() {
+    if (!info) return;
+    setInstalling(true);
+    setInstallMessage(null);
+    try {
+      setInstallMessage(await installAppUpdate(info));
+    } catch (err) {
+      setInstallMessage(`安装更新失败：${errText(err)}。笔记数据不受影响。`);
+    } finally {
+      setInstalling(false);
+    }
+  }
 
   return (
     <article
@@ -2190,22 +2221,42 @@ function UpdateBlock({ focused }: { focused: boolean }) {
         <h3>软件更新</h3>
         <p>从 GitHub Releases 检查新版本。未配置签名公钥时不会联网。</p>
       </header>
-      <div className="ef-block-foot">
-        <Button
-          type="button"
-          disabled={busy}
-          onClick={() => {
-            setBusy(true);
-            setMessage(null);
-            void checkForAppUpdate()
-              .then((text) => setMessage(text))
-              .finally(() => setBusy(false));
-          }}
-        >
-          {busy ? "正在检查…" : "检查更新"}
-        </Button>
-        {message ? <span className="ef-foot-msg">{message}</span> : null}
-      </div>
+      {info?.status === "available" ? (
+        <div className="ef-update-available">
+          <p className="ef-update-version">
+            发现新版本 <b>{info.version}</b>
+            {info.date ? `（发布于 ${formatDate(info.date)}）` : ""}。可以先看说明再决定何时更新。
+          </p>
+          {busyWork ? (
+            <p className="ef-update-warn">
+              {runningJobs ? `有 ${runningJobs} 个作业正在运行，重启后会被中断（记为「应用上次退出」）。` : ""}
+              {draftCount ? ` 有 ${draftCount} 篇论文的笔记草稿尚未保存（草稿在本机保留，重启不丢）。` : ""}
+            </p>
+          ) : null}
+          {info.notes ? (
+            <div className="ef-update-notes">
+              <b>版本说明</b>
+              <pre>{info.notes}</pre>
+            </div>
+          ) : null}
+          <div className="ef-ai-buttons">
+            <Button type="button" variant="primary" disabled={installing} onClick={() => void install()}>
+              {installing ? "正在下载安装…" : "立即下载并重启"}
+            </Button>
+            <Button type="button" disabled={installing} onClick={() => setInfo(null)}>
+              稍后再说
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="ef-block-foot">
+          <Button type="button" disabled={busy} onClick={() => void check()}>
+            {busy ? "正在检查…" : "检查更新"}
+          </Button>
+          {info ? <span className="ef-foot-msg">{info.message}</span> : null}
+        </div>
+      )}
+      {installMessage ? <p className="ef-update-install-msg">{installMessage}</p> : null}
     </article>
   );
 }

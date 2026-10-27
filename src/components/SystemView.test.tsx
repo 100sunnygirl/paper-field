@@ -12,6 +12,7 @@ vi.mock("../lib/repo", async (importOriginal) => {
   return { repo: { ...actual.repo, pdfCount: vi.fn(async () => { throw new Error("no engine in jsdom"); }) } };
 });
 import { SystemView } from "./SystemView";
+import * as updater from "../lib/updater";
 import { useField } from "../store";
 import { DEFAULT_MINERU, type MineruSaveInput, type MineruSettingsV2 } from "../lib/mineru";
 import { clear as clearLog, log } from "../lib/logger";
@@ -1055,6 +1056,89 @@ describe("SystemView · 未保存修改拦截与草稿保留", () => {
     render(<SystemView />);
     const block = screen.getByRole("heading", { level: 3, name: "MinerU 解析源" }).closest("article") as HTMLElement;
     expect(within(block).queryByText("未保存")).not.toBeInTheDocument();
+  });
+});
+
+describe("SystemView · 软件更新（版本预览 / 下载 / 稍后）", () => {
+  beforeEach(() => {
+    useField.setState(useField.getInitialState(), true);
+    localStorage.clear();
+  });
+
+  it("已是最新版本时只显示提示，不出现下载按钮", async () => {
+    render(<SystemView />);
+    fireEvent.click(screen.getByRole("button", { name: "检查更新" }));
+    expect(await screen.findByText(/检查更新只在桌面应用里可用/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "立即下载并重启" })).not.toBeInTheDocument();
+  });
+
+  it("发现新版本：预览版本与说明、提示运行中作业与草稿，稍后可关闭", async () => {
+    const downloadAndInstall = vi.fn(async () => undefined);
+    vi.spyOn(updater, "checkAppUpdateInfo").mockResolvedValue({
+      status: "available",
+      message: "发现新版本 0.3.0。",
+      version: "0.3.0",
+      date: "2026-10-20T00:00:00Z",
+      notes: "## 更新内容\n- 修复了若干问题",
+      update: { downloadAndInstall },
+    });
+    useField.setState({
+      jobs: [
+        { id: "j-1", paperId: "p-1", type: "mineruParse", status: "running", prompt: null, resultJson: null, error: null, createdAt: "", startedAt: "", finishedAt: null },
+      ],
+      drafts: { "p-1": { summary: "草稿" } },
+    });
+    render(<SystemView />);
+    fireEvent.click(screen.getByRole("button", { name: "检查更新" }));
+    expect(await screen.findByText(/发现新版本/)).toBeInTheDocument();
+    expect(screen.getByText("0.3.0")).toBeInTheDocument();
+    expect(screen.getByText(/有 1 个作业正在运行/)).toBeInTheDocument();
+    expect(screen.getByText(/1 篇论文的笔记草稿尚未保存/)).toBeInTheDocument();
+    const notes = screen.getByText("版本说明").parentElement as HTMLElement;
+    expect(notes.textContent).toContain("修复了若干问题");
+    expect(downloadAndInstall).not.toHaveBeenCalled();
+    // 稍后再说：收起预览，回到检查按钮，不下载
+    fireEvent.click(screen.getByRole("button", { name: "稍后再说" }));
+    expect(screen.getByRole("button", { name: "检查更新" })).toBeInTheDocument();
+    expect(downloadAndInstall).not.toHaveBeenCalled();
+  });
+
+  it("「立即下载并重启」才真正下载安装", async () => {
+    const downloadAndInstall = vi.fn(async () => undefined);
+    vi.spyOn(updater, "checkAppUpdateInfo").mockResolvedValue({
+      status: "available",
+      message: "发现新版本 0.3.0。",
+      version: "0.3.0",
+      notes: "说明",
+      update: { downloadAndInstall },
+    });
+    render(<SystemView />);
+    fireEvent.click(screen.getByRole("button", { name: "检查更新" }));
+    await screen.findByText(/发现新版本/);
+    fireEvent.click(screen.getByRole("button", { name: "立即下载并重启" }));
+    await waitFor(() => expect(downloadAndInstall).toHaveBeenCalledTimes(1));
+  });
+
+  it("安装失败给出中文提示且不丢数据说明", async () => {
+    vi.spyOn(updater, "checkAppUpdateInfo").mockResolvedValue({
+      status: "available",
+      message: "发现新版本 0.3.0。",
+      version: "0.3.0",
+      update: {
+        downloadAndInstall: async () => {
+          throw new Error("signature invalid");
+        },
+      },
+    });
+    render(<SystemView />);
+    fireEvent.click(screen.getByRole("button", { name: "检查更新" }));
+    await screen.findByText(/发现新版本/);
+    fireEvent.click(screen.getByRole("button", { name: "立即下载并重启" }));
+    expect(await screen.findByText(/安装更新失败：signature invalid。笔记数据不受影响/)).toBeInTheDocument();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 });
 

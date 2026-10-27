@@ -2173,6 +2173,40 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   background: var(--pf-panel);
   border: 1px dashed var(--pf-divider);
 }
+/* 软件更新：版本预览 + 说明 + 下载/稍后。 */
+.ef-update-version { margin: 0 0 10px; font-size: var(--pf-fs-ui); color: var(--pf-secondary); }
+.ef-update-version b { color: var(--pf-ink); font-weight: 600; }
+.ef-update-warn {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-danger);
+  background: var(--pf-danger-bg);
+  border: 1px solid var(--pf-tint-danger);
+}
+.ef-update-notes {
+  margin: 0 0 14px;
+  border: 1px solid var(--pf-divider);
+  background: var(--pf-panel);
+  padding: 10px 12px;
+}
+.ef-update-notes b {
+  display: block;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
+  margin-bottom: 6px;
+}
+.ef-update-notes pre {
+  margin: 0;
+  max-height: 200px;
+  overflow: auto;
+  font-family: var(--pf-font-ui);
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-body);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.ef-update-install-msg { margin: 12px 0 0; font-size: var(--pf-fs-ui); color: var(--pf-secondary); }
 .ef-llm-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
