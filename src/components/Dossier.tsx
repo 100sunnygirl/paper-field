@@ -1216,6 +1216,32 @@ export function ReadingStage({
   // 五块笔记写满的一次性轻庆祝（同篇只在 4→5 的转变时触发，重开已写满的论文不庆祝）。
   const [noteCelebration, setNoteCelebration] = useState(false);
   const lastNotesSeen = useRef<{ paperId: string | null; written: number }>({ paperId: null, written: -1 });
+  // ↑↓ / 点击切换论文时的读屏播报：第几篇、共几篇、标题。
+  const [paperAnnounce, setPaperAnnounce] = useState("");
+  const lastAnnouncedPaper = useRef<string | null>(null);
+
+  useEffect(() => {
+    const id = paper?.id ?? null;
+    const prev = lastAnnouncedPaper.current;
+    lastAnnouncedPaper.current = id;
+    if (!id || !paper || !prev || prev === id) return;
+    const state = useField.getState();
+    const list = state.mode === "archive" ? state.archive : state.mode === "intake" ? state.intake : state.papers;
+    const index = list.findIndex((item) => item.id === id);
+    const title = paper.titleZh || paper.title;
+    setPaperAnnounce(
+      index >= 0 ? `已切换到第 ${index + 1} 篇（共 ${list.length} 篇）：《${title}》` : `已切换论文：《${title}》`,
+    );
+  }, [paper?.id]);
+
+  /** 跳转链接的落点：移动焦点并滚动到目标（键盘与读屏共用同一路径）。 */
+  function skipTo(target: "paper-title" | "notes-heading") {
+    const el = document.getElementById(target);
+    if (!el) return;
+    el.focus();
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    el.scrollIntoView({ block: "start", behavior: reduce ? "auto" : "smooth" });
+  }
 
   useEffect(() => {
     spotRef.current.section = activeSection;
@@ -1518,6 +1544,31 @@ export function ReadingStage({
       aria-labelledby="paper-title"
       style={appearanceStyle}
     >
+      {/* 无障碍：切换论文的读屏播报（第几篇 / 共几篇 / 标题）。 */}
+      <p className="sr-only" role="status">
+        {paperAnnounce}
+      </p>
+      {/* 无障碍：跳转链接——键盘用户跳过工具条直达正文 / 笔记。 */}
+      <nav className="ef-skip" aria-label="跳转链接">
+        <a
+          href="#paper-title"
+          onClick={(e) => {
+            e.preventDefault();
+            skipTo("paper-title");
+          }}
+        >
+          跳到正文
+        </a>
+        <a
+          href="#notes-heading"
+          onClick={(e) => {
+            e.preventDefault();
+            skipTo("notes-heading");
+          }}
+        >
+          跳到笔记
+        </a>
+      </nav>
       <div className="ef-toolbar">
         <Button
           type="button"
@@ -1673,7 +1724,7 @@ export function ReadingStage({
         </div>
       </div>
 
-      <div className="ef-read-scroll" ref={scrollRef} id="read-scroll">
+      <div className="ef-read-scroll" ref={scrollRef} id="read-scroll" tabIndex={0} aria-label="正文阅读区">
         {/* 全文并读面板：置顶半高分区（自带小节目录），与摘要/笔记同一舞台、互不遮挡。 */}
         {fulltextSplit && paper.parsedMarkdown.trim() ? (
           <section className="ef-fulltext-panel" aria-label="解析全文并读面板">
@@ -1772,7 +1823,7 @@ export function ReadingStage({
               )}
             </section>
             <div className="ef-notes-heading">
-              <h2 className="ef-section-label">
+              <h2 className="ef-section-label" id="notes-heading" tabIndex={-1}>
                 <span>阅读笔记</span>
                 <small>
                   已写 {notesWritten} / {NOTE_DISPLAY_ORDER.length}

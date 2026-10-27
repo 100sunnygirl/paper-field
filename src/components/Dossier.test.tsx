@@ -617,3 +617,42 @@ describe("ReadingStage · 空笔记块的研究问题提示", () => {
     expect(screen.queryByText(NOTE_HINT_QUESTIONS.highlights)).toBeNull();
   });
 });
+
+describe("ReadingStage · 工作台无障碍", () => {
+  it("跳转链接把焦点送到正文标题与笔记标题", () => {
+    useField.setState({ mode: "field", paper: paper({}), selectedPaperId: "p1" });
+    renderStage();
+    const nav = screen.getByRole("navigation", { name: "跳转链接" });
+    fireEvent.click(within(nav).getByRole("link", { name: "跳到正文" }));
+    expect(document.activeElement?.id).toBe("paper-title");
+    fireEvent.click(within(nav).getByRole("link", { name: "跳到笔记" }));
+    expect(document.activeElement?.id).toBe("notes-heading");
+  });
+
+  it("正文滚动区可键盘到达并带 aria-label", () => {
+    useField.setState({ mode: "field", paper: paper({}), selectedPaperId: "p1" });
+    renderStage();
+    const scroll = document.getElementById("read-scroll")!;
+    expect(scroll.getAttribute("aria-label")).toBe("正文阅读区");
+    expect(scroll.tabIndex).toBe(0);
+  });
+
+  it("切换论文时用 aria-live 播报第几篇与标题", () => {
+    function listItem(id: string) {
+      return { id, title: `论文 ${id}`, domainId: "d1" } as never;
+    }
+    useField.setState({ mode: "field", paper: paper({}), selectedPaperId: "p1", papers: [listItem("p1"), listItem("p2")] });
+    renderStage();
+    // 初始挂载不播报
+    expect(document.querySelector(".ef-read .sr-only[role='status']")?.textContent).toBe("");
+    const second = paper({});
+    (second as { id: string }).id = "p2";
+    (second as { titleZh: string }).titleZh = "第二篇论文";
+    act(() => {
+      useField.setState({ paper: second, selectedPaperId: "p2" });
+    });
+    expect(document.querySelector(".ef-read .sr-only[role='status']")?.textContent).toBe(
+      "已切换到第 2 篇（共 2 篇）：《第二篇论文》",
+    );
+  });
+});

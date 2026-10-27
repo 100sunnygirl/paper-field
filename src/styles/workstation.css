@@ -5402,6 +5402,42 @@ mark.ef-ft-hit.is-current { background: var(--pf-signal); }
   padding-left: 10px;
 }
 
+/* ---- 无障碍：跳转链接 ----
+   平时视觉隐藏（读屏照常可及），键盘聚焦时在工具条下方展开成墨底胶囊。 */
+.ef-skip {
+  position: absolute;
+  left: 16px;
+  top: calc(60px + 8px);
+  z-index: 20;
+  display: flex;
+  gap: 6px;
+}
+.ef-skip a {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  color: var(--pf-on-dark);
+  font-size: var(--pf-fs-caption);
+  font-weight: 600;
+  text-decoration: none;
+}
+.ef-skip a:focus-visible {
+  width: auto;
+  height: auto;
+  clip-path: none;
+  padding: 6px 12px;
+  background: var(--pf-ink);
+  border: 1px solid var(--pf-signal);
+}
+.ef-skip a:focus-visible:nth-of-type(2) {
+  margin-left: 88px;
+}
+
 /* ---- 专注模式极简翻页条 ----
    列表与资料栏收起后，底部中央浮一条「上一篇 / 位置 / 标已读 / 下一篇」；
    不挡正文两侧，仅在专注模式渲染。 */
