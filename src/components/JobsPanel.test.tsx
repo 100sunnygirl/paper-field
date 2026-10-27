@@ -25,6 +25,7 @@ import App from "../App";
 import {
   beginBatchItem,
   endBatchItem,
+  finishBatch,
   getActivity,
   queueBatch,
   resetActivity,
@@ -68,6 +69,8 @@ const actions = {
   clearQueueRest: vi.fn(async () => undefined),
   openPaperFulltext: vi.fn(async () => undefined),
   openDialog: vi.fn(),
+  pauseBatchAfterCurrent: vi.fn(),
+  resumeHaltedBatch: vi.fn(async () => undefined),
 };
 
 beforeEach(() => {
@@ -157,6 +160,46 @@ describe("JobsPanel", () => {
 
     fireEvent.click(within(card).getByRole("button", { name: "停止本批…" }));
     expect(actions.stopMineruBatch).not.toHaveBeenCalled();
+    fireEvent.click(within(card).getByRole("button", { name: "确认停止" }));
+    expect(actions.stopMineruBatch).toHaveBeenCalledWith(batchId);
+  });
+
+  it("运行中批次：当前篇完成后暂停（不打断当前一篇）", () => {
+    const batchId = queueBatch("mineru", ["p1", "p2", "p3"]);
+    startBatch(batchId);
+    beginBatchItem(batchId, "p1");
+    render(<JobsPanel />);
+    const card = screen.getByRole("article", { name: "MinerU 解析批次" });
+
+    fireEvent.click(within(card).getByRole("button", { name: "当前篇完成后暂停" }));
+    expect(actions.pauseBatchAfterCurrent).toHaveBeenCalledWith(batchId);
+  });
+
+  it("暂停批次：提示剩余篇数并给「继续本批」", () => {
+    const batchId = queueBatch("mineru", ["p1", "p2", "p3"]);
+    startBatch(batchId);
+    beginBatchItem(batchId, "p1");
+    endBatchItem(batchId, "p1", "ok");
+    finishBatch(batchId, "halted");
+    render(<JobsPanel />);
+    const card = screen.getByRole("article", { name: "MinerU 解析批次" });
+
+    expect(within(card).getByText(/已暂停，剩余 2 篇未处理/)).toBeInTheDocument();
+    fireEvent.click(within(card).getByRole("button", { name: "继续本批" }));
+    expect(actions.resumeHaltedBatch).toHaveBeenCalledWith(batchId);
+  });
+
+  it("AI 补全批次也有停止本批：确认文案带当前论文与剩余篇数", () => {
+    const batchId = queueBatch("meta", ["q1", "q2", "q3"]);
+    startBatch(batchId);
+    beginBatchItem(batchId, "q1");
+    render(<JobsPanel />);
+    const card = screen.getByRole("article", { name: "AI 补全批次" });
+
+    fireEvent.click(within(card).getByRole("button", { name: "停止本批…" }));
+    expect(actions.stopMineruBatch).not.toHaveBeenCalled();
+    // 确认文案：正在补全的一篇会取消，其余 2 篇不再提交。
+    expect(within(card).getByText(/会取消，其余 2 篇排队论文不再提交/)).toBeInTheDocument();
     fireEvent.click(within(card).getByRole("button", { name: "确认停止" }));
     expect(actions.stopMineruBatch).toHaveBeenCalledWith(batchId);
   });

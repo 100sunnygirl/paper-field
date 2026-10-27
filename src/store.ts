@@ -28,6 +28,7 @@ import {
   enqueueMineru,
   enqueueMineruBatch,
   forgetPapers,
+  markPauseAfterCurrent,
   resumeMineru,
   stopBatch,
 } from "./lib/mineruRun";
@@ -217,6 +218,13 @@ interface FieldState {
   openPaperFulltext: (paperId: string) => Promise<void>;
   /** 作业面板「停止批次」：取消正在解析的一篇，并把本批其余排队论文移出队列。 */
   stopMineruBatch: (batchId: number) => Promise<void>;
+  /** 作业面板「当前篇完成后暂停」：当前篇正常收尾，剩余论文写为暂停（可「继续本批」恢复）。 */
+  pauseBatchAfterCurrent: (batchId: number) => void;
+  /**
+   * 作业面板「继续本批」：只恢复该批未完成的论文（跳过已完成 / 移出的）。
+   * 解析批次恢复前先测试解析源，全部不可用就不空跑一轮失败；AI 批次重新排队补全。
+   */
+  resumeHaltedBatch: (batchId: number) => Promise<void>;
   /** 作业面板排队调整：置顶 / 上移 / 下移该篇在本批的处理顺序（对等待中的批次同样生效）。 */
   reorderQueue: (batchId: number, paperId: string, to: "top" | "up" | "down") => void;
   /** 作业面板「清空其余」：保留下一篇，其余排队论文移出本批。 */
@@ -452,6 +460,72 @@ export const useField = create<FieldState>((set, get) => ({
       log.info("llm", `作业面板清空其余：${removed} 篇移出补全队列`);
       get().setFlash({ tone: "ok", text: `已移出 ${removed} 篇，保留下一篇继续补全。` });
     }
+  },
+
+  pauseBatchAfterCurrent: (batchId) => {
+    markPauseAfterCurrent(batchId);
+    log.info("mineru", "作业面板：当前篇完成后暂停批次");
+    get().setFlash({ tone: "ok", text: "将在当前一篇完成后暂停本批，剩余论文可稍后「继续本批」。" });
+  },
+
+  resumeHaltedBatch: async (batchId) => {
+    const batch = getActivity().batches.find((item) => item.id === batchId);
+    if (!batch || batch.state !== "halted") return;
+    // 只恢复这批没跑完的：跳过已完成 / 已跳过 / 被用户移出的，失败与暂停的都续上。
+    const unfinished = batch.paperIds.filter((id) => !batch.results[id] || batch.results[id] === "fail");
+    if (!unfinished.length) {
+      get().setFlash({ tone: "warn", text: "这一批没有待恢复的论文。" });
+      return;
+    }
+    if (batch.kind === "mineru") {
+      // 恢复前先测试解析源（「测试源后续跑」）：全部不可用就不空跑一轮失败。
+      if (!get().mineru.configured) {
+        get().setFlash({
+          tone: "warn",
+          text: "尚未启用任何 MinerU 解析源，无法恢复。可到设置页配置本地 / SSH / 官方 API。",
+          action: { label: "去设置", run: () => get().openSystemCard("mineru") },
+        });
+        return;
+      }
+      const effective =
+        get().effectiveProvider ?? pickProviderFromHealths(get().mineru.order, await get().probeMineru());
+      if (!effective) {
+        const detail = summarizeHealths(get().mineru.order, get().mineruHealth);
+        get().setFlash({
+          tone: "warn",
+          text: detail
+            ? `解析源测试未通过（${detail}），暂不恢复。可到设置页查看失败原因。`
+            : "解析源测试未通过（本地 / SSH / 官方 API 均不可用），暂不恢复。可到设置页查看失败原因。",
+          action: { label: "去设置", run: () => get().openSystemCard("mineru") },
+        });
+        return;
+      }
+      try {
+        await cancelParses(unfinished);
+        await repo.resetMineru(unfinished);
+        await get().refresh();
+        get().setFlash({
+          tone: "ok",
+          text: `解析源测试通过（${providerLabel(effective)}），已恢复本批剩余 ${unfinished.length} 篇。`,
+        });
+        enqueueMineruBatch(mineruHost(), unfinished, true);
+      } catch (err) {
+        get().setFlash({ tone: "error", text: `恢复批次失败：${errText(err)}，数据未改动。` });
+        throw err;
+      }
+      return;
+    }
+    // AI 补全批次：未完成的论文仍是「待补全」，重新排队（与回填同一队列）。
+    if (!hasUsableProvider(get().settings)) {
+      get().setFlash({
+        tone: "warn",
+        text: "尚未配置可用的 AI 服务，无法恢复补全。可到设置页添加提供商。",
+        action: { label: "去设置", run: () => get().openSystemCard("llm") },
+      });
+      return;
+    }
+    enqueueBackfill(mineruHost());
+    get().setFlash({ tone: "ok", text: `已恢复补全，剩余论文重新排队（进度见作业面板）。` });
   },
   openDialog: (dialog, target) => {
     const state = get();

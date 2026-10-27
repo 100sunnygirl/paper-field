@@ -403,12 +403,22 @@ async function processOne(
 const CONSECUTIVE_FAIL_LIMIT = 3;
 
 export const PAUSED_ERROR = "连续失败已暂停，可在 INTAKE 页重试";
+/** 用户「当前篇完成后暂停」写进论文的暂停原因（「继续本批」恢复）。 */
+export const USER_PAUSED_ERROR = "已按要求暂停，可在作业面板继续本批";
+
+/** 「当前篇完成后暂停」标记：当前篇正常收尾后，剩余论文按暂停口径写库（可「继续本批」）。 */
+const pauseAfterCurrent = new Set<number>();
+
+/** 给批次打「当前篇完成后暂停」标记；批次结束（含停止）时自动清除。 */
+export function markPauseAfterCurrent(batchId: number): void {
+  pauseAfterCurrent.add(batchId);
+}
 
 /**
  * 熔断后剩余的论文写成 error（带暂停原因），让「重试解析失败」能看到它们；
  * 已移出的不计数，也不改已经结束的论文。返回真正被暂停的篇数。
  */
-async function pauseRemaining(batchId: number, paperIds: string[]): Promise<number> {
+async function pauseRemaining(batchId: number, paperIds: string[], error = PAUSED_ERROR): Promise<number> {
   let paused = 0;
   for (const paperId of paperIds) {
     if (dequeued.has(queueKey(batchId, paperId))) continue;
@@ -416,7 +426,7 @@ async function pauseRemaining(batchId: number, paperIds: string[]): Promise<numb
     if (!paper?.pdfPath) continue;
     const status = paper.mineruStatus;
     if (status !== null && status !== "pending" && status !== "queued" && status !== "submitted" && status !== "parsing") continue;
-    await repo.setMineruState(paperId, { status: "error", error: PAUSED_ERROR, jobId: null });
+    await repo.setMineruState(paperId, { status: "error", error, jobId: null });
     paused += 1;
   }
   return paused;
@@ -444,6 +454,8 @@ export async function runMineruBatch(
     let fail = 0;
     let consecutiveFails = 0;
     let pausedCount = 0;
+    // 「当前篇完成后暂停」：当前篇收尾后剩余按暂停口径写库，与熔断共用 halted 终态。
+    let pausedByUser = false;
     // 每轮按批次「当前」的顺序取下一篇还没处理的论文：作业面板里的置顶 / 上移 / 下移
     // 只改 activity 批次的 paperIds 顺序，这里跟着走，排队调整立即生效。
     const handled = new Set<string>();
@@ -455,6 +467,11 @@ export async function runMineruBatch(
     for (;;) {
       const next = remaining();
       if (!next.length) break;
+      if (pauseAfterCurrent.has(id)) {
+        pausedCount = await pauseRemaining(id, next, USER_PAUSED_ERROR);
+        pausedByUser = true;
+        break;
+      }
       if (consecutiveFails >= CONSECUTIVE_FAIL_LIMIT) {
         pausedCount = await pauseRemaining(id, next);
         break;
@@ -480,6 +497,11 @@ export async function runMineruBatch(
       // cancelled / skip 不计入连续失败，也不打断计数。
     }
     if (pausedCount) {
+      if (pausedByUser) {
+        log.info("mineru", `按要求暂停批次：剩余 ${pausedCount} 篇`);
+        host.flash("ok", `已按要求暂停，剩余 ${pausedCount} 篇未处理。稍后可在作业面板「继续本批」。`);
+        return;
+      }
       log.warn("mineru", `连续失败 ${consecutiveFails} 篇，熔断暂停剩余 ${pausedCount} 篇`);
       host.flash(
         "error",
@@ -502,6 +524,7 @@ export async function runMineruBatch(
     }
   } finally {
     for (const paperId of paperIds) dequeued.delete(queueKey(id, paperId));
+    pauseAfterCurrent.delete(id);
     finishBatch(id, state);
   }
 }
@@ -545,6 +568,8 @@ export async function backfillMeta(host: Host): Promise<void> {
   let state: "done" | "halted" = "halted";
   let filled = 0;
   let consecutiveFails = 0;
+  // 「当前篇完成后暂停」：剩余论文保持待补全（不写任何状态），下一轮「继续本批」再续。
+  let pausedByUser = false;
   // 与解析批次同构：每轮按批次当前顺序取下一篇（面板里的置顶 / 上移 / 下移立即生效）。
   const handled = new Set<string>();
   const remaining = (): string[] => {
@@ -556,6 +581,10 @@ export async function backfillMeta(host: Host): Promise<void> {
     for (;;) {
       const next = remaining();
       if (!next.length) break;
+      if (pauseAfterCurrent.has(batchId)) {
+        pausedByUser = next.length > 0;
+        break;
+      }
       if (consecutiveFails >= META_FAIL_LIMIT) {
         host.flash(
           "error",
@@ -579,10 +608,16 @@ export async function backfillMeta(host: Host): Promise<void> {
         consecutiveFails += 1;
       }
     }
-    state = "done";
+    // 用户暂停（break 出循环）保持 halted；正常跑完才记 done。
+    if (!pausedByUser) state = "done";
   } finally {
     for (const id of ids) dequeued.delete(queueKey(batchId, id));
+    pauseAfterCurrent.delete(batchId);
     finishBatch(batchId, state);
+  }
+  if (pausedByUser) {
+    host.flash("ok", "已按要求暂停补全，剩余论文可稍后在作业面板「继续本批」。");
+    return;
   }
   if (filled) {
     // 单篇补全完成的通知给「查看字段」直达。

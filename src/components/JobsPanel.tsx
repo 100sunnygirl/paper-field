@@ -221,6 +221,8 @@ function JobsPanelBody() {
 
 function BatchCard({ batch }: { batch: BatchView }) {
   const stopMineruBatch = useField((s) => s.stopMineruBatch);
+  const pauseBatchAfterCurrent = useField((s) => s.pauseBatchAfterCurrent);
+  const resumeHaltedBatch = useField((s) => s.resumeHaltedBatch);
   const [confirmStop, setConfirmStop] = useState(false);
   const running = batch.state === "running";
   const summary = [
@@ -232,6 +234,7 @@ function BatchCard({ batch }: { batch: BatchView }) {
     .filter(Boolean)
     .join(" · ");
   const unfinished = batch.total - batch.processed;
+  const hasWork = Boolean(batch.pending || batch.currentPaperId);
   return (
     <article className={`ef-batchcard is-${batch.state}`} aria-label={`${batch.label}批次`}>
       <header className="ef-batchcard-head">
@@ -284,16 +287,32 @@ function BatchCard({ batch }: { batch: BatchView }) {
       </p>
 
       {batch.state === "halted" && unfinished > 0 ? (
-        <p className="ef-batchcard-alert">
-          已暂停，剩余 {unfinished} 篇未处理。解析源可能繁忙或不可用，可在设置页测试连接后到入库页重试。
-        </p>
+        <>
+          <p className="ef-batchcard-alert">
+            {batch.kind === "mineru"
+              ? `已暂停，剩余 ${unfinished} 篇未处理。继续前会先测试解析源，通过后只恢复这批未完成的论文。`
+              : `已暂停，剩余 ${unfinished} 篇未处理。可继续本批，未完成的论文会重新排队补全。`}
+          </p>
+          <div className="ef-batchcard-actions">
+            <Button type="button" size="sm" onClick={() => void resumeHaltedBatch(batch.id)}>
+              继续本批
+            </Button>
+          </div>
+        </>
       ) : null}
 
-      {running && batch.kind === "mineru" && (batch.pending || batch.currentPaperId) ? (
+      {running && hasWork ? (
         <div className="ef-batchcard-actions">
           {confirmStop ? (
             <>
-              <span>停止后，正在解析的一篇会取消，其余排队论文不再提交。</span>
+              <span>
+                {batch.currentPaperId
+                  ? `正在${batch.kind === "mineru" ? "解析" : "补全"}「${
+                      batch.segments.find((segment) => segment.paperId === batch.currentPaperId)?.title ?? "当前一篇"
+                    }」会取消`
+                  : "正在处理的一篇会取消"}
+                {batch.pending ? `，其余 ${batch.pending} 篇排队论文不再提交` : ""}。
+              </span>
               <Button
                 type="button"
                 size="sm"
@@ -306,13 +325,24 @@ function BatchCard({ batch }: { batch: BatchView }) {
                 确认停止
               </Button>
               <Button type="button" size="sm" variant="text" onClick={() => setConfirmStop(false)}>
-                继续解析
+                {batch.kind === "mineru" ? "继续解析" : "继续补全"}
               </Button>
             </>
           ) : (
-            <Button type="button" size="sm" variant="danger" onClick={() => setConfirmStop(true)}>
-              停止本批…
-            </Button>
+            <>
+              <Button
+                type="button"
+                size="sm"
+                variant="text"
+                title="当前一篇处理完后暂停，剩余论文保留，可稍后继续"
+                onClick={() => pauseBatchAfterCurrent(batch.id)}
+              >
+                当前篇完成后暂停
+              </Button>
+              <Button type="button" size="sm" variant="danger" onClick={() => setConfirmStop(true)}>
+                停止本批…
+              </Button>
+            </>
           )}
         </div>
       ) : null}

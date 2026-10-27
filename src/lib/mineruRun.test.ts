@@ -27,6 +27,7 @@ vi.mock("./mineru", async (importOriginal) => {
 
 import { mineruCurrentFingerprint, mineruMarkdown, mineruParseStatuses, mineruSubmit } from "./mineru";
 import {
+  backfillMeta,
   clearBatchRest,
   dequeueFromBatch,
   enqueueBackfill,
@@ -34,12 +35,14 @@ import {
   enqueueMineru,
   enqueueMineruBatch,
   forgetPapers,
+  markPauseAfterCurrent,
   PAUSED_ERROR,
   resumeMineru,
   runMineruBatch,
   setMineruTiming,
   STALE_CRED_ERROR,
   stopBatch,
+  USER_PAUSED_ERROR,
 } from "./mineruRun";
 import { cancelJob, liveJobsFor, resetLiveJobs } from "./jobs";
 import { getActivity, queueBatch, reorderBatch, resetActivity, subscribeActivity } from "./activity";
@@ -1007,6 +1010,55 @@ describe("排队调度：置顶 / 上移 / 下移 / 清空其余", () => {
 
     expect(host.flash).toHaveBeenCalledWith("ok", "MinerU 解析完成 2 篇。阅读状态未改动。");
     expect(vi.mocked(host.flash).mock.calls.at(-1)).toHaveLength(2);
+  });
+
+  it("「当前篇完成后暂停」：当前篇正常收尾，剩余写为暂停并给「继续本批」指引", async () => {
+    const ids = [await makePaper(), await makePaper(), await makePaper()];
+    const host = makeHost({ hasKey: false });
+    const aSubmit = hang<MineruSubmitResult>();
+    vi.mocked(mineruSubmit).mockImplementation(async (paperId) =>
+      paperId === ids[0] ? aSubmit.promise : submitResult({ status: "done", shortId: `doc-${paperId}` }),
+    );
+    markdownByDoc();
+
+    const batchId = queueBatch("mineru", ids);
+    const run = runMineruBatch(host, ids, true, batchId);
+    await vi.waitFor(() => expect(mineruSubmit).toHaveBeenCalledTimes(1));
+    markPauseAfterCurrent(batchId);
+    aSubmit.release(submitResult({ status: "done", shortId: `doc-${ids[0]}` }));
+    await run;
+
+    expect(getActivity().batches[0]).toMatchObject({ state: "halted" });
+    expect(getActivity().batches[0].results).toEqual({ [ids[0]]: "ok" });
+    expect(mineruSubmit).toHaveBeenCalledTimes(1);
+    for (const id of ids.slice(1)) {
+      expect(await paperOf(id)).toMatchObject({ mineruStatus: "error", mineruError: USER_PAUSED_ERROR });
+    }
+    expect(host.flash).toHaveBeenCalledWith("ok", "已按要求暂停，剩余 2 篇未处理。稍后可在作业面板「继续本批」。");
+  });
+
+  it("AI 补全批次「当前篇完成后暂停」：当前篇收尾后剩余不再处理", async () => {
+    const a = await makePaper(undefined, "# 有全文");
+    const b = await makePaper(undefined, "# 有全文");
+    const first = hang<void>();
+    const host = makeHost({
+      prepare: async (paperId) => {
+        if (paperId === a) await first.promise;
+        await markPrepared(paperId);
+      },
+    });
+
+    const run = backfillMeta(host);
+    await vi.waitFor(() => expect(getActivity().batches[0]?.currentPaperId).toBe(a));
+    markPauseAfterCurrent(getActivity().batches[0].id);
+    first.release();
+    await run;
+
+    expect(getActivity().batches[0]).toMatchObject({ state: "halted" });
+    expect(getActivity().batches[0].results).toEqual({ [a]: "ok" });
+    expect(host.prepare).toHaveBeenCalledTimes(1);
+    expect(await paperOf(b)).toMatchObject({ llmPreparedAt: null });
+    expect(host.flash).toHaveBeenCalledWith("ok", "已按要求暂停补全，剩余论文可稍后在作业面板「继续本批」。");
   });
 });
 
