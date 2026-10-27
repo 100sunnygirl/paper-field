@@ -41,6 +41,8 @@ jobs:
         with:
           workspaces: src-tauri -> target/desktop-e2e
           shared-key: native-smoke-only
+          # This isolated, unsigned test cache never feeds the release workflow.
+          cache-on-failure: true
       - run: npm ci
       - name: Verify production excludes instrumentation
         run: npm run test:desktop:guard
