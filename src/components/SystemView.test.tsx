@@ -1154,7 +1154,7 @@ describe("SystemView · 测试连接与启用自动处理分离", () => {
   });
 
   it("AI 测试连接：脏表单按 deferBackfill 落盘，成功后提供显式「启用自动补全」", async () => {
-    const saveLlmSettings = vi.fn(async () => undefined);
+    const saveLlmSettings = vi.fn(async (_input: LlmSaveInput, _options?: { deferBackfill?: boolean }) => undefined);
     const startMetaBackfill = vi.fn(async () => 3);
     useField.setState({ settings: llmSettings(), saveLlmSettings, startMetaBackfill });
     primeLlmBrowser();
@@ -1192,7 +1192,7 @@ describe("SystemView · 测试连接与启用自动处理分离", () => {
   });
 
   it("MinerU 测试连接：脏表单按 deferJobs 落盘，成功后提供显式「继续未完成的解析」", async () => {
-    const saveMineruSettings = vi.fn(async () => undefined);
+    const saveMineruSettings = vi.fn(async (_input: MineruSaveInput, _options?: { deferJobs?: boolean }) => undefined);
     const resumeMineruParses = vi.fn(async () => 2);
     useField.setState({ mineru: mineruState(), effectiveProvider: null, saveMineruSettings, resumeMineruParses });
     vi.spyOn(mineruModule, "testMineru").mockResolvedValue("连接正常");
