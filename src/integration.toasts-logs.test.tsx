@@ -856,20 +856,20 @@ describe("既有行为回归基线", () => {
     useField.getState().setNoteDraft("p-1", "summary", null);
   });
 
-  it("LogPanel 的「复制」提示也走通知链：留 ok 日志且面板无需重挂载即可见", async () => {
+  it("LogPanel 的「复制当前结果」提示也走通知链：留 ok 日志且面板无需重挂载即可见", async () => {
     const writeText = vi.fn(async (_text: string) => undefined);
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
     render(<LogPanel />);
 
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "复制" }));
+      fireEvent.click(screen.getByRole("button", { name: "复制当前结果" }));
     });
 
     expect(writeText).toHaveBeenCalledTimes(1);
-    expect(getToasts().map((t) => t.text)).toEqual(["运行日志已复制到剪贴板。"]);
-    expect(getEntries().at(-1)).toMatchObject({ level: "info", scope: "ui", message: "运行日志已复制到剪贴板。" });
+    expect(getToasts().map((t) => t.text)).toEqual(["已复制当前筛选结果（0 条）到剪贴板。"]);
+    expect(getEntries().at(-1)).toMatchObject({ level: "info", scope: "ui", message: "已复制当前筛选结果（0 条）到剪贴板。" });
     // 通知产生的新日志即时反映在已挂载面板（useSyncExternalStore 订阅链未断）。
-    expect(await screen.findByText(/运行日志已复制到剪贴板。/)).toBeInTheDocument();
+    expect(await screen.findByText(/已复制当前筛选结果（0 条）到剪贴板。/)).toBeInTheDocument();
   });
 
   it("错误通知自动消退（8s）也留「自动消退」关闭痕迹", async () => {
