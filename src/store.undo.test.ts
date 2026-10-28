@@ -110,3 +110,49 @@ describe("删除论文的限时撤销", () => {
     expect(useField.getState().selectedDomainId).toBe(domainB);
   });
 });
+
+describe("移动论文的撤销移回与去向选择", () => {
+  it("默认跟随到目标领域；提示带「撤销移回」，点击后论文回到原领域", async () => {
+    const id = await makePaper("要移动的论文", domainA);
+    useField.setState({ mode: "field", selectedDomainId: domainA, selectedPaperId: id });
+
+    await useField.getState().movePaper(domainB, id);
+    expect((await repo.getPaper(id))?.domainId).toBe(domainB);
+    expect(useField.getState().selectedDomainId).toBe(domainB);
+    expect(useField.getState().flash?.text).toBe("论文已移动到「领域乙」。");
+    expect(useField.getState().flash?.action?.label).toBe("撤销移回");
+
+    useField.getState().flash!.action!.run();
+    await vi.waitFor(async () => {
+      expect((await repo.getPaper(id))?.domainId).toBe(domainA);
+      expect(useField.getState().flash?.text).toContain("已移回「领域甲」");
+    });
+    expect(useField.getState().selectedDomainId).toBe(domainA);
+  });
+
+  it("选择「留在原领域」：论文移走后用户仍看原领域列表，撤销同样成立", async () => {
+    const id = await makePaper("留在原领域", domainA);
+    useField.setState({ mode: "field", selectedDomainId: domainA, selectedPaperId: id });
+
+    await useField.getState().movePaper(domainB, id, { follow: false });
+    expect((await repo.getPaper(id))?.domainId).toBe(domainB);
+    expect(useField.getState().selectedDomainId).toBe(domainA);
+    expect(useField.getState().flash?.text).toContain("你仍留在「领域甲」");
+
+    useField.getState().flash!.action!.run();
+    // 等「已移回」提示出现：movePaperBack 的刷新与选中都已落地（不留悬挂的异步链）。
+    await vi.waitFor(async () => {
+      expect((await repo.getPaper(id))?.domainId).toBe(domainA);
+      expect(useField.getState().flash?.text).toContain("已移回「领域甲」");
+    });
+    expect(useField.getState().selectedDomainId).toBe(domainA);
+    expect(useField.getState().selectedPaperId).toBe(id);
+  });
+
+  it("移回目标与原领域相同（重复移动）不给撤销按钮", async () => {
+    const id = await makePaper("原地不动", domainA);
+    useField.setState({ mode: "field", selectedDomainId: domainA, selectedPaperId: id });
+    await useField.getState().movePaper(domainA, id);
+    expect(useField.getState().flash?.action).toBeUndefined();
+  });
+});

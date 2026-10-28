@@ -449,6 +449,26 @@ function useCloseWhenMissing(open: boolean, missing: boolean) {
   }, [open, missing, closeDialog, setFlash]);
 }
 
+/** 移动后去向的本机偏好（跟随到目标领域 / 留在原领域）；存不进时按会话内选择走。 */
+const MOVE_FOLLOW_KEY = "paper-field.move-follow";
+
+function loadMoveFollow(): boolean {
+  try {
+    return (typeof localStorage !== "undefined" ? localStorage.getItem(MOVE_FOLLOW_KEY) : null) !== "stay";
+  } catch {
+    return true;
+  }
+}
+
+function saveMoveFollow(follow: boolean): void {
+  try {
+    if (typeof localStorage === "undefined") return;
+    localStorage.setItem(MOVE_FOLLOW_KEY, follow ? "follow" : "stay");
+  } catch {
+    // 偏好存不进不影响本次移动：对话框内仍按当前选择执行。
+  }
+}
+
 export function DomainPickerDialog() {
   const dialog = useField((s) => s.dialog);
   const closeDialog = useField((s) => s.closeDialog);
@@ -460,6 +480,17 @@ export function DomainPickerDialog() {
   const dialogPaperId = useField((s) => s.dialogPaperId);
   const moving = dialog === "move-paper";
   const open = dialog === "pick-domain" || moving;
+  // 去向选择：移动后「跟随到目标领域」（默认）或「留在当前领域」，本机记住偏好。
+  const [follow, setFollow] = useState(() => loadMoveFollow());
+
+  useEffect(() => {
+    if (open) setFollow(loadMoveFollow());
+  }, [open]);
+
+  function chooseFollow(next: boolean) {
+    setFollow(next);
+    saveMoveFollow(next);
+  }
 
   return (
     <Dialog
@@ -485,13 +516,40 @@ export function DomainPickerDialog() {
       }
     >
       <p>{moving ? "选择这篇论文要进入的领域。" : "选择要查看的研究领域。"}</p>
+      {moving ? (
+        <div className="ef-move-follow" role="group" aria-label="移动后的去向">
+          <span className="ef-move-follow-label">移动后</span>
+          <Button
+            type="button"
+            size="sm"
+            variant="text"
+            className={follow ? "is-active" : ""}
+            aria-pressed={follow}
+            title="移动完成后直接进入目标领域，打开这篇论文"
+            onClick={() => chooseFollow(true)}
+          >
+            跟随到目标领域
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="text"
+            className={!follow ? "is-active" : ""}
+            aria-pressed={!follow}
+            title="移动完成后留在当前领域继续阅读原列表"
+            onClick={() => chooseFollow(false)}
+          >
+            留在当前领域
+          </Button>
+        </div>
+      ) : null}
       {domains.map((domain) => (
         <button
           key={domain.id}
           type="button"
           className={`ef-domain-option ${domain.id === selectedDomainId ? "is-current" : ""}`}
           onClick={() => {
-            if (moving) void movePaper(domain.id, dialogPaperId ?? undefined);
+            if (moving) void movePaper(domain.id, dialogPaperId ?? undefined, { follow });
             else void selectDomain(domain.id);
           }}
         >

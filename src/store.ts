@@ -233,7 +233,9 @@ interface FieldState {
    * 精确写回撤销前库里的已读时间戳（含 null），不重新起算。
    */
   setReadingStatus: (status: "unread" | "reading" | "read", paperId?: string, restoreReadAt?: string | null) => Promise<void>;
-  movePaper: (domainId: string, paperId?: string) => Promise<void>;
+  movePaper: (domainId: string, paperId?: string, options?: { follow?: boolean }) => Promise<void>;
+  /** 「撤销移回」的落点：移回原领域并带着用户回去（不再二次提供撤销）。 */
+  movePaperBack: (originDomainId: string, paperId: string) => Promise<void>;
   deletePaper: (paperId?: string) => Promise<void>;
   /** 撤销最近一次删除（论文 / 批量 / 领域）：限时缓冲里的快照原样回插；窗口已过则提示。 */
   undoDelete: () => Promise<void>;
@@ -318,6 +320,9 @@ let refreshSeq = 0;
 let selectionEpoch = 0;
 
 const DRAFTS_KEY = "paper-field.note-drafts";
+
+/** 移动论文「撤销移回」通知的停留窗口（与删除撤销同一节奏）。 */
+const MOVE_UNDO_TOAST_MS = 10_000;
 
 /** 草稿同步存一份到 localStorage：窗口意外重载也能找回。读写失败（隐私模式等）静默忽略。 */
 function loadDrafts(): Record<string, Partial<Record<NoteKind, string>>> {
@@ -1177,21 +1182,56 @@ export const useField = create<FieldState>((set, get) => ({
     }
   },
 
-  movePaper: async (domainId, paperId) => {
+  movePaper: async (domainId, paperId, options) => {
     const id = paperId ?? get().dialogPaperId ?? get().selectedPaperId;
     if (!id) return;
+    // 去向选择：跟随到目标领域（默认，保持既有行为）或留在原领域继续看原列表。
+    const follow = options?.follow !== false;
     try {
+      // 撤销要回到的领域以库里的当前值为准（状态可能滞后）。
+      const originRow = await repo.getPaper(id).catch(() => null);
+      const originDomainId = originRow?.domainId ?? get().selectedDomainId;
       await repo.updatePaper(id, { domainId });
       selectionEpoch += 1;
-      set({ dialog: null, dialogPaperId: null, selectedPaperId: id, selectedDomainId: domainId, mode: "field" });
+      if (follow) {
+        set({ dialog: null, dialogPaperId: null, selectedPaperId: id, selectedDomainId: domainId, mode: "field" });
+      } else {
+        // 留在原领域：论文已不在本列表，选中回落到第一篇（refresh 兜底）。
+        set({ dialog: null, dialogPaperId: null, selectedPaperId: null, paper: null });
+      }
       await get().refresh();
       const domain = get().domains.find((d) => d.id === domainId);
-      get().setFlash({
+      const originName = get().domains.find((d) => d.id === originDomainId)?.name;
+      const flash: Flash = {
         tone: "ok",
-        text: domain ? `论文已移动到「${domain.name}」。` : "论文已移动到新领域。",
-      });
+        text: originName && !follow
+          ? `论文已移动到「${domain?.name ?? "新领域"}」，你仍留在「${originName}」。`
+          : domain
+            ? `论文已移动到「${domain.name}」。`
+            : "论文已移动到新领域。",
+      };
+      // 限时撤销移回（真的跨领域才给）：短窗口内一键带回原领域。
+      if (originDomainId && originDomainId !== domainId) {
+        flash.action = { label: "撤销移回", run: () => void get().movePaperBack(originDomainId, id) };
+        flash.durationMs = MOVE_UNDO_TOAST_MS;
+      }
+      get().setFlash(flash);
     } catch (err) {
       get().setFlash({ tone: "error", text: `移动论文失败：${errText(err)}，数据未改动。` });
+      throw err;
+    }
+  },
+
+  movePaperBack: async (originDomainId, paperId) => {
+    try {
+      await repo.updatePaper(paperId, { domainId: originDomainId });
+      selectionEpoch += 1;
+      set({ selectedPaperId: paperId, selectedDomainId: originDomainId, mode: "field" });
+      await get().refresh();
+      const domain = get().domains.find((d) => d.id === originDomainId);
+      get().setFlash({ tone: "ok", text: domain ? `已移回「${domain.name}」。` : "已移回原领域。" });
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `撤销移动失败：${errText(err)}，数据未改动。` });
       throw err;
     }
   },

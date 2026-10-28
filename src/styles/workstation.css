@@ -3787,6 +3787,26 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 }
 .ef-crew-paste-hint { color: var(--pf-muted); font-size: var(--pf-fs-caption); margin: 0; }
 .ef-crew-row-tools { display: inline-flex; gap: 2px; align-items: center; justify-self: end; }
+/* ---- 移动论文的去向选择（移动对话框顶部） ---- */
+.ef-move-follow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid var(--pf-divider);
+  border-radius: 8px;
+  margin-bottom: 10px;
+}
+.ef-move-follow-label {
+  color: var(--pf-muted);
+  font-size: var(--pf-fs-caption);
+}
+.ef-move-follow .ef-btn.is-active {
+  color: var(--pf-ink);
+  font-weight: 600;
+  text-decoration: underline;
+}
 .job-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 
 /* 通知弹窗：右上角悬浮堆叠（多条各自独立计时、悬停/聚焦暂停），叠加在对话框
