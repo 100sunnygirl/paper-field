@@ -209,6 +209,11 @@ interface FieldState {
     doi?: string;
     pdfPath?: string;
   }) => Promise<void>;
+  /**
+   * 空领域引导的快速建档：粘贴 arXiv 链接 / DOI 直接建档（标识符入列，标题留给文献库
+   * 补全），输入普通文字则按标题建档。之后与手动建档同链路：查文献库、可再关联 PDF。
+   */
+  createQuickEntry: (raw: string) => Promise<void>;
   retryMineru: (paperId: string) => Promise<void>;
   /** INTAKE 页批量重试：把全部解析失败（error）论文重新提交给 MinerU。 */
   retryFailedMineru: () => Promise<void>;
@@ -779,6 +784,12 @@ export const useField = create<FieldState>((set, get) => ({
     const domain = await repo.createDomain(input);
     set({ dialog: null, selectedDomainId: domain.id, mode: "field" });
     await get().refresh();
+    // 新建领域的下一步直接挂在 toast 上：顺手把第一篇论文加进来。
+    get().setFlash({
+      tone: "ok",
+      text: `已创建领域「${domain.name}」。`,
+      action: { label: "添加第一篇论文", run: () => useField.getState().openDialog("paper") },
+    });
   },
 
   updateDomain: async (input) => {
@@ -939,6 +950,44 @@ export const useField = create<FieldState>((set, get) => ({
       if (paper.pdfPath) enqueueMineruBatch(mineruHost(), [paper.id], false);
     } catch (err) {
       get().setFlash({ tone: "error", text: `创建论文失败：${errText(err)}，数据未改动。` });
+      throw err;
+    }
+  },
+
+  createQuickEntry: async (raw) => {
+    const domainId = get().selectedDomainId;
+    if (!domainId) throw new Error("请先选择一个领域，再建档。");
+    const text = raw.trim();
+    if (!text) throw new Error("先粘贴 arXiv 链接、DOI，或直接输入论文标题。");
+    try {
+      // 全角冒号、doi.org 链接等写法在入库前规整；认不出的当标题用。
+      const arxivId = normalizeArxivId(text);
+      const doi = arxivId ? null : normalizeDoi(text);
+      if (!arxivId && !doi && text.length > 200) {
+        throw new Error("这段内容既不是 arXiv 链接也不是 DOI；作为标题请控制在 200 字以内。");
+      }
+      // 标识符建档不写标题（「未命名论文」无来源标记），文献库查到后可替换成正式标题。
+      const paper = await repo.createPaper({
+        domainId,
+        ...(arxivId ? { arxivId } : {}),
+        ...(doi ? { doi } : {}),
+        ...(!arxivId && !doi ? { title: text, userOwned: true } : {}),
+      });
+      selectionEpoch += 1;
+      set({ selectedPaperId: paper.id, mode: "field" });
+      await get().refresh();
+      get().setFlash({
+        tone: "ok",
+        text: arxivId
+          ? `已按 arXiv:${arxivId} 建档，正在查询文献库补全标题与信息。`
+          : doi
+            ? `已按 DOI ${doi} 建档，正在查询文献库补全标题与信息。`
+            : `已创建「${text}」。`,
+      });
+      // 与手动建档同链路：标识符建档即查文献库（无 AI Key 也查），模型部分交给配置决定。
+      void get().runPrepareMeta(paper.id, false, true, { llm: true });
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `快速建档失败：${errText(err)}，数据未改动。` });
       throw err;
     }
   },

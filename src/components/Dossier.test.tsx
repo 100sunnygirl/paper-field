@@ -697,3 +697,39 @@ describe("ReadingStage · 拖入 PDF 关联（浏览器态降级）", () => {
     expect(setFlash).not.toHaveBeenCalled();
   });
 });
+
+describe("ReadingStage · 空领域第一步引导", () => {
+  it("空领域显示三步引导与「导入 PDF…」，点击打开添加论文对话框", () => {
+    const openDialog = vi.fn();
+    useField.setState({ mode: "field", paper: null, search: "", selectedDomainId: "d1", openDialog });
+    renderStage();
+    expect(screen.getByText("从第一篇论文开始")).toBeInTheDocument();
+    expect(screen.getByText("导入 PDF")).toBeInTheDocument();
+    expect(screen.getByText("写五块笔记")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "导入 PDF…" }));
+    expect(openDialog).toHaveBeenCalledWith("paper");
+  });
+
+  it("粘贴 arXiv 链接回车走快速建档；失败时行内提示", async () => {
+    const createQuickEntry = vi.fn(async (raw: string) => {
+      if (!raw.includes("arxiv")) throw new Error("不认识");
+    });
+    useField.setState({ mode: "field", paper: null, search: "", selectedDomainId: "d1", createQuickEntry });
+    renderStage();
+    const input = screen.getByLabelText("粘贴 arXiv 链接或 DOI 快速建档");
+    fireEvent.change(input, { target: { value: "https://arxiv.org/abs/2401.12345" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(createQuickEntry).toHaveBeenCalledWith("https://arxiv.org/abs/2401.12345"));
+    // 失败：行内错误可见，输入保留可修改
+    fireEvent.change(input, { target: { value: "not-a-link" } });
+    fireEvent.click(screen.getByRole("button", { name: "快速建档" }));
+    await waitFor(() => expect(screen.getByText("不认识")).toBeInTheDocument());
+  });
+
+  it("搜索过滤下的空列表不显示引导，仍是「没有符合条件的论文」", () => {
+    useField.setState({ mode: "field", paper: null, search: "不存在的词", selectedDomainId: "d1" });
+    renderStage();
+    expect(screen.queryByText("从第一篇论文开始")).toBeNull();
+    expect(screen.getByText("没有符合条件的论文")).toBeInTheDocument();
+  });
+});

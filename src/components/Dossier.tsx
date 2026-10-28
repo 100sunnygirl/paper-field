@@ -1189,6 +1189,11 @@ export function ReadingStage({
   const intake = useField((s) => s.intake);
   const [menuOpen, setMenuOpen] = useState(false);
   const [activeSection, setActiveSection] = useState("abstract");
+  // 空领域第一步引导：粘贴 arXiv / DOI 快速建档的输入与状态。
+  const createQuickEntry = useField((s) => s.createQuickEntry);
+  const [quickRaw, setQuickRaw] = useState("");
+  const [quickBusy, setQuickBusy] = useState(false);
+  const [quickError, setQuickError] = useState<string | null>(null);
   // 解析全文里最近一次选中：供「摘到笔记」浮条与笔记编辑器的「引用解析全文」共享。
   const [fulltextPick, setFulltextPick] = useState<FulltextSelection | null>(null);
   // 五块笔记的显示布局（顺序 + 折叠）：本机偏好，改动即存。
@@ -1507,6 +1512,21 @@ export function ReadingStage({
     }
   }
 
+  /** 空领域引导的快速建档入口：arXiv / DOI / 标题三种输入都从这里进。 */
+  async function submitQuickEntry() {
+    if (quickBusy || !quickRaw.trim()) return;
+    setQuickError(null);
+    setQuickBusy(true);
+    try {
+      await createQuickEntry(quickRaw);
+      setQuickRaw("");
+    } catch (err) {
+      setQuickError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setQuickBusy(false);
+    }
+  }
+
   if (!paper) {
     const searching = mode === "field" && search.trim().length > 0;
     const emptyDomain = mode === "field" && !searching;
@@ -1526,16 +1546,71 @@ export function ReadingStage({
         </div>
         <div className="ef-read-scroll">
           <div className="ef-reading-grid">
-            <Empty
-              title={searching ? "没有符合条件的论文" : emptyDomain ? "此领域还没有论文" : "选择一篇论文"}
-              body={
-                searching
-                  ? "可以调整搜索词，或清空搜索后继续阅读。"
-                  : emptyDomain
-                    ? "使用论文列表底部的「添加论文」导入第一篇论文。"
+            {emptyDomain ? (
+              <div className="ef-first-steps pf-enter" aria-label="空领域第一步引导">
+                <h2 id="read-empty">从第一篇论文开始</h2>
+                <ol className="ef-first-steps-list">
+                  <li>
+                    <Icon name="file" />
+                    <div>
+                      <strong>导入 PDF</strong>
+                      <span>论文文件入库，文件名先当作标题</span>
+                    </div>
+                  </li>
+                  <li>
+                    <Icon name="spark" />
+                    <div>
+                      <strong>等解析与补全</strong>
+                      <span>MinerU 解析全文，文献库补著录信息</span>
+                    </div>
+                  </li>
+                  <li>
+                    <Icon name="edit" />
+                    <div>
+                      <strong>写五块笔记</strong>
+                      <span>总结 → 亮点 → 不足 → 启示 → 备注</span>
+                    </div>
+                  </li>
+                </ol>
+                <div className="ef-first-steps-actions">
+                  <Button variant="primary" type="button" onClick={() => openDialog("paper")}>
+                    <Icon name="plus" />
+                    导入 PDF…
+                  </Button>
+                </div>
+                <div className="ef-first-steps-paste">
+                  <input
+                    value={quickRaw}
+                    onChange={(e) => {
+                      setQuickRaw(e.target.value);
+                      setQuickError(null);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && quickRaw.trim()) {
+                        e.preventDefault();
+                        void submitQuickEntry();
+                      }
+                    }}
+                    placeholder="或粘贴 arXiv 链接 / DOI，回车快速建档"
+                    aria-label="粘贴 arXiv 链接或 DOI 快速建档"
+                  />
+                  <Button type="button" disabled={!quickRaw.trim() || quickBusy} onClick={() => void submitQuickEntry()}>
+                    {quickBusy ? "建档中…" : "快速建档"}
+                  </Button>
+                </div>
+                {quickError ? <p className="ef-error">{quickError}</p> : null}
+                <p className="ef-first-steps-hint">没有 PDF 也能先建档；拿到文件后在「编辑论文信息」里关联，或直接拖进正文舞台。</p>
+              </div>
+            ) : (
+              <Empty
+                title={searching ? "没有符合条件的论文" : "选择一篇论文"}
+                body={
+                  searching
+                    ? "可以调整搜索词，或清空搜索后继续阅读。"
                     : "从左侧列表选择一篇论文，阅读摘要、撰写阅读笔记，或直接打开 PDF。"
-              }
-            />
+                }
+              />
+            )}
           </div>
         </div>
       </section>
