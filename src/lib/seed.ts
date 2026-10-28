@@ -6,6 +6,7 @@ const DOMAIN_AL = "22222222-2222-4222-8222-222222222222";
 const PAPER_LLAVA = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1";
 const PAPER_CLIP = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2";
 const PAPER_INSTRUCT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3";
+const PAPER_FILENAME = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa4";
 
 function note(
   steps: BatchStep[],
@@ -187,7 +188,20 @@ export async function seedIfEmpty(engine: SqlEngine): Promise<void> {
     at,
   );
 
-  for (const paperId of [PAPER_CLIP, PAPER_INSTRUCT]) {
+  steps.push({
+    sql: `INSERT INTO papers (
+      id, domain_id, title, title_zh, abstract, year, venue, doi, arxiv_id, pdf_url,
+      code_url, code_open_source, project_page, reading_status, read_at, llm_prepared_at,
+      notes_drafted_by_llm, user_notes_touched, tags, labs, field_sources, created_at, updated_at
+    ) VALUES (
+      ?, ?, ?, NULL, '', NULL, NULL, NULL, NULL, NULL,
+      NULL, 'unknown', NULL, 'unread', NULL, NULL,
+      0, 0, '[]', '[]', ?, ?, ?
+    )`,
+    params: [PAPER_FILENAME, DOMAIN_MM, "visual-instruction-tuning.pdf", JSON.stringify({ title: "file" }), at, at],
+  });
+
+  for (const paperId of [PAPER_CLIP, PAPER_INSTRUCT, PAPER_FILENAME]) {
     for (const kind of NOTE_KINDS) {
       steps.push({
         sql: `INSERT INTO notes (id, paper_id, kind, content, source, user_edited, revised_at)
