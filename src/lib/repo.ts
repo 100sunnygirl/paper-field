@@ -1,3 +1,4 @@
+import { captureDomainDelete, capturePaperDelete, restoreDeleteUndo, type DeleteUndoEntry } from "./deleteUndo";
 import { ConflictError, getEngine, type BatchStep } from "./engine";
 import { planPreparedMeta } from "./mergeMeta";
 import { seedIfEmpty } from "./seed";
@@ -807,6 +808,20 @@ export const repo = {
     // 同 deleteDomain：单语句删除，级联清理由 pf_paper_cascade 触发器完成。
     const engine = await getEngine();
     await engine.execute("DELETE FROM papers WHERE id = ?", [id]);
+  },
+
+  // ---- 删除的限时撤销：应用层快照入口（快照/恢复的实现见 lib/deleteUndo.ts） ----
+
+  async snapshotPapersForUndo(paperIds: string[], label: string): Promise<DeleteUndoEntry> {
+    return capturePaperDelete(paperIds, label);
+  },
+
+  async snapshotDomainForUndo(domainId: string, label: string): Promise<DeleteUndoEntry> {
+    return captureDomainDelete(domainId, label);
+  },
+
+  async restoreDeleted(entry: DeleteUndoEntry): Promise<void> {
+    await restoreDeleteUndo(entry);
   },
 
   async deletePapers(ids: string[]): Promise<void> {

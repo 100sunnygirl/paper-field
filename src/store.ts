@@ -45,6 +45,12 @@ import { noteReadingStatus } from "./lib/readingSince";
 import { repo } from "./lib/repo";
 import { cancelChat, completeChat, hasUsableProvider, loadSettings, readLlmSettings, saveSettings, type LlmSaveInput } from "./lib/settings";
 import { log } from "./lib/logger";
+import {
+  DELETE_UNDO_TOAST_MS,
+  saveDeleteUndo,
+  takeDeleteUndo,
+  type DeleteUndoEntry,
+} from "./lib/deleteUndo";
 import { dismissAll, notify, type ToastAction } from "./toasts";
 import type {
   AppMode,
@@ -66,6 +72,8 @@ interface Flash {
   tone: "ok" | "warn" | "error";
   text: string;
   action?: ToastAction;
+  /** 本条通知的停留时长（毫秒）；缺省按 tone。限时撤销（删除/移动）用短窗口。 */
+  durationMs?: number;
 }
 
 /** 数据导出的可选范围。 */
@@ -227,6 +235,8 @@ interface FieldState {
   setReadingStatus: (status: "unread" | "reading" | "read", paperId?: string, restoreReadAt?: string | null) => Promise<void>;
   movePaper: (domainId: string, paperId?: string) => Promise<void>;
   deletePaper: (paperId?: string) => Promise<void>;
+  /** 撤销最近一次删除（论文 / 批量 / 领域）：限时缓冲里的快照原样回插；窗口已过则提示。 */
+  undoDelete: () => Promise<void>;
   setBatchMode: (on: boolean) => void;
   toggleCheckedPaper: (id: string) => void;
   setCheckedPaperIds: (ids: string[]) => void;
@@ -330,6 +340,24 @@ function persistDrafts(drafts: Record<string, Partial<Record<NoteKind, string>>>
   }
 }
 
+/**
+ * 删除前的撤销快照（可选调用）：repo 缺这个方法（旧测试替身）或快照失败时返回
+ * null——删除照常执行，只是这条不可反悔，主流程不被拖垮。
+ */
+async function snapshotForUndo(capture: () => Promise<DeleteUndoEntry> | undefined): Promise<DeleteUndoEntry | null> {
+  try {
+    return (await capture()) ?? null;
+  } catch (err) {
+    log.error("store", "删除撤销快照失败（删除继续，本次不可撤销）", err);
+    return null;
+  }
+}
+
+/** 删除通知上「撤销删除」的公共按钮（10 秒窗口，见 DELETE_UNDO_TOAST_MS）。 */
+function undoDeleteAction(): ToastAction {
+  return { label: "撤销删除", run: () => void useField.getState().undoDelete() };
+}
+
 /** 这篇论文有没有尚未保存的笔记草稿。 */
 export function hasDraft(state: Pick<FieldState, "drafts">, paperId: string | null | undefined): boolean {
   return Boolean(paperId && state.drafts[paperId] && Object.keys(state.drafts[paperId]!).length);
@@ -384,7 +412,11 @@ export const useField = create<FieldState>((set, get) => ({
   // 否则会出现「有弹窗、无日志」的盲区（store.test.ts 有零 IPC + 收口防回归用例）。
   setFlash: (flash) => {
     set({ flash });
-    if (flash) notify(flash.tone, flash.text, flash.action ? { action: flash.action } : undefined);
+    if (flash)
+      notify(flash.tone, flash.text, {
+        ...(flash.durationMs !== undefined ? { durationMs: flash.durationMs } : {}),
+        ...(flash.action ? { action: flash.action } : {}),
+      });
     else dismissAll("manual");
   },
   setNoteDraft: (paperId, kind, value) => {
@@ -748,12 +780,34 @@ export const useField = create<FieldState>((set, get) => ({
     const id = get().selectedDomainId;
     if (!id) return;
     try {
+      // 名字以库为准（状态里的 domains 可能尚未刷新），只用于提示与撤销文案。
+      const domainRow = await repo.getDomain(id).catch(() => null);
+      const domainName = get().domains.find((d) => d.id === id)?.name ?? domainRow?.name ?? "";
       // 先取消这些论文的在途作业并移出排队，免得轮询在论文删掉后还占着队列、扣着配额。
-      await forgetPapers(await repo.paperIdsInDomain(id));
+      const paperIds = await repo.paperIdsInDomain(id);
+      await forgetPapers(paperIds);
+      const priorDrafts = Object.fromEntries(
+        paperIds.map((paperId) => [paperId, get().drafts[paperId]]).filter(([, value]) => value),
+      ) as DeleteUndoEntry["drafts"];
+      // 限时撤销：删除前的应用层快照（领域行 + 论文/笔记/解析/关联/作业），失败则本次不可撤销。
+      const entry = await snapshotForUndo(() => repo.snapshotDomainForUndo?.(id, domainName));
       await repo.deleteDomain(id);
       const domains = await repo.listDomains();
       set({ selectedDomainId: domains[0]?.id ?? null, dialog: null, selectedPaperId: null, paper: null });
+      if (entry) {
+        entry.drafts = priorDrafts;
+        saveDeleteUndo(entry);
+      }
       await get().refresh();
+      const flash: Flash = {
+        tone: "ok",
+        text: `已删除领域「${domainName}」${paperIds.length ? `与 ${paperIds.length} 篇论文` : ""}。`,
+      };
+      if (entry) {
+        flash.action = undoDeleteAction();
+        flash.durationMs = DELETE_UNDO_TOAST_MS;
+      }
+      get().setFlash(flash);
     } catch (err) {
       get().setFlash({ tone: "error", text: `删除领域失败：${errText(err)}，数据未改动。` });
       throw err;
@@ -1147,10 +1201,17 @@ export const useField = create<FieldState>((set, get) => ({
     if (!id) return;
     try {
       await forgetPapers([id]);
+      const priorDraft = get().drafts[id];
+      // 限时撤销：删除前的应用层快照（论文/笔记/解析/关联/作业）；失败则本次不可撤销。
+      const entry = await snapshotForUndo(() => repo.snapshotPapersForUndo?.([id], ""));
       await repo.deletePaper(id);
       const drafts = { ...get().drafts };
       delete drafts[id];
       persistDrafts(drafts);
+      if (entry) {
+        if (priorDraft) entry.drafts = { [id]: priorDraft };
+        saveDeleteUndo(entry);
+      }
       const wasSelected = get().selectedPaperId === id;
       if (wasSelected) selectionEpoch += 1;
       set({
@@ -1160,9 +1221,52 @@ export const useField = create<FieldState>((set, get) => ({
         ...(wasSelected ? { selectedPaperId: null, paper: null } : {}),
       });
       await get().refresh();
-      get().setFlash({ tone: "ok", text: "论文已删除。" });
+      const flash: Flash = { tone: "ok", text: "论文已删除。" };
+      if (entry) {
+        flash.action = undoDeleteAction();
+        flash.durationMs = DELETE_UNDO_TOAST_MS;
+      }
+      get().setFlash(flash);
     } catch (err) {
       get().setFlash({ tone: "error", text: `删除论文失败：${errText(err)}，数据未改动。` });
+      throw err;
+    }
+  },
+
+  undoDelete: async () => {
+    const entry = takeDeleteUndo();
+    if (!entry) {
+      get().setFlash({ tone: "warn", text: "撤销窗口已过，删除已定型，无法恢复。" });
+      return;
+    }
+    try {
+      if (typeof repo.restoreDeleted !== "function") throw new Error("当前环境不支持恢复");
+      await repo.restoreDeleted(entry);
+      // 未保存的笔记草稿原样放回（快照捕获的是删除那一刻的草稿）。
+      for (const [paperId, kinds] of Object.entries(entry.drafts)) {
+        for (const [kind, value] of Object.entries(kinds)) {
+          get().setNoteDraft(paperId, kind as NoteKind, value ?? null);
+        }
+      }
+      selectionEpoch += 1;
+      set({
+        mode: "field",
+        selectedDomainId: entry.domainId || get().selectedDomainId,
+        selectedPaperId: entry.paperIds[0] ?? null,
+        paper: null,
+        dialog: null,
+        dialogPaperId: null,
+      });
+      await get().refresh();
+      get().setFlash({
+        tone: "ok",
+        text:
+          entry.kind === "domain"
+            ? `已撤销删除：领域「${entry.label}」与 ${entry.paperIds.length} 篇论文已原样恢复。`
+            : `已撤销删除，${entry.paperIds.length} 篇论文（含笔记与未保存草稿）已原样恢复。`,
+      });
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `撤销删除失败：${errText(err)}，论文保持删除状态。` });
       throw err;
     }
   },
@@ -1190,10 +1294,19 @@ export const useField = create<FieldState>((set, get) => ({
     if (!ids.length) return;
     try {
       await forgetPapers(ids);
+      const priorDrafts = Object.fromEntries(
+        ids.map((id) => [id, get().drafts[id]]).filter(([, value]) => value),
+      ) as DeleteUndoEntry["drafts"];
+      // 限时撤销：整批一体的应用层快照。
+      const entry = await snapshotForUndo(() => repo.snapshotPapersForUndo?.(ids, ""));
       await repo.deletePapers(ids);
       const drafts = { ...get().drafts };
       for (const id of ids) delete drafts[id];
       persistDrafts(drafts);
+      if (entry) {
+        entry.drafts = priorDrafts;
+        saveDeleteUndo(entry);
+      }
       selectionEpoch += 1;
       set({
         drafts,
@@ -1205,7 +1318,12 @@ export const useField = create<FieldState>((set, get) => ({
         paper: null,
       });
       await get().refresh();
-      get().setFlash({ tone: "ok", text: `已删除 ${ids.length} 篇论文。` });
+      const flash: Flash = { tone: "ok", text: `已删除 ${ids.length} 篇论文。` };
+      if (entry) {
+        flash.action = undoDeleteAction();
+        flash.durationMs = DELETE_UNDO_TOAST_MS;
+      }
+      get().setFlash(flash);
     } catch (err) {
       get().setFlash({ tone: "error", text: `批量删除失败：${errText(err)}，数据未改动。` });
       throw err;

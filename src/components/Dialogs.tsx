@@ -376,7 +376,7 @@ export function DomainDialog() {
       }
     >
       {confirmDelete ? (
-        <p>将删除「{current?.name}」及其中全部论文与笔记。此操作不可撤销。</p>
+        <p>将删除「{current?.name}」及其中全部论文与笔记。删除后 10 秒内可「撤销删除」，超时后不可恢复。</p>
       ) : (
         <>
           <Field label="名称 / 中文（必填）">
@@ -551,7 +551,7 @@ export function DeletePaperDialog() {
       <p>
         <strong>{paper?.titleZh || paper?.title}</strong>
       </p>
-      <p>将删除这篇论文及其全部笔记。此操作不可撤销。</p>
+      <p>将删除这篇论文及其全部笔记。删除后 10 秒内可「撤销删除」，超时后不可恢复。</p>
     </Dialog>
   );
 }
@@ -593,7 +593,7 @@ export function DeleteCheckedPapersDialog() {
       }
     >
       <p>
-        将删除选中的 <strong>{checkedPaperIds.length}</strong> 篇论文及其全部笔记。此操作不可撤销。
+        将删除选中的 <strong>{checkedPaperIds.length}</strong> 篇论文及其全部笔记。删除后 10 秒内可「撤销删除」，超时后不可恢复。
       </p>
     </Dialog>
   );
