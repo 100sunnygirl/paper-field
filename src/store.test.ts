@@ -562,3 +562,25 @@ describe("setFlash × notify：通知唯一收口", () => {
     }
   });
 });
+
+describe("搜索残留可见化（searchCarried）", () => {
+  it("带着搜索词切换领域记 searchCarried；再输入或清空即解除", async () => {
+    useField.setState({ mode: "field", selectedDomainId: "d-1", search: "旧词", searchCarried: false });
+    await useField.getState().selectDomain("d-2");
+    expect(useField.getState().searchCarried).toBe(true);
+
+    await useField.getState().setSearch("新词");
+    expect(useField.getState().search).toBe("新词");
+    expect(useField.getState().searchCarried).toBe(false);
+  });
+
+  it("没有搜索词时切换领域不记残留；同一领域重复选择也不记", async () => {
+    useField.setState({ mode: "field", selectedDomainId: "d-1", search: "" });
+    await useField.getState().selectDomain("d-2");
+    expect(useField.getState().searchCarried).toBe(false);
+
+    useField.setState({ search: "词" });
+    await useField.getState().selectDomain("d-2");
+    expect(useField.getState().searchCarried).toBe(false);
+  });
+});

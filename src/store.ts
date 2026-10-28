@@ -113,6 +113,11 @@ interface FieldState {
   jobs: LlmJob[];
   stats: FieldStats;
   search: string;
+  /**
+   * 搜索残留可见化：切换领域时搜索词没有清空（沿用是特性），这里记一笔
+   * 「这个词是在别的领域输入的」，列表顶部据此显示残留横幅；用户再次输入即清除。
+   */
+  searchCarried: boolean;
   archiveFilter: OpenSource | "all";
   settings: LlmSettings;
   mineru: MineruSettingsV2;
@@ -389,6 +394,7 @@ export const useField = create<FieldState>((set, get) => ({
   jobs: [],
   stats: { read: 0, total: 0, openSource: 0, queued: 0, running: 0 },
   search: "",
+  searchCarried: false,
   archiveFilter: "all",
   settings: { version: 2, providers: [], usage: {} },
   mineru: DEFAULT_MINERU,
@@ -714,7 +720,9 @@ export const useField = create<FieldState>((set, get) => ({
   selectDomain: async (id) => {
     try {
       selectionEpoch += 1;
-      set({ selectedDomainId: id, selectedPaperId: null, paper: null, mode: "field", dialog: null, dialogPaperId: null, dialogPaperIds: [] });
+      // 残留横幅的依据：换到的领域与搜索词输入时不同，且词还留着。
+      const carried = Boolean(get().search.trim()) && id !== get().selectedDomainId;
+      set({ selectedDomainId: id, selectedPaperId: null, paper: null, mode: "field", dialog: null, dialogPaperId: null, dialogPaperIds: [], searchCarried: carried });
       await get().refresh();
     } catch (err) {
       get().setFlash({ tone: "error", text: `切换领域失败：${errText(err)}，数据未改动。` });
@@ -737,7 +745,8 @@ export const useField = create<FieldState>((set, get) => ({
   setSearch: (value) => {
     // The input shows `value` at once; the query runs SEARCH_DEBOUNCE_MS after
     // the last keystroke. Every caller's promise settles when that refresh does.
-    set({ search: value });
+    // 用户主动输入（或清空）即解除「切领域残留」横幅。
+    set({ search: value, searchCarried: false });
     if (searchTimer) clearTimeout(searchTimer);
     // Clearing the box restores the full list at once; there is nothing to debounce.
     const delay = value.trim() === "" ? 0 : SEARCH_DEBOUNCE_MS;

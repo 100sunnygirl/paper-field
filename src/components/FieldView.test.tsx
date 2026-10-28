@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PaperListItem } from "../lib/types";
 import { resetActivity, trackJob } from "../lib/activity";
@@ -343,5 +343,41 @@ describe("PaperNav · 标已读的 +1 微反馈", () => {
     useField.setState({ mode: "field", papers: [intakeItem("p1", null)] });
     render(<PaperNav />);
     expect(document.querySelector(".ef-progress")).not.toHaveClass("is-read-pulse");
+  });
+});
+
+describe("PaperNav · 搜索残留横幅与零命中清空", () => {
+  it("切领域后旧词仍在过滤时显示横幅与一键清空；直接搜索不显示", async () => {
+    useField.setState({
+      mode: "field",
+      selectedDomainId: "d-2",
+      papers: [intakeItem("a", null)],
+      search: "旧词",
+      searchCarried: true,
+    });
+    render(<PaperNav />);
+    const banner = screen.getByText(/已切换领域，列表仍按此前的搜索词「旧词」过滤/);
+    expect(banner).toBeInTheDocument();
+
+    const clear = within(banner.closest(".ef-search-carry")!).getByRole("button", { name: "清空搜索" });
+    fireEvent.click(clear);
+    await waitFor(() => expect(useField.getState().search).toBe(""));
+
+    useField.setState({ searchCarried: false });
+    expect(screen.queryByText(/已切换领域/)).toBeNull();
+  });
+
+  it("零命中时无残留横幅也给「清空搜索查看全部」出口", async () => {
+    useField.setState({
+      mode: "field",
+      selectedDomainId: "d-1",
+      papers: [],
+      search: "不存在的词",
+      searchCarried: false,
+    });
+    render(<PaperNav />);
+    expect(screen.getByText("没有符合条件的论文。可以调整搜索词或切换领域。")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "清空搜索查看全部" }));
+    await waitFor(() => expect(useField.getState().search).toBe(""));
   });
 });
