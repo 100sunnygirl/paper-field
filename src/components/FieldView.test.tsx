@@ -420,3 +420,29 @@ describe("PaperNav · 批量工具栏扩展（移动 / 标状态 / 标签 / 入�
     expect(screen.queryByRole("button", { name: "补全选中" })).toBeNull();
   });
 });
+
+describe("PaperNav · 上次阅读一键续读", () => {
+  it("显示领域内最近标记已读的论文（标题 + 日期），点击直达续读", () => {
+    const selectPaper = vi.fn(async () => undefined);
+    const older = { ...intakeItem("old", null), readingStatus: "read" as const, readAt: "2024-09-01T00:00:00.000Z", title: "Older Paper" };
+    const newer = { ...intakeItem("new", null), readingStatus: "read" as const, readAt: "2024-10-05T00:00:00.000Z", title: "Newer Paper" };
+    useField.setState({
+      mode: "field",
+      selectedDomainId: "d-1",
+      papers: [older, newer, intakeItem("u", null)],
+      selectPaper,
+    });
+    render(<PaperNav />);
+    const lastRead = screen.getByRole("button", { name: /上次阅读/ });
+    expect(lastRead.textContent).toContain("Newer Paper");
+    expect(lastRead.textContent).toContain("2024.10.05");
+    fireEvent.click(lastRead);
+    expect(selectPaper).toHaveBeenCalledWith("new");
+  });
+
+  it("领域内没有已读论文时不显示该行", () => {
+    useField.setState({ mode: "field", selectedDomainId: "d-1", papers: [intakeItem("a", null)] });
+    render(<PaperNav />);
+    expect(screen.queryByRole("button", { name: /上次阅读/ })).toBeNull();
+  });
+});

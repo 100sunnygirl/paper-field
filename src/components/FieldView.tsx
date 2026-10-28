@@ -10,6 +10,7 @@ import { getActivity, subscribeActivity } from "../lib/activity";
 import { jobStageLine } from "../lib/jobsView";
 import { repo } from "../lib/repo";
 import { pad2, shortcut } from "../lib/util";
+import { formatDate } from "../lib/util";
 import { useField } from "../store";
 import { DomainMenu } from "./DomainMenu";
 import { useReadPulse } from "./useReadPulse";
@@ -90,6 +91,13 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
   const allChecked = list.length > 0 && checkedPaperIds.length === list.length;
   // 标已读（⌘R / 下拉）时：领域进度条 + 已读计数做一次 +1 微反馈。
   const readPulse = useReadPulse();
+  // 上次阅读：领域内最近标记已读的那篇，点击直达续读（回到领域不必凭记忆找）。
+  const lastRead = domainPapers
+    .filter((p) => p.readingStatus === "read" && p.readAt)
+    .reduce<PaperListItem | null>(
+      (latest, paper) => (!latest || (paper.readAt ?? "") > (latest.readAt ?? "") ? paper : latest),
+      null,
+    );
 
   // 批量模式下 Esc 退出。对话框打开时 Dialog 的捕获层会拦截 Esc，不会误退批量模式。
   useEffect(() => {
@@ -121,6 +129,18 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
           <div className={`ef-progress${readPulse ? " is-read-pulse" : ""}`} aria-hidden="true">
             <i style={{ width: `${Math.round(fill * 100)}%` }} />
           </div>
+          {lastRead ? (
+            <button
+              type="button"
+              className="ef-last-read"
+              title={`继续阅读：${lastRead.titleZh || lastRead.title}`}
+              onClick={() => void selectPaper(lastRead.id)}
+            >
+              <span className="ef-last-read-label">上次阅读</span>
+              <span className="ef-last-read-title">{lastRead.titleZh || lastRead.title}</span>
+              <span className="mono">{formatDate(lastRead.readAt)}</span>
+            </button>
+          ) : null}
         </div>
       ) : null}
 

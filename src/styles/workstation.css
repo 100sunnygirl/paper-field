@@ -966,6 +966,40 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   display: inline-block;
   animation: pf-count-bump 700ms var(--pf-ease-out);
 }
+/* 上次阅读：领域头一行「标题 · 日期」，点击直达续读。 */
+.ef-last-read {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  margin-top: 12px;
+  padding: 6px 10px;
+  border: none;
+  border-left: 3px solid var(--pf-ink);
+  background: var(--pf-hover-quiet);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--pf-motion);
+}
+.ef-last-read:hover { background: var(--pf-hover-flat); }
+.ef-last-read-label {
+  flex: none;
+  font-size: var(--pf-fs-tag);
+  font-weight: 600;
+  letter-spacing: var(--pf-tracking-tag);
+  color: var(--pf-muted);
+}
+.ef-last-read-title {
+  min-width: 0;
+  flex: 1;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ef-last-read .mono { flex: none; font-size: var(--pf-fs-tag); color: var(--pf-muted); }
 .ef-list-head {
   display: flex;
   align-items: center;
