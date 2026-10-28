@@ -89,3 +89,23 @@ describe("DomainMenu · 领域快捷切换下拉", () => {
     expect(screen.queryByText(/已读/)).toBeNull();
   });
 });
+
+describe("DomainMenu · 领域强调色点", () => {
+  it("设置了强调色的领域行显示色点，当前行迷你进度条同色", async () => {
+    vi.mocked(repo.domainCensus).mockResolvedValue([
+      { domainId: "d-1", total: 2, unread: 1, reading: 0, read: 1, lastReadAt: null, lastActivityAt: null, weekCount: 0 },
+    ]);
+    useField.setState({
+      domains: DOMAINS.map((d) => (d.id === "d-2" ? { ...d, accent: "indigo" } : d)),
+      selectedDomainId: "d-1",
+    });
+    render(<DomainMenu />);
+    fireEvent.click(screen.getByRole("button", { name: "切换研究领域：多模态" }));
+    const menu = screen.getByRole("menu", { name: "领域快捷切换" });
+    const rows = within(menu).getAllByRole("menuitem");
+    expect(within(rows[1]).getByText("指令对齐")).toBeInTheDocument();
+    const dot = rows[1].querySelector(".ef-domain-menu-dot") as HTMLElement | null;
+    expect(dot?.getAttribute("style")).toContain("var(--pf-accent-indigo)");
+    expect(rows[0].querySelector(".ef-domain-menu-dot")).toBeNull();
+  });
+});

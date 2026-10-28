@@ -492,7 +492,9 @@ export const repo = {
     return applyDomainExtra(mapDomain(rows[0]), extras[id]);
   },
 
-  async createDomain(input: { name: string; code: string; summary?: string; keyQuestion?: string | null }): Promise<Domain> {
+  async createDomain(
+    input: { name: string; code: string; summary?: string; keyQuestion?: string | null; accent?: string | null },
+  ): Promise<Domain> {
     const engine = await getEngine();
     const existing = await engine.select<{ max_order: number | null }>(
       "SELECT MAX(sort_order) AS max_order FROM domains",
@@ -505,6 +507,7 @@ export const repo = {
       code: domainCodeOf(input.code, sortOrder),
       summary: input.summary?.trim() || null,
       keyQuestion: input.keyQuestion?.trim() || null,
+      accent: input.accent?.trim() || null,
       sortOrder,
       createdAt: nowIso(),
     };
@@ -512,13 +515,18 @@ export const repo = {
       "INSERT INTO domains (id, name, code, summary, sort_order, created_at) VALUES (?, ?, ?, ?, ?, ?)",
       [domain.id, domain.name, domain.code, domain.summary, domain.sortOrder, domain.createdAt],
     );
-    if (domain.keyQuestion) await writeDomainExtra(engine, domain.id, { keyQuestion: domain.keyQuestion });
+    if (domain.keyQuestion || domain.accent) {
+      await writeDomainExtra(engine, domain.id, {
+        keyQuestion: domain.keyQuestion,
+        accent: domain.accent,
+      });
+    }
     return domain;
   },
 
   async updateDomain(
     id: string,
-    input: { name: string; code: string; summary?: string; keyQuestion?: string | null },
+    input: { name: string; code: string; summary?: string; keyQuestion?: string | null; accent?: string | null },
   ): Promise<void> {
     const engine = await getEngine();
     const code = domainCodeOf(input.code, 0);
@@ -534,8 +542,11 @@ export const repo = {
       input.summary?.trim() || null,
       id,
     ]);
-    if (input.keyQuestion !== undefined) {
-      await writeDomainExtra(engine, id, { keyQuestion: input.keyQuestion?.trim() || null });
+    if (input.keyQuestion !== undefined || input.accent !== undefined) {
+      await writeDomainExtra(engine, id, {
+        ...(input.keyQuestion !== undefined ? { keyQuestion: input.keyQuestion?.trim() || null } : {}),
+        ...(input.accent !== undefined ? { accent: input.accent?.trim() || null } : {}),
+      });
     }
   },
 

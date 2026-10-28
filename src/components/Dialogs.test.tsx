@@ -805,3 +805,41 @@ describe("DomainDialog · 关键问题字段", () => {
     expect(createDomain).toHaveBeenCalledWith(expect.objectContaining({ keyQuestion: "Q" }));
   });
 });
+
+describe("DomainDialog · 领域强调色", () => {
+  it("编辑模式显示色票，选择后随 updateDomain 提交 accent", () => {
+    const updateDomain = vi.fn(async () => undefined);
+    useField.setState({
+      dialog: "edit-domain",
+      selectedDomainId: "d-1",
+      domains: [
+        { id: "d-1", name: "多模态", code: "MM-01", summary: null, sortOrder: 1, createdAt: "2024-01-01T00:00:00.000Z" },
+      ],
+      updateDomain,
+    });
+    render(<DomainDialog />);
+    const group = screen.getByRole("radiogroup", { name: "领域强调色" });
+    expect(within(group).getByRole("radio", { name: "默认" })).toBeChecked();
+    fireEvent.click(within(group).getByRole("radio", { name: "黛蓝" }));
+    fireEvent.click(screen.getByRole("button", { name: "保存修改" }));
+    expect(updateDomain).toHaveBeenCalledWith(expect.objectContaining({ accent: "indigo" }));
+  });
+
+  it("已有强调色的领域回显选中色票；改回默认提交 null", () => {
+    const updateDomain = vi.fn(async () => undefined);
+    useField.setState({
+      dialog: "edit-domain",
+      selectedDomainId: "d-1",
+      domains: [
+        { id: "d-1", name: "多模态", code: "MM-01", summary: null, accent: "moss", sortOrder: 1, createdAt: "2024-01-01T00:00:00.000Z" },
+      ],
+      updateDomain,
+    });
+    render(<DomainDialog />);
+    const group = screen.getByRole("radiogroup", { name: "领域强调色" });
+    expect(within(group).getByRole("radio", { name: "苔绿" })).toBeChecked();
+    fireEvent.click(within(group).getByRole("radio", { name: "默认" }));
+    fireEvent.click(screen.getByRole("button", { name: "保存修改" }));
+    expect(updateDomain).toHaveBeenCalledWith(expect.objectContaining({ accent: null }));
+  });
+});

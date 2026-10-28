@@ -187,8 +187,8 @@ interface FieldState {
    */
   openDialog: (dialog: FieldState["dialog"], target?: string | string[]) => void;
   closeDialog: () => void;
-  createDomain: (input: { name: string; code: string; summary?: string; keyQuestion?: string | null }) => Promise<void>;
-  updateDomain: (input: { name: string; code: string; summary?: string; keyQuestion?: string | null }) => Promise<void>;
+  createDomain: (input: { name: string; code: string; summary?: string; keyQuestion?: string | null; accent?: string | null }) => Promise<void>;
+  updateDomain: (input: { name: string; code: string; summary?: string; keyQuestion?: string | null; accent?: string | null }) => Promise<void>;
   /** 领域手动排序：把新顺序（id 数组）写回 sort_order 并同步 store 里的领域列表。 */
   applyDomainOrder: (orderedIds: string[]) => Promise<void>;
   deleteDomain: () => Promise<void>;

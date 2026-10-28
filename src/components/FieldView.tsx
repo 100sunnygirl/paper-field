@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { useSyncExternalStore } from "react";
 import {
   JOB_STATUS_LABELS,
@@ -10,6 +10,7 @@ import { getActivity, subscribeActivity } from "../lib/activity";
 import { jobStageLine } from "../lib/jobsView";
 import { repo } from "../lib/repo";
 import { pad2, shortcut } from "../lib/util";
+import { domainAccentVar } from "../lib/domainExtras";
 import { formatDate } from "../lib/util";
 import { useField } from "../store";
 import { DomainMenu } from "./DomainMenu";
@@ -112,7 +113,10 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
   return (
     <aside className="ef-nav" aria-label="领域与论文列表">
       {mode === "field" ? (
-        <div className="ef-nav-head">
+        <div
+          className="ef-nav-head"
+          style={domainAccentVar(domain?.accent) ? ({ "--pf-domain-accent": domainAccentVar(domain!.accent) } as CSSProperties) : undefined}
+        >
           <div className="ef-overline">
             <span>研究领域</span>
             {domain?.code ? <span className="ef-code">{domain.code}</span> : null}

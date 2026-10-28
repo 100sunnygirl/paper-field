@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { repo } from "../lib/repo";
 import type { DomainCensus } from "../lib/types";
+import { domainAccentVar } from "../lib/domainExtras";
 import { shortcut } from "../lib/util";
 import { useField } from "../store";
 import { Icon } from "./ui";
@@ -90,6 +91,13 @@ export function DomainMenu() {
               >
                 <span className="ef-domain-menu-main">
                   <span className="ef-domain-menu-name">
+                    {domainAccentVar(item.accent) ? (
+                      <i
+                        className="ef-domain-menu-dot"
+                        style={{ background: domainAccentVar(item.accent) ?? undefined }}
+                        aria-hidden="true"
+                      />
+                    ) : null}
                     {item.id === selectedDomainId ? <Icon name="check" /> : null}
                     {item.name}
                   </span>
@@ -99,7 +107,14 @@ export function DomainMenu() {
                   </span>
                   {stat && total ? (
                     <span className="ef-domain-menu-bar" aria-hidden="true">
-                      <i style={{ width: `${fill}%` }} />
+                      <i
+                        style={{
+                          width: `${fill}%`,
+                          ...(domainAccentVar(item.accent)
+                            ? { background: domainAccentVar(item.accent)! }
+                            : {}),
+                        }}
+                      />
                     </span>
                   ) : null}
                 </span>

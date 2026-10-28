@@ -38,6 +38,13 @@
   --pf-hover-quiet: #eef1e8;
   --pf-tint-success: #8fd3a9;
   --pf-tint-danger: #f19a92;
+  /* 领域强调色板（六枚、与墨色同饱和度的深色；信号黄不在其中，保留给「打开 PDF」与选中提示）。 */
+  --pf-accent-moss: #4e6e38;
+  --pf-accent-indigo: #35507e;
+  --pf-accent-sienna: #8a4b2b;
+  --pf-accent-plum: #6d4470;
+  --pf-accent-teal: #2f6b66;
+  --pf-accent-amber: #8a6512;
 
   /* ---- Type ---- */
   --pf-font-ui: Inter, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
@@ -733,7 +740,11 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 .ef-nav-head {
   padding: 24px 22px 20px;
   border-bottom: 1px solid var(--pf-divider);
+  /* 领域强调色：未设置时回落墨色；进度条填充与「上次阅读」左边线同色归组。 */
+  --pf-domain-accent: var(--pf-ink);
 }
+.ef-nav-head .ef-progress > i { background: var(--pf-domain-accent); }
+.ef-nav-head .ef-last-read { border-left-color: var(--pf-domain-accent); }
 /* 区段角标（研究领域 / 全部领域 · 已读…）：caption 档、带一枚墨框黄方块。 */
 .ef-overline {
   display: flex;
@@ -900,6 +911,35 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 .ef-domain-menu-foot button:hover { color: var(--pf-ink); }
 .ef-domain-menu-foot button .ef-ico { width: 13px; height: 13px; }
 .ef-domain-menu-hint { white-space: nowrap; }
+.ef-domain-menu-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+/* 领域强调色选择：固定六枚色票 + 默认（墨色）。 */
+.ef-domain-swatches {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.ef-domain-swatches button {
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--pf-divider);
+  border-radius: 50%;
+  background: var(--pf-panel);
+  font: inherit;
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-secondary);
+  cursor: pointer;
+  transition: box-shadow var(--pf-motion), border-color var(--pf-motion);
+}
+.ef-domain-swatches button.is-on {
+  border-color: var(--pf-ink);
+  box-shadow: inset 0 0 0 2px var(--pf-surface), inset 0 0 0 3px var(--pf-ink);
+}
 .ef-nav-sum {
   font-size: var(--pf-fs-caption);
   color: var(--pf-secondary);

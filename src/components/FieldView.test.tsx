@@ -481,3 +481,31 @@ describe("PaperNav · 领域关键问题提示", () => {
     expect(screen.queryByText("关键问题")).toBeNull();
   });
 });
+
+describe("PaperNav · 领域强调色归组", () => {
+  it("领域设置强调色时导航头挂上对应 CSS 变量", () => {
+    useField.setState({
+      mode: "field",
+      selectedDomainId: "d-1",
+      domains: [
+        { id: "d-1", name: "多模态", code: "MM-01", summary: null, accent: "teal", sortOrder: 1, createdAt: "2024-01-01T00:00:00.000Z" },
+      ],
+      papers: [intakeItem("a", null)],
+    });
+    render(<PaperNav />);
+    expect(document.querySelector(".ef-nav-head")?.getAttribute("style")).toContain("--pf-domain-accent: var(--pf-accent-teal)");
+  });
+
+  it("未设置时不挂变量（回落默认墨色）", () => {
+    useField.setState({
+      mode: "field",
+      selectedDomainId: "d-1",
+      domains: [
+        { id: "d-1", name: "多模态", code: "MM-01", summary: null, sortOrder: 1, createdAt: "2024-01-01T00:00:00.000Z" },
+      ],
+      papers: [intakeItem("a", null)],
+    });
+    render(<PaperNav />);
+    expect(document.querySelector(".ef-nav-head")?.getAttribute("style") ?? "").not.toContain("--pf-domain-accent");
+  });
+});

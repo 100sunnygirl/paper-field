@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { DOMAIN_ACCENTS } from "../lib/domainExtras";
 import { loadRecentDomains, orderDomainsByRecent } from "../lib/domainRecent";
 import { pickPdfFiles, pickPdfFolder } from "../lib/mineru";
 import { repo } from "../lib/repo";
@@ -312,6 +313,7 @@ export function DomainDialog() {
   const [code, setCode] = useState("");
   const [summary, setSummary] = useState("");
   const [keyQuestion, setKeyQuestion] = useState("");
+  const [accent, setAccent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const open = dialog === "domain" || dialog === "edit-domain";
@@ -323,11 +325,13 @@ export function DomainDialog() {
       setCode(current.code);
       setSummary(current.summary ?? "");
       setKeyQuestion(current.keyQuestion ?? "");
+      setAccent(current.accent ?? null);
     } else if (!editing) {
       setName("");
       setCode("");
       setSummary("");
       setKeyQuestion("");
+      setAccent(null);
     }
     setError(null);
     setConfirmDelete(false);
@@ -365,8 +369,8 @@ export function DomainDialog() {
               onClick={() => {
                 setError(null);
                 const run = editing
-                  ? updateDomain({ name, code, summary, keyQuestion })
-                  : createDomain({ name, code, summary, keyQuestion });
+                  ? updateDomain({ name, code, summary, keyQuestion, accent })
+                  : createDomain({ name, code, summary, keyQuestion, accent });
                 void run.catch((err: unknown) =>
                   setError(err instanceof Error ? err.message : String(err)),
                 );
@@ -404,6 +408,35 @@ export function DomainDialog() {
             />
             <small className="ef-field-hint">进入领域时会显示为一句提示，提醒自己为什么读这些论文。</small>
           </Field>
+          <div className="ef-field">
+            <span>强调色（可选）</span>
+            <div className="ef-domain-swatches" role="radiogroup" aria-label="领域强调色">
+              <button
+                type="button"
+                role="radio"
+                aria-checked={accent === null}
+                aria-label="默认"
+                className={accent === null ? "is-on" : ""}
+                onClick={() => setAccent(null)}
+              >
+                默认
+              </button>
+              {DOMAIN_ACCENTS.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={accent === item.id}
+                  aria-label={item.label}
+                  title={item.label}
+                  className={accent === item.id ? "is-on" : ""}
+                  style={{ background: `var(--pf-accent-${item.id})` }}
+                  onClick={() => setAccent(item.id)}
+                />
+              ))}
+            </div>
+            <small className="ef-field-hint">领域头进度条与领域条会用这个颜色归组；不选则用默认墨色。</small>
+          </div>
         </>
       )}
       {error ? <p className="ef-error">{error}</p> : null}

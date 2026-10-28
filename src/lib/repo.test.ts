@@ -1058,3 +1058,17 @@ describe("领域关键问题（app_meta 附加字段）", () => {
     expect((await repo.getDomain(domain.id))?.name).toBe("A2");
   });
 });
+
+describe("领域强调色（accent 附加字段）", () => {
+  it("updateDomain 只改强调色不影响关键问题；清空回落 null", async () => {
+    const domain = await repo.createDomain({ name: "A", code: "", keyQuestion: "Q?" });
+    await repo.updateDomain(domain.id, { name: "A", code: "AA", accent: "indigo" });
+    let got = await repo.getDomain(domain.id);
+    expect(got?.accent).toBe("indigo");
+    expect(got?.keyQuestion).toBe("Q?");
+    await repo.updateDomain(domain.id, { name: "A", code: "AA", accent: "  " });
+    got = await repo.getDomain(domain.id);
+    expect(got?.accent).toBeNull();
+    expect(got?.keyQuestion).toBe("Q?");
+  });
+});
