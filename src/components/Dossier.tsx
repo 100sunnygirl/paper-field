@@ -1211,14 +1211,14 @@ export function ReadingStage({
     if (!isTauri()) return;
     let cancelled = false;
     let offs: Array<() => void> = [];
-    void import("@tauri-apps/api/event")
+    void import("@tauri-apps/api/webview")
       .then(async ({ getCurrentWebview }) => {
         const webview = getCurrentWebview();
         return Promise.all([
-          webview.listen<{ paths: string[] }>("tauri://drag-drop", (event) => {
+          webview.listen<{ paths: string[] }>("tauri://drag-drop", (event: { payload: { paths: string[] } }) => {
             setPdfDragOver(false);
             const paths = event.payload?.paths ?? [];
-            const pdf = paths.find((path) => /\.pdf$/i.test(path));
+            const pdf = paths.find((path: string) => /\.pdf$/i.test(path));
             if (!pdf) {
               if (paths.length) setFlash({ tone: "warn", text: "只支持 PDF 文件：拖入的内容里没有 .pdf 文件。" });
               return;
@@ -1234,7 +1234,7 @@ export function ReadingStage({
           webview.listen("tauri://drag-leave", () => setPdfDragOver(false)),
         ]);
       })
-      .then((fns) => {
+      .then((fns: Array<() => void>) => {
         if (cancelled) fns.forEach((off) => off());
         else offs = fns;
       })
