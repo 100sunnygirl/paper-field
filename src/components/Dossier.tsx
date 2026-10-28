@@ -45,7 +45,6 @@ import { openLocalPdf } from "../lib/mineru";
 import {
   JOB_STATUS_LABELS,
   JOB_TYPE_LABELS,
-  MINERU_PROVIDER_LABELS,
   MINERU_STATUS_LABELS,
   NOTE_DISPLAY_ORDER,
   NOTE_LABELS,
@@ -702,6 +701,8 @@ function ContextPanel({
   const runDraftNotes = useField((s) => s.runDraftNotes);
   const retryMineru = useField((s) => s.retryMineru);
   const mineru = useField((s) => s.mineru);
+  const effectiveProvider = useField((s) => s.effectiveProvider);
+  const openSystemCard = useField((s) => s.openSystemCard);
   const cancelJob = useField((s) => s.cancelJob);
   const savePaperPatch = useField((s) => s.savePaperPatch);
   const setMode = useField((s) => s.setMode);
@@ -1008,31 +1009,49 @@ function ContextPanel({
             </p>
           </div>
         </details>
+        {/* 解析状态小卡：状态 / 来源 / 失败原因合并呈现；失败时给出下一步动作。 */}
         {paper.pdfPath ? (
-          <p className="ef-missing">
-            MinerU · {paper.mineruStatus ? MINERU_STATUS_LABELS[paper.mineruStatus] : "尚未解析"}
-          </p>
-        ) : null}
-        {paper.pdfPath && paper.mineruProvider ? (
-          <p className="ef-missing">
-            解析源：{MINERU_PROVIDER_LABELS[paper.mineruProvider] ?? paper.mineruProvider}
-          </p>
-        ) : null}
-        {paper.mineruError ? <p className="ef-missing is-error">{paper.mineruError}</p> : null}
-        {paper.pdfPath && !mineru.configured ? (
-          <Button type="button" variant="link" onClick={() => void setMode("system")}>
-            配置 MinerU 解析源
-            <Icon name="right" />
-          </Button>
-        ) : paper.pdfPath &&
-          mineru.configured &&
-          paper.mineruStatus !== "queued" &&
-          paper.mineruStatus !== "submitted" &&
-          paper.mineruStatus !== "parsing" &&
-          paper.mineruStatus !== "done" ? (
-          <Button type="button" onClick={() => void retryMineru(paper.id)}>
-            {paper.mineruStatus === "error" || paper.mineruStatus === "cancelled" ? "重新解析" : "发送到 MinerU 解析"}
-          </Button>
+          <div className={`ef-parse-card${parseFailed ? " is-failed" : ""}`} role="group" aria-label="解析状态">
+            <p className="ef-parse-head">
+              <b>MinerU 解析</b>
+              <span className={`ef-parse-state${parseFailed ? " is-error" : parseDone ? " is-ok" : ""}`}>{parseLabel}</span>
+              {paper.mineruProvider ? (
+                <span className="ef-parse-provider">· 上次用 {providerLabel(paper.mineruProvider)}</span>
+              ) : null}
+            </p>
+            {paper.mineruError ? <p className="ef-parse-reason">{paper.mineruError}</p> : null}
+            {parseFailed ? (
+              <p className="ef-parse-next">
+                下次将用：
+                {mineru.configured
+                  ? effectiveProvider
+                    ? `${providerLabel(effectiveProvider)}（按回退顺序重选）`
+                    : "按回退顺序重选（当前探测均未通过，可先测试连接）"
+                  : "尚未配置解析源"}
+              </p>
+            ) : null}
+            <div className="ef-parse-actions">
+              {!mineru.configured ? (
+                <Button type="button" variant="link" onClick={() => void setMode("system")}>
+                  配置 MinerU 解析源
+                  <Icon name="right" />
+                </Button>
+              ) : paper.mineruStatus !== "queued" &&
+                paper.mineruStatus !== "submitted" &&
+                paper.mineruStatus !== "parsing" &&
+                paper.mineruStatus !== "done" ? (
+                <Button type="button" onClick={() => void retryMineru(paper.id)}>
+                  {paper.mineruStatus === "error" || paper.mineruStatus === "cancelled" ? "重新解析" : "发送到 MinerU 解析"}
+                </Button>
+              ) : null}
+              {parseFailed && mineru.configured ? (
+                <Button type="button" variant="link" onClick={() => openSystemCard("mineru")}>
+                  去设置测试连接
+                  <Icon name="right" />
+                </Button>
+              ) : null}
+            </div>
+          </div>
         ) : null}
       </ContextBlock>
 

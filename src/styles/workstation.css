@@ -2021,6 +2021,32 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   color: var(--pf-muted);
 }
 .ef-missing.is-error { color: var(--pf-danger); min-height: 0; margin: 6px 0; line-height: var(--pf-lh-ui); }
+
+/* ---- 解析状态小卡（资料栏）：状态 / 来源 / 失败原因合并呈现 ---- */
+.ef-parse-card {
+  margin: 10px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--pf-divider);
+  border-left: var(--pf-marker) solid var(--pf-ink);
+  font-size: var(--pf-fs-caption);
+  line-height: var(--pf-lh-ui);
+}
+.ef-parse-card.is-failed { border-left-color: var(--pf-danger); }
+.ef-parse-card p { margin: 0 0 4px; }
+.ef-parse-card p:last-child { margin-bottom: 0; }
+.ef-parse-head { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; }
+.ef-parse-head b { color: var(--pf-ink); font-weight: 700; }
+.ef-parse-state.is-ok { color: var(--pf-success); font-weight: 600; }
+.ef-parse-state.is-error { color: var(--pf-danger); font-weight: 600; }
+.ef-parse-provider { color: var(--pf-muted); }
+.ef-parse-reason { color: var(--pf-danger); }
+.ef-parse-next { color: var(--pf-muted); }
+.ef-parse-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
 .ef-identifier {
   display: flex;
   align-items: baseline;

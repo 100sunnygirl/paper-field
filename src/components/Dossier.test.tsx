@@ -367,6 +367,81 @@ describe("ReadingStage · 正文阅读外观（A−/A+、行宽）", () => {
   });
 });
 
+describe("ReadingStage · 资料栏「解析状态小卡」", () => {
+  function parseCard() {
+    return screen.getByRole("group", { name: "解析状态" }) as HTMLElement;
+  }
+
+  it("完成态：状态 / 上次用的源合并在一张小卡里", () => {
+    const parsed = {
+      ...paper({}),
+      pdfPath: "/library/a.pdf",
+      mineruStatus: "done",
+      mineruProvider: "api",
+      parsedMarkdown: "# 全文",
+    } as PaperDetail;
+    useField.setState({ mode: "field", paper: parsed, selectedPaperId: "p1" });
+    renderStage();
+    const card = parseCard();
+    expect(within(card).getByText("已完成")).toBeInTheDocument();
+    expect(within(card).getByText(/上次用 官方 API/)).toBeInTheDocument();
+  });
+
+  it("失败态：失败原因 + 下次将用的源 + 两个修复动作（重新解析 / 去设置测试连接）", () => {
+    const failed = {
+      ...paper({}),
+      pdfPath: "/library/a.pdf",
+      mineruStatus: "error",
+      mineruProvider: "api",
+      mineruError: "mineru.net 返回 -60018：当日额度已用尽",
+    } as PaperDetail;
+    const retryMineru = vi.fn(async () => undefined);
+    const openSystemCard = vi.fn();
+    useField.setState({
+      mode: "field",
+      paper: failed,
+      selectedPaperId: "p1",
+      retryMineru,
+      openSystemCard,
+      mineru: { ...useField.getState().mineru, local: { enabled: true, socketPath: "~/.mineru/doclib.sock" }, configured: true },
+      effectiveProvider: "local",
+    });
+    renderStage();
+    const card = parseCard();
+    expect(within(card).getByText("解析失败")).toBeInTheDocument();
+    expect(within(card).getByText(/-60018/)).toBeInTheDocument();
+    expect(within(card).getByText(/下次将用：本地 CLI（按回退顺序重选）/)).toBeInTheDocument();
+    fireEvent.click(within(card).getByRole("button", { name: "重新解析" }));
+    expect(retryMineru).toHaveBeenCalledWith("p1");
+    fireEvent.click(within(card).getByRole("button", { name: /去设置测试连接/ }));
+    expect(openSystemCard).toHaveBeenCalledWith("mineru");
+  });
+
+  it("失败但全部源未通过探测：说明先测试连接，不再假装有下次源", () => {
+    const failed = {
+      ...paper({}),
+      pdfPath: "/library/a.pdf",
+      mineruStatus: "error",
+      mineruError: "连接超时",
+    } as PaperDetail;
+    useField.setState({
+      mode: "field",
+      paper: failed,
+      selectedPaperId: "p1",
+      mineru: { ...useField.getState().mineru, local: { enabled: true, socketPath: "~/.mineru/doclib.sock" }, configured: true },
+      effectiveProvider: null,
+    });
+    renderStage();
+    expect(within(parseCard()).getByText(/按回退顺序重选（当前探测均未通过，可先测试连接）/)).toBeInTheDocument();
+  });
+
+  it("无 PDF 的论文不渲染小卡", () => {
+    useField.setState({ mode: "field", paper: paper({}), selectedPaperId: "p1" });
+    renderStage();
+    expect(screen.queryByRole("group", { name: "解析状态" })).toBeNull();
+  });
+});
+
 describe("ReadingStage · 资料栏「本篇状态卡」", () => {
   function completePaper(filled: Partial<Record<NoteKind, string>>): PaperDetail {
     const base = paper(filled);
