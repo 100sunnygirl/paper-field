@@ -227,6 +227,11 @@ interface FieldState {
     doi?: string;
     pdfPath?: string;
   }) => Promise<void>;
+  /**
+   * 为已有条目补充本地 PDF（导入预览的重复候选分支）：复制进文库后挂到该论文；
+   * 该论文已有关联 PDF 时不替换，只提示。挂上后若解析源可用则直接排队解析。
+   */
+  attachPdfToPaper: (paperId: string, path: string) => Promise<void>;
   retryMineru: (paperId: string) => Promise<void>;
   /** INTAKE 页批量重试：把全部解析失败（error）论文重新提交给 MinerU。 */
   retryFailedMineru: () => Promise<void>;
@@ -993,6 +998,40 @@ export const useField = create<FieldState>((set, get) => ({
       if (paper.pdfPath) enqueueMineruBatch(mineruHost(), [paper.id], false);
     } catch (err) {
       get().setFlash({ tone: "error", text: `创建论文失败：${errText(err)}，数据未改动。` });
+      throw err;
+    }
+  },
+
+  attachPdfToPaper: async (paperId, path) => {
+    const target = path.trim();
+    if (!target) return;
+    try {
+      // 先复制进文库（已在库中的原路径会在这里被拦下），再挂给目标论文。
+      const adopted = await repo.adoptManualPdf(target);
+      const result = await repo.attachPdfToPaper(paperId, adopted);
+      if (result === "has-pdf") {
+        get().setFlash({ tone: "warn", text: "这篇论文已有关联 PDF，未替换。可先在编辑里确认原有文件。" });
+        return;
+      }
+      await get().refresh();
+      const paper = await repo.getPaper(paperId);
+      const name = paper?.titleZh || paper?.title || "这篇论文";
+      // 与导入同口径：有可用解析源就直接排队解析；没有就留待解析队列。
+      let effective = get().effectiveProvider;
+      if (!effective && get().mineru.configured) {
+        effective = pickProviderFromHealths(get().mineru.order, await get().probeMineru());
+      }
+      if (effective) {
+        get().setFlash({ tone: "ok", text: `已把文件补充到「${name}」，正在用${providerLabel(effective)}解析。` });
+        enqueueMineruBatch(mineruHost(), [paperId], false);
+      } else {
+        get().setFlash({
+          tone: "ok",
+          text: `已把文件补充到「${name}」。当前没有可用的解析源，稍后可在入库页解析。`,
+        });
+      }
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `补充文件失败：${errText(err)}，数据未改动。` });
       throw err;
     }
   },

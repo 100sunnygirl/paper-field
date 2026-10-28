@@ -12,6 +12,8 @@ vi.mock("./lib/repo", () => ({
     listIntake: vi.fn(async () => []),
     getPaper: vi.fn(async () => null),
     importLocalPdfs: vi.fn(),
+    adoptManualPdf: vi.fn(),
+    attachPdfToPaper: vi.fn(),
   },
 }));
 vi.mock("@tauri-apps/plugin-store", () => ({ load: vi.fn() }));
@@ -211,5 +213,35 @@ describe("importPdfsPerFile · 逐文件目标领域", () => {
     await useField.getState().retryImportFailures();
     expect(importLocalPdfs).toHaveBeenCalledWith("d-2", ["/y/b.pdf"]);
     expect(useField.getState().importFailures).toEqual([]);
+  });
+});
+
+describe("attachPdfToPaper · 为已有条目补充文件", () => {
+  const adoptManualPdf = repo.adoptManualPdf as unknown as ReturnType<typeof vi.fn>;
+  const attach = repo.attachPdfToPaper as unknown as ReturnType<typeof vi.fn>;
+  const getPaper = repo.getPaper as unknown as ReturnType<typeof vi.fn>;
+
+  it("复制进文库后挂到目标论文；无解析源时不排队只提示", async () => {
+    adoptManualPdf.mockResolvedValue({ libraryPath: "library/a-1.pdf", originalPath: "/x/a.pdf" });
+    attach.mockResolvedValue("attached");
+    getPaper.mockResolvedValue({ id: "p-1", title: "Attention Is All You Need", titleZh: null, domainId: "d-1" });
+    await useField.getState().attachPdfToPaper("p-1", "/x/a.pdf");
+    expect(adoptManualPdf).toHaveBeenCalledWith("/x/a.pdf");
+    expect(attach).toHaveBeenCalledWith("p-1", { libraryPath: "library/a-1.pdf", originalPath: "/x/a.pdf" });
+    expect(getToasts().some((t) => t.text.includes("已把文件补充到「Attention Is All You Need」"))).toBe(true);
+    expect(getToasts().some((t) => t.text.includes("没有可用的解析源"))).toBe(true);
+  });
+
+  it("目标论文已有关联 PDF 时不替换，给说明", async () => {
+    adoptManualPdf.mockResolvedValue({ libraryPath: "library/a-1.pdf", originalPath: "/x/a.pdf" });
+    attach.mockResolvedValue("has-pdf");
+    await useField.getState().attachPdfToPaper("p-1", "/x/a.pdf");
+    expect(getToasts().some((t) => t.text.includes("已有关联 PDF，未替换"))).toBe(true);
+  });
+
+  it("复制阶段被拦（文件已在库中）时错误上抛并通知", async () => {
+    adoptManualPdf.mockRejectedValue(new Error("这个 PDF 已在库中"));
+    await expect(useField.getState().attachPdfToPaper("p-1", "/x/a.pdf")).rejects.toThrow("这个 PDF 已在库中");
+    expect(getToasts().some((t) => t.text.includes("补充文件失败"))).toBe(true);
   });
 });

@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useRef, useState, type CSSProperties } from "react";
+import { scanImportItem, type ImportItemScan, type PaperRef } from "../lib/importScan";
 import { lookupPaper } from "../lib/lookup";
 import { pickPdfFiles, pickPdfFolder } from "../lib/mineru";
 import { parsePastedRef, type ParsedRef } from "../lib/pasteRef";
@@ -14,6 +15,7 @@ export function PaperDialog() {
   const closeDialog = useField((s) => s.closeDialog);
   const importPdfs = useField((s) => s.importPdfs);
   const importPdfsPerFile = useField((s) => s.importPdfsPerFile);
+  const attachPdfToPaper = useField((s) => s.attachPdfToPaper);
   const domains = useField((s) => s.domains);
   // 导入目标：显式改选（含就地新建）优先，缺省跟随当前选中领域；对话框顶部常驻可见。
   const importTargetDomainId = useField((s) => s.importTargetDomainId);
@@ -22,12 +24,26 @@ export function PaperDialog() {
   const targetDomain = domains.find((d) => d.id === targetDomainId) ?? null;
   // 清单里逐文件可指定目标领域（domainTouched：用户单独改过的不跟随对话框目标联动）。
   const [items, setItems] = useState<
-    Array<{ path: string; name: string; duplicate: boolean; excluded: boolean; domainId: string; domainTouched: boolean }>
+    Array<{
+      path: string;
+      name: string;
+      duplicate: boolean;
+      excluded: boolean;
+      domainId: string;
+      domainTouched: boolean;
+      /** 文件名扫描：提取的 arXiv 号 / 清洗标题 / 与库内著录的重复候选。 */
+      scan: ImportItemScan | null;
+      /** 「已在库中」对应的原条目（点开直达）。 */
+      duplicatePaper: { id: string; title: string; domainName: string } | null;
+      /** 已通过「补充到已有条目」挂上文件的行：不再参与导入。 */
+      attached: boolean;
+    }>
   >([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<{ done: number; total: number; current: string } | null>(null);
   const [manualOpen, setManualOpen] = useState(false);
+  const [attachBusy, setAttachBusy] = useState(false);
   const open = dialog === "paper";
 
   useEffect(() => {
@@ -37,6 +53,7 @@ export function PaperDialog() {
     setBusy(false);
     setProgress(null);
     setManualOpen(false);
+    setAttachBusy(false);
   }, [open]);
 
   // 对话框目标领域变化时：没被单独改过的行跟着换目标（跨领域收集时先全部指到 A 再逐个改）。
@@ -51,6 +68,18 @@ export function PaperDialog() {
 
   async function addPaths(paths: string[]) {
     const known = new Set(await repo.pdfPaths());
+    // 库内轻量引用：既找出「已在库中」的原条目，也做 arXiv/标题的重复候选扫描。
+    let refs: PaperRef[] = [];
+    try {
+      refs = await repo.paperRefsForDedup();
+    } catch {
+      refs = []; // 引用读不到时只保留按路径的重复标记，候选扫描安静降级。
+    }
+    const byPath = new Map<string, PaperRef>();
+    for (const ref of refs) {
+      if (ref.pdfPath) byPath.set(ref.pdfPath, ref);
+      if (ref.pdfOriginalPath) byPath.set(ref.pdfOriginalPath, ref);
+    }
     const fallbackDomain = targetDomainId ?? domains[0]?.id ?? "";
     setItems((current) => {
       const next = new Map(current.map((item) => [item.path, item]));
@@ -61,7 +90,18 @@ export function PaperDialog() {
         const excluded = prev?.excluded ?? false;
         const domainId = prev?.domainId ?? fallbackDomain;
         const domainTouched = prev?.domainTouched ?? false;
-        next.set(path, { path, name, duplicate: known.has(path), excluded, domainId, domainTouched });
+        const ref = byPath.get(path) ?? null;
+        next.set(path, {
+          path,
+          name,
+          duplicate: known.has(path),
+          excluded,
+          domainId,
+          domainTouched,
+          scan: prev?.scan ?? scanImportItem(name, refs),
+          duplicatePaper: ref ? { id: ref.id, title: ref.titleZh || ref.title, domainName: ref.domainName } : null,
+          attached: prev?.attached ?? false,
+        });
       }
       return [...next.values()];
     });
@@ -90,8 +130,8 @@ export function PaperDialog() {
     }
   }
 
-  const fresh = items.filter((item) => !item.duplicate && !item.excluded);
-  const checkable = items.filter((item) => !item.duplicate);
+  const fresh = items.filter((item) => !item.duplicate && !item.excluded && !item.attached);
+  const checkable = items.filter((item) => !item.duplicate && !item.attached);
   const checkedCount = checkable.filter((item) => !item.excluded).length;
   // 本批要分入几个领域：1 个保持「导入 N 篇到「X」」的原按钮与原链路；多个则走逐文件导入。
   const freshDomains = [...new Set(fresh.map((item) => item.domainId))];
@@ -102,7 +142,7 @@ export function PaperDialog() {
   }
 
   function setAllExcluded(excluded: boolean) {
-    setItems((current) => current.map((item) => (item.duplicate ? item : { ...item, excluded })));
+    setItems((current) => current.map((item) => (item.duplicate || item.attached ? item : { ...item, excluded })));
   }
 
   function setItemDomain(path: string, domainId: string) {
@@ -136,7 +176,22 @@ export function PaperDialog() {
     return groupItems.every((item) => item.domainId === first) ? first : "";
   }
 
+  /** 「补充到已有条目」：把这个 PDF 挂到候选的那篇论文上，行转为已补充，不再参与导入。 */
+  async function attachCandidate(item: (typeof items)[number]) {
+    if (!item.scan?.candidate || attachBusy) return;
+    setAttachBusy(true);
+    try {
+      await attachPdfToPaper(item.scan.candidate.paperId, item.path);
+      setItems((current) => current.map((row) => (row.path === item.path ? { ...row, attached: true } : row)));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAttachBusy(false);
+    }
+  }
+
   function renderItem(item: (typeof items)[number], index: number) {
+    const candidate = item.scan?.candidate ?? null;
     return (
       <li
         key={item.path}
@@ -146,14 +201,14 @@ export function PaperDialog() {
         <label className="ef-import-check">
           <input
             type="checkbox"
-            checked={!item.duplicate && !item.excluded}
-            disabled={busy || item.duplicate}
+            checked={!item.duplicate && !item.excluded && !item.attached}
+            disabled={busy || item.duplicate || item.attached}
             onChange={(e) => toggleExcluded(item.path, !e.target.checked)}
           />
           <span>{item.name}</span>
         </label>
         <span className="ef-import-row-side">
-          {domains.length > 1 && !item.duplicate ? (
+          {domains.length > 1 && !item.duplicate && !item.attached ? (
             <select
               className="ef-import-row-domain"
               aria-label={`目标领域：${item.name}`}
@@ -168,7 +223,27 @@ export function PaperDialog() {
               ))}
             </select>
           ) : null}
-          {item.duplicate ? <em>已在库中</em> : null}
+          {item.attached ? (
+            <em>已补充到「{candidate?.title ?? "已有条目"}」</em>
+          ) : item.duplicate ? (
+            <em>已在库中</em>
+          ) : candidate ? (
+            <span className="ef-import-dup">
+              <span className="ef-import-dup-info">
+                疑似已有 · {candidate.title}（{candidate.domainName}）· {candidate.detail}
+              </span>
+              <Button
+                type="button"
+                size="sm"
+                variant="text"
+                disabled={busy || attachBusy}
+                title={`把这个 PDF 补充到「${candidate.title}」，不另建新条目`}
+                onClick={() => void attachCandidate(item)}
+              >
+                补充到已有条目
+              </Button>
+            </span>
+          ) : null}
         </span>
       </li>
     );

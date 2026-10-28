@@ -23,6 +23,7 @@ vi.mock("../lib/lookup", () => ({
 vi.mock("../lib/repo", () => ({
   repo: {
     pdfPaths: vi.fn(async () => [] as string[]),
+    paperRefsForDedup: vi.fn(async () => [] as never[]),
     importLocalPdfs: vi.fn(),
     stats: vi.fn(async () => ({ read: 0, total: 0, openSource: 0, queued: 0, running: 0 })),
     listJobs: vi.fn(async () => []),
@@ -80,6 +81,7 @@ beforeEach(() => {
   vi.mocked(pickPdfFolder).mockReset();
   vi.mocked(repo.importLocalPdfs).mockReset();
   vi.mocked(repo.pdfPaths).mockResolvedValue([]);
+  vi.mocked(repo.paperRefsForDedup).mockResolvedValue([]);
   useField.setState({ dialog: "paper", selectedDomainId: "d-1" });
 });
 
@@ -678,6 +680,66 @@ describe("PaperDialog · 逐文件/按文件夹指定目标领域", () => {
     // a 没单独改过：跟随新目标 d-3；b 单独指派过：保留 d-2
     expect(screen.getByLabelText("目标领域：a.pdf")).toHaveValue("d-3");
     expect(screen.getByLabelText("目标领域：b.pdf")).toHaveValue("d-2");
+  });
+});
+
+describe("PaperDialog · 重复候选（arXiv/标题跨领域比对）", () => {
+  beforeEach(() => {
+    asTauri();
+    vi.mocked(repo.paperRefsForDedup).mockResolvedValue([
+      {
+        id: "p-1",
+        title: "Attention Is All You Need",
+        titleZh: null,
+        arxivId: "1706.03762",
+        doi: null,
+        domainId: "d-2",
+        domainName: "指令对齐",
+        pdfPath: null,
+        pdfOriginalPath: null,
+      },
+    ]);
+  });
+
+  it("同 arXiv 号的换名文件标「疑似已有」并展示匹配依据与所属领域", async () => {
+    vi.mocked(pickPdfFiles).mockResolvedValue(["/papers/1706.03762v2 my copy.pdf"]);
+    render(<PaperDialog />);
+    fireEvent.click(screen.getByRole("button", { name: /选择 PDF/ }));
+    await waitFor(() =>
+      expect(screen.getByText(/疑似已有 · Attention Is All You Need（指令对齐）· arXiv 1706\.03762 相同/)).toBeInTheDocument(),
+    );
+    // 默认仍按导入处理（保留分支）；由用户决定补充、排除或保留。
+    expect(screen.getByRole("button", { name: "导入 1" })).toBeInTheDocument();
+  });
+
+  it("「补充到已有条目」调用 store 动作，行转为已补充且不再计入导入数", async () => {
+    vi.mocked(pickPdfFiles).mockResolvedValue(["/papers/1706.03762v2 my copy.pdf"]);
+    const attachPdfToPaper = vi.fn(async () => undefined);
+    useField.setState({ attachPdfToPaper });
+    render(<PaperDialog />);
+    fireEvent.click(screen.getByRole("button", { name: /选择 PDF/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "补充到已有条目" })).toBeEnabled());
+
+    fireEvent.click(screen.getByRole("button", { name: "补充到已有条目" }));
+    await waitFor(() => expect(attachPdfToPaper).toHaveBeenCalledWith("p-1", "/papers/1706.03762v2 my copy.pdf"));
+    expect(await screen.findByText(/已补充到「Attention Is All You Need」/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^导入/ })).toBeNull();
+  });
+
+  it("补充失败时行不转为已补充，错误就地显示", async () => {
+    vi.mocked(pickPdfFiles).mockResolvedValue(["/papers/1706.03762v2 my copy.pdf"]);
+    const attachPdfToPaper = vi.fn(async () => {
+      throw new Error("这个 PDF 已在库中");
+    });
+    useField.setState({ attachPdfToPaper });
+    render(<PaperDialog />);
+    fireEvent.click(screen.getByRole("button", { name: /选择 PDF/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "补充到已有条目" })).toBeEnabled());
+
+    fireEvent.click(screen.getByRole("button", { name: "补充到已有条目" }));
+    await waitFor(() => expect(screen.getByText(/这个 PDF 已在库中/)).toBeInTheDocument());
+    expect(screen.queryByText(/已补充到/)).toBeNull();
+    expect(screen.getByRole("button", { name: "导入 1" })).toBeInTheDocument();
   });
 });
 

@@ -3815,6 +3815,20 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* 重复候选提示：匹配依据 + 「补充到已有条目」分支（由用户决定合并/保留/另建）。 */
+.ef-import-dup {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 60%;
+}
+.ef-import-dup-info {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--pf-secondary);
+  font-size: var(--pf-fs-caption);
+}
 .ef-dialog-foot {
   display: flex;
   gap: 10px;
