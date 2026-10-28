@@ -1327,6 +1327,20 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   height: 1px;
   background: var(--pf-control-border);
 }
+[data-saved-change="true"] {
+  box-shadow: inset 3px 0 0 currentColor;
+}
+
+.ef-title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  max-width: 100%;
+  margin: 0 0 14px;
+}
+.ef-title-row .ef-read-title { margin: 0; }
+.ef-title-row .ef-source-badge { margin-left: 0; }
 .ef-document h1,
 .ef-read-title {
   position: relative;
