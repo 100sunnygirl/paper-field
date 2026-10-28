@@ -276,7 +276,7 @@ describe("PaperNav · 领域标题与批量入口", () => {
     useField.setState(useField.getInitialState(), true);
   });
 
-  it("领域标题整行是切换按钮，chevron 只是图标", () => {
+  it("领域标题整行是切换按钮，chevron 只是图标；点击就地展开快捷切换下拉", () => {
     useField.setState({
       mode: "field",
       selectedDomainId: "d-1",
@@ -289,6 +289,14 @@ describe("PaperNav · 领域标题与批量入口", () => {
           sortOrder: 1,
           createdAt: "2024-01-01T00:00:00.000Z",
         },
+        {
+          id: "d-2",
+          name: "指令对齐",
+          code: "AL-02",
+          summary: null,
+          sortOrder: 2,
+          createdAt: "2024-01-02T00:00:00.000Z",
+        },
       ],
       papers: [intakeItem("a", null)],
     });
@@ -298,8 +306,10 @@ describe("PaperNav · 领域标题与批量入口", () => {
     expect(picker.querySelector("h2")).toHaveTextContent("多模态");
     expect(picker.querySelector(".ef-domain-select")).toBeTruthy();
     expect(picker.querySelector("button")).toBeNull();
+    // 点击展开快捷下拉：一步切换，不再先进领域选择对话框。
     fireEvent.click(picker);
-    expect(useField.getState().dialog).toBe("pick-domain");
+    expect(screen.getByRole("menu", { name: "领域快捷切换" })).toBeInTheDocument();
+    expect(useField.getState().dialog).toBeNull();
   });
 
   it("批量入口在图标旁显示「批量」", () => {

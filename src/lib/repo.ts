@@ -3,6 +3,7 @@ import { planPreparedMeta } from "./mergeMeta";
 import { seedIfEmpty } from "./seed";
 import type {
   Domain,
+  DomainCensus,
   DraftedNotes,
   FieldProviders,
   FieldSource,
@@ -375,6 +376,44 @@ export const repo = {
       "SELECT * FROM domains ORDER BY sort_order ASC, created_at ASC",
     );
     return rows.map(mapDomain);
+  },
+
+  /** 各领域论文概览（总数 / 三态 / 最近已读 / 最近活跃 / 本周新增）：一次 GROUP BY 读全。 */
+  async domainCensus(): Promise<DomainCensus[]> {
+    const engine = await getEngine();
+    const weekSince = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const rows = await engine.select<{
+      domain_id: string;
+      total: number;
+      unread: number;
+      reading: number;
+      read: number;
+      last_read_at: string | null;
+      last_activity_at: string | null;
+      week_count: number;
+    }>(
+      `SELECT domain_id,
+              COUNT(*) AS total,
+              SUM(CASE WHEN reading_status = 'unread' THEN 1 ELSE 0 END) AS unread,
+              SUM(CASE WHEN reading_status = 'reading' THEN 1 ELSE 0 END) AS reading,
+              SUM(CASE WHEN reading_status = 'read' THEN 1 ELSE 0 END) AS read,
+              MAX(read_at) AS last_read_at,
+              MAX(updated_at) AS last_activity_at,
+              SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS week_count
+         FROM papers
+        GROUP BY domain_id`,
+      [weekSince],
+    );
+    return rows.map((row) => ({
+      domainId: row.domain_id,
+      total: Number(row.total ?? 0),
+      unread: Number(row.unread ?? 0),
+      reading: Number(row.reading ?? 0),
+      read: Number(row.read ?? 0),
+      lastReadAt: row.last_read_at ?? null,
+      lastActivityAt: row.last_activity_at ?? null,
+      weekCount: Number(row.week_count ?? 0),
+    }));
   },
 
   async getDomain(id: string): Promise<Domain | null> {

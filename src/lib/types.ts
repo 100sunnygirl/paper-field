@@ -185,6 +185,21 @@ export interface FieldStats {
   running: number;
 }
 
+/** 领域级论文概览：快捷切换下拉、领域行计数与活跃度提示共用一份聚合。 */
+export interface DomainCensus {
+  domainId: string;
+  total: number;
+  unread: number;
+  reading: number;
+  read: number;
+  /** 领域内最近一次标记已读的时间（ISO）；没有已读论文为 null。 */
+  lastReadAt: string | null;
+  /** 领域内最近一次论文更新（入库 / 解析 / 笔记等）时间。 */
+  lastActivityAt: string | null;
+  /** 最近 7 天内新增的论文数。 */
+  weekCount: number;
+}
+
 /** 单个 LLM 提供商的公共视图：密钥永不回显，只返回 hasKey。 */
 export interface LlmProviderView {
   id: string;

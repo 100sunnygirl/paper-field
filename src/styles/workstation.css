@@ -806,6 +806,100 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 .ef-domain-select .ef-ico { width: 16px; height: 16px; transition: transform var(--pf-direct); }
 .ef-domain-select:hover { border-color: var(--pf-ink); background: var(--pf-ink); color: var(--pf-signal); }
 .ef-domain-select:hover .ef-ico { transform: translateY(1px); }
+/* 领域快捷切换下拉：点领域名就地展开（各领域带阅读进度），⌘1-9 / ⌘↑⌘↓ 直达。 */
+.ef-domain-menu-wrap { position: relative; margin-top: 10px; }
+.ef-domain-menu-wrap .ef-domain-picker { margin-top: 0; }
+.ef-domain-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 12;
+  background: var(--pf-surface);
+  border: 1px solid var(--pf-ink);
+  border-radius: var(--pf-radius);
+  box-shadow: 0 14px 34px rgba(25, 25, 25, 0.16);
+  padding: 6px;
+  max-height: min(60vh, 420px);
+  overflow: auto;
+}
+.ef-domain-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: calc(var(--pf-radius) - 1px);
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ef-domain-menu-item:hover { background: var(--pf-hover-flat); }
+.ef-domain-menu-item.is-current { background: var(--pf-hover-quiet); }
+.ef-domain-menu-main { min-width: 0; display: block; }
+.ef-domain-menu-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--pf-fs-ui);
+  font-weight: 600;
+  color: var(--pf-ink);
+  overflow-wrap: anywhere;
+}
+.ef-domain-menu-name .ef-ico { width: 13px; height: 13px; color: var(--pf-success); flex: none; }
+.ef-domain-menu-meta {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-muted);
+}
+.ef-domain-menu-bar {
+  display: block;
+  height: 3px;
+  margin-top: 5px;
+  background: #dcdfd5;
+  overflow: hidden;
+}
+.ef-domain-menu-bar > i { display: block; height: 3px; background: var(--pf-ink); }
+.ef-domain-menu-item kbd,
+.ef-domain-menu-hint {
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-muted);
+}
+.ef-domain-menu-item kbd {
+  flex: none;
+  border: 1px solid var(--pf-divider);
+  border-radius: 4px;
+  padding: 1px 5px;
+  background: var(--pf-panel);
+}
+.ef-domain-menu-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-top: 1px solid var(--pf-divider);
+  margin-top: 6px;
+  padding: 8px 10px 2px;
+}
+.ef-domain-menu-foot button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: none;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+  cursor: pointer;
+}
+.ef-domain-menu-foot button:hover { color: var(--pf-ink); }
+.ef-domain-menu-foot button .ef-ico { width: 13px; height: 13px; }
+.ef-domain-menu-hint { white-space: nowrap; }
 .ef-nav-sum {
   font-size: var(--pf-fs-caption);
   color: var(--pf-secondary);
