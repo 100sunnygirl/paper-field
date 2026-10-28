@@ -723,3 +723,55 @@ describe("DomainPickerDialog · 批量移动（move-checked）", () => {
     expect(screen.queryByRole("button", { name: "新建领域并移入" })).toBeNull();
   });
 });
+
+describe("DomainPickerDialog · 手动排序（写回 sort_order）", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  function openSwitch() {
+    useField.setState({ dialog: "pick-domain", domains: PICKER_DOMAINS, selectedDomainId: "d-1" });
+    return render(<DomainPickerDialog />);
+  }
+
+  it("「调整顺序」进入排序模式：按 sort_order 列出（不受最近置顶影响），行不再点击切换", () => {
+    recordDomainVisit("d-3"); // 最近置顶影响切换视图，但排序视图按 sort_order
+    openSwitch();
+    fireEvent.click(screen.getByRole("button", { name: "调整顺序" }));
+    expect(screen.getByText(/用 ↑↓ 调整领域顺序/)).toBeInTheDocument();
+    const rows = document.querySelectorAll(".ef-order-row");
+    expect(rows).toHaveLength(3);
+    expect(rows[0].textContent).toContain("多模态");
+    expect(rows[2].textContent).toContain("强化学习");
+    // 排序模式下没有搜索框，也没有可点的切换行（只有 ↑↓ 调整按钮）
+    expect(screen.queryByLabelText("搜索领域")).toBeNull();
+    expect(document.querySelectorAll(".ef-domain-options button.ef-domain-option")).toHaveLength(0);
+  });
+
+  it("上移/下移立即写回新顺序；首行上移与末行下移禁用", () => {
+    const applyDomainOrder = vi.fn(async () => undefined);
+    useField.setState({ applyDomainOrder });
+    openSwitch();
+    fireEvent.click(screen.getByRole("button", { name: "调整顺序" }));
+    expect(screen.getByRole("button", { name: "上移 多模态" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "下移 强化学习" })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "上移 指令对齐" }));
+    expect(applyDomainOrder).toHaveBeenCalledTimes(1);
+    expect(applyDomainOrder).toHaveBeenCalledWith(["d-2", "d-1", "d-3"]);
+    // 本地顺序同步：指令对齐现在排第一
+    const rows = document.querySelectorAll(".ef-order-row");
+    expect(rows[0].textContent).toContain("指令对齐");
+  });
+
+  it("「完成排序」退出排序模式，恢复搜索与点击切换", () => {
+    const selectDomain = vi.fn(async () => undefined);
+    useField.setState({ selectDomain });
+    openSwitch();
+    fireEvent.click(screen.getByRole("button", { name: "调整顺序" }));
+    fireEvent.click(screen.getByRole("button", { name: "完成排序" }));
+    expect(screen.getByLabelText("搜索领域")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /指令对齐/ }));
+    expect(selectDomain).toHaveBeenCalledWith("d-2");
+  });
+});

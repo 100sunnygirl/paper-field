@@ -476,6 +476,10 @@ export function DomainPickerDialog() {
   const [createBusy, setCreateBusy] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const createInputRef = useRef<HTMLInputElement | null>(null);
+  // 手动排序模式：按 sort_order 列出并 ↑↓ 调整，改动即时写回（常用领域可以靠前）。
+  const applyDomainOrder = useField((s) => s.applyDomainOrder);
+  const [ordering, setOrdering] = useState(false);
+  const [order, setOrder] = useState<string[]>([]);
 
   useEffect(() => {
     if (!open) {
@@ -483,6 +487,8 @@ export function DomainPickerDialog() {
       setNewName("");
       setCreateBusy(false);
       setCreateError(null);
+      setOrdering(false);
+      setOrder([]);
       return;
     }
     setQuery("");
@@ -544,6 +550,22 @@ export function DomainPickerDialog() {
     }
   }
 
+  function toggleOrdering() {
+    if (!ordering) setOrder(domains.map((domain) => domain.id));
+    setOrdering((value) => !value);
+  }
+
+  function moveOrder(id: string, dir: -1 | 1) {
+    const index = order.indexOf(id);
+    const target = index + dir;
+    if (index < 0 || target < 0 || target >= order.length) return;
+    const next = [...order];
+    [next[index], next[target]] = [next[target], next[index]];
+    setOrder(next);
+    // 每次调整即时写回 sort_order：中途关掉对话框顺序也已生效。
+    void applyDomainOrder(next);
+  }
+
   function onFilterKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
     if (event.key === "Enter") {
       if (filtered.length) {
@@ -578,6 +600,14 @@ export function DomainPickerDialog() {
           </Button>
         ) : (
           <>
+            <Button
+              type="button"
+              aria-pressed={ordering}
+              className={ordering ? "is-active" : ""}
+              onClick={toggleOrdering}
+            >
+              {ordering ? "完成排序" : "调整顺序"}
+            </Button>
             <Button type="button" onClick={() => openDialog("edit-domain")}>
               编辑当前领域
             </Button>
@@ -594,8 +624,52 @@ export function DomainPickerDialog() {
           ? "选择这篇论文要进入的领域。"
           : movingChecked
             ? `把选中的 ${dialogPaperIds.length} 篇论文移入哪个领域？`
-            : "选择要查看的研究领域。"}
+            : ordering
+              ? "用 ↑↓ 调整领域顺序，常用领域放前面；每次调整即时保存（⌘1-9 跟随新顺序）。"
+              : "选择要查看的研究领域。"}
       </p>
+      {ordering ? (
+        <div className="ef-domain-options ef-domain-ordering" aria-label="领域排序列表">
+          {order.map((id, index) => {
+            const domain = domains.find((item) => item.id === id);
+            if (!domain) return null;
+            return (
+              <div key={id} className="ef-domain-option ef-order-row">
+                <span>
+                  <strong>{domain.name}</strong>
+                  <small className="ef-domain-option-sum">
+                    {domain.code}
+                    {index < 9 ? ` · ⌘${index + 1}` : ""}
+                  </small>
+                </span>
+                <span className="ef-order-actions">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="text"
+                    aria-label={`上移 ${domain.name}`}
+                    disabled={index === 0}
+                    onClick={() => moveOrder(id, -1)}
+                  >
+                    <Icon name="up" />
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="text"
+                    aria-label={`下移 ${domain.name}`}
+                    disabled={index === order.length - 1}
+                    onClick={() => moveOrder(id, 1)}
+                  >
+                    <Icon name="down" />
+                  </Button>
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <>
       <div className="ef-domain-filter">
         <Icon name="search" />
         <input
@@ -684,6 +758,8 @@ export function DomainPickerDialog() {
           )}
         </div>
       ) : null}
+        </>
+      )}
     </Dialog>
   );
 }

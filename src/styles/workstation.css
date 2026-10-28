@@ -3864,6 +3864,10 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   vertical-align: 2px;
 }
 .ef-domain-empty { color: var(--pf-muted); text-align: center; padding: 18px 0; }
+/* 排序模式：行不可点击切换，右侧 ↑↓ 立即写回 sort_order。 */
+.ef-domain-ordering .ef-order-row { cursor: default; }
+.ef-domain-ordering .ef-order-row:hover { background: var(--pf-surface); border-color: var(--pf-divider); }
+.ef-order-actions { display: inline-flex; gap: 2px; flex: none; }
 /* 移动模式：目标领域不存在时就地「新建领域并移入」，不必中途退出先去建。 */
 .ef-domain-create { margin-top: 10px; }
 .ef-domain-create-toggle {

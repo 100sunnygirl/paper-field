@@ -189,6 +189,8 @@ interface FieldState {
   closeDialog: () => void;
   createDomain: (input: { name: string; code: string; summary?: string }) => Promise<void>;
   updateDomain: (input: { name: string; code: string; summary?: string }) => Promise<void>;
+  /** 领域手动排序：把新顺序（id 数组）写回 sort_order 并同步 store 里的领域列表。 */
+  applyDomainOrder: (orderedIds: string[]) => Promise<void>;
   deleteDomain: () => Promise<void>;
   importPdfs: (
     paths: string[],
@@ -761,6 +763,22 @@ export const useField = create<FieldState>((set, get) => ({
     await repo.updateDomain(id, input);
     set({ dialog: null });
     await get().refresh();
+  },
+
+  applyDomainOrder: async (orderedIds) => {
+    if (!orderedIds.length) return;
+    try {
+      await repo.reorderDomains(orderedIds);
+      // 本地立即按新顺序重排（⌘1-9 与下拉同步跟随；refresh 也会带回同样顺序）。
+      const rank = new Map(orderedIds.map((id, index) => [id, index]));
+      const domains = [...get().domains].sort(
+        (a, b) => (rank.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.id) ?? Number.MAX_SAFE_INTEGER),
+      );
+      set({ domains });
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `调整领域顺序失败：${errText(err)}，数据未改动。` });
+      throw err;
+    }
   },
 
   deleteDomain: async () => {

@@ -1005,3 +1005,24 @@ describe("批量移动与批量标签（movePapers / tagsOfPapers / applyTagsToP
     expect((await repo.getPaper(papers[0]))?.tags).toEqual([]);
   });
 });
+
+describe("reorderDomains（手动排序写回 sort_order）", () => {
+  it("按传入顺序连续编号，listDomains 按新顺序返回", async () => {
+    const d1 = await makeDomain("MM-01");
+    const d2 = await makeDomain("AL-02");
+    const d3 = await makeDomain("RL-03");
+    const before = await repo.listDomains();
+    expect(before.map((d) => d.id)).toEqual([d1, d2, d3]);
+
+    await repo.reorderDomains([d3, d1, d2]);
+    const after = await repo.listDomains();
+    expect(after.map((d) => d.id)).toEqual([d3, d1, d2]);
+    expect(after.map((d) => d.sortOrder)).toEqual([1, 2, 3]);
+  });
+
+  it("空顺序不写库", async () => {
+    const d1 = await makeDomain();
+    await repo.reorderDomains([]);
+    expect((await repo.listDomains()).map((d) => d.id)).toEqual([d1]);
+  });
+});

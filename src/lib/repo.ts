@@ -461,6 +461,18 @@ export const repo = {
     ]);
   },
 
+  /** 手动排序：把给定顺序写回 sort_order（1 起连续编号，同一事务）。 */
+  async reorderDomains(orderedIds: string[]): Promise<void> {
+    if (!orderedIds.length) return;
+    const engine = await getEngine();
+    await engine.batch(
+      orderedIds.map((id, index) => ({
+        sql: "UPDATE domains SET sort_order = ? WHERE id = ?",
+        params: [index + 1, id],
+      })),
+    );
+  },
+
   async deleteDomain(id: string): Promise<void> {
     // 整域删除原子性由 pf_domain_cascade → pf_paper_cascade 触发器在单语句内完成
     // （论文/笔记/解析/作业/作者关联一次清完、孤儿作者扫除），中途失败整条语句
