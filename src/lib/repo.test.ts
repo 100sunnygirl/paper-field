@@ -916,6 +916,22 @@ describe("列级写入与条件写入", () => {
     expect(detail.notes.highlights.content).toBe("h");
     expect(detail.notes.highlights.source).toBe("llm");
   });
+
+  it("applyDraftedNotes：调用方给了版本号但笔记行不存在时不插入", async () => {
+    const domainId = await makeDomain();
+    const paper = await repo.createPaper({ domainId });
+    await holder.engine!.execute("DELETE FROM notes WHERE paper_id = ? AND kind = 'summary'", [paper.id]);
+    const revs = { remarks: 0, summary: -1, highlights: 0, weaknesses: 0, implications: 0 };
+    await repo.applyDraftedNotes(
+      paper.id,
+      { remarks: "r", summary: "不该出现", highlights: "h", weaknesses: "w", implications: "i" },
+      true,
+      revs,
+    );
+    const detail = (await repo.getPaper(paper.id))!;
+    expect(detail.notes.summary.content).toBe("");
+    expect(detail.notes.highlights.content).toBe("h");
+  });
 });
 
 describe("手动添加的 PDF 进文库", () => {

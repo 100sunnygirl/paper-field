@@ -1012,6 +1012,9 @@ export const repo = {
                  WHERE id = ? AND rev = ? AND (user_edited = 0 OR ? = 1)`,
           params: [notes[kind] ?? "", at, block.id, revs?.[kind] ?? Number(block.rev ?? 0), overwrite ? 1 : 0],
         });
+      } else if (revs && Object.prototype.hasOwnProperty.call(revs, kind)) {
+        // A supplied rev writes only when that rev still matches. There is no row to match,
+        // and inserting would create a block the caller withheld.
       } else {
         candidates.push(kind);
         steps.push({
