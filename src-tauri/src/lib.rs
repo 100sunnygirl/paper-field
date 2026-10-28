@@ -354,6 +354,7 @@ pub fn run() {
             restore::restore_list_pre,
             restore::restore_delete_pre,
             restore::restore_abandon,
+            restore::restore_staged_titles,
             appdir::appdir_migration_notices,
             applog::app_log_read,
             applog::app_log_write,

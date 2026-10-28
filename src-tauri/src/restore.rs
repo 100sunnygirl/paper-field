@@ -1111,6 +1111,48 @@ fn abandon_locked(dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct StagedTitle {
+    pub id: String,
+    pub title: String,
+    pub title_zh: Option<String>,
+}
+
+/// Read titles from the staged database on its own connection. Does not attach
+/// to the live pool and does not move the restore marker.
+pub async fn read_staged_titles(db: &Path) -> Result<Vec<StagedTitle>, String> {
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use sqlx::Row;
+    let options = SqliteConnectOptions::new().filename(db).read_only(true).create_if_missing(false);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .map_err(|e| format!("无法打开暂存文库：{e}"))?;
+    let result = sqlx::query("SELECT id, title, title_zh FROM papers WHERE id != '' ORDER BY id")
+        .fetch_all(&pool)
+        .await
+        .map_err(|e| format!("无法读取暂存文库标题：{e}"));
+    pool.close().await;
+    let rows = result?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(StagedTitle {
+            id: row.try_get("id").map_err(|e| e.to_string())?,
+            title: row.try_get("title").map_err(|e| e.to_string())?,
+            title_zh: row.try_get("title_zh").ok().flatten(),
+        });
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub async fn restore_staged_titles(app: AppHandle) -> Result<Vec<StagedTitle>, String> {
+    let db = app_config_dir(&app)?.join(STAGING).join(DB);
+    read_staged_titles(&db).await
+}
+
 #[tauri::command]
 pub async fn restore_abandon(app: AppHandle) -> Result<(), String> {
     abandon_restore(&app_config_dir(&app)?).await
@@ -1121,6 +1163,32 @@ mod tests {
     use super::*;
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
     use std::io::Write;
+
+    #[test]
+    fn read_staged_titles_lists_rows_and_skips_blank_ids() {
+        let path = std::env::temp_dir().join(format!("pf-staged-titles-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let opts = SqliteConnectOptions::new().filename(&path).create_if_missing(true);
+            let pool = SqlitePoolOptions::new().max_connections(1).connect_with(opts).await.unwrap();
+            sqlx::query("CREATE TABLE papers (id TEXT, title TEXT, title_zh TEXT)")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO papers (id, title, title_zh) VALUES ('b', 'Keep', '保留'), ('a', 'File.pdf', NULL), ('', 'skip', NULL)")
+                .execute(&pool)
+                .await
+                .unwrap();
+            pool.close().await;
+            let rows = read_staged_titles(&path).await.unwrap();
+            assert_eq!(rows.len(), 2);
+            assert_eq!(rows[0].id, "a");
+            assert_eq!(rows[0].title, "File.pdf");
+            assert_eq!(rows[1].title_zh.as_deref(), Some("保留"));
+        });
+        let _ = std::fs::remove_file(&path);
+    }
 
     fn tmp(n: &str) -> PathBuf {
         let d = crate::test_util::unique_temp_dir(&format!("pf-restore-{n}"));
