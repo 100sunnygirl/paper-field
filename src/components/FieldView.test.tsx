@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PaperListItem } from "../lib/types";
 import { resetActivity, trackJob } from "../lib/activity";
@@ -162,6 +162,256 @@ describe("PaperNav · INTAKE 任务列表只显示进行中的作业", () => {
     render(<PaperNav />);
     expect(screen.getByText(/另有 2 条进行中作业/)).toBeInTheDocument();
     expect(document.querySelectorAll(".ef-job-row-main")).toHaveLength(6);
+  });
+});
+
+describe("PaperNav · 归档筛选、分组与排序", () => {
+  function archiveItem(
+    id: string,
+    domainId: string,
+    year: number | null,
+    readAt: string | null,
+    notesRevisedAt?: string,
+  ): PaperListItem {
+    return {
+      ...intakeItem(id, null),
+      domainId,
+      readingStatus: "read" as const,
+      readAt,
+      year,
+      notesRevisedAt: notesRevisedAt ?? null,
+      domainName: domainId === "d-1" ? "多模态" : "指令对齐",
+      domainCode: domainId === "d-1" ? "MM-01" : "IA-02",
+      titleZh: null,
+      title: `Paper ${id}`,
+    };
+  }
+
+  const domains = [
+    { id: "d-1", name: "多模态", code: "MM-01", summary: null, sortOrder: 1, createdAt: "2024-01-01T00:00:00.000Z" },
+    { id: "d-2", name: "指令对齐", code: "IA-02", summary: null, sortOrder: 2, createdAt: "2024-01-01T00:00:00.000Z" },
+  ];
+
+  function archiveOf(): PaperListItem[] {
+    return [
+      archiveItem("a", "d-1", 2023, "2026-01-05T00:00:00.000Z", "2026-02-01T00:00:00.000Z"),
+      archiveItem("b", "d-2", 2024, "2026-03-05T00:00:00.000Z"),
+      archiveItem("c", "d-1", null, "2026-02-05T00:00:00.000Z", "2026-03-01T00:00:00.000Z"),
+    ];
+  }
+
+  it("领域与年份组合筛选：只显示同时满足的行，计数跟随可见列表", () => {
+    useField.setState({ mode: "archive", domains, archive: archiveOf() });
+    const { rerender } = render(<PaperNav />);
+    expect(document.querySelectorAll(".ef-row")).toHaveLength(3);
+
+    fireEvent.change(screen.getByLabelText("按领域筛选归档"), { target: { value: "d-2" } });
+    rerender(<PaperNav />);
+    expect(document.querySelectorAll(".ef-row")).toHaveLength(1);
+    expect(document.querySelector(".ef-count")?.textContent).toBe("01");
+
+    fireEvent.change(screen.getByLabelText("按发表年份筛选归档"), { target: { value: "2023" } });
+    rerender(<PaperNav />);
+    expect(screen.getByText("没有符合条件的已读论文。可以调整上方的领域 / 年份筛选或开源状态。")).toBeInTheDocument();
+  });
+
+  it("排序：标题 / 最近改笔记 / 标记最久各有正确顺序", () => {
+    useField.setState({
+      mode: "archive",
+      domains,
+      archive: [
+        archiveItem("b", "d-1", 2023, "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z"),
+        archiveItem("a", "d-1", 2024, "2026-03-01T00:00:00.000Z"),
+        archiveItem("c", "d-1", 2022, "2026-02-01T00:00:00.000Z", "2026-02-01T00:00:00.000Z"),
+      ],
+    });
+    const { rerender } = render(<PaperNav />);
+    const titles = () => [...document.querySelectorAll(".ef-row h3")].map((node) => node.textContent);
+
+    // 默认按最近已读（readAt 降序）。
+    expect(titles()).toEqual(["Paper a", "Paper c", "Paper b"]);
+
+    fireEvent.change(screen.getByLabelText("归档排序方式"), { target: { value: "title" } });
+    rerender(<PaperNav />);
+    expect(titles()).toEqual(["Paper a", "Paper b", "Paper c"]);
+
+    fireEvent.change(screen.getByLabelText("归档排序方式"), { target: { value: "notes-recent" } });
+    rerender(<PaperNav />);
+    expect(titles()).toEqual(["Paper c", "Paper b", "Paper a"]);
+
+    fireEvent.change(screen.getByLabelText("归档排序方式"), { target: { value: "oldest-read" } });
+    rerender(<PaperNav />);
+    expect(titles()).toEqual(["Paper b", "Paper c", "Paper a"]);
+  });
+
+  it("按领域分组：组头带领域与已读数，点击折叠该组", () => {
+    useField.setState({ mode: "archive", domains, archive: archiveOf() });
+    const { rerender } = render(<PaperNav />);
+    fireEvent.click(screen.getByRole("button", { name: "按领域分组" }));
+    rerender(<PaperNav />);
+
+    const head = screen.getByRole("button", { name: "折叠领域分组：多模态" });
+    expect(head).toHaveTextContent("多模态");
+    expect(head).toHaveTextContent("已读 2 篇");
+    expect(screen.getByRole("button", { name: /折叠领域分组：指令对齐/ })).toHaveTextContent("已读 1 篇");
+    expect(document.querySelectorAll(".ef-row")).toHaveLength(3);
+
+    fireEvent.click(head);
+    rerender(<PaperNav />);
+    expect(screen.getByRole("button", { name: "展开领域分组：多模态" })).toBeInTheDocument();
+    // 多模态组折叠后只剩指令对齐组的 1 行。
+    expect(document.querySelectorAll(".ef-row")).toHaveLength(1);
+  });
+  it("归档批量模式提供「对照表」入口：少于两篇禁用，两篇起打开对照表对话框", () => {
+    useField.setState({
+      mode: "archive",
+      archive: [archiveItem("a", "d-1", 2023, "2026-01-01T00:00:00.000Z"), archiveItem("b", "d-1", 2024, "2026-02-01T00:00:00.000Z")],
+      batchMode: true,
+    });
+    const { rerender } = render(<PaperNav />);
+    const compare = screen.getByRole("button", { name: "对照表" });
+    expect(compare).toBeDisabled();
+
+    useField.setState({ checkedPaperIds: ["a"] });
+    rerender(<PaperNav />);
+    expect(screen.getByRole("button", { name: "对照表" })).toBeDisabled();
+
+    useField.setState({ checkedPaperIds: ["a", "b"] });
+    rerender(<PaperNav />);
+    fireEvent.click(screen.getByRole("button", { name: "对照表" }));
+    expect(useField.getState().dialog).toBe("compare-notes");
+    // 打开时冻结勾选集。
+    expect(useField.getState().dialogPaperIds).toEqual(["a", "b"]);
+  });
+
+  it("「笔记未写满」筛选：只留五块未写满的行，行内显示笔记 x/5", () => {
+    useField.setState({
+      mode: "archive",
+      domains,
+      archive: [
+        { ...archiveItem("a", "d-1", 2023, "2026-01-01T00:00:00.000Z"), notesFilled: 5 },
+        { ...archiveItem("b", "d-1", 2024, "2026-02-01T00:00:00.000Z"), notesFilled: 3 },
+      ],
+    });
+    const { rerender } = render(<PaperNav />);
+    expect(document.querySelectorAll(".ef-row")).toHaveLength(2);
+
+    fireEvent.click(screen.getByRole("button", { name: "笔记未写满" }));
+    rerender(<PaperNav />);
+    expect(useField.getState().archiveView.notesIncomplete).toBe(true);
+    const rows = document.querySelectorAll(".ef-row");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].textContent).toContain("笔记 3/5");
+  });
+
+  it("现场模式批量工具栏不提供「对照表」", () => {
+    useField.setState({ mode: "field", papers: [intakeItem("a", null)], batchMode: true });
+    render(<PaperNav />);
+    expect(screen.queryByRole("button", { name: "对照表" })).toBeNull();
+  });
+  it("归档行显示领域徽标与「在所属领域中打开」：徽标筛选该领域（再点取消），直达进入现场", async () => {
+    const selectDomain = vi.fn(async () => undefined);
+    const selectPaper = vi.fn(async () => undefined);
+    useField.setState({ mode: "archive", domains, archive: archiveOf(), selectDomain, selectPaper });
+    const { rerender } = render(<PaperNav />);
+
+    const badge = screen.getAllByRole("button", { name: "只看领域 多模态 的已读论文" })[0];
+    expect(badge).toHaveTextContent("MM-01");
+    fireEvent.click(badge);
+    rerender(<PaperNav />);
+    expect(useField.getState().archiveView.domainId).toBe("d-1");
+    expect(document.querySelectorAll(".ef-row")).toHaveLength(2);
+    // 激活的徽标再点一次取消筛选，回到全部领域。
+    fireEvent.click(screen.getAllByRole("button", { name: "只看领域 多模态 的已读论文" })[0]);
+    rerender(<PaperNav />);
+    expect(useField.getState().archiveView.domainId).toBeNull();
+
+    await act(async () => {
+      fireEvent.click(screen.getAllByRole("button", { name: /在所属领域中打开/ })[0]);
+    });
+    // 默认按最近已读排序，第一行是 readAt 最新的 b（领域 d-2）。
+    expect(selectDomain).toHaveBeenCalledWith("d-2");
+    expect(selectPaper).toHaveBeenCalledWith("b");
+    expect(useField.getState().flash?.text).toContain("已在所属领域中打开");
+  });
+
+  it("现场模式行不带领域徽标与直达入口", () => {
+    useField.setState({ mode: "field", papers: [intakeItem("a", null)] });
+    render(<PaperNav />);
+    expect(screen.queryByRole("button", { name: /只看领域/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /在所属领域中打开/ })).toBeNull();
+  });
+});
+
+describe("PaperNav · 阅读成果统计卡与归档空态指引", () => {
+  function readAtItem(id: string, readAt: string, domainName = "多模态"): PaperListItem {
+    return { ...intakeItem(id, null), readingStatus: "read" as const, readAt, domainName };
+  }
+
+  function localIso(date: Date): string {
+    const p = (n: number) => String(n).padStart(2, "0");
+    return `${date.getFullYear()}-${p(date.getMonth() + 1)}-${p(date.getDate())}T09:00:00.000`;
+  }
+
+  it("显示本周 / 本月 / 连续阅读与今年回顾，可安静关闭（本机记住）", () => {
+    localStorage.removeItem("paper-field.archive-stats-dismissed");
+    const now = new Date();
+    const daysAgo = (n: number) => {
+      const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - n, 9);
+      return localIso(d);
+    };
+    useField.setState({
+      mode: "archive",
+      archive: [readAtItem("a", daysAgo(0)), readAtItem("b", daysAgo(1))],
+    });
+    render(<PaperNav />);
+    const card = document.querySelector(".ef-archive-stats");
+    expect(card).toBeTruthy();
+    // 周界随星期几漂移，只断言标签；连续阅读（今天+昨天）与今年口径是确定的。
+    expect(card?.textContent).toContain("本周已读");
+    expect(card?.textContent).toContain("本月已读");
+    expect(card?.textContent).toContain("连续阅读 2 天");
+    expect(card?.textContent).toContain("今年已读 2 篇");
+    expect(card?.textContent).toContain("最常读 多模态");
+    expect(card?.querySelectorAll(".ef-stats-spark i")).toHaveLength(12);
+
+    fireEvent.click(screen.getByRole("button", { name: "关闭阅读成果统计（不再显示）" }));
+    expect(document.querySelector(".ef-archive-stats")).toBeNull();
+    expect(localStorage.getItem("paper-field.archive-stats-dismissed")).toBe("1");
+    localStorage.removeItem("paper-field.archive-stats-dismissed");
+  });
+
+  it("空归档给出三步指引与下一步入口：去读第一篇 / 去入库看看", async () => {
+    localStorage.removeItem("paper-field.archive-stats-dismissed");
+    const selectDomain = vi.fn(async () => undefined);
+    const selectPaper = vi.fn(async () => undefined);
+    const setMode = vi.fn(async () => undefined);
+    useField.setState({
+      mode: "archive",
+      archive: [],
+      intake: [intakeItem("p1", "done")],
+      selectDomain,
+      selectPaper,
+      setMode,
+    });
+    render(<PaperNav />);
+    expect(screen.getByText(/在「现场」或「入库」打开一篇论文/)).toBeInTheDocument();
+    expect(screen.getByText(/把阅读状态改为「已读」/)).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "去读第一篇" }));
+    });
+    expect(selectDomain).toHaveBeenCalledWith("d-1");
+    expect(selectPaper).toHaveBeenCalledWith("p1");
+
+    fireEvent.click(screen.getByRole("button", { name: "去入库看看" }));
+    expect(setMode).toHaveBeenCalledWith("intake");
+  });
+
+  it("库里完全没有论文时「去读第一篇」禁用", () => {
+    useField.setState({ mode: "archive", archive: [], intake: [], papers: [] });
+    render(<PaperNav />);
+    expect(screen.getByRole("button", { name: "去读第一篇" })).toBeDisabled();
   });
 });
 

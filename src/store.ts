@@ -71,7 +71,28 @@ interface Flash {
 /** 数据导出的可选范围。 */
 export type ExportScope = "current" | "all" | "read" | "checked" | "paper";
 
-/** 导出格式：按领域分文件夹的 Markdown / 单文件合并版 / BibTeX。 */
+/** 归档列表的排序口径（开源状态筛选沿用 archiveFilter，走 SQL）。 */
+export type ArchiveSort = "recent-read" | "oldest-read" | "notes-recent" | "year" | "title";
+
+/** 归档的客户端视图状态：领域 / 年份 / 笔记完整度筛选 + 排序 + 是否按领域分组。 */
+export interface ArchiveView {
+  /** null = 全部领域。 */
+  domainId: string | null;
+  /** null = 全部年份。 */
+  year: number | null;
+  /** 只看「五块笔记未写满」的已读论文（回头补笔记）。 */
+  notesIncomplete: boolean;
+  sort: ArchiveSort;
+  groupByDomain: boolean;
+}
+
+export const DEFAULT_ARCHIVE_VIEW: ArchiveView = {
+  domainId: null,
+  year: null,
+  notesIncomplete: false,
+  sort: "recent-read",
+  groupByDomain: false,
+};/** 导出格式：按领域分文件夹的 Markdown / 单文件合并版 / BibTeX。 */
 export type ExportFormat = "folders" | "merged" | "bibtex";
 
 /** 一次导出的完整计划：范围 + 格式 + 内容选择。 */
@@ -106,6 +127,9 @@ interface FieldState {
   stats: FieldStats;
   search: string;
   archiveFilter: OpenSource | "all";
+  /** 归档客户端视图（领域/年份筛选、排序、分组）；与 archiveFilter 分开存放。 */
+  archiveView: ArchiveView;
+  setArchiveView: (patch: Partial<ArchiveView>) => void;
   settings: LlmSettings;
   mineru: MineruSettingsV2;
   biblio: BiblioStatus;
@@ -124,12 +148,13 @@ interface FieldState {
     | "move-paper"
     | "delete-paper"
     | "delete-checked"
+    | "compare-notes"
     | "pick-domain"
     | "edit-paper"
     | null;
   /** 对话框打开时锁定的目标论文：之后选中怎么变，对话框都只作用于它。 */
   dialogPaperId: string | null;
-  /** delete-checked 打开时冻结的勾选集。 */
+  /** delete-checked / compare-notes 打开时冻结的勾选集。 */
   dialogPaperIds: string[];
   pendingDraftJob: string | null;
   /** 正在编辑、尚未保存的笔记草稿，按论文分开存：切换论文不丢，切回来还在。 */
@@ -355,6 +380,7 @@ export const useField = create<FieldState>((set, get) => ({
   stats: { read: 0, total: 0, openSource: 0, queued: 0, running: 0 },
   search: "",
   archiveFilter: "all",
+  archiveView: DEFAULT_ARCHIVE_VIEW,
   settings: { version: 2, providers: [], usage: {} },
   mineru: DEFAULT_MINERU,
   biblio: DEFAULT_BIBLIO,
@@ -566,7 +592,12 @@ export const useField = create<FieldState>((set, get) => ({
     set({
       dialog,
       dialogPaperId: paperScoped ? (typeof target === "string" ? target : state.paper?.id ?? state.selectedPaperId) : null,
-      dialogPaperIds: dialog === "delete-checked" ? (Array.isArray(target) ? [...target] : [...state.checkedPaperIds]) : [],
+      dialogPaperIds:
+        dialog === "delete-checked" || dialog === "compare-notes"
+          ? Array.isArray(target)
+            ? [...target]
+            : [...state.checkedPaperIds]
+          : [],
     });
   },
   closeDialog: () => set({ dialog: null, dialogPaperId: null, dialogPaperIds: [], pendingDraftJob: null }),
@@ -721,6 +752,10 @@ export const useField = create<FieldState>((set, get) => ({
   setArchiveFilter: async (value) => {
     set({ archiveFilter: value });
     await get().refresh({ reselect: true });
+  },
+
+  setArchiveView: (patch) => {
+    set({ archiveView: { ...get().archiveView, ...patch } });
   },
 
   createDomain: async (input) => {

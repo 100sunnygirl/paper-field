@@ -1,7 +1,14 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { pickPdfFiles, pickPdfFolder } from "../lib/mineru";
 import { repo } from "../lib/repo";
-import type { Author, PaperDetail } from "../lib/types";
+import {
+  NOTE_DISPLAY_ORDER,
+  NOTE_LABELS,
+  OPEN_SOURCE_LABELS,
+  type Author,
+  type NoteKind,
+  type PaperDetail,
+} from "../lib/types";
 import { isTauri } from "../lib/util";
 import { useField } from "../store";
 import { Button, Dialog, Field, Icon } from "./ui";
@@ -594,6 +601,133 @@ export function DeleteCheckedPapersDialog() {
       <p>
         将删除选中的 <strong>{checkedPaperIds.length}</strong> 篇论文及其全部笔记。此操作不可撤销。
       </p>
+    </Dialog>
+  );
+}
+
+/** 对照表单元格的摘录长度（换行折平，超长截断加省略号）。 */
+const COMPARE_EXCERPT = 80;
+
+function compareExcerpt(text: string): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > COMPARE_EXCERPT ? `${flat.slice(0, COMPARE_EXCERPT - 1)}…` : flat;
+}
+
+/**
+ * 勾选归档论文后的五块笔记对照表：行 = 论文，列 = 年份 / 开源 / 五块笔记。
+ * 单元格可点击：回到该论文的阅读页并滚到对应笔记块（跨论文比较不用来回切换）。
+ */
+export function CompareNotesDialog() {
+  const dialog = useField((s) => s.dialog);
+  const closeDialog = useField((s) => s.closeDialog);
+  // 打开时冻结的勾选集：加载期间后台刷新改动勾选不影响本表。
+  const ids = useField((s) => s.dialogPaperIds);
+  const selectDomain = useField((s) => s.selectDomain);
+  const selectPaper = useField((s) => s.selectPaper);
+  const [papers, setPapers] = useState<PaperDetail[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const open = dialog === "compare-notes" && ids.length > 0;
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setPapers(null);
+    setError(null);
+    Promise.all(ids.map((id) => repo.getPaper(id)))
+      .then((rows) => {
+        if (cancelled) return;
+        const found = rows.filter((row): row is PaperDetail => Boolean(row));
+        if (!found.length) setError("选中的论文已不存在。");
+        else setPapers(found);
+      })
+      .catch(() => {
+        if (!cancelled) setError("读取笔记失败，请稍后重试。");
+      });
+    return () => {
+      cancelled = true;
+    };
+    // ids 来自冻结的勾选集，打开期间不会变；以引用为依赖足够。
+  }, [open, ids]);
+
+  /** 点标题回到论文本身；点笔记格再滚到对应笔记块（与 openPaperFulltext 同一双 rAF 手法）。 */
+  async function jumpTo(paper: PaperDetail, kind: NoteKind | null) {
+    closeDialog();
+    await selectDomain(paper.domainId);
+    await selectPaper(paper.id);
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        const target = kind ? document.getElementById(`note-${kind}`) : null;
+        target?.scrollIntoView({ block: "start" });
+      }),
+    );
+  }
+
+  return (
+    <Dialog open={open} title={`五块笔记对照表 · ${ids.length} 篇`} className="is-wide" onClose={closeDialog}>
+      {error ? (
+        <p className="ef-error">{error}</p>
+      ) : !papers ? (
+        <p aria-live="polite">正在读取选中的论文与笔记…</p>
+      ) : (
+        <div className="ef-compare-wrap">
+          <table className="ef-compare-table">
+            <thead>
+              <tr>
+                <th scope="col">论文</th>
+                <th scope="col">年份</th>
+                <th scope="col">开源</th>
+                {NOTE_DISPLAY_ORDER.map((kind) => (
+                  <th key={kind} scope="col">
+                    {NOTE_LABELS[kind].zh}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {papers.map((paper) => (
+                <tr key={paper.id}>
+                  <th scope="row">
+                    <button
+                      type="button"
+                      className="ef-compare-title"
+                      title="打开这篇论文"
+                      onClick={() => void jumpTo(paper, null)}
+                    >
+                      {paper.titleZh || paper.title}
+                    </button>
+                    <span className="ef-compare-domain">
+                      {paper.domain.name}
+                      {paper.domain.code ? ` · ${paper.domain.code}` : ""}
+                    </span>
+                  </th>
+                  <td className="mono">{paper.year ?? "—"}</td>
+                  <td>{OPEN_SOURCE_LABELS[paper.codeOpenSource]}</td>
+                  {NOTE_DISPLAY_ORDER.map((kind) => {
+                    const content = paper.notes[kind]?.content?.trim();
+                    return (
+                      <td key={kind}>
+                        {content ? (
+                          <button
+                            type="button"
+                            className="ef-compare-cell"
+                            title={`回到${NOTE_LABELS[kind].zh}`}
+                            aria-label={`回到「${paper.titleZh || paper.title}」的${NOTE_LABELS[kind].zh}`}
+                            onClick={() => void jumpTo(paper, kind)}
+                          >
+                            {compareExcerpt(content)}
+                          </button>
+                        ) : (
+                          <span className="ef-compare-empty">未写</span>
+                        )}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </Dialog>
   );
 }

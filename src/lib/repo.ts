@@ -65,6 +65,8 @@ interface PaperRow {
   mineru_provider?: string | null;
   mineru_cred_fingerprint?: string | null;
   mineru_job_id?: string | null;
+  notes_revised_at?: string | null;
+  notes_filled?: number;
   tags: string;
   labs: string;
   field_sources?: string | null;
@@ -121,7 +123,9 @@ interface JobRow {
   domain_code?: string;
 }
 
-const PAPER_LIST_SQL = `
+/** 论文列表共用 SELECT：extraColumns 让个别查询附带自己的派生列（归档的最近改笔记时间）。 */
+function paperListSql(extraColumns = ""): string {
+  return `
   SELECT p.*,
          d.name AS domain_name,
          d.code AS domain_code,
@@ -129,10 +133,18 @@ const PAPER_LIST_SQL = `
             JOIN authors a ON a.id = pa.author_id
            WHERE pa.paper_id = p.id
            ORDER BY pa.sort_order ASC LIMIT 1) AS first_author,
-         (SELECT COUNT(*) FROM paper_authors pa WHERE pa.paper_id = p.id) AS author_count
+         (SELECT COUNT(*) FROM paper_authors pa WHERE pa.paper_id = p.id) AS author_count${extraColumns}
     FROM papers p
     JOIN domains d ON d.id = p.domain_id
 `;
+}
+
+const PAPER_LIST_SQL = paperListSql();
+
+/** 归档专用的派生列：最近改笔记时间 + 已写笔记块数（只挂在归档查询上，其他列表不碰 notes 表）。 */
+const ARCHIVE_NOTES_COLUMN = `,
+         (SELECT MAX(n.revised_at) FROM notes n WHERE n.paper_id = p.id) AS notes_revised_at,
+         (SELECT COUNT(*) FROM notes n WHERE n.paper_id = p.id AND TRIM(n.content) != '') AS notes_filled`;
 
 // 三种模式（现场 / 归档 / 入库）与跨域搜索共用的匹配条件：
 // 标题、中文标题、摘要、期刊、DOI、arXiv、标签、实验室 JSON 文本 + 作者名。
@@ -280,6 +292,8 @@ function mapListItem(row: PaperRow): PaperListItem {
     authorCount: Number(row.author_count ?? 0),
     domainName: row.domain_name ?? "",
     domainCode: row.domain_code ?? "",
+    notesRevisedAt: row.notes_revised_at ?? null,
+    notesFilled: row.notes_filled == null ? undefined : Number(row.notes_filled),
   };
 }
 
@@ -484,7 +498,7 @@ export const repo = {
       params.push(...searchParams(like));
     }
     const rows = await engine.select<PaperRow>(
-      `${PAPER_LIST_SQL} WHERE ${clauses.join(" AND ")} ORDER BY IFNULL(p.read_at, p.updated_at) DESC`,
+      `${paperListSql(ARCHIVE_NOTES_COLUMN)} WHERE ${clauses.join(" AND ")} ORDER BY IFNULL(p.read_at, p.updated_at) DESC`,
       params,
     );
     return rows.map(mapListItem);

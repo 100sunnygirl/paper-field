@@ -357,6 +357,19 @@ describe("三种模式搜索（缺陷 1：作者/DOI/标签命中）", () => {
     expect(await repo.listArchive({ search: "archive-tag", openSource: "closed" })).toEqual([]);
   });
 
+  it("listArchive：附带最近改笔记时间与已写笔记块数（notes_revised_at / notes_filled）", async () => {
+    const read = (await repo.listPapers(domainA, "已读的老论文"))[0];
+    await repo.updateNote(read.id, "summary", "一句话总结", "manual", true);
+    await repo.updateNote(read.id, "highlights", "亮点一条", "manual", true);
+    // 再写一块空字符串：不计入已写块数。
+    await repo.updateNote(read.id, "weaknesses", "   ", "manual", true);
+
+    const rows = await repo.listArchive({ search: "已读的老论文" });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].notesFilled).toBe(2);
+    expect(rows[0].notesRevisedAt).toBeTruthy();
+  });
+
   it("searchAll：跨领域命中（作者 / 摘要）", async () => {
     const hits = await repo.searchAll("Radford");
     expect(hits.map((p) => p.title)).toEqual(["Contrastive Learning"]);
