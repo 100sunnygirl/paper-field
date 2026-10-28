@@ -738,6 +738,7 @@ export function EditPaperDialog() {
   const closeDialog = useField((s) => s.closeDialog);
   const savePaperPatch = useField((s) => s.savePaperPatch);
   const saveAuthors = useField((s) => s.saveAuthors);
+  const attachPaperPdf = useField((s) => s.attachPaperPdf);
   const setFlash = useField((s) => s.setFlash);
   // 打开时锁定的那篇：之后搜索或后台刷新改了选中，也只会保存到这篇。
   const { paper, missing } = useDialogPaper();
@@ -811,6 +812,7 @@ export function EditPaperDialog() {
             paper={paper}
             onDirtyChange={setMetaDirty}
             saveRef={metaSaveRef}
+            onAttachPdf={(path) => attachPaperPdf(paper.id, path)}
             onSave={(patch) => savePaperPatch(paper.id, patch)}
           />
           <h3 className="ef-dialog-section">作者</h3>
@@ -851,11 +853,14 @@ function MetaEditor({
   onSave,
   onDirtyChange,
   saveRef,
+  onAttachPdf,
 }: {
   paper: PaperDetail;
   onDirtyChange?: (dirty: boolean) => void;
   /** 父级「保存全部并关闭」的句柄：挂载期间始终指向最新的 save 实现。 */
   saveRef?: React.MutableRefObject<(() => Promise<boolean>) | null>;
+  /** 关联 / 替换本机 PDF 的落库动作（桌面端）；缺省（浏览器）时字段保持只读展示。 */
+  onAttachPdf?: (path: string) => Promise<void>;
   onSave: (patch: {
     title?: string;
     titleZh?: string | null;
@@ -875,6 +880,24 @@ function MetaEditor({
   const dirtyRef = useRef(new Set<MetaDraftKey>());
   const [dirty, setDirty] = useState(false);
   const yearInputRef = useRef<HTMLInputElement>(null);
+  // 关联 / 替换本机 PDF 的就地状态（桌面端按钮路径）。
+  const [attaching, setAttaching] = useState(false);
+  const [attachError, setAttachError] = useState<string | null>(null);
+
+  async function pickAndAttachPdf() {
+    if (!onAttachPdf || attaching) return;
+    setAttachError(null);
+    setAttaching(true);
+    try {
+      const selected = await pickPdfFiles(false);
+      if (!selected?.[0]) return;
+      await onAttachPdf(selected[0]);
+    } catch (err) {
+      setAttachError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAttaching(false);
+    }
+  }
 
   useEffect(() => {
     const incoming = metaDraftOf(paper);
@@ -983,8 +1006,23 @@ function MetaEditor({
         <input value={draft.arxivId} onChange={(e) => edit("arxivId", e.target.value)} />
       </Field>
       <Field label="本地 PDF">
-        <input value={paper.pdfPath ?? "尚未关联本地 PDF"} readOnly />
+        <input value={paper.pdfPath ?? "尚未关联本地 PDF"} readOnly title={paper.pdfPath ?? undefined} />
       </Field>
+      {isTauri() && onAttachPdf ? (
+        <div className="ef-pdf-attach">
+          <Button type="button" size="sm" disabled={attaching} onClick={() => void pickAndAttachPdf()}>
+            <Icon name="file" />
+            {attaching ? "处理中…" : paper.pdfPath ? "替换 PDF 文件…" : "关联 PDF 文件…"}
+          </Button>
+          {/* 文件找不到了？同一个按钮就是重新定位入口：换一份文件重新关联。 */}
+          {paper.pdfPath ? (
+            <span className="ef-crew-paste-hint">文件缺失时可点「替换 PDF 文件…」重新定位。</span>
+          ) : null}
+        </div>
+      ) : (
+        <p className="ef-crew-paste-hint">浏览器预览不能读取本机 PDF；可在桌面应用中关联，或把文件拖进正文舞台。</p>
+      )}
+      {attachError ? <p className="ef-error ef-field-error">{attachError}</p> : null}
       <Field label="公开 PDF 链接">
         <input value={draft.pdfUrl} onChange={(e) => edit("pdfUrl", e.target.value)} />
       </Field>

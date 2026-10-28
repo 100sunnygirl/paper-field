@@ -675,3 +675,25 @@ describe("ReadingStage · 面包屑直达「移动到其他领域」", () => {
     expect(crumb.textContent).toContain("多模态");
   });
 });
+
+describe("ReadingStage · 拖入 PDF 关联（浏览器态降级）", () => {
+  it("浏览器态拖入文件给出降级提示（拿不到本机路径），不抛错", () => {
+    const setFlash = vi.fn();
+    useField.setState({ mode: "field", paper: paper({}), setFlash });
+    const { container } = renderStage();
+    const stage = container.querySelector("#stage")!;
+    fireEvent.drop(stage, { dataTransfer: { files: [{ name: "a.pdf" }] } });
+    expect(setFlash).toHaveBeenCalledWith(
+      expect.objectContaining({ tone: "warn", text: expect.stringContaining("浏览器预览拿不到本机文件路径") }),
+    );
+  });
+
+  it("拖入没有文件载荷（纯文本等）不弹提示", () => {
+    const setFlash = vi.fn();
+    useField.setState({ mode: "field", paper: paper({}), setFlash });
+    const { container } = renderStage();
+    const stage = container.querySelector("#stage")!;
+    fireEvent.drop(stage, { dataTransfer: { files: [] } });
+    expect(setFlash).not.toHaveBeenCalled();
+  });
+});

@@ -824,6 +824,26 @@ export const repo = {
     await restoreDeleteUndo(entry);
   },
 
+  /**
+   * 为已有论文关联 / 替换本机 PDF（编辑对话框「关联/替换文件」与拖入正文舞台共用）。
+   * 文件先经 adoptManualPdf 复制进文库；这里只写路径。从未解析过的论文补 pending，
+   * 让批量解析入口能看到它。
+   */
+  async attachPdf(paperId: string, pdf: { libraryPath: string; originalPath: string }): Promise<void> {
+    const engine = await getEngine();
+    await engine.batch([
+      {
+        sql: `UPDATE papers
+               SET pdf_path = ?, pdf_original_path = ?,
+                   mineru_status = COALESCE(mineru_status, 'pending'),
+                   updated_at = ?
+             WHERE id = ?`,
+        params: [pdf.libraryPath, pdf.originalPath, nowIso(), paperId],
+        expect: "one",
+      },
+    ]);
+  },
+
   async deletePapers(ids: string[]): Promise<void> {
     // 同 deletePaper（触发器级联），按 500 个分块：一条 IN (…) 的绑定参数
     // 不能超过 SQLite 的变量上限，整库勾选删除时单语句会炸。

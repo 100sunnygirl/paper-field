@@ -5,6 +5,11 @@ import { useField } from "../store";
 import type { NoteKind, PaperDetail } from "../lib/types";
 import { ConfirmMetaDialog, EditPaperDialog } from "./Dialogs";
 
+vi.mock("../lib/mineru", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/mineru")>();
+  return { ...actual, pickPdfFiles: vi.fn(async () => null) };
+});
+
 function noteBlock(paperId: string, kind: NoteKind, content = ""): PaperDetail["notes"][NoteKind] {
   return { id: `n-${kind}`, paperId, kind, content, source: "manual", userEdited: false, revisedAt: null };
 }
@@ -462,4 +467,43 @@ describe("EditPaperDialog · 作者名单粘贴自动拆分", () => {
       "Carol Wu",
     ]);
   });
+});
+
+describe("EditPaperDialog · 关联/替换本机 PDF", () => {
+  function asTauri() {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: {}, configurable: true });
+  }
+
+  it("浏览器预览：字段保持只读并给出拖入舞台的指引，不显示选择按钮", () => {
+    openWith(fakeDetail({ pdfPath: null }));
+    render(<EditPaperDialog />);
+    expect((screen.getByLabelText("本地 PDF") as HTMLInputElement).value).toBe("尚未关联本地 PDF");
+    expect(screen.queryByRole("button", { name: "关联 PDF 文件…" })).toBeNull();
+    expect(screen.getByText(/可在桌面应用中关联，或把文件拖进正文舞台/)).toBeInTheDocument();
+  });
+
+  it("已关联 PDF 的论文显示文件名与「替换 PDF 文件…」", () => {
+    asTauri();
+    openWith(fakeDetail());
+    useField.setState({ attachPaperPdf: vi.fn(async () => undefined) });
+    render(<EditPaperDialog />);
+    expect((screen.getByLabelText("本地 PDF") as HTMLInputElement).value).toBe("/local/llava.pdf");
+    expect(screen.getByRole("button", { name: "替换 PDF 文件…" })).toBeInTheDocument();
+    expect(screen.getByText(/文件缺失时可点「替换 PDF 文件…」重新定位/)).toBeInTheDocument();
+  });
+
+  it("桌面端：选择文件后交给 attachPaperPdf（替换已有文件时按钮文案跟着变）", async () => {
+    const { pickPdfFiles } = await import("../lib/mineru");
+    asTauri();
+    const attachPaperPdf = vi.fn(async () => undefined);
+    openWith(fakeDetail({ pdfPath: null }));
+    useField.setState({ attachPaperPdf });
+    render(<EditPaperDialog />);
+    fireEvent.click(screen.getByRole("button", { name: "关联 PDF 文件…" }));
+    await waitFor(() => expect(pickPdfFiles).toHaveBeenCalledWith(false));
+    vi.mocked(pickPdfFiles).mockResolvedValueOnce(["/papers/llava-v2.pdf"]);
+    fireEvent.click(screen.getByRole("button", { name: "关联 PDF 文件…" }));
+    await waitFor(() => expect(attachPaperPdf).toHaveBeenCalledWith("paper-1", "/papers/llava-v2.pdf"));
+  });
+
 });

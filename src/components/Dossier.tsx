@@ -55,7 +55,7 @@ import {
 } from "../lib/types";
 import { hasUsableProvider } from "../lib/settings";
 import { arxivAbsUrl, arxivPdfUrl, doiUrl, openExternal, safeHttpUrl } from "../lib/urls";
-import { formatDate, modLabel, pad2 } from "../lib/util";
+import { formatDate, isTauri, modLabel, pad2 } from "../lib/util";
 import { useField } from "../store";
 import { Button, Dialog, Empty, ExternalResource, Icon, SourceBadge, type IconName } from "./ui";
 
@@ -1203,6 +1203,59 @@ export function ReadingStage({
   );
   const scrollRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  // 拖入本机 PDF 关联当前论文：桌面端走 Tauri 的拖放事件（dragDropEnabled 默认开启，
+  // HTML5 drop 不触发）；拖拽悬停时舞台显示落点提示。
+  const [pdfDragOver, setPdfDragOver] = useState(false);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    let cancelled = false;
+    let offs: Array<() => void> = [];
+    void import("@tauri-apps/api/event")
+      .then(async ({ getCurrentWebview }) => {
+        const webview = getCurrentWebview();
+        return Promise.all([
+          webview.listen<{ paths: string[] }>("tauri://drag-drop", (event) => {
+            setPdfDragOver(false);
+            const paths = event.payload?.paths ?? [];
+            const pdf = paths.find((path) => /\.pdf$/i.test(path));
+            if (!pdf) {
+              if (paths.length) setFlash({ tone: "warn", text: "只支持 PDF 文件：拖入的内容里没有 .pdf 文件。" });
+              return;
+            }
+            const current = useField.getState().paper;
+            if (!current) {
+              setFlash({ tone: "warn", text: "先选择一篇论文，再把 PDF 拖进来关联。" });
+              return;
+            }
+            void useField.getState().attachPaperPdf(current.id, pdf);
+          }),
+          webview.listen("tauri://drag-enter", () => setPdfDragOver(true)),
+          webview.listen("tauri://drag-leave", () => setPdfDragOver(false)),
+        ]);
+      })
+      .then((fns) => {
+        if (cancelled) fns.forEach((off) => off());
+        else offs = fns;
+      })
+      .catch(() => {
+        // 拖放事件不可用（旧桌面端等）：不影响阅读，其余关联入口照常。
+      });
+    return () => {
+      cancelled = true;
+      offs.forEach((off) => off());
+    };
+  }, [setFlash]);
+
+  // 浏览器预览：HTML5 drop 拿得到 File 对象但没有本机路径，诚实降级提示（并阻止浏览器直接打开 PDF）。
+  function onStageDrop(event: React.DragEvent) {
+    event.preventDefault();
+    if (!event.dataTransfer?.files?.length) return;
+    setFlash({
+      tone: "warn",
+      text: "浏览器预览拿不到本机文件路径；请在桌面应用中拖入 PDF，或在论文信息里填写公开 PDF 链接。",
+    });
+  }
 
   useEffect(() => {
     saveNoteLayout(noteLayout);
@@ -1543,7 +1596,19 @@ export function ReadingStage({
       id="stage"
       aria-labelledby="paper-title"
       style={appearanceStyle}
+      onDragOver={(event) => {
+        // 浏览器态需要 preventDefault 才能收到 drop；桌面端此事件不触发（Tauri 接管拖放）。
+        if (!isTauri()) event.preventDefault();
+      }}
+      onDrop={onStageDrop}
     >
+      {/* 拖入 PDF 的落点提示（桌面端 Tauri 拖放悬停时显示）。 */}
+      {pdfDragOver ? (
+        <div className="ef-pdf-dropzone" role="status">
+          <Icon name="file" />
+          <span>松开把 PDF 关联到这篇论文</span>
+        </div>
+      ) : null}
       {/* 无障碍：切换论文的读屏播报（第几篇 / 共几篇 / 标题）。 */}
       <p className="sr-only" role="status">
         {paperAnnounce}

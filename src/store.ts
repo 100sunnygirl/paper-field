@@ -236,6 +236,8 @@ interface FieldState {
   movePaper: (domainId: string, paperId?: string, options?: { follow?: boolean }) => Promise<void>;
   /** 「撤销移回」的落点：移回原领域并带着用户回去（不再二次提供撤销）。 */
   movePaperBack: (originDomainId: string, paperId: string) => Promise<void>;
+  /** 为已有论文关联 / 替换本机 PDF（编辑对话框与拖入正文舞台共用）。 */
+  attachPaperPdf: (paperId: string, path: string) => Promise<void>;
   deletePaper: (paperId?: string) => Promise<void>;
   /** 撤销最近一次删除（论文 / 批量 / 领域）：限时缓冲里的快照原样回插；窗口已过则提示。 */
   undoDelete: () => Promise<void>;
@@ -1232,6 +1234,49 @@ export const useField = create<FieldState>((set, get) => ({
       get().setFlash({ tone: "ok", text: domain ? `已移回「${domain.name}」。` : "已移回原领域。" });
     } catch (err) {
       get().setFlash({ tone: "error", text: `撤销移动失败：${errText(err)}，数据未改动。` });
+      throw err;
+    }
+  },
+
+  attachPaperPdf: async (paperId, path) => {
+    const trimmed = path.trim();
+    if (!trimmed) return;
+    try {
+      const paper = await repo.getPaper(paperId);
+      if (!paper) return;
+      // 同一文件已关联到这篇：不重复复制，友好提示（也覆盖「文件缺失重新定位到原路径」的误点）。
+      if (paper.pdfPath === trimmed || paper.pdfOriginalPath === trimmed) {
+        get().setFlash({ tone: "ok", text: "这篇论文已经关联这个文件。" });
+        return;
+      }
+      const adopted = await repo.adoptManualPdf(trimmed);
+      await repo.attachPdf(paperId, adopted);
+      await get().refresh();
+      const name = adopted.libraryPath.split(/[/\\]/).pop() ?? adopted.libraryPath;
+      // 尚未解析出全文的论文：解析源可用就顺势排上解析（与导入、手动建档同一语义）。
+      const fresh = await repo.getPaper(paperId);
+      if (fresh && !fresh.parsedMarkdown.trim()) {
+        let effective = get().effectiveProvider;
+        if (!effective && get().mineru.configured) {
+          effective = pickProviderFromHealths(get().mineru.order, await get().probeMineru());
+        }
+        if (effective) {
+          get().setFlash({
+            tone: "ok",
+            text: `已关联 PDF（${name}），正在用${providerLabel(effective)}解析。`,
+          });
+          enqueueMineruBatch(mineruHost(), [paperId], false);
+          return;
+        }
+        get().setFlash({
+          tone: "ok",
+          text: `已关联 PDF（${name}）。尚未启用解析源，可到设置页配置后解析全文。`,
+        });
+        return;
+      }
+      get().setFlash({ tone: "ok", text: `已关联 PDF（${name}）。` });
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `关联 PDF 失败：${errText(err)}，数据未改动。` });
       throw err;
     }
   },

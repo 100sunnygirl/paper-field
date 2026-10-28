@@ -3807,6 +3807,36 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   font-weight: 600;
   text-decoration: underline;
 }
+/* ---- 本地 PDF 关联/替换（编辑论文对话框）与拖入舞台的落点提示 ---- */
+.ef-pdf-attach {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.ef-pdf-attach-path {
+  color: var(--pf-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 24em;
+}
+.ef-pdf-dropzone {
+  position: absolute;
+  inset: 12px;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 2px dashed var(--pf-line-strong);
+  border-radius: 12px;
+  background: var(--pf-canvas);
+  color: var(--pf-ink);
+  font-weight: 600;
+  pointer-events: none;
+}
+.ef-pdf-dropzone .ef-ico { width: 20px; height: 20px; }
 .job-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 
 /* 通知弹窗：右上角悬浮堆叠（多条各自独立计时、悬停/聚焦暂停），叠加在对话框
