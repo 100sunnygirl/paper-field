@@ -9,6 +9,7 @@ These files describe the user-visible behavior `drive.mjs` is allowed to prove. 
 | `add-paper-manual` | [add-paper-manual.md](add-paper-manual.md) | 添加论文, then 创建论文 |
 | `mark-reading-status` | [mark-reading-status.md](mark-reading-status.md) | 资料 rail, 修改阅读状态 |
 | `system-settings` | [system-settings.md](system-settings.md) | 主导航 设置 |
+| `reading-holds` | [reading-holds.md](reading-holds.md) | filename paper, move dialog, Ctrl R, 设置 |
 
 Run one journey or all of them:
 
@@ -17,4 +18,4 @@ Run one journey or all of them:
 .cursor/skills/verify-paper-field/scripts/drive-smoke.sh all
 ```
 
-First-launch seed (empty IndexedDB): domains 多模态 and 指令对齐; papers 视觉指令微调 (已读), 从自然语言监督中学习可迁移视觉模型 (在读), 用人类反馈训练语言模型遵循指令 (未读). Status strip starts at 已读 1 / 3.
+First-launch seed (empty IndexedDB): domains 多模态 and 指令对齐; papers 视觉指令微调 (已读), 从自然语言监督中学习可迁移视觉模型 (在读), 用人类反馈训练语言模型遵循指令 (未读), and visual-instruction-tuning.pdf (未读, title source 文件名). Status strip starts at 已读 1 / 4.
