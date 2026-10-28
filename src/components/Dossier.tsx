@@ -18,6 +18,7 @@ import {
 import { hasUsableProvider } from "../lib/settings";
 import { arxivAbsUrl, arxivPdfUrl, doiUrl, openExternal, safeHttpUrl } from "../lib/urls";
 import { formatDate, pad2 } from "../lib/util";
+import { diffStage, type StageField } from "../lib/readingHolds";
 import { useField } from "../store";
 import { Button, Dialog, Empty, ExternalResource, Icon, SourceBadge } from "./ui";
 
@@ -25,11 +26,15 @@ function NoteEditor({
   kind,
   index,
   paper,
+  proseText,
+  changed,
   onStart,
 }: {
   kind: NoteKind;
   index: number;
   paper: PaperDetail;
+  proseText: string;
+  changed: boolean;
   onStart: () => void;
 }) {
   const saveNote = useField((s) => s.saveNote);
@@ -38,7 +43,7 @@ function NoteEditor({
   const draft = useField((s) => s.drafts[paper.id]?.[kind]);
   const editing = draft !== undefined;
   const block = paper.notes[kind];
-  const value = editing ? draft : block.content;
+  const value = editing ? draft : proseText;
   const [saving, setSaving] = useState(false);
   const [failed, setFailed] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -72,6 +77,7 @@ function NoteEditor({
     <section
       className={["ef-note", editing ? "is-editing" : "", value.trim() ? "" : "is-empty"].filter(Boolean).join(" ")}
       id={`note-${kind}`}
+      data-saved-change={changed ? "true" : undefined}
     >
       <div className="ef-note-head">
         <span className="ef-note-number" aria-hidden="true">
@@ -136,6 +142,7 @@ function ContextPanel({
   const runRefreshLinks = useField((s) => s.runRefreshLinks);
   const runDraftNotes = useField((s) => s.runDraftNotes);
   const retryMineru = useField((s) => s.retryMineru);
+  const stageHold = useField((s) => s.stageHold);
   const mineru = useField((s) => s.mineru);
   const cancelJob = useField((s) => s.cancelJob);
   const savePaperPatch = useField((s) => s.savePaperPatch);
@@ -145,6 +152,15 @@ function ContextPanel({
   const active = jobs.filter(
     (job) => job.paperId === paper.id && (job.status === "running" || job.status === "queued"),
   );
+  const prose = stageHold?.paperId === paper.id ? stageHold.prose : null;
+  const margin = prose ? diffStage(prose, paper) : [];
+  const mark = (field: StageField) => (margin.includes(field) ? "true" : undefined);
+  const doi = prose ? prose.doi || null : paper.doi;
+  const arxivId = prose ? prose.arxivId || null : paper.arxivId;
+  const codeUrl = prose ? prose.codeUrl || null : paper.codeUrl;
+  const projectPage = prose ? prose.projectPage || null : paper.projectPage;
+  const venue = prose ? prose.venue || null : paper.venue;
+  const yearLabel = prose ? prose.year : paper.year;
 
   return (
     <aside className="ef-context" aria-label="论文资料与目录">
@@ -173,39 +189,39 @@ function ContextPanel({
 
       <section className="ef-context-block">
         <h2 className="ef-context-title">资料与链接</h2>
-        {paper.codeUrl && safeHttpUrl(paper.codeUrl) ? (
-          <ExternalResource href={paper.codeUrl} icon="code">
+        {codeUrl && safeHttpUrl(codeUrl) ? (
+          <ExternalResource href={codeUrl} icon="code">
             代码仓库
             <SourceBadge source={paper.fieldSources?.codeUrl} provider={paper.fieldProviders?.codeUrl} />
           </ExternalResource>
         ) : (
-          <p className="ef-missing">未提供代码仓库</p>
+          <p className="ef-missing" data-saved-change={mark("codeUrl")}>未提供代码仓库</p>
         )}
-        {paper.projectPage && safeHttpUrl(paper.projectPage) ? (
-          <ExternalResource href={paper.projectPage} icon="link">
+        {projectPage && safeHttpUrl(projectPage) ? (
+          <ExternalResource href={projectPage} icon="link">
             项目主页
             <SourceBadge source={paper.fieldSources?.projectPage} provider={paper.fieldProviders?.projectPage} />
           </ExternalResource>
         ) : (
-          <p className="ef-missing">未提供项目主页</p>
+          <p className="ef-missing" data-saved-change={mark("projectPage")}>未提供项目主页</p>
         )}
-        <div className="ef-identifier">
+        <div className="ef-identifier" data-saved-change={mark("arxivId")}>
           arXiv
           <SourceBadge source={paper.fieldSources?.arxivId} provider={paper.fieldProviders?.arxivId} />
-          {arxivAbsUrl(paper.arxivId) ? (
-            <button type="button" className="mono ef-id-link" onClick={() => void openExternal(arxivAbsUrl(paper.arxivId))}>
-              {paper.arxivId}
+          {arxivAbsUrl(arxivId) ? (
+            <button type="button" className="mono ef-id-link" onClick={() => void openExternal(arxivAbsUrl(arxivId))}>
+              {arxivId}
             </button>
           ) : (
-            <span className="mono">{paper.arxivId || "未提供"}</span>
+            <span className="mono">{arxivId || "未提供"}</span>
           )}
         </div>
-        <div className="ef-identifier">
+        <div className="ef-identifier" data-saved-change={mark("venue") || mark("year")}>
           <span>
             来源
             <SourceBadge source={paper.fieldSources?.venue} provider={paper.fieldProviders?.venue} />
           </span>
-          <span className="mono">{[paper.venue, paper.year].filter(Boolean).join(" ") || "未提供"}</span>
+          <span className="mono">{[venue, yearLabel].filter(Boolean).join(" ") || "未提供"}</span>
         </div>
         <label className="ef-os-select">
           <span>开源状态</span>
@@ -225,8 +241,10 @@ function ContextPanel({
             <Icon name="right" />
             作者、机构与 DOI
           </summary>
-          <div className="ef-author-details">
-            {paper.authors.length ? (
+          <div className="ef-author-details" data-saved-change={mark("authors")}>
+            {prose ? (
+              <p>{prose.authors || "作者信息待补充"}</p>
+            ) : paper.authors.length ? (
               paper.authors.map((author) => (
                 <p key={author.id}>
                   <strong>
@@ -241,16 +259,16 @@ function ContextPanel({
               <p>作者信息待补充</p>
             )}
             <SourceBadge source={paper.fieldSources?.authors} provider={paper.fieldProviders?.authors} />
-            <p>
+            <p data-saved-change={mark("doi")}>
               DOI
               <SourceBadge source={paper.fieldSources?.doi} provider={paper.fieldProviders?.doi} />
               <br />
-              {doiUrl(paper.doi) ? (
-                <button type="button" className="mono ef-id-link" onClick={() => void openExternal(doiUrl(paper.doi))}>
-                  {paper.doi}
+              {doiUrl(doi) ? (
+                <button type="button" className="mono ef-id-link" onClick={() => void openExternal(doiUrl(doi))}>
+                  {doi}
                 </button>
               ) : (
-                <span className="mono">{paper.doi || "未提供"}</span>
+                <span className="mono">{doi || "未提供"}</span>
               )}
             </p>
           </div>
@@ -410,6 +428,8 @@ export function ReadingStage({
   onToggleContext: () => void;
 }) {
   const paper = useField((s) => s.paper);
+  const stageHold = useField((s) => s.stageHold);
+  const claimFileTitle = useField((s) => s.claimFileTitle);
   const mode = useField((s) => s.mode);
   const search = useField((s) => s.search);
   const openDialog = useField((s) => s.openDialog);
@@ -491,9 +511,10 @@ export function ReadingStage({
 
   function startEdit(kind: NoteKind) {
     if (!paper) return;
-    // 已有草稿就接着编辑；没有则以当前内容开一份草稿。
+    const held = useField.getState().stageHold;
+    const fromProse = held?.paperId === paper.id ? held.prose.notes[kind] : undefined;
     if (useField.getState().drafts[paper.id]?.[kind] === undefined) {
-      setNoteDraft(paper.id, kind, paper.notes[kind].content);
+      setNoteDraft(paper.id, kind, fromProse ?? paper.notes[kind].content);
     }
     requestAnimationFrame(() => jump(`note-${kind}`));
   }
@@ -533,8 +554,11 @@ export function ReadingStage({
     );
   }
 
-  const title = paper.titleZh || paper.title;
-  const english = paper.titleZh ? paper.title : "";
+  const prose = stageHold?.paperId === paper.id ? stageHold.prose : null;
+  const margin = prose ? diffStage(prose, paper) : [];
+  const title = prose ? prose.titleZh || prose.title : paper.titleZh || paper.title;
+  const english = prose ? (prose.titleZh ? prose.title : "") : paper.titleZh ? paper.title : "";
+  const fileTitle = paper.fieldSources?.title === "file";
   // 选中的论文只是被搜索或筛选挡在列表外时仍保持打开（不自动跳到别的论文），这里说明一下。
   const visibleList = mode === "archive" ? archive : mode === "intake" ? intake : papers;
   const outOfList = mode !== "system" && !visibleList.some((item) => item.id === paper.id);
@@ -711,16 +735,29 @@ export function ReadingStage({
                 这篇论文不在当前列表中（搜索或筛选条件不匹配），仍可继续阅读与编辑。
               </p>
             ) : null}
-            <h1 id="paper-title" className="ef-read-title" tabIndex={-1}>
+            <h1
+              id="paper-title"
+              className="ef-read-title"
+              tabIndex={-1}
+              data-saved-change={margin.includes("title") || margin.includes("titleZh") ? "true" : undefined}
+            >
               {title}
+              {fileTitle ? <SourceBadge source="file" /> : null}
             </h1>
+            {fileTitle ? (
+              <Button type="button" onClick={() => void claimFileTitle(paper.id)}>
+                认领标题
+              </Button>
+            ) : null}
             {english ? <p className="ef-paper-en">{english}</p> : null}
-            <p className="ef-paper-author-line">
-              {paper.authors.length
-                ? paper.authors.map((author) => author.name).join(" · ")
-                : "作者信息待补充"}
+            <p className="ef-paper-author-line" data-saved-change={margin.includes("authors") ? "true" : undefined}>
+              {prose
+                ? prose.authors || "作者信息待补充"
+                : paper.authors.length
+                  ? paper.authors.map((author) => author.name).join(" · ")
+                  : "作者信息待补充"}
             </p>
-            <section className="ef-abstract" id="abstract">
+            <section className="ef-abstract" id="abstract" data-saved-change={margin.includes("abstract") ? "true" : undefined}>
               <h2 className="ef-section-label">
                 <span>
                   摘要
@@ -728,8 +765,8 @@ export function ReadingStage({
                 </span>
                 <i className="ef-section-rule" aria-hidden="true" />
               </h2>
-              {paper.abstract ? (
-                <p>{paper.abstract}</p>
+              {(prose ? prose.abstract : paper.abstract) ? (
+                <p>{prose ? prose.abstract : paper.abstract}</p>
               ) : (
                 <p className="ef-empty-note">
                   尚未填写摘要。摘要属于论文信息，不是笔记：
@@ -755,6 +792,8 @@ export function ReadingStage({
                 kind={kind}
                 index={index}
                 paper={paper}
+                proseText={prose ? prose.notes[kind] : paper.notes[kind].content}
+                changed={margin.includes(kind)}
                 onStart={() => startEdit(kind)}
               />
             ))}

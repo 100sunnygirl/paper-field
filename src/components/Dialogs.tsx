@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { pickPdfFiles, pickPdfFolder } from "../lib/mineru";
 import { repo } from "../lib/repo";
-import type { Author, PaperDetail } from "../lib/types";
+import { defaultNotePermit, type NotePermit, type PartitionedTitles } from "../lib/readingHolds";
+import { NOTE_DISPLAY_ORDER, NOTE_KINDS, NOTE_LABELS, type NoteKind, type Author, type PaperDetail } from "../lib/types";
 import { isTauri } from "../lib/util";
 import { useField } from "../store";
 import { Button, Dialog, Field, Icon } from "./ui";
@@ -455,10 +456,19 @@ export function DomainPickerDialog() {
   const selectedDomainId = useField((s) => s.selectedDomainId);
   const selectDomain = useField((s) => s.selectDomain);
   const movePaper = useField((s) => s.movePaper);
+  const createDomainAndMove = useField((s) => s.createDomainAndMove);
   const openDialog = useField((s) => s.openDialog);
   const dialogPaperId = useField((s) => s.dialogPaperId);
   const moving = dialog === "move-paper";
   const open = dialog === "pick-domain" || moving;
+  const [domainName, setDomainName] = useState("");
+  const [moveError, setMoveError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setDomainName("");
+    setMoveError(null);
+  }, [open]);
 
   return (
     <Dialog
@@ -484,6 +494,30 @@ export function DomainPickerDialog() {
       }
     >
       <p>{moving ? "选择这篇论文要进入的领域。" : "选择要查看的研究领域。"}</p>
+      {moving ? (
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            setMoveError(null);
+            void createDomainAndMove(domainName).catch((err: unknown) =>
+              setMoveError(err instanceof Error ? err.message : String(err)),
+            );
+          }}
+        >
+          <Field label="新领域名称">
+            <input
+              aria-label="新领域名称"
+              value={domainName}
+              onChange={(event) => setDomainName(event.target.value)}
+              placeholder="例如：对齐"
+            />
+          </Field>
+          <Button type="submit" variant="primary">
+            创建并移入
+          </Button>
+          {moveError ? <p className="ef-error">{moveError}</p> : null}
+        </form>
+      ) : null}
       {domains.map((domain) => (
         <button
           key={domain.id}
@@ -601,37 +635,120 @@ export function DeleteCheckedPapersDialog() {
 export function ConfirmNotesDialog() {
   const dialog = useField((s) => s.dialog);
   const closeDialog = useField((s) => s.closeDialog);
-  const pendingDraftJob = useField((s) => s.pendingDraftJob);
   const runDraftNotes = useField((s) => s.runDraftNotes);
+  const drafts = useField((s) => s.drafts);
+  const { paper, missing } = useDialogPaper();
+  const open = dialog === "confirm-notes";
+  useCloseWhenMissing(open, missing);
+  const [checked, setChecked] = useState<NotePermit | null>(null);
   const [busy, setBusy] = useState(false);
 
-  async function overwrite() {
-    if (busy) return;
-    setBusy(true);
-    try {
-      await runDraftNotes(pendingDraftJob ?? undefined, true);
-    } finally {
-      setBusy(false);
+  useEffect(() => {
+    if (!open || !paper) return;
+    setChecked(defaultNotePermit(paper.notes, drafts[paper.id] ?? {}));
+    setBusy(false);
+  }, [open, paper?.id]);
+
+  function submit() {
+    if (!paper || !checked || busy) return;
+    const openDrafts = useField.getState().drafts[paper.id] ?? {};
+    const next: NotePermit = { ...checked };
+    for (const kind of NOTE_KINDS) {
+      if (openDrafts[kind] !== undefined) (next as { [K in NoteKind]: boolean })[kind] = false;
     }
+    setBusy(true);
+    void runDraftNotes(paper.id, next).finally(() => setBusy(false));
   }
+
+  const plan = paper ? defaultNotePermit(paper.notes, drafts[paper.id] ?? {}) : null;
+  const canSubmit = Boolean(plan && checked && NOTE_DISPLAY_ORDER.some((kind) => plan[kind] && checked[kind]));
 
   return (
     <Dialog
-      open={dialog === "confirm-notes"}
-      title="笔记已被修改"
+      open={open && Boolean(paper)}
+      title="起草哪些笔记"
       onClose={closeDialog}
       footer={
         <>
           <Button type="button" onClick={closeDialog}>
-            保留我的笔记
+            取消
           </Button>
-          <Button variant="primary" type="button" disabled={busy} onClick={() => void overwrite()}>
-            用 AI 草稿覆盖
+          <Button variant="primary" type="button" disabled={busy || !canSubmit} onClick={submit}>
+            起草所选
           </Button>
         </>
       }
     >
-      <p>你已经修改过笔记，AI 不会静默覆盖。确认后五个笔记板块都会替换为 AI 草稿；起草期间你再改的块会保留你的内容。</p>
+      <p>勾选允许模型写入的块。你改过的块，以及还没保存的草稿，默认不写入。</p>
+      {paper && checked
+        ? NOTE_DISPLAY_ORDER.map((kind) => {
+            const editable = plan?.[kind] === true;
+            const hint = drafts[paper.id]?.[kind] !== undefined ? "有未保存草稿" : paper.notes[kind].userEdited ? "已有人工修订" : null;
+            return (
+              <label key={kind}>
+                <input
+                  type="checkbox"
+                  checked={editable && checked[kind]}
+                  disabled={!editable}
+                  onChange={(event) => setChecked((cur) => (cur ? { ...cur, [kind]: event.target.checked } : cur))}
+                />
+                {NOTE_LABELS[kind].zh}
+                {hint ? <small> {hint}</small> : null}
+              </label>
+            );
+          })
+        : null}
+    </Dialog>
+  );
+}
+
+export function RestoreDiffDialog() {
+  const dialog = useField((s) => s.dialog);
+  const preview = useField((s) => s.restorePreview);
+  const confirmRestore = useField((s) => s.confirmRestore);
+  const cancelRestore = useField((s) => s.cancelRestore);
+  const open = dialog === "restore-diff" && preview.phase !== "idle";
+  const diff: PartitionedTitles | null = preview.phase === "idle" ? null : preview.diff;
+  const columns = diff
+    ? ([
+        ["仅当前文库", diff.onlyCurrent],
+        ["仅备份", diff.onlyBackup],
+        ["两边都有", diff.both],
+      ] as const)
+    : [];
+
+  return (
+    <Dialog
+      open={open}
+      title="恢复前的文献"
+      danger
+      onClose={() => void cancelRestore()}
+      footer={
+        <>
+          <Button type="button" onClick={() => void cancelRestore()}>
+            取消
+          </Button>
+          <Button type="button" variant="primary" disabled={preview.phase !== "previewed"} onClick={() => void confirmRestore()}>
+            恢复并重启
+          </Button>
+        </>
+      }
+    >
+      {columns.map(([label, bucket]) => (
+        <section key={label}>
+          <h3>
+            {label}（{bucket.rows.length + bucket.hidden}）
+          </h3>
+          <ul>
+            {bucket.rows.map((row) => (
+              <li key={row.id}>
+                {"renamed" in row && row.renamed ? `${row.label} → ${row.backupLabel}` : row.label}
+              </li>
+            ))}
+          </ul>
+          {bucket.hidden ? <p>另有 {bucket.hidden} 篇</p> : null}
+        </section>
+      ))}
     </Dialog>
   );
 }
