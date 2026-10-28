@@ -34,6 +34,9 @@ import {
   type FulltextSelection,
 } from "../lib/fulltext";
 import { onMarkdownClick, renderMarkdown } from "../lib/markdown";
+import { providerLabel } from "../lib/mineruPlan";
+import { clearReparseSnapshot, fulltextStats, getReparseRecord } from "../lib/reparse";
+import { repo } from "../lib/repo";
 import { isNoteHintDismissed, NOTE_HINT_QUESTIONS, setNoteHintDismissed } from "../lib/noteHints";
 import { loadNoteLayout, moveNoteKind as moveNoteKindInOrder, saveNoteLayout, type NoteLayout } from "../lib/noteLayout";
 import { loadReadingSpots, saveReadingSpot } from "../lib/readingSpot";
@@ -380,6 +383,76 @@ function NoteEditor({
 }
 
 /**
+ * 重新解析的两版对照：新结果完成后在解析全文顶部展示新旧统计对照，由用户决定
+ * 采用哪一版（快照存本机，见 lib/reparse）。解析进行中先说明「当前仍是上一版」。
+ */
+function ReparseCompareNote({ paper }: { paper: PaperDetail }) {
+  const setFlash = useField((s) => s.setFlash);
+  const refresh = useField((s) => s.refresh);
+  const [record, setRecord] = useState(() => getReparseRecord(paper.id));
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    setRecord(getReparseRecord(paper.id));
+  }, [paper.id, paper.parsedMarkdown]);
+
+  if (!record) return null;
+  const prevStats = fulltextStats(record.prev.markdown);
+
+  function adoptNew() {
+    clearReparseSnapshot(paper.id);
+    setRecord(null);
+  }
+
+  async function restoreOld() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await repo.saveParsedMarkdown(paper.id, record!.prev.markdown);
+      clearReparseSnapshot(paper.id);
+      setRecord(null);
+      await refresh();
+      setFlash({ tone: "ok", text: "已恢复上一版解析全文。" });
+    } catch (err) {
+      setFlash({
+        tone: "error",
+        text: `恢复旧版失败：${err instanceof Error ? err.message : String(err)}，新版保持不变。`,
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!record.next) {
+    // 重解析还在进行：旧版全文就是当前显示的内容，先给一句确定性。
+    return (
+      <p className="ef-reparse-note" role="note">
+        正在重新解析：这里显示的仍是上一版全文，新结果完成后可在两版之间选择。
+      </p>
+    );
+  }
+  return (
+    <div className="ef-reparse-note is-compare" role="note" aria-label="新旧版本对照">
+      <p>
+        <b>重新解析完成，新旧版本对照</b>
+        <br />
+        旧版（{providerLabel(record.prev.provider)}）约 {prevStats.chars.toLocaleString("zh-Hans-CN")} 字 ·{" "}
+        {prevStats.sections} 节 → 新版（{providerLabel(record.next.provider)}）约{" "}
+        {record.next.chars.toLocaleString("zh-Hans-CN")} 字 · {record.next.sections} 节
+        {prevStats.chars === record.next.chars && prevStats.sections === record.next.sections ? " · 两版统计一致" : ""}
+      </p>
+      <p className="ef-reparse-actions">
+        <Button type="button" size="sm" disabled={busy} onClick={() => void restoreOld()}>
+          恢复旧版
+        </Button>
+        <Button type="button" size="sm" variant="primary" onClick={adoptNew}>
+          采用新版（当前显示）
+        </Button>
+      </p>
+    </div>
+  );
+}
+
+/**
  * 解析全文的渲染容器：渲染后按小节补锚点（消毒层剥掉了外部 id），
  * 选中文字后浮出「摘到笔记」条，一键把引用写入对应笔记块并保留跳回锚点。
  */
@@ -484,6 +557,7 @@ function FulltextDoc({
 
   return (
     <>
+      <ReparseCompareNote paper={paper} />
       <div className="ef-ft-search" role="search">
         <Icon name="search" />
         <input

@@ -21,6 +21,7 @@ import {
 import { cancelJob, cancelJobsForPapers, JobCancelled, liveJobsFor, runTracked, type JobCtx } from "./jobs";
 import { loadJobNotifyPrefs, systemNotify, type JobNotifyPrefs } from "./notifyPrefs";
 import { journalBegin, journalFinish, journalItem } from "./jobJournal";
+import { clearReparseSnapshot, completeReparseSnapshot, fulltextStats, getReparseRecord, saveReparseSnapshot } from "./reparse";
 import { formatSpan } from "./jobsView";
 import { log } from "./logger";
 import { repo } from "./repo";
@@ -305,6 +306,15 @@ async function processOne(
   }
   const settings = host.mineru();
   if (!settings.configured) return "skip";
+  // 强制重解析且已有全文：先把旧版快照存到本机，新结果完成后界面给两版对照
+  //（失败 / 取消则作废快照——旧版仍是当前全文，无需对照）。
+  // store 的重试入口在重置前已存过更完整的快照（含上次用的源）：那种情况不覆盖。
+  const hadPrevFulltext = force && Boolean(paper.parsedMarkdown.trim());
+  if (hadPrevFulltext && !getReparseRecord(paperId)) {
+    saveReparseSnapshot({ paperId, markdown: paper.parsedMarkdown, provider: paper.mineruProvider });
+  }
+  let newMarkdown = "";
+  let newProvider: string | null = null;
 
   const inflight = paper.mineruStatus === "submitted" || paper.mineruStatus === "parsing";
   if (!force && inflight && !(await resumeAllowed(paper))) {
@@ -375,6 +385,8 @@ async function processOne(
             expectedFingerprint,
           );
           await checkpoint(ctx, batchId);
+          newMarkdown = markdown;
+          newProvider = provider;
           return (await commitParseSuccess(ctx, markdown)) ? "done" : "cancelled";
         }
       }
@@ -391,10 +403,25 @@ async function processOne(
         expectedFingerprint,
       );
       await checkpoint(ctx, batchId);
+      newMarkdown = markdown;
+      newProvider = provider;
       return (await commitParseSuccess(ctx, markdown)) ? "done" : "cancelled";
     },
   );
   await host.refresh();
+  if (hadPrevFulltext) {
+    if (result.outcome === "done" && newMarkdown) {
+      const stats = fulltextStats(newMarkdown);
+      completeReparseSnapshot(paperId, {
+        provider: newProvider,
+        chars: stats.chars,
+        sections: stats.sections,
+      });
+    } else {
+      // 失败 / 取消：旧版全文原样保留（没有任何写入），对照垫片作废。
+      clearReparseSnapshot(paperId);
+    }
+  }
   if (result.outcome === "done") {
     enqueueMeta(async () => void (await autoPrepare(host, paperId)));
     return "ok";

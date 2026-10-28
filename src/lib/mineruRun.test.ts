@@ -48,6 +48,7 @@ import { cancelJob, liveJobsFor, resetLiveJobs } from "./jobs";
 import { getActivity, queueBatch, reorderBatch, resetActivity, subscribeActivity } from "./activity";
 import { resetJobNotifyPrefs, saveJobNotifyPrefs } from "./notifyPrefs";
 import { journalBegin, listJobBatches, resetJobJournal } from "./jobJournal";
+import { getReparseRecord, resetReparseSnapshots } from "./reparse";
 import { repo } from "./repo";
 
 const FP = "pf-cred-v1:match";
@@ -103,6 +104,7 @@ beforeEach(async () => {
   resetLiveJobs();
   resetJobNotifyPrefs();
   resetJobJournal();
+  resetReparseSnapshots();
   setMineruTiming({ pollMs: 1, retryMs: 1 });
   vi.mocked(mineruSubmit).mockReset();
   vi.mocked(mineruParseStatuses).mockReset();
@@ -451,6 +453,45 @@ describe("恢复仅同源（I4d）", () => {
       mineruParseIds: [],
       parsedMarkdown: "# forced",
     });
+  });
+
+  it("force 重解析已有全文：完成前快照旧版，完成后补新版权重，供界面两版对照", async () => {
+    // 状态 queued 模拟「重新解析」重置后的论文（resetMineru 置 queued、清 provider；
+    // 这里保留 provider 以验证快照记录它）。
+    const id = await makePaper({ status: "queued", provider: "ssh" }, "# 旧版全文\n\n## 方法\n\n一段。");
+    const host = makeHost({ hasKey: false });
+    vi.mocked(mineruSubmit).mockResolvedValue(submitResult({ provider: "local", shortId: "doc-9", parseIds: [] }));
+    vi.mocked(mineruParseStatuses).mockResolvedValue([poll("done", { id: "9" })]);
+    vi.mocked(mineruMarkdown).mockResolvedValue("# 新版全文\n\n## 方法\n\n## 实验\n\n另一段。");
+
+    await runMineruBatch(host, [id], true);
+
+    const record = getReparseRecord(id);
+    expect(record).not.toBeNull();
+    expect(record?.prev).toMatchObject({ markdown: expect.stringContaining("旧版全文"), provider: "ssh" });
+    expect(record?.next).toMatchObject({ provider: "local", sections: 3 });
+  });
+
+  it("force 重解析失败：旧版全文原样保留，对照快照作废", async () => {
+    const id = await makePaper({ status: "queued", provider: "local" }, "# 旧版全文");
+    const host = makeHost({ hasKey: false });
+    vi.mocked(mineruSubmit).mockRejectedValue(new Error("本地 doclib 未启动"));
+
+    await runMineruBatch(host, [id], true);
+
+    expect(await paperOf(id)).toMatchObject({ mineruStatus: "error", parsedMarkdown: "# 旧版全文" });
+    expect(getReparseRecord(id)).toBeNull();
+  });
+
+  it("非 force 的普通批次不为已有全文的论文建对照快照", async () => {
+    const id = await makePaper(undefined, "# 已有全文但状态待解析");
+    const host = makeHost({ hasKey: false });
+    vi.mocked(mineruSubmit).mockResolvedValue(submitResult({ status: "done" }));
+    vi.mocked(mineruMarkdown).mockResolvedValue("# 新解析");
+
+    await runMineruBatch(host, [id], false);
+
+    expect(getReparseRecord(id)).toBeNull();
   });
 });
 

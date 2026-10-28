@@ -3,8 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { pickPdfFiles, pickPdfFolder } from "../lib/mineru";
 import { repo } from "../lib/repo";
 import { useField } from "../store";
-import { DeleteCheckedPapersDialog, DomainDialog, PaperDialog } from "./Dialogs";
-import type { Paper } from "../lib/types";
+import { ConfirmReparseDialog, DeleteCheckedPapersDialog, DomainDialog, PaperDialog } from "./Dialogs";
+import type { Paper, PaperDetail } from "../lib/types";
 
 vi.mock("../lib/mineru", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/mineru")>();
@@ -455,5 +455,100 @@ describe("DomainDialog · 删除确认", () => {
     fireEvent.click(screen.getByRole("button", { name: "确认删除领域" }));
     expect(deleteDomain).toHaveBeenCalledTimes(1);
     expect(updateDomain).not.toHaveBeenCalled();
+  });
+});
+
+describe("ImportPreflight · 导入清单的提交前预检", () => {
+  async function pickTwo() {
+    vi.mocked(pickPdfFiles).mockResolvedValue(["/a/one.pdf", "/a/two.pdf"]);
+    asTauri();
+    useField.setState({ dialog: "paper" });
+    render(<PaperDialog />);
+    fireEvent.click(screen.getByRole("button", { name: "选择 PDF" }));
+    await waitFor(() => expect(screen.getByText("one.pdf")).toBeInTheDocument());
+  }
+
+  it("官方 API 启用且页码范围超 200 页：预检标红并建议缩页 / 换源", async () => {
+    useField.setState({
+      mineru: {
+        ...useField.getState().mineru,
+        pageRange: "1-250",
+        api: { ...useField.getState().mineru.api, hasToken: true },
+      },
+    });
+    await pickTwo();
+    const preflight = screen.getByLabelText("提交前预检");
+    expect(within(preflight).getByText(/共 250 页/)).toBeInTheDocument();
+    expect(within(preflight).getByText(/超过官方 API 单文件 200 页上限/)).toBeInTheDocument();
+    expect(within(preflight).getByText(/缩小页码范围/)).toBeInTheDocument();
+  });
+
+  it("官方 API 启用 + 页码范围 all：显示限额与预计篇数，不给猜测页数", async () => {
+    useField.setState({
+      mineru: { ...useField.getState().mineru, api: { ...useField.getState().mineru.api, hasToken: true } },
+    });
+    await pickTwo();
+    const preflight = screen.getByLabelText("提交前预检");
+    expect(within(preflight).getByText(/本批 2 篇/)).toBeInTheDocument();
+    expect(within(preflight).getByText(/单文件 ≤200MB \/ ≤200 页/)).toBeInTheDocument();
+    expect(within(preflight).getByText(/实际页数在提交时由桌面端核验/)).toBeInTheDocument();
+  });
+
+  it("只用本地 / SSH（未存官方 Token）：不渲染预检区", async () => {
+    await pickTwo();
+    expect(screen.queryByLabelText("提交前预检")).toBeNull();
+  });
+});
+
+describe("ConfirmReparseDialog · 重新解析已有全文的确认", () => {
+  function parsedDetail(): PaperDetail {
+    return {
+      ...paperOf("/library/a.pdf"),
+      id: "p1",
+      mineruProvider: "api",
+      parsedMarkdown: "# 旧版全文\n\n## 方法\n\n一段正文。",
+      authors: [],
+      notes: {} as PaperDetail["notes"],
+      domain: { id: "d-1", name: "多模态", code: "MM-01", summary: null, sortOrder: 0, createdAt: "2024-01-01T00:00:00.000Z" },
+    } as unknown as PaperDetail;
+  }
+
+  it("说明重新提交语义、将用哪个源与旧版概览；确认走 confirmReparse，取消关闭", async () => {
+    const confirmReparse = vi.fn(async () => undefined);
+    const closeDialog = vi.fn();
+    useField.setState({
+      dialog: "confirm-reparse",
+      dialogPaperId: "p1",
+      paper: parsedDetail(),
+      effectiveProvider: "local",
+      confirmReparse,
+      closeDialog,
+    });
+    render(<ConfirmReparseDialog />);
+    const semantics = screen.getByText(/重新解析是/);
+    expect(semantics.textContent).toContain("重新提交");
+    expect(semantics.textContent).toContain("本地 CLI");
+    const summary = screen.getByText(/当前已有全文：/);
+    expect(summary.textContent).toContain("2 个小节");
+    expect(summary.textContent).toContain("官方 API");
+    expect(screen.getByText(/当日 1000 页额度/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "先导出全文" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "确认重新解析" }));
+    await waitFor(() => expect(confirmReparse).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    expect(closeDialog).toHaveBeenCalled();
+  });
+
+  it("没有生效源时说明将按回退顺序自动选择", () => {
+    useField.setState({
+      dialog: "confirm-reparse",
+      dialogPaperId: "p1",
+      paper: parsedDetail(),
+      effectiveProvider: null,
+    });
+    render(<ConfirmReparseDialog />);
+    const semantics = screen.getByText(/重新解析是/);
+    expect(semantics.textContent).toContain("自动选择（按回退顺序探测）");
   });
 });

@@ -26,7 +26,8 @@ vi.mock("./lib/mineru", async (importOriginal) => ({
 import { beginBatchItem, endBatchItem, finishBatch, getActivity, queueBatch, resetActivity, startBatch } from "./lib/activity";
 import { runTracked } from "./lib/jobs";
 import { dequeueFromBatch } from "./lib/mineruRun";
-import { DEFAULT_MINERU, type MineruSubmitResult } from "./lib/mineru";
+import { DEFAULT_MINERU, mineruSubmit, type MineruSubmitResult } from "./lib/mineru";
+import { getReparseRecord, resetReparseSnapshots } from "./lib/reparse";
 import { repo } from "./lib/repo";
 import { cancelChat, completeChat } from "./lib/settings";
 import { useField } from "./store";
@@ -78,6 +79,7 @@ beforeEach(async () => {
   useField.setState(useField.getInitialState(), true);
   useField.setState({ settings: usableSettings });
   resetActivity();
+  resetReparseSnapshots();
   vi.mocked(completeChat).mockReset();
   vi.mocked(cancelChat).mockClear();
 });
@@ -207,6 +209,45 @@ describe("作业面板的队列操作", () => {
     expect(useField.getState().flash?.text).toBe(
       "已在本机停止解析，3 篇不再写入。远端任务不撤回，可能仍在继续，配额或页数可能已经计入。",
     );
+  });
+
+  it("重新解析已有全文：先弹确认对话框，确认后快照旧版并强制重提", async () => {
+    const id = await makePaper(true);
+    await repo.setMineruState(id, { status: "done", provider: "api" });
+    await repo.saveParsedMarkdown(id, "# 旧版全文");
+    useField.setState({
+      mineru: { ...DEFAULT_MINERU, ssh: { ...DEFAULT_MINERU.ssh, enabled: true }, configured: true },
+      effectiveProvider: "ssh",
+    });
+
+    await useField.getState().retryMineru(id);
+
+    // 已有全文：先弹「确认重新解析」，不直接提交。
+    expect(useField.getState().dialog).toBe("confirm-reparse");
+    expect(useField.getState().dialogPaperId).toBe(id);
+    expect(vi.mocked(mineruSubmit)).not.toHaveBeenCalled();
+
+    await useField.getState().confirmReparse();
+
+    // 确认后：旧版（含上次用的源）已快照，解析状态重置为 queued 并入链强制重提。
+    expect(getReparseRecord(id)?.prev).toMatchObject({ provider: "api", markdown: "# 旧版全文" });
+    expect((await repo.getPaper(id))!.mineruStatus).toBe("queued");
+    expect(useField.getState().flash?.text).toContain("对照新旧两版");
+    await vi.waitFor(() => expect(vi.mocked(mineruSubmit)).toHaveBeenCalled());
+  });
+
+  it("没有全文时 retryMineru 不弹确认，直接提交", async () => {
+    const id = await makePaper(true);
+    useField.setState({
+      mineru: { ...DEFAULT_MINERU, ssh: { ...DEFAULT_MINERU.ssh, enabled: true }, configured: true },
+      effectiveProvider: "ssh",
+    });
+
+    await useField.getState().retryMineru(id);
+
+    expect(useField.getState().dialog).toBeNull();
+    expect(useField.getState().flash?.text).toContain("已将这篇论文发送到 MinerU 解析");
+    await vi.waitFor(() => expect(vi.mocked(mineruSubmit)).toHaveBeenCalled());
   });
 
   it("AI 补全批次也能停止：排队论文移出", async () => {

@@ -3608,6 +3608,18 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   color: var(--pf-secondary);
   text-decoration: line-through;
 }
+/* 导入清单的提交前预检：标题墨色、警示用既有 danger 色、口径说明弱化。 */
+.ef-import-preflight {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--pf-divider);
+  background: var(--pf-panel);
+}
+.ef-import-preflight p { margin: 0 0 4px; font-size: var(--pf-fs-caption); }
+.ef-import-preflight p:last-child { margin-bottom: 0; }
+.ef-import-preflight-title { color: var(--pf-ink); font-weight: 600; }
+.ef-import-preflight-warn { color: var(--pf-danger); }
+.ef-import-preflight-note { color: var(--pf-muted); }
 .ef-dialog-foot {
   display: flex;
   gap: 10px;
@@ -5227,6 +5239,21 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 .ef-fulltext[open] summary .ef-ico { transform: rotate(90deg); }
 .ef-fulltext .ef-note-text { margin-top: 6px; animation: pf-fade var(--pf-t-enter); }
 .ef-fulltext .ef-empty-note { margin: 6px 0 0; }
+
+/* ---- 重新解析的两版对照（折叠区与并读面板共用，挂在检索行上方）---- */
+.ef-reparse-note {
+  margin: 6px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--pf-divider);
+  border-left: var(--pf-marker) solid var(--pf-ink);
+  background: var(--pf-surface);
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-body);
+}
+.ef-reparse-note.is-compare { border-left-color: var(--pf-success); }
+.ef-reparse-note p { margin: 0; }
+.ef-reparse-note b { color: var(--pf-ink); font-weight: 700; }
+.ef-reparse-actions { display: flex; gap: 8px; margin-top: 8px !important; flex-wrap: wrap; }
 
 /* ---- 全文并读（半高分屏面板）----
    阅读滚动区改为上下两行：上=解析全文面板（自带小节目录、独立滚动），

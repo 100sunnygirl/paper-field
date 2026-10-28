@@ -36,6 +36,7 @@ import { getActivity, reorderBatch } from "./lib/activity";
 import { cancelJob as cancelTrackedJob, jobDoneStep, runTracked } from "./lib/jobs";
 import { pickProviderFromHealths, providerLabel, summarizeHealths } from "./lib/mineruPlan";
 import { backupLibrary, restoreLibrary, writeLastBackup } from "./lib/backup";
+import { saveReparseSnapshot } from "./lib/reparse";
 import { DEFAULT_BIBLIO, loadBiblioSettings, saveBiblioSettings, type BiblioSaveInput, type BiblioStatus } from "./lib/biblio";
 import { filledFrom, lookupPaper, type LookupResult, verifyReachable } from "./lib/lookup";
 import { normalizeArxivId, normalizeDoi, safeHttpUrl, withDefaultScheme } from "./lib/urls";
@@ -126,6 +127,7 @@ interface FieldState {
     | "delete-checked"
     | "pick-domain"
     | "edit-paper"
+    | "confirm-reparse"
     | null;
   /** 对话框打开时锁定的目标论文：之后选中怎么变，对话框都只作用于它。 */
   dialogPaperId: string | null;
@@ -197,6 +199,10 @@ interface FieldState {
     pdfPath?: string;
   }) => Promise<void>;
   retryMineru: (paperId: string) => Promise<void>;
+  /** 「确认重新解析」放行：直接走取消旧轮 → 重置 → 强制重提（不再二次确认）。 */
+  confirmReparse: () => Promise<void>;
+  /** retryMineru 的实际提交段：探测可用源后取消旧轮、重置状态、按回退顺序重提。 */
+  submitMineruRetry: (paperId: string) => Promise<void>;
   /** INTAKE 页批量重试：把全部解析失败（error）论文重新提交给 MinerU。 */
   retryFailedMineru: () => Promise<void>;
   /** 作业面板批量重试：把指定论文重新提交给 MinerU（一次事务重置、一个批次入链）。 */
@@ -562,7 +568,8 @@ export const useField = create<FieldState>((set, get) => ({
       dialog === "delete-paper" ||
       dialog === "move-paper" ||
       dialog === "confirm-meta" ||
-      dialog === "confirm-notes";
+      dialog === "confirm-notes" ||
+      dialog === "confirm-reparse";
     set({
       dialog,
       dialogPaperId: paperScoped ? (typeof target === "string" ? target : state.paper?.id ?? state.selectedPaperId) : null,
@@ -874,6 +881,25 @@ export const useField = create<FieldState>((set, get) => ({
   },
 
   retryMineru: async (paperId) => {
+    // 已有解析全文时先确认：重新解析会作废本轮成果并重新提交（可能重复计入官方 API
+    // 页数额度）。旧版全文保留、完成后可对照——确认对话框见 Dialogs 的 ConfirmReparseDialog。
+    const current = get().paper?.id === paperId ? get().paper : await repo.getPaper(paperId);
+    if (current?.parsedMarkdown.trim()) {
+      set({ dialog: "confirm-reparse", dialogPaperId: paperId });
+      return;
+    }
+    await get().submitMineruRetry(paperId);
+  },
+
+  /** 「确认重新解析」对话框的放行入口：走原本的取消旧轮 → 重置 → 强制重提流程。 */
+  confirmReparse: async () => {
+    const paperId = get().dialogPaperId;
+    if (!paperId) return;
+    set({ dialog: null, dialogPaperId: null });
+    await get().submitMineruRetry(paperId);
+  },
+
+  submitMineruRetry: async (paperId) => {
     if (!get().mineru.configured) {
       get().setFlash({
         tone: "warn",
@@ -898,10 +924,22 @@ export const useField = create<FieldState>((set, get) => ({
     try {
       // 跨源切换唯一入口：先取消旧的一轮，再重置 docRef/parseIds/provider 并收回所有权，
       // 以 force 重新提交，由后端按回退顺序重选源。旧的一轮之后写什么都不生效。
+      // 重置会清掉 mineru_provider：有旧全文时先把「旧版 + 上次用的源」快照存到本机，
+      // 新结果完成后界面给两版对照（mineruRun 完成时补新版权重，失败时作废快照）。
+      const before = await repo.getPaper(paperId);
+      const hadFulltext = Boolean(before?.parsedMarkdown.trim());
+      if (hadFulltext) {
+        saveReparseSnapshot({ paperId, markdown: before!.parsedMarkdown, provider: before!.mineruProvider });
+      }
       await cancelParses([paperId]);
       await repo.resetMineru([paperId]);
       await get().refresh();
-      get().setFlash({ tone: "ok", text: "已将这篇论文发送到 MinerU 解析。" });
+      get().setFlash({
+        tone: "ok",
+        text: hadFulltext
+          ? "已重新提交解析。完成后解析全文顶部可对照新旧两版。"
+          : "已将这篇论文发送到 MinerU 解析。",
+      });
       enqueueMineruBatch(mineruHost(), [paperId], true);
     } catch (err) {
       get().setFlash({ tone: "error", text: `重新解析失败：${errText(err)}，数据未改动。` });
@@ -937,6 +975,13 @@ export const useField = create<FieldState>((set, get) => ({
     }
     try {
       // 与单篇重试同构：重置解析状态后重新提交；连续失败由批次熔断兜底提示。
+      // 已有全文的论文同样先快照旧版（重置会清 provider，逐篇读出后再重置）。
+      for (const id of ids) {
+        const before = await repo.getPaper(id);
+        if (before?.parsedMarkdown.trim()) {
+          saveReparseSnapshot({ paperId: id, markdown: before.parsedMarkdown, provider: before.mineruProvider });
+        }
+      }
       await cancelParses(ids);
       await repo.resetMineru(ids);
       await get().refresh();

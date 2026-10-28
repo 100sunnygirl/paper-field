@@ -1,5 +1,11 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { repo } from "../lib/repo";
+import {
+  completeReparseSnapshot,
+  resetReparseSnapshots,
+  saveReparseSnapshot,
+} from "../lib/reparse";
 import { NOTE_DISPLAY_ORDER, type NoteKind, type PaperDetail } from "../lib/types";
 import { useField } from "../store";
 import { ReadingStage } from "./Dossier";
@@ -92,6 +98,50 @@ beforeAll(() => {
 
 beforeEach(() => {
   useField.setState(useField.getInitialState(), true);
+  resetReparseSnapshots();
+});
+
+describe("ReadingStage · 重新解析的两版对照", () => {
+  it("快照还没补新版（解析进行中）：说明当前显示的仍是上一版", () => {
+    saveReparseSnapshot({ paperId: "p1", markdown: "# 上一版", provider: "api" });
+    useField.setState({ mode: "field", paper: paper(), selectedPaperId: "p1" });
+    renderStage();
+    expect(screen.getByText(/正在重新解析：这里显示的仍是上一版全文/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /恢复旧版/ })).toBeNull();
+  });
+
+  it("新结果完成后展示两版对照，「采用新版」清掉快照", () => {
+    saveReparseSnapshot({ paperId: "p1", markdown: "# 上一版", provider: "api" });
+    completeReparseSnapshot("p1", { provider: "local", chars: 9999, sections: 4 });
+    useField.setState({ mode: "field", paper: paper(), selectedPaperId: "p1" });
+    renderStage();
+    expect(screen.getByText(/新旧版本对照/)).toBeInTheDocument();
+    expect(screen.getByText(/旧版（官方 API）/)).toBeInTheDocument();
+    expect(screen.getByText(/新版（本地 CLI）/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /采用新版（当前显示）/ }));
+    expect(screen.queryByText(/新旧版本对照/)).toBeNull();
+  });
+
+  it("「恢复旧版」把快照里的旧全文写回库并刷新", async () => {
+    saveReparseSnapshot({ paperId: "p1", markdown: "# 上一版", provider: "api" });
+    completeReparseSnapshot("p1", { provider: "local", chars: 10, sections: 1 });
+    const save = vi.spyOn(repo, "saveParsedMarkdown").mockResolvedValue(undefined);
+    const refresh = vi.fn(async () => undefined);
+    useField.setState({ mode: "field", paper: paper(), selectedPaperId: "p1", refresh });
+    renderStage();
+    fireEvent.click(screen.getByRole("button", { name: /恢复旧版/ }));
+    await waitFor(() => expect(save).toHaveBeenCalledWith("p1", "# 上一版"));
+    expect(refresh).toHaveBeenCalled();
+    expect(useField.getState().flash?.text).toContain("已恢复上一版解析全文");
+    save.mockRestore();
+  });
+
+  it("没有快照时不渲染对照区", () => {
+    useField.setState({ mode: "field", paper: paper(), selectedPaperId: "p1" });
+    renderStage();
+    expect(screen.queryByRole("note", { name: "新旧版本对照" })).toBeNull();
+    expect(screen.queryByText(/正在重新解析/)).toBeNull();
+  });
 });
 
 describe("ReadingStage · 从解析全文摘录到笔记", () => {
