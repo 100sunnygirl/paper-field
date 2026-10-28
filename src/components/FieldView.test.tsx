@@ -1,7 +1,8 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PaperListItem } from "../lib/types";
 import { resetActivity, trackJob } from "../lib/activity";
+import { repo } from "../lib/repo";
 import { useField } from "../store";
 import { PaperNav } from "./FieldView";
 
@@ -302,6 +303,31 @@ describe("PaperNav · 归档筛选、分组与排序", () => {
     const rows = document.querySelectorAll(".ef-row");
     expect(rows).toHaveLength(1);
     expect(rows[0].textContent).toContain("笔记 3/5");
+  });
+
+  it("搜索范围开关「含笔记」：切换写入视图态，命中显示行内片段", async () => {
+    const noteSpy = vi
+      .spyOn(repo, "noteHitExcerpts")
+      .mockResolvedValue([{ paperId: "a", kind: "highlights", snippet: "…独特的暗号…" }]);
+    vi.spyOn(repo, "fulltextHitExcerpts").mockResolvedValue([]);
+    useField.setState({
+      mode: "archive",
+      domains,
+      archive: [archiveItem("a", "d-1", 2023, "2026-01-01T00:00:00.000Z")],
+      search: "暗号",
+    });
+    render(<PaperNav />);
+    // 默认关闭：不发片段查询。
+    expect(noteSpy).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "含笔记" }));
+    expect(useField.getState().archiveView.searchNotes).toBe(true);
+    await waitFor(
+      () => {
+        expect(screen.getByText("笔记命中 · 亮点：…独特的暗号…")).toBeInTheDocument();
+      },
+      { timeout: 4000 },
+    );
   });
 
   it("现场模式批量工具栏不提供「对照表」", () => {

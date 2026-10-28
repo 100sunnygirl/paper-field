@@ -82,6 +82,10 @@ export interface ArchiveView {
   year: number | null;
   /** 只看「五块笔记未写满」的已读论文（回头补笔记）。 */
   notesIncomplete: boolean;
+  /** 搜索范围扩展：同时搜「我的笔记」内容。 */
+  searchNotes: boolean;
+  /** 搜索范围扩展：同时搜 MinerU 解析全文。 */
+  searchFulltext: boolean;
   sort: ArchiveSort;
   groupByDomain: boolean;
 }
@@ -90,6 +94,8 @@ export const DEFAULT_ARCHIVE_VIEW: ArchiveView = {
   domainId: null,
   year: null,
   notesIncomplete: false,
+  searchNotes: false,
+  searchFulltext: false,
   sort: "recent-read",
   groupByDomain: false,
 };/** 导出格式：按领域分文件夹的 Markdown / 单文件合并版 / BibTeX。 */
@@ -658,6 +664,10 @@ export const useField = create<FieldState>((set, get) => ({
     const archive = await repo.listArchive({
       search: state.mode === "archive" ? state.search : "",
       openSource: state.archiveFilter,
+      // 范围开关只在归档页的搜索生效（其他页 search 为空，不会触发扩展匹配）；
+      // 只在开启时才带键：默认调用的参数形状与既有语义/测试保持一致。
+      ...(state.archiveView.searchNotes ? { searchNotes: true } : {}),
+      ...(state.archiveView.searchFulltext ? { searchFulltext: true } : {}),
     });
     const intake = await repo.listIntake(state.mode === "intake" ? state.search : "");
     // 选中只随用户意图变化：以「现在」的选中为准（不是开始时的快照），论文还在库里就保持，

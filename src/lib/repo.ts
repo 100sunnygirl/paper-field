@@ -23,7 +23,7 @@ import type {
   PreparedMeta,
   ReadingStatus,
 } from "./types";
-import { NOTE_KINDS } from "./types";
+import { NOTE_DISPLAY_ORDER, NOTE_KINDS } from "./types";
 import { safeHttpUrl, withDefaultScheme } from "./urls";
 import { isTauri, nowIso, parseJsonArray, uid } from "./util";
 
@@ -166,6 +166,16 @@ export function likePattern(q: string): string {
 
 function searchParams(like: string): unknown[] {
   return [like, like, like, like, like, like, like, like, like];
+}
+
+/** 命中片段：在 content 里定位 q（不区分大小写）并截取前后各约 24 字。 */
+export function hitSnippet(content: string, q: string, radius = 24): string {
+  const flat = content.replace(/\s+/g, " ").trim();
+  const at = flat.toLowerCase().indexOf(q.trim().toLowerCase());
+  if (!q.trim() || at < 0) return flat.slice(0, radius * 2);
+  const start = Math.max(0, at - radius);
+  const end = Math.min(flat.length, at + q.trim().length + radius);
+  return `${start > 0 ? "…" : ""}${flat.slice(start, end).trim()}${end < flat.length ? "…" : ""}`;
 }
 
 function mapDomain(row: DomainRow): Domain {
@@ -484,6 +494,10 @@ export const repo = {
   async listArchive(filter: {
     search?: string;
     openSource?: OpenSource | "all";
+    /** 搜索范围扩展：把「我的笔记」内容也纳入匹配（与元数据命中取并集）。 */
+    searchNotes?: boolean;
+    /** 搜索范围扩展：把 MinerU 解析全文也纳入匹配。 */
+    searchFulltext?: boolean;
   }): Promise<PaperListItem[]> {
     const engine = await getEngine();
     const clauses = ["p.reading_status = 'read'"];
@@ -494,8 +508,20 @@ export const repo = {
     }
     if (filter.search?.trim()) {
       const like = likePattern(filter.search.trim());
-      clauses.push(PAPER_SEARCH_MATCH_SQL);
+      // 范围开关把笔记 / 解析全文以 EXISTS 并进匹配条件（与元数据命中取并集）。
+      const parts = [PAPER_SEARCH_MATCH_SQL];
+      if (filter.searchNotes) {
+        parts.push(`EXISTS (SELECT 1 FROM notes n WHERE n.paper_id = p.id AND n.content LIKE ? ESCAPE '\\')`);
+      }
+      if (filter.searchFulltext) {
+        parts.push(
+          `EXISTS (SELECT 1 FROM paper_parse m WHERE m.paper_id = p.id AND m.markdown LIKE ? ESCAPE '\\')`,
+        );
+      }
+      clauses.push(parts.length > 1 ? `(${parts.join(" OR ")})` : PAPER_SEARCH_MATCH_SQL);
       params.push(...searchParams(like));
+      if (filter.searchNotes) params.push(like);
+      if (filter.searchFulltext) params.push(like);
     }
     const rows = await engine.select<PaperRow>(
       `${paperListSql(ARCHIVE_NOTES_COLUMN)} WHERE ${clauses.join(" AND ")} ORDER BY IFNULL(p.read_at, p.updated_at) DESC`,
@@ -526,6 +552,61 @@ export const repo = {
       searchParams(like),
     );
     return rows.map(mapListItem);
+  },
+
+  /**
+   * 笔记命中片段：在给定论文里找第一块包含 q 的笔记（按展示顺序优先），
+   * 返回命中的块类型与前后文片段（归档搜索范围「含笔记」的行内展示）。
+   */
+  async noteHitExcerpts(
+    q: string,
+    paperIds: string[],
+  ): Promise<Array<{ paperId: string; kind: NoteKind; snippet: string }>> {
+    const unique = [...new Set(paperIds)].filter(Boolean);
+    const query = q.trim();
+    if (!query || !unique.length) return [];
+    const engine = await getEngine();
+    const like = likePattern(query);
+    const priority = new Map(NOTE_DISPLAY_ORDER.map((kind, index) => [kind, index]));
+    const first = new Map<string, { paperId: string; kind: NoteKind; snippet: string }>();
+    for (let start = 0; start < unique.length; start += 400) {
+      const chunk = unique.slice(start, start + 400);
+      const rows = await engine.select<{ paper_id: string; kind: NoteKind; content: string }>(
+        `SELECT paper_id, kind, content FROM notes
+          WHERE content LIKE ? ESCAPE '\\'
+            AND paper_id IN (${chunk.map(() => "?").join(", ")})`,
+        [like, ...chunk],
+      );
+      for (const row of rows) {
+        const current = first.get(row.paper_id);
+        const candidate = { paperId: row.paper_id, kind: row.kind, snippet: hitSnippet(row.content, query) };
+        if (!current || (priority.get(candidate.kind) ?? 99) < (priority.get(current.kind) ?? 99)) {
+          first.set(row.paper_id, candidate);
+        }
+      }
+    }
+    return [...first.values()];
+  },
+
+  /** 解析全文命中片段：给定论文里 MinerU 全文包含 q 时返回前后文片段。 */
+  async fulltextHitExcerpts(q: string, paperIds: string[]): Promise<Array<{ paperId: string; snippet: string }>> {
+    const unique = [...new Set(paperIds)].filter(Boolean);
+    const query = q.trim();
+    if (!query || !unique.length) return [];
+    const engine = await getEngine();
+    const like = likePattern(query);
+    const out: Array<{ paperId: string; snippet: string }> = [];
+    for (let start = 0; start < unique.length; start += 400) {
+      const chunk = unique.slice(start, start + 400);
+      const rows = await engine.select<{ paper_id: string; markdown: string }>(
+        `SELECT paper_id, markdown FROM paper_parse
+          WHERE markdown LIKE ? ESCAPE '\\'
+            AND paper_id IN (${chunk.map(() => "?").join(", ")})`,
+        [like, ...chunk],
+      );
+      for (const row of rows) out.push({ paperId: row.paper_id, snippet: hitSnippet(row.markdown, query) });
+    }
+    return out;
   },
 
   async getPaper(id: string): Promise<PaperDetail | null> {

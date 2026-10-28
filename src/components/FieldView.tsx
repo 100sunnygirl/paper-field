@@ -3,6 +3,8 @@ import { useSyncExternalStore } from "react";
 import {
   JOB_STATUS_LABELS,
   JOB_TYPE_LABELS,
+  NOTE_LABELS,
+  type NoteKind,
   type OpenSource,
   type PaperListItem,
 } from "../lib/types";
@@ -235,6 +237,42 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
         })
       : [];
   const [collapsedGroups, setCollapsedGroups] = useState<string[]>([]);
+  // 搜索范围扩展（含笔记 / 含全文）时的行内命中片段：按论文 id 记一块笔记命中 + 一条全文命中。
+  const [hitLines, setHitLines] = useState<
+    Record<string, { notes?: { kind: NoteKind; snippet: string }; fulltext?: string }>
+  >({});
+  const hitScopeKey = `${archiveView.searchNotes ? "n" : ""}${archiveView.searchFulltext ? "f" : ""}`;
+  const hitIdsKey = archiveItems.map((p) => p.id).join(",");
+  useEffect(() => {
+    if (mode !== "archive" || !search.trim() || (!archiveView.searchNotes && !archiveView.searchFulltext)) {
+      setHitLines({});
+      return;
+    }
+    let cancelled = false;
+    const ids = hitIdsKey ? hitIdsKey.split(",") : [];
+    void Promise.all([
+      archiveView.searchNotes ? repo.noteHitExcerpts(search.trim(), ids) : Promise.resolve([]),
+      archiveView.searchFulltext ? repo.fulltextHitExcerpts(search.trim(), ids) : Promise.resolve([]),
+    ])
+      .then(([notes, fulltext]) => {
+        if (cancelled) return;
+        const map: Record<string, { notes?: { kind: NoteKind; snippet: string }; fulltext?: string }> = {};
+        for (const hit of notes) {
+          map[hit.paperId] = { ...map[hit.paperId], notes: { kind: hit.kind, snippet: hit.snippet } };
+        }
+        for (const hit of fulltext) map[hit.paperId] = { ...map[hit.paperId], fulltext: hit.snippet };
+        setHitLines(map);
+      })
+      .catch(() => {
+        // 片段只是辅助展示：读不到就安静略过（列表本身仍来自 SQL 结果）。
+        if (!cancelled) setHitLines({});
+      });
+    return () => {
+      cancelled = true;
+    };
+    // hitIdsKey/hitScopeKey 已把易变引用压平成字符串，避免每渲染都重查。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, search, hitScopeKey, hitIdsKey]);
   function toggleArchiveGroup(domainId: string) {
     setCollapsedGroups((current) =>
       current.includes(domainId) ? current.filter((id) => id !== domainId) : [...current, domainId],
@@ -246,6 +284,14 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
    */
   const archiveRowExtra = (paper: PaperListItem) => (
     <div className="ef-row-extra">
+      {hitLines[paper.id]?.notes ? (
+        <p className="ef-row-hit">
+          笔记命中 · {NOTE_LABELS[hitLines[paper.id]!.notes!.kind].zh}：{hitLines[paper.id]!.notes!.snippet}
+        </p>
+      ) : null}
+      {hitLines[paper.id]?.fulltext ? (
+        <p className="ef-row-hit">全文命中：{hitLines[paper.id]!.fulltext}</p>
+      ) : null}
       <button
         type="button"
         className={`ef-row-domain-badge mono${archiveView.domainId === paper.domainId ? " is-active" : ""}`}
@@ -453,6 +499,26 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
             onClick={() => setArchiveView({ groupByDomain: !archiveView.groupByDomain })}
           >
             按领域分组
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            className={archiveView.searchNotes ? "is-active" : ""}
+            aria-pressed={archiveView.searchNotes}
+            title="搜索时同时匹配五块笔记的内容（行内显示命中片段）"
+            onClick={() => setArchiveView({ searchNotes: !archiveView.searchNotes })}
+          >
+            含笔记
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            className={archiveView.searchFulltext ? "is-active" : ""}
+            aria-pressed={archiveView.searchFulltext}
+            title="搜索时同时匹配 MinerU 解析出的全文（行内显示命中片段）"
+            onClick={() => setArchiveView({ searchFulltext: !archiveView.searchFulltext })}
+          >
+            含全文
           </Button>
         </div>
       ) : null}

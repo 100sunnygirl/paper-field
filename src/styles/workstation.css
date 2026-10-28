@@ -1195,8 +1195,9 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 .ef-row-shell > .ef-row { border-bottom-color: transparent; }
 .ef-row-extra {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 6px 8px;
   padding: 0 12px 10px 16px;
 }
 .ef-row-domain-badge {
@@ -1230,6 +1231,18 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 }
 .ef-row-domain-open:hover { color: var(--pf-ink); text-decoration: underline; }
 .ef-row-domain-open .ef-ico { width: 12px; height: 12px; }
+/* 搜索范围命中片段（含笔记 / 含全文）：弱化的小字一行，前缀标明来自哪里。 */
+.ef-row-hit {
+  margin: 0;
+  flex: 1 1 100%;
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-muted);
+  line-height: 1.6;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
 /* 阅读成果统计卡：归档头部的一块安静面板（纸面 + 发丝线），本周/本月/连续阅读
    三格计数 + 今年已读与最常读领域、12 格逐月分布条；可一键安静关闭。 */
 .ef-archive-stats {
