@@ -3608,6 +3608,61 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   color: var(--pf-secondary);
   text-decoration: line-through;
 }
+/* AI 写入前的字段级对照清单（确认对话框逐项勾选）：与导入审阅清单同一形态。 */
+.ef-confirm-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 240px;
+  overflow: auto;
+  border: 1px solid var(--pf-divider);
+}
+.ef-confirm-list li {
+  border-bottom: 1px solid var(--pf-divider);
+  font-size: var(--pf-fs-caption);
+}
+.ef-confirm-list li:last-child { border-bottom: 0; }
+.ef-confirm-list label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  min-width: 0;
+}
+.ef-confirm-name {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.ef-confirm-flag {
+  font-style: normal;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+  border: 1px solid var(--pf-divider);
+  border-radius: 3px;
+  padding: 0 4px;
+}
+.ef-confirm-list li.is-manual .ef-confirm-flag { color: var(--pf-ink); border-color: var(--pf-ink); }
+.ef-confirm-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--pf-secondary);
+}
+.ef-confirm-hint {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin: 8px 0 0;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+}
 .ef-dialog-foot {
   display: flex;
   gap: 10px;

@@ -1,7 +1,16 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { pickPdfFiles, pickPdfFolder } from "../lib/mineru";
 import { repo } from "../lib/repo";
-import type { Author, PaperDetail } from "../lib/types";
+import {
+  META_FIELD_LABELS,
+  NOTE_DISPLAY_ORDER,
+  NOTE_LABELS,
+  OPEN_SOURCE_LABELS,
+  type Author,
+  type MetaField,
+  type NoteKind,
+  type PaperDetail,
+} from "../lib/types";
 import { isTauri } from "../lib/util";
 import { useField } from "../store";
 import { Button, Dialog, Field, Icon } from "./ui";
@@ -598,18 +607,76 @@ export function DeleteCheckedPapersDialog() {
   );
 }
 
+/** 字段当前值的一行预览（确认对话框逐项勾选用；过长的截断显示）。 */
+const FIELD_VALUE_PREVIEW = 48;
+
+function fieldValuePreview(paper: PaperDetail, field: MetaField): string {
+  const clamp = (text: string): string => {
+    const chars = [...text.replace(/\s+/g, " ").trim()];
+    return chars.length > FIELD_VALUE_PREVIEW ? `${chars.slice(0, FIELD_VALUE_PREVIEW).join("")}…` : chars.join("");
+  };
+  switch (field) {
+    case "year":
+      return paper.year != null ? String(paper.year) : "";
+    case "tags":
+      return paper.tags.join("、");
+    case "labs":
+      return paper.labs.map((lab) => lab.name).filter(Boolean).join("、");
+    case "authors":
+      return paper.authors.map((author) => author.name).filter(Boolean).join("、");
+    case "codeOpenSource":
+      return OPEN_SOURCE_LABELS[paper.codeOpenSource];
+    default: {
+      const value = paper[field];
+      return clamp(typeof value === "string" ? value : (value ?? ""));
+    }
+  }
+}
+
+/** 走一遍字段级对照勾选的公共 UI：rows 每行 = 勾选框 + 名称 + 当前值预览，默认全部保留。 */
 export function ConfirmNotesDialog() {
   const dialog = useField((s) => s.dialog);
   const closeDialog = useField((s) => s.closeDialog);
   const pendingDraftJob = useField((s) => s.pendingDraftJob);
   const runDraftNotes = useField((s) => s.runDraftNotes);
+  const { paper } = useDialogPaper();
   const [busy, setBusy] = useState(false);
+  const open = dialog === "confirm-notes";
+  // 五块逐项列出：你改过的块默认保留（不勾），未改过的块默认随草稿替换（与旧「覆盖」语义一致）。
+  const rows = useMemo(
+    () =>
+      NOTE_DISPLAY_ORDER.map((kind) => ({
+        key: kind as NoteKind,
+        label: NOTE_LABELS[kind].zh,
+        preview: paper?.notes[kind]?.content ?? "",
+        userEdited: Boolean(paper?.notes[kind]?.userEdited),
+      })),
+    [paper],
+  );
+  const [checked, setChecked] = useState<Set<NoteKind>>(new Set());
+  useEffect(() => {
+    if (!open) return;
+    setBusy(false);
+    // 打开 / 换目标论文时重置勾选：未改过的块默认勾上（替换），你改过的块默认保留。
+    setChecked(new Set(rows.filter((row) => !row.userEdited).map((row) => row.key)));
+    // rows 依赖 paper，重置只应跟随打开事件与目标论文变化。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, paper?.id]);
+
+  function toggle(kind: NoteKind, on: boolean) {
+    setChecked((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(kind);
+      else next.delete(kind);
+      return next;
+    });
+  }
 
   async function overwrite() {
     if (busy) return;
     setBusy(true);
     try {
-      await runDraftNotes(pendingDraftJob ?? undefined, true);
+      await runDraftNotes(pendingDraftJob ?? undefined, true, { kinds: [...checked] });
     } finally {
       setBusy(false);
     }
@@ -617,7 +684,7 @@ export function ConfirmNotesDialog() {
 
   return (
     <Dialog
-      open={dialog === "confirm-notes"}
+      open={open}
       title="笔记已被修改"
       onClose={closeDialog}
       footer={
@@ -626,12 +693,35 @@ export function ConfirmNotesDialog() {
             保留我的笔记
           </Button>
           <Button variant="primary" type="button" disabled={busy} onClick={() => void overwrite()}>
-            用 AI 草稿覆盖
+            按勾选覆盖（{checked.size} 块）
           </Button>
         </>
       }
     >
-      <p>你已经修改过笔记，AI 不会静默覆盖。确认后五个笔记板块都会替换为 AI 草稿；起草期间你再改的块会保留你的内容。</p>
+      <p>你已经修改过笔记，AI 不会静默覆盖。逐块勾选允许替换的笔记块；未勾选的块保留你的内容，起草期间你再改的块也仍会保留。</p>
+      <ul className="ef-confirm-list">
+        {rows.map((row) => (
+          <li key={row.key} className={row.userEdited ? "is-manual" : ""}>
+            <label>
+              <input type="checkbox" checked={checked.has(row.key)} onChange={(e) => toggle(row.key, e.target.checked)} />
+              <span className="ef-confirm-name">
+                {row.label}
+                <em className="ef-confirm-flag">{row.userEdited ? "你改过" : "未改过"}</em>
+              </span>
+              <span className="ef-confirm-value">{row.preview.trim() ? row.preview : "（空白）"}</span>
+            </label>
+          </li>
+        ))}
+      </ul>
+      <p className="ef-confirm-hint">
+        已勾选 {checked.size} / {rows.length} 块。
+        <Button type="button" size="sm" variant="text" onClick={() => setChecked(new Set())}>
+          全部保留
+        </Button>
+        <Button type="button" size="sm" variant="text" onClick={() => setChecked(new Set(rows.map((row) => row.key)))}>
+          全部替换
+        </Button>
+      </p>
     </Dialog>
   );
 }
@@ -645,9 +735,29 @@ export function ConfirmMetaDialog() {
   const open = dialog === "confirm-meta" && Boolean(paper);
   useCloseWhenMissing(dialog === "confirm-meta", missing);
 
+  // 逐项列出会被「覆盖」影响的手动字段（fieldSources = user）：默认全部保留（不勾）。
+  const rows = useMemo(() => {
+    if (!paper) return [] as Array<{ key: MetaField; label: string; preview: string }>;
+    return (Object.keys(META_FIELD_LABELS) as MetaField[])
+      .filter((field) => paper.fieldSources?.[field] === "user")
+      .map((field) => ({ key: field, label: META_FIELD_LABELS[field], preview: fieldValuePreview(paper, field) }));
+  }, [paper]);
+  const [checked, setChecked] = useState<Set<MetaField>>(new Set());
+  useEffect(() => {
+    if (open) setChecked(new Set());
+  }, [open, paper?.id]);
+  function toggle(field: MetaField, on: boolean) {
+    setChecked((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(field);
+      else next.delete(field);
+      return next;
+    });
+  }
+
   function run(overwrite: boolean) {
     closeDialog();
-    if (paper) void runPrepareMeta(paper.id, overwrite);
+    if (paper) void runPrepareMeta(paper.id, overwrite, false, { allowFields: overwrite ? [...checked] : undefined });
   }
 
   return (
@@ -661,15 +771,41 @@ export function ConfirmMetaDialog() {
             保留我的修改
           </Button>
           <Button variant="primary" type="button" onClick={() => run(true)}>
-            用 AI 结果覆盖
+            按勾选覆盖{rows.length ? `（${checked.size} / ${rows.length} 项）` : ""}
           </Button>
         </>
       }
     >
       <p>
         你已经手动修改过论文信息，AI 不会静默覆盖。文献库查到的值优先，模型只补仍空的字段，
-        也不会替换文献库的值。「保留我的修改」只补全空白字段；「用 AI 结果覆盖」会覆盖你修改过的字段。
+        也不会替换文献库的值。「保留我的修改」只补全空白字段；勾选的字段才允许被新结果替换，未勾选的一律保留。
       </p>
+      {rows.length ? (
+        <>
+          <ul className="ef-confirm-list">
+            {rows.map((row) => (
+              <li key={row.key} className="is-manual">
+                <label>
+                  <input type="checkbox" checked={checked.has(row.key)} onChange={(e) => toggle(row.key, e.target.checked)} />
+                  <span className="ef-confirm-name">{row.label}</span>
+                  <span className="ef-confirm-value">{row.preview.trim() ? row.preview : "（空白）"}</span>
+                </label>
+              </li>
+            ))}
+          </ul>
+          <p className="ef-confirm-hint">
+            已勾选 {checked.size} / {rows.length} 项（默认全部保留）。
+            <Button type="button" size="sm" variant="text" onClick={() => setChecked(new Set(rows.map((row) => row.key)))}>
+              全选
+            </Button>
+            <Button type="button" size="sm" variant="text" onClick={() => setChecked(new Set())}>
+              全不选
+            </Button>
+          </p>
+        </>
+      ) : (
+        <p className="ef-confirm-hint">这篇论文没有记录到具体的手动字段，「按勾选覆盖」将按整批覆盖语义执行。</p>
+      )}
     </Dialog>
   );
 }

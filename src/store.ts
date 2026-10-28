@@ -53,6 +53,7 @@ import type {
   JobType,
   LlmJob,
   LlmSettings,
+  MetaField,
   NoteKind,
   OpenSource,
   PaperDetail,
@@ -250,9 +251,15 @@ interface FieldState {
   reorderQueue: (batchId: number, paperId: string, to: "top" | "up" | "down") => void;
   /** 作业面板「清空其余」：保留下一篇，其余排队论文移出本批。 */
   clearQueueRest: (batchId: number) => Promise<void>;
-  runPrepareMeta: (paperId?: string, overwrite?: boolean, quiet?: boolean, options?: { llm?: boolean }) => Promise<void>;
+  /** 字段级覆盖白名单（确认对话框逐项勾选的手动字段）；只收窄整批 overwrite，不放宽。 */
+  runPrepareMeta: (
+    paperId?: string,
+    overwrite?: boolean,
+    quiet?: boolean,
+    options?: { llm?: boolean; allowFields?: MetaField[] },
+  ) => Promise<void>;
   runRefreshLinks: (paperId?: string) => Promise<void>;
-  runDraftNotes: (paperId?: string, overwrite?: boolean) => Promise<void>;
+  runDraftNotes: (paperId?: string, overwrite?: boolean, options?: { kinds?: NoteKind[] }) => Promise<void>;
   cancelJob: (jobId: string, options?: { silent?: boolean }) => Promise<void>;
   /**
    * deferBackfill：测试连接 / 拉模型等“只查不启动”的保存暂不排自动补全，
@@ -1216,6 +1223,8 @@ export const useField = create<FieldState>((set, get) => ({
     const id = paperId ?? get().selectedPaperId;
     if (!id || prepareInflight.has(id)) return;
     prepareInflight.add(id);
+    // 字段级覆盖白名单：确认框逐项勾选的结果，两段写入（文献库 → 模型）共用同一份。
+    const allowFields = options?.allowFields ? new Set(options.allowFields) : undefined;
     try {
       const paper = await repo.getPaper(id);
       if (!paper) return;
@@ -1236,6 +1245,7 @@ export const useField = create<FieldState>((set, get) => ({
               startedRev,
               source: "api",
               jobId: ctx.jobId,
+              allowFields,
             });
             if (applied === "cancelled") return "cancelled";
           }
@@ -1258,6 +1268,7 @@ export const useField = create<FieldState>((set, get) => ({
             startedRev,
             source: "llm",
             jobId: ctx.jobId,
+            allowFields,
             finish: jobDoneStep(ctx.jobId, raw),
           });
           if (applied === "cancelled") return "cancelled";
@@ -1337,7 +1348,7 @@ export const useField = create<FieldState>((set, get) => ({
     }
   },
 
-  runDraftNotes: async (paperId, overwrite = false) => {
+  runDraftNotes: async (paperId, overwrite = false, options) => {
     const id = paperId ?? get().selectedPaperId;
     if (!id || draftInflight.has(id)) return;
     if (!hasUsableProvider(get().settings)) {
@@ -1348,6 +1359,8 @@ export const useField = create<FieldState>((set, get) => ({
       });
       return;
     }
+    // 确认框逐项勾选的起草范围：未勾选的块这次完全不写。
+    const draftKinds = options?.kinds;
     // 先占在途锁再读库：双击时第二次调用在这里就返回。
     draftInflight.add(id);
     const paper = await repo.getPaper(id);
@@ -1369,7 +1382,7 @@ export const useField = create<FieldState>((set, get) => ({
           await ctx.checkpoint();
           ctx.stage("apply");
           const notes = normalizeNotes(extractJson(raw));
-          const kept = await repo.applyDraftedNotes(id, notes, overwrite, revs, jobDoneStep(ctx.jobId, raw));
+          const kept = await repo.applyDraftedNotes(id, notes, overwrite, revs, jobDoneStep(ctx.jobId, raw), draftKinds);
           if (kept === null) return "cancelled";
           const editedDuring = kept.filter((kind) => overwrite || !paper.notes?.[kind]?.userEdited);
           if (editedDuring.length) {
