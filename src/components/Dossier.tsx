@@ -735,15 +735,17 @@ export function ReadingStage({
                 这篇论文不在当前列表中（搜索或筛选条件不匹配），仍可继续阅读与编辑。
               </p>
             ) : null}
-            <h1
-              id="paper-title"
-              className="ef-read-title"
-              tabIndex={-1}
-              data-saved-change={margin.includes("title") || margin.includes("titleZh") ? "true" : undefined}
-            >
-              {title}
+            <div className="ef-title-row">
+              <h1
+                id="paper-title"
+                className="ef-read-title"
+                tabIndex={-1}
+                data-saved-change={margin.includes("title") || margin.includes("titleZh") ? "true" : undefined}
+              >
+                {title}
+              </h1>
               {fileTitle ? <SourceBadge source="file" /> : null}
-            </h1>
+            </div>
             {fileTitle ? (
               <Button type="button" onClick={() => void claimFileTitle(paper.id)}>
                 认领标题
