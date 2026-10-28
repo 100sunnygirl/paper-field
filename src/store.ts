@@ -40,6 +40,13 @@ import { DEFAULT_BIBLIO, loadBiblioSettings, saveBiblioSettings, type BiblioSave
 import { filledFrom, lookupPaper, type LookupResult, verifyReachable } from "./lib/lookup";
 import { normalizeArxivId, normalizeDoi, safeHttpUrl, withDefaultScheme } from "./lib/urls";
 import { DRAFT_NOTES_SYSTEM, PREPARE_META_SYSTEM, draftNotesUserPrompt, normalizeMeta, normalizeNotes, prepareMetaUserPrompt } from "./lib/prompts";
+import {
+  listImportFailures,
+  recordImportFailures,
+  removeImportFailure as dropImportFailure,
+  resolveImportFailures,
+  type ImportFailureEntry,
+} from "./lib/importFailures";
 import { redactSecrets } from "./lib/redact";
 import { noteReadingStatus } from "./lib/readingSince";
 import { repo } from "./lib/repo";
@@ -102,6 +109,15 @@ interface FieldState {
   paper: PaperDetail | null;
   archive: PaperListItem[];
   intake: PaperListItem[];
+  /**
+   * 导入失败清单（localStorage 持久化，见 lib/importFailures.ts）：toast 上的重试
+   * 入口随通知消失，这份清单让失败文件长期留在 INTAKE 页可逐条重试或放弃。
+   */
+  importFailures: ImportFailureEntry[];
+  /** 逐条移除一个失败文件（用户明确放弃；不再走导入）。 */
+  removeImportFailure: (path: string) => void;
+  /** INTAKE「仅重试失败文件」：按原目标领域分组重跑（全部或指定路径）。 */
+  retryImportFailures: (paths?: string[]) => Promise<void>;
   /**
    * 导入目标领域（导入对话框与 INTAKE 页头部共享；null = 跟随当前选中领域）。
    * 从 INTAKE 发起导入时当前选中领域不可见，这一份显式目标让「导入到哪」始终可读可改。
@@ -359,6 +375,7 @@ export const useField = create<FieldState>((set, get) => ({
   archive: [],
   intake: [],
   importTargetDomainId: null,
+  importFailures: listImportFailures(),
   jobs: [],
   stats: { read: 0, total: 0, openSource: 0, queued: 0, running: 0 },
   search: "",
@@ -682,6 +699,35 @@ export const useField = create<FieldState>((set, get) => ({
 
   setImportTargetDomainId: (id) => set({ importTargetDomainId: id }),
 
+  removeImportFailure: (path) => {
+    dropImportFailure(path);
+    set({ importFailures: listImportFailures() });
+  },
+
+  retryImportFailures: async (paths) => {
+    const all = get().importFailures;
+    const targets = paths ? all.filter((entry) => paths.includes(entry.path)) : all;
+    if (!targets.length) {
+      get().setFlash({ tone: "warn", text: "没有待重试的导入失败文件。" });
+      return;
+    }
+    // 按原目标领域分组重跑：失败清单记着当时要导入到哪，重试不改道。
+    const byDomain = new Map<string, string[]>();
+    for (const entry of targets) {
+      const list = byDomain.get(entry.domainId) ?? [];
+      list.push(entry.path);
+      byDomain.set(entry.domainId, list);
+    }
+    for (const [domainId, group] of byDomain) {
+      try {
+        await get().importPdfs(group, undefined, domainId);
+      } catch (err) {
+        // importPdfs 内部已逐文件记失败与通知；这里兜住整组异常继续下一组。
+        log.error("store", "重试导入失败", err);
+      }
+    }
+  },
+
   selectDomain: async (id) => {
     try {
       selectionEpoch += 1;
@@ -779,6 +825,7 @@ export const useField = create<FieldState>((set, get) => ({
     try {
       // 逐篇入库以回报真实进度（n/总数 · 当前文件）；单篇失败不中断整批。
       const created: PaperListItem["id"][] = [];
+      const settled: string[] = [];
       let skippedCount = 0;
       const failed: Array<{ name: string; path: string; message: string }> = [];
       let done = 0;
@@ -788,12 +835,28 @@ export const useField = create<FieldState>((set, get) => ({
           const result = await repo.importLocalPdfs(domainId, [path]);
           for (const paper of result.created) created.push(paper.id);
           skippedCount += result.skipped.length;
+          // 成功入库与确认重复都算落定：从失败清单（如有）移出。
+          settled.push(path);
         } catch (err) {
           failed.push({ name, path, message: errText(err) });
         }
         done += 1;
         onProgress?.(done, unique.length, name);
       }
+      // 失败清单持久化（同路径覆盖）：toast 的重试入口会消失，这份清单长期留在 INTAKE。
+      if (failed.length) {
+        recordImportFailures(
+          failed.map((f) => ({
+            path: f.path,
+            name: f.name,
+            domainId,
+            message: shortReason(f.message),
+            at: Date.now(),
+          })),
+        );
+      }
+      if (settled.length) resolveImportFailures(settled);
+      set({ importFailures: listImportFailures() });
       // 只关导入对话框本身：长时间导入期间用户打开的其他对话框不被顺手关掉。
       if (get().dialog === "paper") set({ dialog: null });
       if (created[0]) selectionEpoch += 1;

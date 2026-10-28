@@ -89,6 +89,43 @@ describe("PaperNav · 入库页导入目标常驻", () => {
   });
 });
 
+describe("PaperNav · INTAKE 导入待重试清单", () => {
+  const failures = [
+    { path: "/x/bad.pdf", name: "bad.pdf", domainId: "d-1", message: "磁盘已满", at: 1 },
+    { path: "/y/worse.pdf", name: "worse.pdf", domainId: "d-2", message: "PDF 不存在", at: 2 },
+  ];
+
+  it("列出失败文件与原因，「仅重试失败文件」触发重试，逐条可移除", () => {
+    const retryImportFailures = vi.fn(async () => undefined);
+    const removeImportFailure = vi.fn();
+    useField.setState({
+      mode: "intake",
+      intake: [],
+      importFailures: failures,
+      retryImportFailures,
+      removeImportFailure,
+    });
+    render(<PaperNav />);
+
+    expect(screen.getByText("导入待重试 · 2 篇")).toBeInTheDocument();
+    expect(screen.getByText("bad.pdf")).toBeInTheDocument();
+    expect(screen.getByText("磁盘已满")).toBeInTheDocument();
+    expect(screen.getByText("worse.pdf")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "仅重试失败文件" }));
+    expect(retryImportFailures).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "放弃重试 bad.pdf" }));
+    expect(removeImportFailure).toHaveBeenCalledWith("/x/bad.pdf");
+  });
+
+  it("清单为空时不显示区块", () => {
+    useField.setState({ mode: "intake", intake: [], importFailures: [] });
+    render(<PaperNav />);
+    expect(screen.queryByText(/导入待重试/)).toBeNull();
+  });
+});
+
 describe("PaperNav · INTAKE 批量重试入口", () => {
   it("有解析失败论文时显示计数与「全部重试」，点击触发批量重试", () => {
     const retryFailedMineru = vi.fn(async () => undefined);

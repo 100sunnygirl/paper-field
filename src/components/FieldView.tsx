@@ -43,6 +43,9 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
   const setArchiveFilter = useField((s) => s.setArchiveFilter);
   const cancelJob = useField((s) => s.cancelJob);
   const retryFailedMineru = useField((s) => s.retryFailedMineru);
+  const importFailures = useField((s) => s.importFailures);
+  const removeImportFailure = useField((s) => s.removeImportFailure);
+  const retryImportFailures = useField((s) => s.retryImportFailures);
   const setJobsOpen = useField((s) => s.setJobsOpen);
   const highlightJob = useField((s) => s.highlightJob);
   // 阶段一句话与作业面板同一口径：入库页行内直接看到「已解析 n/N 页」等实况。
@@ -154,6 +157,35 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
           <p className="ef-nav-sum">未手动标为已读的论文，以及 MinerU 解析和 AI 补全作业。</p>
           {/* 从入库页发起的导入默认落进当前选中领域却不可见：常驻「将导入到」可就地更换或新建。 */}
           <ImportTarget />
+          {importFailures.length ? (
+            <div className="ef-import-retry">
+              <div className="ef-import-retry-head">
+                <span className="status-error">导入待重试 · {importFailures.length} 篇</span>
+                <Button type="button" size="sm" onClick={() => void retryImportFailures()}>
+                  仅重试失败文件
+                </Button>
+              </div>
+              <ul className="ef-import-retry-list">
+                {importFailures.map((entry) => (
+                  <li key={entry.path} title={entry.message}>
+                    <span className="ef-import-retry-name">{entry.name}</span>
+                    <em>{entry.message}</em>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="text"
+                      aria-label={`放弃重试 ${entry.name}`}
+                      title="从待重试清单移除（不影响已入库的论文）"
+                      onClick={() => removeImportFailure(entry.path)}
+                    >
+                      移除
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+              <p className="ef-nav-sum">重试按失败时选定的目标领域导入；成功或确认重复后自动移出清单。</p>
+            </div>
+          ) : null}
           {failedParseCount ? (
             <div className="ef-job-row">
               <span className="status-error">解析失败 · {failedParseCount} 篇</span>

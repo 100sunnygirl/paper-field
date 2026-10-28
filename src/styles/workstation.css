@@ -3282,6 +3282,55 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   border-color: var(--pf-ink);
   box-shadow: 0 0 0 1px var(--pf-ink);
 }
+/* INTAKE「导入待重试」清单：toast 上的重试入口会消失，这份清单长期常驻，
+   逐条展示失败原因，可整批「仅重试失败文件」或逐条放弃。 */
+.ef-import-retry {
+  margin: 8px 0 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--pf-divider);
+  border-left: var(--pf-marker) solid var(--pf-danger);
+  background: var(--pf-surface);
+}
+.ef-import-retry-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+  font-size: var(--pf-fs-caption);
+}
+.ef-import-retry-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 132px;
+  overflow: auto;
+}
+.ef-import-retry-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--pf-divider);
+  font-size: var(--pf-fs-caption);
+}
+.ef-import-retry-list li:last-child { border-bottom: 0; }
+.ef-import-retry-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--pf-ink);
+}
+.ef-import-retry-list em {
+  max-width: 46%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--pf-secondary);
+  font-style: normal;
+}
 
 /* ---- Status strip ----
    底栏与顶栏同为墨色，把工作台上下框住；条目以竖向发丝线分隔。 */

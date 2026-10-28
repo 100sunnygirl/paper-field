@@ -18,6 +18,7 @@ vi.mock("@tauri-apps/plugin-store", () => ({ load: vi.fn() }));
 
 import { Toasts } from "./components/Toasts";
 import { repo } from "./lib/repo";
+import { resetImportFailures } from "./lib/importFailures";
 import { IMPORT_REASON_MAX, importFailureList, shortReason, useField } from "./store";
 import { dismissAll, getToasts, notify } from "./toasts";
 
@@ -26,12 +27,14 @@ const importLocalPdfs = repo.importLocalPdfs as unknown as ReturnType<typeof vi.
 beforeEach(() => {
   dismissAll();
   importLocalPdfs.mockReset();
+  resetImportFailures();
   useField.setState({
     selectedDomainId: "d-1",
     mode: "field",
     search: "",
     effectiveProvider: null,
     mineru: { ...useField.getState().mineru, configured: false },
+    importFailures: [],
   } as never);
 });
 
@@ -92,5 +95,64 @@ describe("retry failed imports", () => {
   it("toasts without an action keep their normal auto-dismiss duration", () => {
     notify("error", "普通错误");
     expect(getToasts().find((t) => t.text === "普通错误")?.durationMs).toBeUndefined();
+  });
+});
+
+describe("import failure list persistence", () => {
+  it("导入失败的文件进入持久化清单（含目标领域与截断原因），成功的不进", async () => {
+    importLocalPdfs.mockImplementation(async (_d: string, [p]: string[]) => {
+      if (p.endsWith("bad.pdf")) throw new Error("磁盘已满");
+      return { created: [{ id: p }], skipped: [] };
+    });
+    await useField.getState().importPdfs(["/x/ok.pdf", "/x/bad.pdf"]);
+    const failures = useField.getState().importFailures;
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toMatchObject({ path: "/x/bad.pdf", name: "bad.pdf", domainId: "d-1", message: "磁盘已满" });
+  });
+
+  it("确认重复（skipped）也算落定并移出清单", async () => {
+    importLocalPdfs.mockImplementation(async (_d: string, [p]: string[]) => ({ created: [], skipped: [p] }));
+    await useField.getState().importPdfs(["/x/dup.pdf"]);
+    expect(useField.getState().importFailures).toEqual([]);
+  });
+
+  it("重试成功后清单自动清空；再失败则更新原因", async () => {
+    importLocalPdfs.mockImplementation(async () => {
+      throw new Error("磁盘已满");
+    });
+    await useField.getState().importPdfs(["/x/bad.pdf"]);
+    expect(useField.getState().importFailures).toHaveLength(1);
+
+    importLocalPdfs.mockImplementation(async (_d: string, [p]: string[]) => ({ created: [{ id: p }], skipped: [] }));
+    await useField.getState().retryImportFailures();
+    expect(useField.getState().importFailures).toEqual([]);
+
+    importLocalPdfs.mockImplementation(async () => {
+      throw new Error("另一个原因");
+    });
+    await useField.getState().importPdfs(["/x/bad.pdf"]);
+    expect(useField.getState().importFailures[0]?.message).toBe("另一个原因");
+  });
+
+  it("retryImportFailures 按原目标领域分组重跑，切过领域也不改道", async () => {
+    importLocalPdfs.mockImplementation(async () => {
+      throw new Error("坏文件");
+    });
+    await useField.getState().importPdfs(["/x/a.pdf"]); // 目标 d-1
+    await useField.getState().importPdfs(["/y/b.pdf"], undefined, "d-2");
+    useField.setState({ selectedDomainId: "d-9" } as never);
+
+    importLocalPdfs.mockClear();
+    importLocalPdfs.mockImplementation(async (_d: string, [p]: string[]) => ({ created: [{ id: p }], skipped: [] }));
+    await useField.getState().retryImportFailures();
+    expect(importLocalPdfs).toHaveBeenCalledWith("d-1", ["/x/a.pdf"]);
+    expect(importLocalPdfs).toHaveBeenCalledWith("d-2", ["/y/b.pdf"]);
+    expect(importLocalPdfs).not.toHaveBeenCalledWith("d-9", expect.anything());
+    expect(useField.getState().importFailures).toEqual([]);
+  });
+
+  it("清单为空时重试给提示不报错", async () => {
+    await useField.getState().retryImportFailures();
+    expect(getToasts().some((t) => t.text.includes("没有待重试的导入失败文件"))).toBe(true);
   });
 });
