@@ -743,6 +743,51 @@ describe("PaperDialog · 重复候选（arXiv/标题跨领域比对）", () => {
   });
 });
 
+describe("PaperDialog · 「已在库中」直达原条目", () => {
+  beforeEach(() => {
+    asTauri();
+    vi.mocked(repo.pdfPaths).mockResolvedValue(["/papers/a.pdf"]);
+    vi.mocked(repo.paperRefsForDedup).mockResolvedValue([
+      {
+        id: "p-9",
+        title: "Attention Is All You Need",
+        titleZh: "注意力机制",
+        arxivId: null,
+        doi: null,
+        domainId: "d-2",
+        domainName: "指令对齐",
+        pdfPath: "/papers/a.pdf",
+        pdfOriginalPath: "/papers/a.pdf",
+      },
+    ]);
+  });
+
+  it("重复行显示原条目标题与所属领域，点击关闭对话框并打开那篇论文", async () => {
+    const selectDomain = vi.fn(async () => undefined);
+    const selectPaper = vi.fn(async () => undefined);
+    useField.setState({ selectDomain, selectPaper });
+    vi.mocked(pickPdfFiles).mockResolvedValue(["/papers/a.pdf"]);
+    render(<PaperDialog />);
+    fireEvent.click(screen.getByRole("button", { name: /选择 PDF/ }));
+    const link = await screen.findByRole("button", { name: /已在库中 · 注意力机制（指令对齐）/ });
+    expect(link).toBeInTheDocument();
+
+    fireEvent.click(link);
+    expect(useField.getState().dialog).toBeNull();
+    await waitFor(() => expect(selectDomain).toHaveBeenCalledWith("d-2"));
+    await waitFor(() => expect(selectPaper).toHaveBeenCalledWith("p-9"));
+  });
+
+  it("读不到原条目信息时退回纯文字「已在库中」（不出现死链接）", async () => {
+    vi.mocked(repo.paperRefsForDedup).mockResolvedValue([]);
+    vi.mocked(pickPdfFiles).mockResolvedValue(["/papers/a.pdf"]);
+    render(<PaperDialog />);
+    fireEvent.click(screen.getByRole("button", { name: /选择 PDF/ }));
+    await waitFor(() => expect(screen.getByText("已在库中")).toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: /已在库中 ·/ })).toBeNull();
+  });
+});
+
 describe("DomainDialog · 删除确认", () => {
   it("确认步只显示取消和确认删除领域", () => {
     const deleteDomain = vi.fn(async () => undefined);

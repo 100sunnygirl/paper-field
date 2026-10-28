@@ -3829,6 +3829,23 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   color: var(--pf-secondary);
   font-size: var(--pf-fs-caption);
 }
+/* 「已在库中」直达原条目：点开即关掉导入对话框、切到所属领域打开那篇论文。 */
+.ef-import-dup-link {
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--pf-secondary);
+  font-size: var(--pf-fs-caption);
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--pf-secondary) 45%, transparent);
+  text-underline-offset: 2px;
+}
+.ef-import-dup-link:hover { color: var(--pf-ink); }
 .ef-dialog-foot {
   display: flex;
   gap: 10px;

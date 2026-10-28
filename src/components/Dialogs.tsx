@@ -16,6 +16,8 @@ export function PaperDialog() {
   const importPdfs = useField((s) => s.importPdfs);
   const importPdfsPerFile = useField((s) => s.importPdfsPerFile);
   const attachPdfToPaper = useField((s) => s.attachPdfToPaper);
+  const selectDomain = useField((s) => s.selectDomain);
+  const selectPaper = useField((s) => s.selectPaper);
   const domains = useField((s) => s.domains);
   // 导入目标：显式改选（含就地新建）优先，缺省跟随当前选中领域；对话框顶部常驻可见。
   const importTargetDomainId = useField((s) => s.importTargetDomainId);
@@ -34,7 +36,7 @@ export function PaperDialog() {
       /** 文件名扫描：提取的 arXiv 号 / 清洗标题 / 与库内著录的重复候选。 */
       scan: ImportItemScan | null;
       /** 「已在库中」对应的原条目（点开直达）。 */
-      duplicatePaper: { id: string; title: string; domainName: string } | null;
+      duplicatePaper: { id: string; title: string; domainName: string; domainId: string } | null;
       /** 已通过「补充到已有条目」挂上文件的行：不再参与导入。 */
       attached: boolean;
     }>
@@ -99,7 +101,9 @@ export function PaperDialog() {
           domainId,
           domainTouched,
           scan: prev?.scan ?? scanImportItem(name, refs),
-          duplicatePaper: ref ? { id: ref.id, title: ref.titleZh || ref.title, domainName: ref.domainName } : null,
+          duplicatePaper: ref
+            ? { id: ref.id, title: ref.titleZh || ref.title, domainName: ref.domainName, domainId: ref.domainId }
+            : null,
           attached: prev?.attached ?? false,
         });
       }
@@ -190,6 +194,16 @@ export function PaperDialog() {
     }
   }
 
+  /** 「已在库中」顺路直达原条目：关掉导入对话框、切到所属领域并打开那篇论文。 */
+  function openDuplicatePaper(duplicate: NonNullable<(typeof items)[number]["duplicatePaper"]>) {
+    closeDialog();
+    void selectDomain(duplicate.domainId)
+      .then(() => selectPaper(duplicate.id))
+      .catch(() => {
+        // 直达不是关键路径：失败已有提示，导入清单本身不受影响。
+      });
+  }
+
   function renderItem(item: (typeof items)[number], index: number) {
     const candidate = item.scan?.candidate ?? null;
     return (
@@ -226,7 +240,18 @@ export function PaperDialog() {
           {item.attached ? (
             <em>已补充到「{candidate?.title ?? "已有条目"}」</em>
           ) : item.duplicate ? (
-            <em>已在库中</em>
+            item.duplicatePaper ? (
+              <button
+                type="button"
+                className="ef-import-dup-link"
+                title={`打开库里那篇：「${item.duplicatePaper.title}」（${item.duplicatePaper.domainName}）`}
+                onClick={() => openDuplicatePaper(item.duplicatePaper!)}
+              >
+                已在库中 · {item.duplicatePaper.title}（{item.duplicatePaper.domainName}）
+              </button>
+            ) : (
+              <em>已在库中</em>
+            )
           ) : candidate ? (
             <span className="ef-import-dup">
               <span className="ef-import-dup-info">
