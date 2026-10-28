@@ -1837,6 +1837,8 @@ export function ReadingStage({
                   size="sm"
                   className="ef-save-all"
                   title="保存这篇论文当前全部未保存的笔记草稿"
+                  // 按住焦点再动作：不触发草稿编辑框的失焦自动保存，避免同一块被存两次。
+                  onMouseDown={(e) => e.preventDefault()}
                   onClick={() => void saveAllNoteDrafts(paper.id)}
                 >
                   保存本篇全部（{draftCount} 处草稿）

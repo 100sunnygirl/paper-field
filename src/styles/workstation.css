@@ -3663,6 +3663,63 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   font-size: var(--pf-fs-caption);
   color: var(--pf-secondary);
 }
+/* AI 写入的 diff 查看与撤销（ai-diff 对话框）。 */
+.ef-diff-block { margin: 14px 0 0; }
+.ef-diff-block h3 {
+  margin: 0 0 6px;
+  font-size: var(--pf-fs-body);
+}
+.ef-diff-block h4 {
+  margin: 8px 0 4px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+}
+.ef-diff-note { margin: 0 0 8px; font-size: var(--pf-fs-caption); color: var(--pf-secondary); }
+.ef-diff-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--pf-divider);
+}
+.ef-diff-list li {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--pf-divider);
+  font-size: var(--pf-fs-caption);
+}
+.ef-diff-list li:last-child { border-bottom: 0; }
+.ef-diff-field { flex: none; min-width: 5em; }
+.ef-diff-pair { display: flex; align-items: baseline; gap: 6px; min-width: 0; flex: 1; flex-wrap: wrap; }
+.ef-diff-pair del { color: var(--pf-secondary); overflow-wrap: anywhere; }
+.ef-diff-pair ins { text-decoration: none; color: var(--pf-ink); overflow-wrap: anywhere; }
+.ef-diff-versions ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.ef-diff-versions li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: var(--pf-fs-caption);
+  border-bottom: 1px dashed var(--pf-divider);
+}
+.ef-diff-versions li:last-child { border-bottom: 0; }
+.ef-diff-version-by { flex: none; }
+.ef-diff-version-by.is-ai { color: var(--pf-secondary); }
+.ef-diff-version-by.is-user { color: var(--pf-ink); }
+.ef-diff-version-at { flex: none; color: var(--pf-secondary); }
+.ef-diff-version-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--pf-secondary);
+}
 .ef-dialog-foot {
   display: flex;
   gap: 10px;
