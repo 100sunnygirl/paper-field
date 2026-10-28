@@ -920,16 +920,17 @@ describe("列级写入与条件写入", () => {
   it("applyDraftedNotes：调用方给了版本号但笔记行不存在时不插入", async () => {
     const domainId = await makeDomain();
     const paper = await repo.createPaper({ domainId });
-    await holder.engine!.execute("DELETE FROM notes WHERE paper_id = ? AND kind = 'summary'", [paper.id]);
+    await holder.engine!.execute("DELETE FROM notes WHERE paper_id = ? AND kind IN ('summary', 'weaknesses')", [paper.id]);
     const revs = { remarks: 0, summary: -1, highlights: 0, weaknesses: 0, implications: 0 };
     await repo.applyDraftedNotes(
       paper.id,
-      { remarks: "r", summary: "不该出现", highlights: "h", weaknesses: "w", implications: "i" },
+      { remarks: "r", summary: "不该出现", highlights: "h", weaknesses: "也不该出现", implications: "i" },
       true,
       revs,
     );
     const detail = (await repo.getPaper(paper.id))!;
     expect(detail.notes.summary.content).toBe("");
+    expect(detail.notes.weaknesses.content).toBe("");
     expect(detail.notes.highlights.content).toBe("h");
   });
 });

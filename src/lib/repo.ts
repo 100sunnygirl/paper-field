@@ -348,6 +348,10 @@ function authorPayload(
   );
 }
 
+function claimedRevBlocksInsert(revs: Partial<Record<NoteKind, number>> | undefined, kind: NoteKind): boolean {
+  return revs !== undefined && Object.prototype.hasOwnProperty.call(revs, kind);
+}
+
 function emptyNoteSteps(paperId: string, at: string): BatchStep[] {
   return NOTE_KINDS.map((kind) => ({
     sql: `INSERT OR IGNORE INTO notes (id, paper_id, kind, content, source, user_edited, revised_at)
@@ -1012,10 +1016,7 @@ export const repo = {
                  WHERE id = ? AND rev = ? AND (user_edited = 0 OR ? = 1)`,
           params: [notes[kind] ?? "", at, block.id, revs?.[kind] ?? Number(block.rev ?? 0), overwrite ? 1 : 0],
         });
-      } else if (revs && Object.prototype.hasOwnProperty.call(revs, kind)) {
-        // A supplied rev writes only when that rev still matches. There is no row to match,
-        // and inserting would create a block the caller withheld.
-      } else {
+      } else if (!claimedRevBlocksInsert(revs, kind)) {
         candidates.push(kind);
         steps.push({
           sql: `INSERT OR IGNORE INTO notes (id, paper_id, kind, content, source, user_edited, rev, revised_at)

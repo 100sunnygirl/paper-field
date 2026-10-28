@@ -123,7 +123,6 @@ interface FieldState {
   pendingDraftJob: string | null;
   /** 正在编辑、尚未保存的笔记草稿，按论文分开存：切换论文不丢，切回来还在。 */
   drafts: Record<string, Partial<Record<NoteKind, string>>>;
-  /** Prose frozen while a note draft is open. state.paper stays the saved row. */
   stageHold: { paperId: string; prose: StageProse } | null;
   pendingReadingUndo: (ReadingUndo & { gen: number }) | null;
   restorePreview: { phase: "idle" } | { phase: "previewed" | "staged"; diff: PartitionedTitles };

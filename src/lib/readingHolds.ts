@@ -22,7 +22,6 @@ export type StageField = (typeof STAGE_FIELDS)[number];
 
 const NOTE_FIELDS = new Set<StageField>(["summary", "highlights", "weaknesses", "implications", "remarks"]);
 
-/** The document on screen. It has no id and cannot be saved. */
 export interface StageProse {
   title: string;
   titleZh: string;
@@ -37,7 +36,6 @@ export interface StageProse {
   notes: Record<NoteKind, string>;
 }
 
-/** Every block is named. A missing key is not a permit. */
 export type NotePermit = { readonly [K in NoteKind]: boolean };
 
 export interface ReadingUndo {
@@ -79,7 +77,6 @@ export function libraryLabel(title: string, titleZh: string | null | undefined):
   return en || "未命名论文";
 }
 
-/** Exact compare. A space is a change. */
 export function noteWriteNeeded(stored: string, submitted: string): boolean {
   return stored !== submitted;
 }
@@ -101,11 +98,6 @@ export function allowEveryNote(): NotePermit {
   return permit;
 }
 
-/**
- * reading with a null stamp cannot be restored by setReadingStatus("reading"),
- * because that call keeps the stamp mark-read just wrote. unread clears it,
- * and the following reading keeps the null.
- */
 export function readingUndoPlan(undo: Pick<ReadingUndo, "status" | "readAt">): ReadingStatus[] {
   if (undo.status === "reading" && undo.readAt === null) return ["unread", "reading"];
   return [undo.status];
@@ -230,7 +222,6 @@ function capBucket<T>(rows: T[], cap: number): TitleBucket<T> {
   return { rows: rows.slice(0, cap), hidden: Math.max(0, rows.length - cap) };
 }
 
-/** Identity is papers.id. A shared id with two labels is both, and renamed. */
 export function partitionTitles(
   current: readonly LibraryTitle[],
   backup: readonly LibraryTitle[],

@@ -1119,8 +1119,6 @@ pub struct StagedTitle {
     pub title_zh: Option<String>,
 }
 
-/// Read titles from the staged database on its own connection. Does not attach
-/// to the live pool and does not move the restore marker.
 pub async fn read_staged_titles(db: &Path) -> Result<Vec<StagedTitle>, String> {
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
     use sqlx::Row;
