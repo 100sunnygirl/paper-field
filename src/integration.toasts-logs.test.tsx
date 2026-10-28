@@ -731,7 +731,7 @@ describe("领域管理的通知触达", () => {
     );
   });
 
-  it("现状基线：创建 / 删除领域成功不产生任何通知（缺口已记录，防进一步劣化）", async () => {
+  it("创建 / 删除领域成功各有通知：删除带「撤销删除」、创建带「添加第一篇论文」（原缺口已由限时撤销与新手上手补上）", async () => {
     useField.setState({ selectedDomainId: "d-1" });
     vi.mocked(repo.deleteDomain).mockResolvedValue(undefined);
     vi.mocked(repo.listDomains).mockResolvedValue([]);
@@ -745,8 +745,18 @@ describe("领域管理的通知触达", () => {
     });
 
     expect(useField.getState().selectedDomainId).toBe("d-2");
-    expect(getToasts()).toHaveLength(0);
-    expect(getEntries()).toHaveLength(0);
+    const toasts = getToasts();
+    expect(toasts).toHaveLength(2);
+    // 本文件的 repo 替身没有 snapshotDomainForUndo，删除通知因此不带「撤销删除」
+    // （撤销链路的真库断言在 store.undo.test.ts）；这里只断言通知本身与收口。
+    expect(toasts[0]?.text).toContain("已删除领域");
+    expect(toasts[1]?.text).toContain("已创建领域");
+    expect(toasts[1]?.action?.label).toBe("添加第一篇论文");
+    // 两条通知都进了日志收口（emit → log.info("ui", text)）
+    const logged = getEntries().filter(
+      (entry) => entry.message.includes("已删除领域") || entry.message.includes("已创建领域"),
+    );
+    expect(logged).toHaveLength(2);
   });
 });
 

@@ -808,7 +808,12 @@ export const useField = create<FieldState>((set, get) => ({
     if (!id) return;
     try {
       // 名字以库为准（状态里的 domains 可能尚未刷新），只用于提示与撤销文案。
-      const domainRow = await repo.getDomain(id).catch(() => null);
+      let domainRow: { name?: string } | null = null;
+      try {
+        domainRow = (await repo.getDomain?.(id)) ?? null;
+      } catch {
+        domainRow = null;
+      }
       const domainName = get().domains.find((d) => d.id === id)?.name ?? domainRow?.name ?? "";
       // 先取消这些论文的在途作业并移出排队，免得轮询在论文删掉后还占着队列、扣着配额。
       const paperIds = await repo.paperIdsInDomain(id);
