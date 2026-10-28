@@ -3765,6 +3765,56 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   color: var(--pf-secondary);
   text-decoration: line-through;
 }
+/* 逐文件目标领域：行尾的小下拉 + 文件夹分组头（跨领域收集时按目录整组指派）。 */
+.ef-import-row-side {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+.ef-import-row-domain,
+.ef-import-bulk-domain select {
+  appearance: none;
+  -webkit-appearance: none;
+  max-width: 128px;
+  padding: 2px 20px 2px 8px;
+  border: 1px solid var(--pf-control-border);
+  border-radius: var(--pf-radius);
+  background: var(--pf-surface);
+  color: var(--pf-ink);
+  font-size: var(--pf-fs-caption);
+  background-image: linear-gradient(45deg, transparent 50%, var(--pf-ink) 50%),
+    linear-gradient(135deg, var(--pf-ink) 50%, transparent 50%);
+  background-position: calc(100% - 12px) calc(50% - 1px), calc(100% - 8px) calc(50% - 1px);
+  background-size: 4px 4px;
+  background-repeat: no-repeat;
+}
+.ef-import-row-domain:hover,
+.ef-import-bulk-domain select:hover { border-color: var(--pf-ink); }
+.ef-import-row-domain:disabled { opacity: 0.55; }
+.ef-import-bulk-domain {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--pf-secondary);
+  font-size: var(--pf-fs-caption);
+}
+.ef-import-group {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 10px;
+  background: var(--pf-hover-flat);
+  border-bottom: 1px solid var(--pf-divider);
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+}
+.ef-import-group-dir {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .ef-dialog-foot {
   display: flex;
   gap: 10px;

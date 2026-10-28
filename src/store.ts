@@ -212,7 +212,15 @@ interface FieldState {
     onProgress?: (done: number, total: number, current: string) => void,
     /** 导入到哪个领域；缺省为发起时选中的领域（重试时由闭包带上原领域）。 */
     domainId?: string,
-  ) => Promise<void>;
+  ) => Promise<ImportOutcome>;
+  /**
+   * 逐文件目标导入：导入预览里逐文件/按文件夹指定领域的执行端（跨领域收集不用先统一
+   * 导入再逐篇移动）；每个条目带自己的目标领域，单篇失败不中断，失败按原领域记账。
+   */
+  importPdfsPerFile: (
+    entries: ImportFileEntry[],
+    onProgress?: (done: number, total: number, current: string) => void,
+  ) => Promise<ImportOutcome>;
   createManualPaper: (input: {
     title: string;
     arxivId?: string;
@@ -319,6 +327,19 @@ export function importFailureList(failed: Array<{ name: string; message: string 
   const shown = failed.slice(0, IMPORT_FAILURES_SHOWN).map((f) => `${f.name}（${shortReason(f.message)}）`).join("、");
   const rest = failed.length - IMPORT_FAILURES_SHOWN;
   return rest > 0 ? `${shown} 等，另有 ${rest} 篇` : shown;
+}
+
+/** 一次导入要落库的文件与它的目标领域（导入预览可逐文件指定）。 */
+export interface ImportFileEntry {
+  path: string;
+  domainId: string;
+}
+
+/** 一次导入（单领域或逐文件多领域）的逐文件结果。 */
+export interface ImportOutcome {
+  created: number;
+  skipped: number;
+  failed: Array<{ name: string; path: string; domainId: string; message: string }>;
 }
 
 const prepareInflight = new Set<string>();
@@ -822,37 +843,65 @@ export const useField = create<FieldState>((set, get) => ({
     if (!domainId) throw new Error("请先选择一个领域，再导入 PDF。");
     const unique = [...new Set(paths.map((path) => path.trim()).filter(Boolean))];
     if (!unique.length) throw new Error("请选择至少一个 PDF");
+    return get().importPdfsPerFile(
+      unique.map((path) => ({ path, domainId })),
+      onProgress,
+    );
+  },
+
+  importPdfsPerFile: async (entries, onProgress) => {
+    // 同一路径只导一次（按首次出现的目标领域）；没带领域的条目按失败记账，不静默丢弃。
+    const byPath = new Map<string, ImportFileEntry>();
+    const failed: ImportOutcome["failed"] = [];
+    for (const entry of entries) {
+      const path = entry.path.trim();
+      if (!path || byPath.has(path)) continue;
+      if (!entry.domainId) {
+        failed.push({
+          name: path.split(/[/\\]/).pop() ?? path,
+          path,
+          domainId: "",
+          message: "未指定目标领域",
+        });
+        continue;
+      }
+      byPath.set(path, { path, domainId: entry.domainId });
+    }
+    const queue = [...byPath.values()];
+    if (!queue.length && !failed.length) throw new Error("请选择至少一个 PDF");
     try {
       // 逐篇入库以回报真实进度（n/总数 · 当前文件）；单篇失败不中断整批。
       const created: PaperListItem["id"][] = [];
       const settled: string[] = [];
       let skippedCount = 0;
-      const failed: Array<{ name: string; path: string; message: string }> = [];
       let done = 0;
-      for (const path of unique) {
-        const name = path.split(/[/\\]/).pop() ?? path;
+      for (const entry of queue) {
+        const name = entry.path.split(/[/\\]/).pop() ?? entry.path;
         try {
-          const result = await repo.importLocalPdfs(domainId, [path]);
+          const result = await repo.importLocalPdfs(entry.domainId, [entry.path]);
           for (const paper of result.created) created.push(paper.id);
           skippedCount += result.skipped.length;
           // 成功入库与确认重复都算落定：从失败清单（如有）移出。
-          settled.push(path);
+          settled.push(entry.path);
         } catch (err) {
-          failed.push({ name, path, message: errText(err) });
+          failed.push({ name, path: entry.path, domainId: entry.domainId, message: errText(err) });
         }
         done += 1;
-        onProgress?.(done, unique.length, name);
+        onProgress?.(done, queue.length, name);
       }
-      // 失败清单持久化（同路径覆盖）：toast 的重试入口会消失，这份清单长期留在 INTAKE。
+      // 失败清单持久化（同路径覆盖，按各自目标领域记账）：toast 的重试入口会消失，
+      // 这份清单长期留在 INTAKE。
       if (failed.length) {
         recordImportFailures(
-          failed.map((f) => ({
-            path: f.path,
-            name: f.name,
-            domainId,
-            message: shortReason(f.message),
-            at: Date.now(),
-          })),
+          failed
+            .filter((f) => f.domainId)
+            .map((f) => ({
+              path: f.path,
+              name: f.name,
+              domainId: f.domainId,
+              message: shortReason(f.message),
+              at: Date.now(),
+            })),
         );
       }
       if (settled.length) resolveImportFailures(settled);
@@ -873,11 +922,11 @@ export const useField = create<FieldState>((set, get) => ({
           text: `已导入 ${created.length} 篇${skippedText}，${failed.length} 篇失败：${importFailureList(failed)}。${failed.length > 1 ? "完整失败列表见日志。" : ""}`,
           action: {
             label: failed.length > 1 ? `重试这 ${failed.length} 篇` : "重试",
-            // Only the failed paths go back in; already-imported ones are not re-sent.
+            // Only the failed entries go back in; already-imported ones are not re-sent.
             run: () => {
-              const retry = failed.map((f) => f.path);
+              const retry = failed.filter((f) => f.domainId).map((f) => ({ path: f.path, domainId: f.domainId }));
               get()
-                .importPdfs(retry, undefined, domainId)
+                .importPdfsPerFile(retry)
                 .catch((err) => get().setFlash({ tone: "error", text: `重试导入失败：${errText(err)}` }));
             },
           },
@@ -885,7 +934,7 @@ export const useField = create<FieldState>((set, get) => ({
       }
       if (!created.length) {
         if (!failed.length) get().setFlash({ tone: "warn", text: "这些 PDF 已在库中。" });
-        return;
+        return { created: created.length, skipped: skippedCount, failed };
       }
       // 生效源判断：探测结果可能过期，无结果时先重探一次再下结论。
       let effective = get().effectiveProvider;
@@ -898,7 +947,7 @@ export const useField = create<FieldState>((set, get) => ({
           text: `已导入 ${created.length} 篇${skippedText}。当前没有可用的 MinerU 解析源，论文已入库但未解析，可到设置页启用解析源。`,
           action: { label: "去设置", run: () => get().openSystemCard("mineru") },
         });
-        return;
+        return { created: created.length, skipped: skippedCount, failed };
       }
       if (!failed.length) {
         get().setFlash({
@@ -907,6 +956,7 @@ export const useField = create<FieldState>((set, get) => ({
         });
       }
       enqueueMineruBatch(mineruHost(), created, false);
+      return { created: created.length, skipped: skippedCount, failed };
     } catch (err) {
       get().setFlash({ tone: "error", text: `导入失败：${errText(err)}，数据未改动。` });
       throw err;

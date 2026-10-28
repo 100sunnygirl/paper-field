@@ -3,9 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { lookupPaper } from "../lib/lookup";
 import { pickPdfFiles, pickPdfFolder } from "../lib/mineru";
 import { repo } from "../lib/repo";
-import { useField } from "../store";
+import { useField, type ImportOutcome } from "../store";
 import { DeleteCheckedPapersDialog, DomainDialog, PaperDialog } from "./Dialogs";
 import type { Paper } from "../lib/types";
+
+function emptyOutcome(): ImportOutcome {
+  return { created: 0, skipped: 0, failed: [] };
+}
 
 vi.mock("../lib/mineru", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/mineru")>();
@@ -204,7 +208,7 @@ describe("PaperDialog · 导入目标领域常驻可见", () => {
         _paths: string[],
         _onProgress?: (done: number, total: number, current: string) => void,
         _domainId?: string,
-      ) => undefined,
+      ) => emptyOutcome(),
     );
     useField.setState({ importPdfs });
     render(<PaperDialog />);
@@ -225,7 +229,7 @@ describe("PaperDialog · 导入目标领域常驻可见", () => {
         _paths: string[],
         _onProgress?: (done: number, total: number, current: string) => void,
         _domainId?: string,
-      ) => undefined,
+      ) => emptyOutcome(),
     );
     useField.setState({ importPdfs });
     render(<PaperDialog />);
@@ -308,7 +312,7 @@ describe("PaperDialog · 扫描结果挑选排除", () => {
 
   it("取消勾选后不计入导入数，导入只包含仍勾选的文件", async () => {
     setupScan(["/papers/folder/paper-a.pdf", "/papers/folder/manual.pdf", "/papers/folder/paper-b.pdf"]);
-    const importPdfs = vi.fn(async (_paths: string[]) => undefined);
+    const importPdfs = vi.fn(async (_paths: string[]) => emptyOutcome());
     useField.setState({ importPdfs });
     render(<PaperDialog />);
     fireEvent.click(screen.getByRole("button", { name: /选择文件夹/ }));
@@ -386,10 +390,16 @@ describe("PaperDialog · 导入执行与进度", () => {
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
-    const importPdfs = vi.fn(async (_paths: string[], onProgress?: (done: number, total: number, current: string) => void) => {
-      onProgress?.(1, 2, "a.pdf");
-      await gate;
-    });
+    const importPdfs = vi.fn(
+      async (
+        _paths: string[],
+        onProgress?: (done: number, total: number, current: string) => void,
+      ): Promise<ImportOutcome> => {
+        onProgress?.(1, 2, "a.pdf");
+        await gate;
+        return emptyOutcome();
+      },
+    );
     useField.setState({ importPdfs });
 
     render(<PaperDialog />);
@@ -565,6 +575,109 @@ describe("PaperDialog · 手动添加粘贴识别", () => {
       target: { value: "随手敲的一句话" },
     });
     expect(screen.getByText(/未识别出 arXiv \/ DOI \/ BibTeX/)).toBeInTheDocument();
+  });
+});
+
+describe("PaperDialog · 逐文件/按文件夹指定目标领域", () => {
+  beforeEach(() => {
+    asTauri();
+    useField.setState({
+      domains: [
+        { id: "d-1", name: "多模态", code: "MM-01", summary: null, sortOrder: 1, createdAt: "2024-01-01T00:00:00.000Z" },
+        { id: "d-2", name: "指令对齐", code: "AL-02", summary: null, sortOrder: 2, createdAt: "2024-01-01T00:00:00.000Z" },
+      ],
+    });
+  });
+
+  it("多领域时行尾出现目标领域下拉，默认跟随对话框目标", async () => {
+    vi.mocked(pickPdfFiles).mockResolvedValue(["/papers/a.pdf"]);
+    render(<PaperDialog />);
+    fireEvent.click(screen.getByRole("button", { name: /选择 PDF/ }));
+    await waitFor(() => expect(screen.getByLabelText("目标领域：a.pdf")).toHaveValue("d-1"));
+  });
+
+  it("单领域批次仍走 importPdfs 原链路，按钮文案不变", async () => {
+    vi.mocked(pickPdfFiles).mockResolvedValue(["/papers/a.pdf"]);
+    const importPdfs = vi.fn(async () => emptyOutcome());
+    const importPdfsPerFile = vi.fn(async () => emptyOutcome());
+    useField.setState({ importPdfs, importPdfsPerFile });
+    render(<PaperDialog />);
+    fireEvent.click(screen.getByRole("button", { name: /选择 PDF/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "导入 1 篇到「多模态」" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "导入 1 篇到「多模态」" }));
+    await waitFor(() => expect(importPdfs).toHaveBeenCalledTimes(1));
+    expect(importPdfsPerFile).not.toHaveBeenCalled();
+  });
+
+  it("逐文件改领域后按「分入 N 个领域」走 importPdfsPerFile，条目带各自领域", async () => {
+    vi.mocked(pickPdfFiles).mockResolvedValue(["/papers/a.pdf", "/papers/b.pdf"]);
+    const importPdfs = vi.fn(async () => emptyOutcome());
+    const importPdfsPerFile = vi.fn(
+      async (_entries: Array<{ path: string; domainId: string }>) => emptyOutcome(),
+    );
+    useField.setState({ importPdfs, importPdfsPerFile });
+    render(<PaperDialog />);
+    fireEvent.click(screen.getByRole("button", { name: /选择 PDF/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "导入 2 篇到「多模态」" })).toBeEnabled());
+
+    fireEvent.change(screen.getByLabelText("目标领域：b.pdf"), { target: { value: "d-2" } });
+    await waitFor(() => expect(screen.getByRole("button", { name: "导入 2 篇 · 分入 2 个领域" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "导入 2 篇 · 分入 2 个领域" }));
+
+    await waitFor(() => expect(importPdfsPerFile).toHaveBeenCalledTimes(1));
+    expect(importPdfsPerFile.mock.calls[0][0]).toEqual([
+      { path: "/papers/a.pdf", domainId: "d-1" },
+      { path: "/papers/b.pdf", domainId: "d-2" },
+    ]);
+    expect(importPdfs).not.toHaveBeenCalled();
+  });
+
+  it("「全部使用此领域」一键整批指派", async () => {
+    vi.mocked(pickPdfFiles).mockResolvedValue(["/papers/a.pdf", "/papers/b.pdf"]);
+    render(<PaperDialog />);
+    fireEvent.click(screen.getByRole("button", { name: /选择 PDF/ }));
+    await waitFor(() => expect(screen.getByLabelText("目标领域：b.pdf")).toBeEnabled());
+
+    fireEvent.change(screen.getByLabelText("目标领域：b.pdf"), { target: { value: "d-2" } });
+    expect(screen.getByLabelText("目标领域：a.pdf")).toHaveValue("d-1");
+    fireEvent.change(screen.getByLabelText("全部使用此领域"), { target: { value: "d-2" } });
+    expect(screen.getByLabelText("目标领域：a.pdf")).toHaveValue("d-2");
+    expect(screen.getByLabelText("目标领域：b.pdf")).toHaveValue("d-2");
+  });
+
+  it("跨文件夹扫描按目录分组，组头可整组指派", async () => {
+    vi.mocked(pickPdfFolder).mockResolvedValue(["/papers/mm/x.pdf", "/papers/mm/y.pdf", "/papers/al/z.pdf"]);
+    render(<PaperDialog />);
+    fireEvent.click(screen.getByRole("button", { name: /选择文件夹/ }));
+    await waitFor(() => expect(screen.getByText("x.pdf")).toBeInTheDocument());
+
+    expect(screen.getByText("mm")).toBeInTheDocument();
+    expect(screen.getByText("al")).toBeInTheDocument();
+    // 组头下拉整组指派 al → 指令对齐
+    fireEvent.change(screen.getByLabelText("此文件夹全部使用：/papers/al"), { target: { value: "d-2" } });
+    expect(screen.getByLabelText("目标领域：z.pdf")).toHaveValue("d-2");
+    expect(screen.getByLabelText("目标领域：x.pdf")).toHaveValue("d-1");
+  });
+
+  it("切换对话框目标时，未单独改过的行跟随、单独改过的保留", async () => {
+    useField.setState({
+      domains: [
+        { id: "d-1", name: "多模态", code: "MM-01", summary: null, sortOrder: 1, createdAt: "2024-01-01T00:00:00.000Z" },
+        { id: "d-2", name: "指令对齐", code: "AL-02", summary: null, sortOrder: 2, createdAt: "2024-01-01T00:00:00.000Z" },
+        { id: "d-3", name: "具身智能", code: "EM-03", summary: null, sortOrder: 3, createdAt: "2024-01-01T00:00:00.000Z" },
+      ],
+    });
+    vi.mocked(pickPdfFiles).mockResolvedValue(["/papers/a.pdf", "/papers/b.pdf"]);
+    render(<PaperDialog />);
+    fireEvent.click(screen.getByRole("button", { name: /选择 PDF/ }));
+    await waitFor(() => expect(screen.getByLabelText("目标领域：b.pdf")).toBeEnabled());
+
+    fireEvent.change(screen.getByLabelText("目标领域：b.pdf"), { target: { value: "d-2" } });
+    fireEvent.click(screen.getByRole("button", { name: /将导入到/ }));
+    fireEvent.click(screen.getByRole("button", { name: /具身智能/ }));
+    // a 没单独改过：跟随新目标 d-3；b 单独指派过：保留 d-2
+    expect(screen.getByLabelText("目标领域：a.pdf")).toHaveValue("d-3");
+    expect(screen.getByLabelText("目标领域：b.pdf")).toHaveValue("d-2");
   });
 });
 

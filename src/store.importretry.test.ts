@@ -156,3 +156,60 @@ describe("import failure list persistence", () => {
     expect(getToasts().some((t) => t.text.includes("没有待重试的导入失败文件"))).toBe(true);
   });
 });
+
+describe("importPdfsPerFile · 逐文件目标领域", () => {
+  it("每个文件按自己的目标领域入库，结果按文件计数", async () => {
+    importLocalPdfs.mockImplementation(async (d: string, [p]: string[]) => ({ created: [{ id: `${d}:${p}` }], skipped: [] }));
+    const outcome = await useField.getState().importPdfsPerFile([
+      { path: "/x/a.pdf", domainId: "d-1" },
+      { path: "/y/b.pdf", domainId: "d-2" },
+    ]);
+    expect(importLocalPdfs).toHaveBeenCalledWith("d-1", ["/x/a.pdf"]);
+    expect(importLocalPdfs).toHaveBeenCalledWith("d-2", ["/y/b.pdf"]);
+    expect(outcome).toMatchObject({ created: 2, skipped: 0 });
+    expect(outcome.failed).toEqual([]);
+  });
+
+  it("同一路径出现两次只导一次（按首次目标领域）", async () => {
+    importLocalPdfs.mockImplementation(async (_d: string, [p]: string[]) => ({ created: [{ id: p }], skipped: [] }));
+    await useField.getState().importPdfsPerFile([
+      { path: "/x/a.pdf", domainId: "d-1" },
+      { path: "/x/a.pdf", domainId: "d-2" },
+    ]);
+    expect(importLocalPdfs).toHaveBeenCalledTimes(1);
+    expect(importLocalPdfs).toHaveBeenCalledWith("d-1", ["/x/a.pdf"]);
+  });
+
+  it("没带目标领域的条目按失败记账（含原因），不影响其余文件", async () => {
+    importLocalPdfs.mockImplementation(async (_d: string, [p]: string[]) => ({ created: [{ id: p }], skipped: [] }));
+    const outcome = await useField.getState().importPdfsPerFile([
+      { path: "/x/ok.pdf", domainId: "d-1" },
+      { path: "/x/orphan.pdf", domainId: "" },
+    ]);
+    expect(importLocalPdfs).toHaveBeenCalledTimes(1);
+    expect(outcome.created).toBe(1);
+    expect(outcome.failed).toEqual([
+      { name: "orphan.pdf", path: "/x/orphan.pdf", domainId: "", message: "未指定目标领域" },
+    ]);
+  });
+
+  it("逐文件失败按各自目标领域进入待重试清单，重试不改道", async () => {
+    importLocalPdfs.mockImplementation(async (d: string) => {
+      if (d === "d-2") throw new Error("坏文件");
+      return { created: [{ id: "ok" }], skipped: [] };
+    });
+    await useField.getState().importPdfsPerFile([
+      { path: "/x/a.pdf", domainId: "d-1" },
+      { path: "/y/b.pdf", domainId: "d-2" },
+    ]);
+    const failures = useField.getState().importFailures;
+    expect(failures).toHaveLength(1);
+    expect(failures[0]).toMatchObject({ path: "/y/b.pdf", domainId: "d-2" });
+
+    importLocalPdfs.mockClear();
+    importLocalPdfs.mockImplementation(async (_d: string, [p]: string[]) => ({ created: [{ id: p }], skipped: [] }));
+    await useField.getState().retryImportFailures();
+    expect(importLocalPdfs).toHaveBeenCalledWith("d-2", ["/y/b.pdf"]);
+    expect(useField.getState().importFailures).toEqual([]);
+  });
+});

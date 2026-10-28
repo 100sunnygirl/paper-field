@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { Fragment, useEffect, useRef, useState, type CSSProperties } from "react";
 import { lookupPaper } from "../lib/lookup";
 import { pickPdfFiles, pickPdfFolder } from "../lib/mineru";
 import { parsePastedRef, type ParsedRef } from "../lib/pasteRef";
@@ -13,13 +13,17 @@ export function PaperDialog() {
   const dialog = useField((s) => s.dialog);
   const closeDialog = useField((s) => s.closeDialog);
   const importPdfs = useField((s) => s.importPdfs);
+  const importPdfsPerFile = useField((s) => s.importPdfsPerFile);
   const domains = useField((s) => s.domains);
   // 导入目标：显式改选（含就地新建）优先，缺省跟随当前选中领域；对话框顶部常驻可见。
   const importTargetDomainId = useField((s) => s.importTargetDomainId);
   const selectedDomainId = useField((s) => s.selectedDomainId);
   const targetDomainId = importTargetDomainId ?? selectedDomainId;
   const targetDomain = domains.find((d) => d.id === targetDomainId) ?? null;
-  const [items, setItems] = useState<Array<{ path: string; name: string; duplicate: boolean; excluded: boolean }>>([]);
+  // 清单里逐文件可指定目标领域（domainTouched：用户单独改过的不跟随对话框目标联动）。
+  const [items, setItems] = useState<
+    Array<{ path: string; name: string; duplicate: boolean; excluded: boolean; domainId: string; domainTouched: boolean }>
+  >([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<{ done: number; total: number; current: string } | null>(null);
@@ -35,15 +39,29 @@ export function PaperDialog() {
     setManualOpen(false);
   }, [open]);
 
+  // 对话框目标领域变化时：没被单独改过的行跟着换目标（跨领域收集时先全部指到 A 再逐个改）。
+  useEffect(() => {
+    if (!targetDomainId) return;
+    setItems((current) =>
+      current.some((item) => !item.domainTouched && item.domainId !== targetDomainId)
+        ? current.map((item) => (item.domainTouched ? item : { ...item, domainId: targetDomainId }))
+        : current,
+    );
+  }, [targetDomainId]);
+
   async function addPaths(paths: string[]) {
     const known = new Set(await repo.pdfPaths());
+    const fallbackDomain = targetDomainId ?? domains[0]?.id ?? "";
     setItems((current) => {
       const next = new Map(current.map((item) => [item.path, item]));
       for (const path of paths) {
         const name = path.split(/[/\\]/).pop() ?? path;
-        // 重新扫描同一目录时保留用户已排除的选择，不悄悄改回勾选。
-        const excluded = current.find((item) => item.path === path)?.excluded ?? false;
-        next.set(path, { path, name, duplicate: known.has(path), excluded });
+        // 重新扫描同一目录时保留用户已排除的选择与单独指定过的目标领域，不悄悄改回。
+        const prev = current.find((item) => item.path === path);
+        const excluded = prev?.excluded ?? false;
+        const domainId = prev?.domainId ?? fallbackDomain;
+        const domainTouched = prev?.domainTouched ?? false;
+        next.set(path, { path, name, duplicate: known.has(path), excluded, domainId, domainTouched });
       }
       return [...next.values()];
     });
@@ -75,6 +93,9 @@ export function PaperDialog() {
   const fresh = items.filter((item) => !item.duplicate && !item.excluded);
   const checkable = items.filter((item) => !item.duplicate);
   const checkedCount = checkable.filter((item) => !item.excluded).length;
+  // 本批要分入几个领域：1 个保持「导入 N 篇到「X」」的原按钮与原链路；多个则走逐文件导入。
+  const freshDomains = [...new Set(fresh.map((item) => item.domainId))];
+  const multiDomain = freshDomains.length > 1;
 
   function toggleExcluded(path: string, excluded: boolean) {
     setItems((current) => current.map((item) => (item.path === path ? { ...item, excluded } : item)));
@@ -82,6 +103,75 @@ export function PaperDialog() {
 
   function setAllExcluded(excluded: boolean) {
     setItems((current) => current.map((item) => (item.duplicate ? item : { ...item, excluded })));
+  }
+
+  function setItemDomain(path: string, domainId: string) {
+    setItems((current) => current.map((item) => (item.path === path ? { ...item, domainId, domainTouched: true } : item)));
+  }
+
+  /** 「全部使用此领域」：整批改到同一领域（含被排除行，保持后续再勾选时语义一致）。 */
+  function setAllDomain(domainId: string) {
+    setItems((current) => current.map((item) => ({ ...item, domainId, domainTouched: false })));
+  }
+
+  function setGroupDomain(paths: string[], domainId: string) {
+    const group = new Set(paths);
+    setItems((current) => current.map((item) => (group.has(item.path) ? { ...item, domainId, domainTouched: true } : item)));
+  }
+
+  // 按文件夹分组（跨领域收集时按目录审阅；单一目录保持原平铺清单）。
+  const groups = new Map<string, typeof items>();
+  for (const item of items) {
+    const dir = item.path.split(/[/\\]/).slice(0, -1).join("/") || "/";
+    const list = groups.get(dir) ?? [];
+    list.push(item);
+    groups.set(dir, list);
+  }
+  const groupEntries = [...groups.entries()];
+  const multiDir = groupEntries.length > 1;
+
+  /** 组内目标领域一致时返回该领域，不一致返回 ""（下拉显示「选择领域」占位）。 */
+  function groupDomainValue(groupItems: typeof items): string {
+    const first = groupItems[0]?.domainId ?? "";
+    return groupItems.every((item) => item.domainId === first) ? first : "";
+  }
+
+  function renderItem(item: (typeof items)[number], index: number) {
+    return (
+      <li
+        key={item.path}
+        className={`pf-stagger${item.excluded && !item.duplicate ? " is-excluded" : ""}`}
+        style={{ "--pf-i": index } as CSSProperties}
+      >
+        <label className="ef-import-check">
+          <input
+            type="checkbox"
+            checked={!item.duplicate && !item.excluded}
+            disabled={busy || item.duplicate}
+            onChange={(e) => toggleExcluded(item.path, !e.target.checked)}
+          />
+          <span>{item.name}</span>
+        </label>
+        <span className="ef-import-row-side">
+          {domains.length > 1 && !item.duplicate ? (
+            <select
+              className="ef-import-row-domain"
+              aria-label={`目标领域：${item.name}`}
+              value={item.domainId}
+              disabled={busy}
+              onChange={(e) => setItemDomain(item.path, e.target.value)}
+            >
+              {domains.map((domain) => (
+                <option key={domain.id} value={domain.id}>
+                  {domain.name}
+                </option>
+              ))}
+            </select>
+          ) : null}
+          {item.duplicate ? <em>已在库中</em> : null}
+        </span>
+      </li>
+    );
   }
 
   return (
@@ -103,9 +193,13 @@ export function PaperDialog() {
               onClick={() => {
                 setError(null);
                 setBusy(true);
-                void importPdfs(fresh.map((item) => item.path), (done, total, current) =>
-                  setProgress({ done, total, current }),
-                targetDomainId ?? undefined)
+                const onProgress = (done: number, total: number, current: string) =>
+                  setProgress({ done, total, current });
+                // 单一目标领域：走原有 importPdfs 链路；逐文件多领域：走 importPdfsPerFile。
+                const run = multiDomain
+                  ? importPdfsPerFile(fresh.map((item) => ({ path: item.path, domainId: item.domainId })), onProgress)
+                  : importPdfs(fresh.map((item) => item.path), onProgress, fresh[0]?.domainId || undefined);
+                void run
                   .catch((err: unknown) => {
                     setError(err instanceof Error ? err.message : String(err));
                   })
@@ -117,9 +211,11 @@ export function PaperDialog() {
             >
               {busy
                 ? "导入中…"
-                : targetDomain
-                  ? `导入 ${fresh.length} 篇到「${targetDomain.name}」`
-                  : `导入 ${fresh.length}`}
+                : multiDomain
+                  ? `导入 ${fresh.length} 篇 · 分入 ${freshDomains.length} 个领域`
+                  : targetDomain
+                    ? `导入 ${fresh.length} 篇到「${targetDomain.name}」`
+                    : `导入 ${fresh.length}`}
             </Button>
           ) : null}
         </>
@@ -179,6 +275,26 @@ export function PaperDialog() {
               共 {checkable.length} 个待选，已勾选 {checkedCount} 个；取消勾选可在导入前排除非论文 PDF。
             </span>
             <span className="ef-import-review-actions">
+              {domains.length > 1 ? (
+                <label className="ef-import-bulk-domain">
+                  全部使用
+                  <select
+                    aria-label="全部使用此领域"
+                    value={freshDomains.length === 1 ? freshDomains[0] : ""}
+                    disabled={busy}
+                    onChange={(e) => setAllDomain(e.target.value)}
+                  >
+                    <option value="" disabled>
+                      选择领域
+                    </option>
+                    {domains.map((domain) => (
+                      <option key={domain.id} value={domain.id}>
+                        {domain.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
               <Button
                 type="button"
                 size="sm"
@@ -200,24 +316,38 @@ export function PaperDialog() {
             </span>
           </div>
           <ul className="ef-import-list">
-            {items.map((item, index) => (
-              <li
-                key={item.path}
-                className={`pf-stagger${item.excluded && !item.duplicate ? " is-excluded" : ""}`}
-                style={{ "--pf-i": index } as CSSProperties}
-              >
-                <label className="ef-import-check">
-                  <input
-                    type="checkbox"
-                    checked={!item.duplicate && !item.excluded}
-                    disabled={busy || item.duplicate}
-                    onChange={(e) => toggleExcluded(item.path, !e.target.checked)}
-                  />
-                  <span>{item.name}</span>
-                </label>
-                {item.duplicate ? <em>已在库中</em> : null}
-              </li>
-            ))}
+            {multiDir
+              ? groupEntries.map(([dir, groupItems]) => (
+                  <Fragment key={dir}>
+                    <li className="ef-import-group">
+                      <span className="ef-import-group-dir mono" title={dir}>
+                        {dir.split(/[/\\]/).filter(Boolean).slice(-1)[0] || dir}
+                      </span>
+                      <label className="ef-import-bulk-domain">
+                        此文件夹全部
+                        <select
+                          aria-label={`此文件夹全部使用：${dir}`}
+                          value={groupDomainValue(groupItems)}
+                          disabled={busy}
+                          onChange={(e) => setGroupDomain(groupItems.map((item) => item.path), e.target.value)}
+                        >
+                          {groupDomainValue(groupItems) === "" ? (
+                            <option value="" disabled>
+                              选择领域
+                            </option>
+                          ) : null}
+                          {domains.map((domain) => (
+                            <option key={domain.id} value={domain.id}>
+                              {domain.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </li>
+                    {groupItems.map((item) => renderItem(item, items.indexOf(item)))}
+                  </Fragment>
+                ))
+              : items.map((item, index) => renderItem(item, index))}
           </ul>
         </>
       ) : null}
