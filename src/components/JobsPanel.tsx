@@ -14,6 +14,7 @@ import {
   formatElapsed,
   formatEta,
   formatSpan,
+  providerName,
   summarizeDomains,
   type ActiveJobView,
   type BatchView,
@@ -433,9 +434,39 @@ function BatchCard({
   onJump: (paperId: string, domainId: string | null) => Promise<void>;
 }) {
   const stopMineruBatch = useField((s) => s.stopMineruBatch);
+  const stopMineruBatchUnsubmitted = useField((s) => s.stopMineruBatchUnsubmitted);
   const pauseBatchAfterCurrent = useField((s) => s.pauseBatchAfterCurrent);
   const resumeHaltedBatch = useField((s) => s.resumeHaltedBatch);
   const [confirmStop, setConfirmStop] = useState(false);
+  /** 确认停止时读当前篇的远端任务信息（docRef / 解析源），说明「停止 ≠ 止损」。 */
+  const [remote, setRemote] = useState<{ provider: string | null; docRef: string | null } | null>(null);
+  const activity = useSyncExternalStore(subscribeActivity, getActivity);
+  useEffect(() => {
+    if (!confirmStop) {
+      setRemote(null);
+      return;
+    }
+    // 只在确认展开时读一次：远端任务号属于当前正在处理的一篇。
+    let alive = true;
+    const current = batch.currentPaperId;
+    if (!current || batch.kind !== "mineru") return;
+    void repo
+      .getPaper(current)
+      .then((paper) => {
+        if (alive) setRemote({ provider: paper?.mineruProvider ?? null, docRef: paper?.mineruDocRef ?? null });
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [confirmStop, batch.currentPaperId, batch.kind]);
+  // 官方 API 回报的页进度：说明「可能已计入的页数」。
+  const remotePages = (() => {
+    const current = batch.currentPaperId;
+    if (!current || batch.kind !== "mineru") return null;
+    const live = Object.values(activity.jobs).find((job) => job.paperId === current);
+    return live?.pages ?? null;
+  })();
   /** 逐篇进度视图：色块（默认）/ 可键盘聚焦的文字列表。 */
   const [view, setView] = useState<"blocks" | "list">("blocks");
   // 关键阶段变化用文字播报（ polite live region）：处理到第几篇。
@@ -595,6 +626,31 @@ function BatchCard({
                   : "正在处理的一篇会取消"}
                 {batch.pending ? `，其余 ${batch.pending} 篇排队论文不再提交` : ""}。
               </span>
+              {batch.kind === "mineru" ? (
+                <p className="ef-batchcard-remote">
+                  停止只停本机的接收与轮询：远端任务不撤回，可能仍在解析并继续计入页数或配额。
+                  {remote?.docRef ? (
+                    <>
+                      正在解析的一篇：远端任务 <span className="mono">{remote.docRef}</span>
+                      {remote.provider ? `（${providerName(remote.provider) ?? remote.provider}）` : ""}
+                      ，仍可在该解析源查询结果。
+                    </>
+                  ) : null}
+                  {remotePages ? `官方 API 已回报解析 ${remotePages.done} / ${remotePages.total} 页，这部分大概率已计入当日额度。` : null}
+                </p>
+              ) : null}
+              {batch.kind === "mineru" && batch.pending ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => {
+                    setConfirmStop(false);
+                    void stopMineruBatchUnsubmitted(batch.id);
+                  }}
+                >
+                  仅停止未提交（{batch.pending} 篇）
+                </Button>
+              ) : null}
               <Button
                 type="button"
                 size="sm"

@@ -30,7 +30,8 @@ import {
   forgetPapers,
   markPauseAfterCurrent,
   resumeMineru,
-  stopBatch,
+  stopBatchUnsubmitted,
+  stopBatchWithIds,
 } from "./lib/mineruRun";
 import { getActivity, reorderBatch } from "./lib/activity";
 import { cancelJob as cancelTrackedJob, jobDoneStep, runTracked } from "./lib/jobs";
@@ -245,6 +246,8 @@ interface FieldState {
   openPaperFulltext: (paperId: string) => Promise<void>;
   /** 作业面板「停止批次」：取消正在解析的一篇，并把本批其余排队论文移出队列。 */
   stopMineruBatch: (batchId: number) => Promise<void>;
+  /** 作业面板「仅停止未提交」：只移出排队论文，正在处理的一篇照常收尾。 */
+  stopMineruBatchUnsubmitted: (batchId: number) => Promise<void>;
   /** 作业面板「当前篇完成后暂停」：当前篇正常收尾，剩余论文写为暂停（可「继续本批」恢复）。 */
   pauseBatchAfterCurrent: (batchId: number) => void;
   /**
@@ -466,15 +469,41 @@ export const useField = create<FieldState>((set, get) => ({
 
   stopMineruBatch: async (batchId) => {
     const kind = getActivity().batches.find((item) => item.id === batchId)?.kind;
-    const stopped = await stopBatch(batchId);
+    const { stopped, paperIds } = await stopBatchWithIds(batchId);
     await get().refresh();
     if (!kind) return;
     if (kind === "mineru") {
       log.info("mineru", `作业面板停止解析批次：${stopped} 篇不再写入`);
-      get().setFlash({ tone: "ok", text: mineruStopCopy(stopped) });
+      // 受影响的论文仍列在批次卡的文字列表里；提示里给一键重新排队。
+      get().setFlash({
+        tone: "ok",
+        text: mineruStopCopy(stopped),
+        action: stopped
+          ? { label: `重新排队 ${paperIds.length} 篇`, run: () => void get().retryMineruPapers(paperIds) }
+          : undefined,
+      });
     } else {
       log.info("llm", `作业面板停止 AI 补全批次：${stopped} 篇`);
       get().setFlash({ tone: "ok", text: `已停止补全，${stopped} 篇不再写入。` });
+    }
+  },
+
+  /** 「仅停止未提交」：只移出还没轮到的排队论文，正在解析的一篇继续收尾（远端已在跑）。 */
+  stopMineruBatchUnsubmitted: async (batchId) => {
+    const kind = getActivity().batches.find((item) => item.id === batchId)?.kind;
+    const { stopped, paperIds } = await stopBatchUnsubmitted(batchId);
+    await get().refresh();
+    if (!stopped) return;
+    if (kind === "mineru") {
+      log.info("mineru", `作业面板仅停止未提交：${stopped} 篇移出解析队列`);
+      get().setFlash({
+        tone: "ok",
+        text: `已移出 ${stopped} 篇排队论文，正在解析的一篇继续收尾（远端任务不撤回）。`,
+        action: { label: `重新排队 ${stopped} 篇`, run: () => void get().retryMineruPapers(paperIds) },
+      });
+    } else {
+      log.info("llm", `作业面板仅停止未提交：${stopped} 篇移出补全队列`);
+      get().setFlash({ tone: "ok", text: `已移出 ${stopped} 篇排队论文，正在补全的一篇继续。` });
     }
   },
 

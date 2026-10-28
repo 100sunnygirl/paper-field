@@ -66,6 +66,7 @@ const actions = {
   selectPaper: vi.fn(async () => undefined),
   dequeueMineruPaper: vi.fn(),
   stopMineruBatch: vi.fn(async () => undefined),
+  stopMineruBatchUnsubmitted: vi.fn(async () => undefined),
   reorderQueue: vi.fn(),
   clearQueueRest: vi.fn(async () => undefined),
   openPaperFulltext: vi.fn(async () => undefined),
@@ -299,6 +300,41 @@ describe("JobsPanel", () => {
     expect(within(card).getByText(/会取消，其余 2 篇排队论文不再提交/)).toBeInTheDocument();
     fireEvent.click(within(card).getByRole("button", { name: "确认停止" }));
     expect(actions.stopMineruBatch).toHaveBeenCalledWith(batchId);
+  });
+
+  it("停止解析批次确认：说明远端不撤回（含任务号），并给「仅停止未提交」", async () => {
+    vi.mocked(repo.getPaper).mockResolvedValue({
+      id: "p1",
+      mineruProvider: "api",
+      mineruDocRef: "batch-7f2a",
+    } as never);
+    trackJob("m", "p1", "parse", { provider: "api", pages: { done: 4, total: 30 } });
+    const batchId = queueBatch("mineru", ["p1", "p2", "p3"]);
+    startBatch(batchId);
+    beginBatchItem(batchId, "p1");
+    render(<JobsPanel />);
+    const card = screen.getByRole("article", { name: "MinerU 解析批次" });
+
+    fireEvent.click(within(card).getByRole("button", { name: "停止本批…" }));
+    expect(within(card).getByText(/远端任务不撤回，可能仍在解析并继续计入页数或配额/)).toBeInTheDocument();
+    expect(await within(card).findByText(/batch-7f2a/)).toBeInTheDocument();
+    expect(within(card).getByText(/已回报解析 4 \/ 30 页/)).toBeInTheDocument();
+
+    // 仅停止未提交：只移出排队论文，当前篇继续收尾。
+    fireEvent.click(within(card).getByRole("button", { name: "仅停止未提交（2 篇）" }));
+    expect(actions.stopMineruBatchUnsubmitted).toHaveBeenCalledWith(batchId);
+    expect(actions.stopMineruBatch).not.toHaveBeenCalled();
+  });
+
+  it("AI 补全批次确认停止：不显示远端口径说明", () => {
+    const batchId = queueBatch("meta", ["q1", "q2"]);
+    startBatch(batchId);
+    beginBatchItem(batchId, "q1");
+    render(<JobsPanel />);
+    const card = screen.getByRole("article", { name: "AI 补全批次" });
+    fireEvent.click(within(card).getByRole("button", { name: "停止本批…" }));
+    expect(within(card).queryByText(/远端任务不撤回/)).toBeNull();
+    expect(within(card).queryByRole("button", { name: /仅停止未提交/ })).toBeNull();
   });
 
   it("排队列表：标题取轻量书目，可移出队列，点标题跳到论文", async () => {

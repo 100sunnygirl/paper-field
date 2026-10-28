@@ -42,6 +42,8 @@ import {
   setMineruTiming,
   STALE_CRED_ERROR,
   stopBatch,
+  stopBatchUnsubmitted,
+  stopBatchWithIds,
   USER_PAUSED_ERROR,
 } from "./mineruRun";
 import { cancelJob, liveJobsFor, resetLiveJobs } from "./jobs";
@@ -981,6 +983,54 @@ describe("移出队列与停止批次", () => {
     await settle();
     expect(mineruParseStatuses).not.toHaveBeenCalled();
     expect(mineruSubmit).not.toHaveBeenCalled();
+  });
+
+  it("仅停止未提交：排队论文移出并写 cancelled，正在处理的一篇继续收尾", async () => {
+    const ids = [await makePaper(), await makePaper(), await makePaper()];
+    await repo.resetMineru(ids);
+    const host = makeHost({ hasKey: false });
+    // 第一篇提交后挂起（正在解析），后两篇还在排队。
+    const firstSubmit = hang<MineruSubmitResult>();
+    vi.mocked(mineruSubmit).mockImplementation(async (paperId) =>
+      paperId === ids[0] ? firstSubmit.promise : submitResult({ status: "done", shortId: `doc-${paperId}` }),
+    );
+    markdownByDoc();
+
+    const batchId = queueBatch("mineru", ids);
+    const run = runMineruBatch(host, ids, true, batchId);
+    await vi.waitFor(() => expect(mineruSubmit).toHaveBeenCalledTimes(1));
+
+    const { stopped, paperIds } = await stopBatchUnsubmitted(batchId);
+    expect(stopped).toBe(2);
+    expect(paperIds).toEqual([ids[1], ids[2]]);
+    expect(getActivity().batches[0].results).toEqual({ [ids[1]]: "cancelled", [ids[2]]: "cancelled" });
+    expect(getActivity().batches[0].currentPaperId).toBe(ids[0]);
+    for (const id of [ids[1], ids[2]]) expect((await paperOf(id)).mineruStatus).toBe("cancelled");
+
+    // 放行第一篇：照常完成，不受「仅停止未提交」影响。
+    firstSubmit.release(submitResult({ status: "done", shortId: "doc-first" }));
+    await run;
+    expect((await paperOf(ids[0])).mineruStatus).toBe("done");
+    expect(getActivity().batches[0].results[ids[0]]).toBe("ok");
+  });
+
+  it("stopBatchWithIds：连同受影响论文 id 一起返回（含正在处理的一篇）", async () => {
+    const ids = [await makePaper(), await makePaper()];
+    await repo.resetMineru(ids);
+    const host = makeHost({ hasKey: false });
+    const firstSubmit = hang<MineruSubmitResult>();
+    vi.mocked(mineruSubmit).mockImplementation(async (paperId) =>
+      paperId === ids[0] ? firstSubmit.promise : submitResult(),
+    );
+    const batchId = queueBatch("mineru", ids);
+    const run = runMineruBatch(host, ids, true, batchId);
+    await vi.waitFor(() => expect(mineruSubmit).toHaveBeenCalledTimes(1));
+
+    const detail = await stopBatchWithIds(batchId);
+    expect(detail.stopped).toBe(2);
+    expect(new Set(detail.paperIds)).toEqual(new Set(ids));
+    firstSubmit.release(submitResult());
+    await run;
   });
 });
 

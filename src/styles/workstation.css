@@ -4353,6 +4353,15 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   color: var(--pf-secondary);
 }
 .ef-batchcard-actions > span { flex: 1 1 220px; }
+/* 停止确认里的远端口径说明：整行占满，警示色描边。 */
+.ef-batchcard-remote {
+  flex: 1 1 100%;
+  margin: 0;
+  padding: 8px 10px;
+  border-left: var(--pf-marker) solid var(--pf-danger);
+  background: var(--pf-danger-bg);
+  color: var(--pf-body);
+}
 
 /* 作业卡：左缘黄头墨身标记块（排队中退为灰条）；标题可点，跳到阅读页。 */
 .ef-jobcard {

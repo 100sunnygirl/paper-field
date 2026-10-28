@@ -250,6 +250,48 @@ describe("作业面板的队列操作", () => {
     await vi.waitFor(() => expect(vi.mocked(mineruSubmit)).toHaveBeenCalled());
   });
 
+  it("仅停止未提交：排队论文写 cancelled、当前篇不动，提示带一键重新排队", async () => {
+    const [p1, p2, p3] = [await makePaper(true), await makePaper(true), await makePaper(true)];
+    await repo.resetMineru([p1, p2, p3]);
+    const batchId = queueBatch("mineru", [p1, p2, p3]);
+    startBatch(batchId);
+    beginBatchItem(batchId, p1);
+    const retryMineruPapers = vi.fn(async () => undefined);
+    useField.setState({ retryMineruPapers });
+
+    await useField.getState().stopMineruBatchUnsubmitted(batchId);
+
+    expect(getActivity().batches[0].results).toEqual({ [p2]: "cancelled", [p3]: "cancelled" });
+    expect((await repo.getPaper(p2))!.mineruStatus).toBe("cancelled");
+    expect((await repo.getPaper(p1))!.mineruStatus).toBe("queued");
+    const flash = useField.getState().flash;
+    expect(flash?.text).toContain("已移出 2 篇排队论文，正在解析的一篇继续收尾");
+    expect(flash?.text).toContain("远端任务不撤回");
+    expect(flash?.action?.label).toBe("重新排队 2 篇");
+    flash?.action?.run();
+    await vi.waitFor(() => expect(retryMineruPapers).toHaveBeenCalledWith([p2, p3]));
+  });
+
+  it("全部停止的提示也带「一键重新排队」（受影响论文含正在解析的一篇）", async () => {
+    const [p1, p2] = [await makePaper(true), await makePaper(true)];
+    await repo.resetMineru([p1, p2]);
+    const batchId = queueBatch("mineru", [p1, p2]);
+    startBatch(batchId);
+    beginBatchItem(batchId, p1);
+    const retryMineruPapers = vi.fn(async () => undefined);
+    useField.setState({ retryMineruPapers });
+
+    await useField.getState().stopMineruBatch(batchId);
+
+    const flash = useField.getState().flash;
+    expect(flash?.text).toBe(
+      "已在本机停止解析，2 篇不再写入。远端任务不撤回，可能仍在继续，配额或页数可能已经计入。",
+    );
+    expect(flash?.action?.label).toBe("重新排队 2 篇");
+    flash?.action?.run();
+    await vi.waitFor(() => expect(retryMineruPapers).toHaveBeenCalledTimes(1));
+  });
+
   it("AI 补全批次也能停止：排队论文移出", async () => {
     const batchId = queueBatch("meta", ["p1", "p2"]);
     startBatch(batchId);

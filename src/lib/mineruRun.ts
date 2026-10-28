@@ -89,8 +89,13 @@ export async function dequeueFromBatch(batchId: number, paperId: string): Promis
  * 还没建作业就打上移出标记（建好作业后会立刻看到并自行取消）。返回停止的篇数。
  */
 export async function stopBatch(batchId: number): Promise<number> {
+  return (await stopBatchWithIds(batchId)).stopped;
+}
+
+/** stopBatch 的明细版：连同受影响的论文 id 一起返回（提示里的「一键重新排队」用）。 */
+export async function stopBatchWithIds(batchId: number): Promise<{ stopped: number; paperIds: string[] }> {
   const batch = getActivity().batches.find((item) => item.id === batchId);
-  if (!batch) return 0;
+  if (!batch) return { stopped: 0, paperIds: [] };
   const pending = batch.paperIds.filter((id) => !batch.results[id] && id !== batch.currentPaperId);
   for (const id of pending) {
     if (batch.kind === "mineru") await dequeueFromBatch(batchId, id);
@@ -108,7 +113,26 @@ export async function stopBatch(batchId: number): Promise<number> {
     }
     stopped += 1;
   }
-  return stopped;
+  return { stopped, paperIds: current ? [...pending, current] : [...pending] };
+}
+
+/**
+ * 「仅停止未提交」：只把还没轮到的排队论文移出本批（解析类写库 cancelled，重启不续跑），
+ * 正在处理的一篇照常收尾——它的远端任务已在跑，中止只会白花已计入的页数。
+ * 返回移出的篇数与论文 id。
+ */
+export async function stopBatchUnsubmitted(batchId: number): Promise<{ stopped: number; paperIds: string[] }> {
+  const batch = getActivity().batches.find((item) => item.id === batchId);
+  if (!batch) return { stopped: 0, paperIds: [] };
+  const pending = batch.paperIds.filter((id) => !batch.results[id] && id !== batch.currentPaperId);
+  for (const id of pending) {
+    if (batch.kind === "mineru") await dequeueFromBatch(batchId, id);
+    else {
+      dequeued.add(queueKey(batchId, id));
+      endBatchItem(batchId, id, "cancelled");
+    }
+  }
+  return { stopped: pending.length, paperIds: [...pending] };
 }
 
 /**
