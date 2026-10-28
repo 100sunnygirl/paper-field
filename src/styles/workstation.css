@@ -3753,6 +3753,23 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   gap: 8px;
   margin-bottom: 10px;
 }
+/* ---- 作者名单粘贴拆分与逐行校对（编辑论文对话框） ---- */
+.ef-crew-paste { margin-bottom: 10px; }
+.ef-crew-paste-area {
+  border: 1px dashed var(--pf-divider);
+  border-radius: 8px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ef-crew-paste-area textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 72px;
+}
+.ef-crew-paste-hint { color: var(--pf-muted); font-size: var(--pf-fs-caption); margin: 0; }
+.ef-crew-row-tools { display: inline-flex; gap: 2px; align-items: center; justify-self: end; }
 .job-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 
 /* 通知弹窗：右上角悬浮堆叠（多条各自独立计时、悬停/聚焦暂停），叠加在对话框
