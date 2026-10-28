@@ -14,6 +14,7 @@ vi.mock("./lib/repo", () => ({
     listIntake: vi.fn(async () => []),
     listFailedMineru: vi.fn(async () => [] as string[]),
     createDomain: vi.fn(),
+    updatePaper: vi.fn(async () => undefined),
     setReadingStatus: vi.fn(async () => undefined),
     setMineruState: vi.fn(async () => undefined),
     resetMineru: vi.fn(async () => undefined),
@@ -81,6 +82,7 @@ beforeEach(() => {
   vi.mocked(repo.setReadingStatus).mockReset();
   vi.mocked(repo.setMineruState).mockReset();
   vi.mocked(repo.createDomain).mockReset();
+  vi.mocked(repo.updatePaper).mockClear();
   vi.mocked(repo.deletePapers).mockReset();
 });
 
@@ -486,6 +488,29 @@ describe("createDomain / updateDomain（仅名称必填）", () => {
     });
     await useField.getState().createDomain({ name: "多模态", code: "" });
     expect(repo.createDomain).toHaveBeenCalledWith({ name: "多模态", code: "" });
+  });
+
+  it("createDomainAndMove：一次完成建领域 + 移动（就地新建入口）", async () => {
+    vi.mocked(repo.createDomain).mockResolvedValue({
+      id: "d-world",
+      name: "世界模型",
+      code: "D-09",
+      summary: null,
+      sortOrder: 9,
+      createdAt: "2024-06-01T00:00:00.000Z",
+    });
+    useField.setState({ dialog: "move-paper", dialogPaperId: "p-1", mode: "field", selectedDomainId: "d-1" });
+    await useField.getState().createDomainAndMove("  世界模型 ", "p-1");
+    expect(repo.createDomain).toHaveBeenCalledWith({ name: "世界模型", code: "" });
+    expect(repo.updatePaper).toHaveBeenCalledWith("p-1", { domainId: "d-world" });
+    // 移动完成后：对话框关闭、选中新领域（refresh 后列表为空 → 选中回落为空也符合语义）。
+    expect(useField.getState().dialog).toBeNull();
+  });
+
+  it("createDomainAndMove：名称为空报「领域名称必填」，不建领域不移动", async () => {
+    await expect(useField.getState().createDomainAndMove("  ", "p-1")).rejects.toThrow("领域名称必填");
+    expect(repo.createDomain).not.toHaveBeenCalled();
+    expect(repo.updatePaper).not.toHaveBeenCalled();
   });
 });
 

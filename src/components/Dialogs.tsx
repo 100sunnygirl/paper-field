@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { loadRecentDomains, orderDomainsByRecent } from "../lib/domainRecent";
 import { pickPdfFiles, pickPdfFolder } from "../lib/mineru";
 import { repo } from "../lib/repo";
 import type { Author, PaperDetail } from "../lib/types";
@@ -459,6 +460,106 @@ export function DomainPickerDialog() {
   const dialogPaperId = useField((s) => s.dialogPaperId);
   const moving = dialog === "move-paper";
   const open = dialog === "pick-domain" || moving;
+  // 搜索过滤 + 最近使用置顶 + ↑↓/Enter 键盘选择：领域多时不必线性滚动逐个找。
+  const [query, setQuery] = useState("");
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [recent, setRecent] = useState<string[]>([]);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  // 移动模式：就地新建领域并移入（目标领域不存在时不必中途退出先去建）。
+  const createDomainAndMove = useField((s) => s.createDomainAndMove);
+  const [creating, setCreating] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [createBusy, setCreateBusy] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const createInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (!open) {
+      setCreating(false);
+      setNewName("");
+      setCreateBusy(false);
+      setCreateError(null);
+      return;
+    }
+    setQuery("");
+    setActiveIndex(0);
+    setRecent(loadRecentDomains());
+  }, [open]);
+
+  const ordered = useMemo(() => orderDomainsByRecent(domains, recent), [domains, recent]);
+  const keyword = query.trim().toLowerCase();
+  const filtered = keyword
+    ? ordered.filter(
+        (domain) =>
+          domain.name.toLowerCase().includes(keyword) || domain.code.toLowerCase().includes(keyword),
+      )
+    : ordered;
+  const recentSet = useMemo(() => new Set(recent), [recent]);
+
+  useEffect(() => {
+    setActiveIndex(0);
+  }, [keyword]);
+
+  useEffect(() => {
+    // 键盘高亮行保持在可视区内（jsdom 无 scrollIntoView，可选调用静默跳过）。
+    const row = listRef.current?.querySelector<HTMLElement>(`[data-index="${activeIndex}"]`);
+    row?.scrollIntoView?.({ block: "nearest" });
+  }, [activeIndex]);
+
+  useEffect(() => {
+    if (creating) createInputRef.current?.focus();
+  }, [creating]);
+
+  function pick(domainId: string) {
+    if (moving) void movePaper(domainId, dialogPaperId ?? undefined);
+    else void selectDomain(domainId);
+  }
+
+  function startCreate(initial: string) {
+    setNewName(initial);
+    setCreateError(null);
+    setCreating(true);
+  }
+
+  async function submitCreate() {
+    if (!moving || createBusy) return;
+    const name = newName.trim();
+    if (!name) {
+      setCreateError("请先输入新领域的名称。");
+      return;
+    }
+    setCreateError(null);
+    setCreateBusy(true);
+    try {
+      // 成功后 movePaper 会关掉对话框；失败保留输入与就地展开的状态。
+      await createDomainAndMove(name, dialogPaperId ?? undefined);
+    } catch (err) {
+      setCreateBusy(false);
+      setCreateError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  function onFilterKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Enter") {
+      if (filtered.length) {
+        event.preventDefault();
+        pick(filtered[activeIndex].id);
+      } else if (moving && keyword) {
+        // 搜索无匹配：Enter 直接把搜索词带进「新建领域并移入」，再按一次 Enter 完成。
+        event.preventDefault();
+        startCreate(query.trim());
+      }
+      return;
+    }
+    if (!filtered.length) return;
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setActiveIndex((index) => (index + 1) % filtered.length);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setActiveIndex((index) => (index - 1 + filtered.length) % filtered.length);
+    }
+  }
 
   return (
     <Dialog
@@ -484,29 +585,94 @@ export function DomainPickerDialog() {
       }
     >
       <p>{moving ? "选择这篇论文要进入的领域。" : "选择要查看的研究领域。"}</p>
-      {domains.map((domain) => (
-        <button
-          key={domain.id}
-          type="button"
-          className={`ef-domain-option ${domain.id === selectedDomainId ? "is-current" : ""}`}
-          onClick={() => {
-            if (moving) void movePaper(domain.id, dialogPaperId ?? undefined);
-            else void selectDomain(domain.id);
-          }}
-        >
-          <span>
-            <strong>{domain.name}</strong>
-            {domain.summary ? (
-              <small className="ef-domain-option-sum">
-                {domain.summary}
-              </small>
-            ) : null}
-          </span>
-          <span className="mono">
-            {domain.code} <Icon name="right" />
-          </span>
-        </button>
-      ))}
+      <div className="ef-domain-filter">
+        <Icon name="search" />
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={onFilterKeyDown}
+          placeholder="搜索领域名称或短码"
+          aria-label="搜索领域"
+          aria-keyshortcuts="ArrowUp ArrowDown Enter"
+        />
+        <small className="ef-domain-filter-hint" aria-hidden="true">
+          ↑↓ 选择 · Enter 确认
+        </small>
+      </div>
+      <div className="ef-domain-options" ref={listRef} role="list" aria-label="领域列表">
+        {filtered.map((domain, index) => (
+          <button
+            key={domain.id}
+            type="button"
+            data-index={index}
+            className={[
+              "ef-domain-option",
+              domain.id === selectedDomainId ? "is-current" : "",
+              index === activeIndex ? "is-active" : "",
+            ]
+              .filter(Boolean)
+              .join(" ")}
+            onClick={() => pick(domain.id)}
+            onMouseEnter={() => setActiveIndex(index)}
+          >
+            <span>
+              <strong>{domain.name}</strong>
+              {recentSet.has(domain.id) ? <i className="ef-domain-recent" aria-hidden="true">最近</i> : null}
+              {domain.summary ? (
+                <small className="ef-domain-option-sum">{domain.summary}</small>
+              ) : null}
+            </span>
+            <span className="mono">
+              {domain.code} <Icon name="right" />
+            </span>
+          </button>
+        ))}
+        {filtered.length === 0 ? <p className="ef-domain-empty">没有匹配的领域。</p> : null}
+      </div>
+      {moving ? (
+        <div className="ef-domain-create">
+          {creating ? (
+            <>
+              <div className="ef-domain-create-row">
+                <Icon name="plus" />
+                <input
+                  ref={createInputRef}
+                  value={newName}
+                  onChange={(e) => setNewName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      void submitCreate();
+                    }
+                  }}
+                  placeholder="新领域名称，Enter 直接移入"
+                  aria-label="新领域名称"
+                  disabled={createBusy}
+                />
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="primary"
+                  disabled={createBusy}
+                  onClick={() => void submitCreate()}
+                >
+                  {createBusy ? "移动中…" : "创建并移入"}
+                </Button>
+              </div>
+              {createError ? <p className="ef-error">{createError}</p> : null}
+            </>
+          ) : (
+            <button
+              type="button"
+              className="ef-domain-create-toggle"
+              onClick={() => startCreate(keyword ? query.trim() : "")}
+            >
+              <Icon name="plus" />
+              新建领域并移入
+            </button>
+          )}
+        </div>
+      ) : null}
     </Dialog>
   );
 }

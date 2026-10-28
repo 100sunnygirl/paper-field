@@ -3725,6 +3725,92 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 .ef-domain-option:hover { border-color: var(--pf-ink); background: var(--pf-hover-flat); }
 .ef-domain-option:hover .mono .ef-ico { transform: translateX(3px); }
 .ef-domain-option:active { transform: translateY(var(--pf-nudge)); }
+/* 领域选择对话框：顶部搜索过滤 + ↑↓/Enter 键盘高亮；最近使用的领域置顶并带角标。 */
+.ef-domain-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0 2px;
+  padding: 0 12px;
+  height: 36px;
+  border: 1px solid var(--pf-divider);
+  border-radius: var(--pf-radius);
+  background: var(--pf-surface);
+}
+.ef-domain-filter > .ef-ico { width: 15px; height: 15px; color: var(--pf-muted); flex: none; }
+.ef-domain-filter:focus-within { border-color: var(--pf-ink); }
+.ef-domain-filter input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  font: inherit;
+  color: var(--pf-ink);
+}
+.ef-domain-filter input:focus { outline: none; }
+.ef-domain-filter input::placeholder { color: var(--pf-muted); }
+.ef-domain-filter-hint {
+  flex: none;
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-muted);
+  letter-spacing: 0.02em;
+}
+.ef-domain-options { margin-top: 2px; }
+.ef-domain-option.is-active { border-color: var(--pf-ink); box-shadow: inset 0 0 0 1px var(--pf-ink); }
+.ef-domain-recent {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 6px;
+  border: 1px solid var(--pf-control-border);
+  border-radius: 999px;
+  font-size: var(--pf-fs-tag);
+  font-style: normal;
+  font-weight: 500;
+  color: var(--pf-secondary);
+  vertical-align: 2px;
+}
+.ef-domain-empty { color: var(--pf-muted); text-align: center; padding: 18px 0; }
+/* 移动模式：目标领域不存在时就地「新建领域并移入」，不必中途退出先去建。 */
+.ef-domain-create { margin-top: 10px; }
+.ef-domain-create-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  border: 1px dashed var(--pf-control-border);
+  border-radius: var(--pf-radius);
+  background: transparent;
+  font: inherit;
+  font-size: var(--pf-fs-ui);
+  color: var(--pf-secondary);
+  cursor: pointer;
+  transition: border-color var(--pf-motion), color var(--pf-motion), background-color var(--pf-motion);
+}
+.ef-domain-create-toggle .ef-ico { width: 15px; height: 15px; }
+.ef-domain-create-toggle:hover { border-color: var(--pf-ink); color: var(--pf-ink); background: var(--pf-hover-flat); }
+.ef-domain-create-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  height: 40px;
+  border: 1px solid var(--pf-ink);
+  border-radius: var(--pf-radius);
+  background: var(--pf-surface);
+}
+.ef-domain-create-row > .ef-ico { width: 15px; height: 15px; color: var(--pf-muted); flex: none; }
+.ef-domain-create-row input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  font: inherit;
+  color: var(--pf-ink);
+}
+.ef-domain-create-row input:focus { outline: none; }
+.ef-domain-create-row input::placeholder { color: var(--pf-muted); }
 /* Current option: the 3px signal bar lives on a ::before so pf-marker-in can
    grow it once from the top; the corner notch marks it as the active field. */
 .ef-domain-option.is-current {

@@ -42,6 +42,7 @@ import { normalizeArxivId, normalizeDoi, safeHttpUrl, withDefaultScheme } from "
 import { DRAFT_NOTES_SYSTEM, PREPARE_META_SYSTEM, draftNotesUserPrompt, normalizeMeta, normalizeNotes, prepareMetaUserPrompt } from "./lib/prompts";
 import { redactSecrets } from "./lib/redact";
 import { noteReadingStatus } from "./lib/readingSince";
+import { recordDomainVisit } from "./lib/domainRecent";
 import { repo } from "./lib/repo";
 import { cancelChat, completeChat, hasUsableProvider, loadSettings, readLlmSettings, saveSettings, type LlmSaveInput } from "./lib/settings";
 import { log } from "./lib/logger";
@@ -226,6 +227,8 @@ interface FieldState {
    */
   setReadingStatus: (status: "unread" | "reading" | "read", paperId?: string, restoreReadAt?: string | null) => Promise<void>;
   movePaper: (domainId: string, paperId?: string) => Promise<void>;
+  /** 移动对话框内就地新建领域并把目标论文移入：一次完成「建领域 + 移动」。 */
+  createDomainAndMove: (name: string, paperId?: string) => Promise<void>;
   deletePaper: (paperId?: string) => Promise<void>;
   setBatchMode: (on: boolean) => void;
   toggleCheckedPaper: (id: string) => void;
@@ -676,6 +679,8 @@ export const useField = create<FieldState>((set, get) => ({
     try {
       selectionEpoch += 1;
       set({ selectedDomainId: id, selectedPaperId: null, paper: null, mode: "field", dialog: null, dialogPaperId: null, dialogPaperIds: [] });
+      // 最近使用置顶（领域切换对话框）：切换成功路径才记，失败不污染记录。
+      if (id) recordDomainVisit(id);
       await get().refresh();
     } catch (err) {
       get().setFlash({ tone: "error", text: `切换领域失败：${errText(err)}，数据未改动。` });
@@ -1130,6 +1135,8 @@ export const useField = create<FieldState>((set, get) => ({
       await repo.updatePaper(id, { domainId });
       selectionEpoch += 1;
       set({ dialog: null, dialogPaperId: null, selectedPaperId: id, selectedDomainId: domainId, mode: "field" });
+      // 移入的目标领域同样算一次「最近使用」：下次切换时置顶。
+      recordDomainVisit(domainId);
       await get().refresh();
       const domain = get().domains.find((d) => d.id === domainId);
       get().setFlash({
@@ -1140,6 +1147,16 @@ export const useField = create<FieldState>((set, get) => ({
       get().setFlash({ tone: "error", text: `移动论文失败：${errText(err)}，数据未改动。` });
       throw err;
     }
+  },
+
+  createDomainAndMove: async (name, paperId) => {
+    const id = paperId ?? get().dialogPaperId ?? get().selectedPaperId;
+    const trimmed = name.trim();
+    if (!trimmed) throw new Error("领域名称必填");
+    if (!id) return;
+    // 建领域后直接走既有 movePaper：选中、刷新与「论文已移动到…」提示保持同一语义。
+    const domain = await repo.createDomain({ name: trimmed, code: "" });
+    await get().movePaper(domain.id, id);
   },
 
   deletePaper: async (paperId) => {
