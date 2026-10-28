@@ -456,10 +456,14 @@ export function DomainPickerDialog() {
   const selectedDomainId = useField((s) => s.selectedDomainId);
   const selectDomain = useField((s) => s.selectDomain);
   const movePaper = useField((s) => s.movePaper);
+  const moveCheckedPapers = useField((s) => s.moveCheckedPapers);
   const openDialog = useField((s) => s.openDialog);
   const dialogPaperId = useField((s) => s.dialogPaperId);
+  const dialogPaperIds = useField((s) => s.dialogPaperIds);
   const moving = dialog === "move-paper";
-  const open = dialog === "pick-domain" || moving;
+  // 批量移动：勾选集在对话框打开时冻结（dialogPaperIds），确认期间不被后台刷新改动。
+  const movingChecked = dialog === "move-checked";
+  const open = dialog === "pick-domain" || moving || movingChecked;
   // 搜索过滤 + 最近使用置顶 + ↑↓/Enter 键盘选择：领域多时不必线性滚动逐个找。
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
@@ -511,7 +515,8 @@ export function DomainPickerDialog() {
   }, [creating]);
 
   function pick(domainId: string) {
-    if (moving) void movePaper(domainId, dialogPaperId ?? undefined);
+    if (movingChecked) void moveCheckedPapers(domainId);
+    else if (moving) void movePaper(domainId, dialogPaperId ?? undefined);
     else void selectDomain(domainId);
   }
 
@@ -564,10 +569,10 @@ export function DomainPickerDialog() {
   return (
     <Dialog
       open={open}
-      title={moving ? "移动到其他领域" : "切换研究领域"}
+      title={moving ? "移动到其他领域" : movingChecked ? "移动选中论文到其他领域" : "切换研究领域"}
       onClose={closeDialog}
       footer={
-        moving ? (
+        moving || movingChecked ? (
           <Button type="button" onClick={closeDialog}>
             取消
           </Button>
@@ -584,7 +589,13 @@ export function DomainPickerDialog() {
         )
       }
     >
-      <p>{moving ? "选择这篇论文要进入的领域。" : "选择要查看的研究领域。"}</p>
+      <p>
+        {moving
+          ? "选择这篇论文要进入的领域。"
+          : movingChecked
+            ? `把选中的 ${dialogPaperIds.length} 篇论文移入哪个领域？`
+            : "选择要查看的研究领域。"}
+      </p>
       <div className="ef-domain-filter">
         <Icon name="search" />
         <input
@@ -760,6 +771,138 @@ export function DeleteCheckedPapersDialog() {
       <p>
         将删除选中的 <strong>{checkedPaperIds.length}</strong> 篇论文及其全部笔记。此操作不可撤销。
       </p>
+    </Dialog>
+  );
+}
+
+/** 批量标签：为勾选集统一添加标签，或从整批移除已有标签（候选标签按覆盖篇数排序）。 */
+export function TagCheckedPapersDialog() {
+  const dialog = useField((s) => s.dialog);
+  const closeDialog = useField((s) => s.closeDialog);
+  const checkedPaperIds = useField((s) => s.dialogPaperIds);
+  const addTagsToChecked = useField((s) => s.addTagsToChecked);
+  const removeTagsFromChecked = useField((s) => s.removeTagsFromChecked);
+  const [input, setInput] = useState("");
+  const [existing, setExisting] = useState<Array<{ tag: string; count: number }>>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const open = dialog === "tag-checked" && checkedPaperIds.length > 0;
+
+  useEffect(() => {
+    if (!open) {
+      setInput("");
+      setExisting([]);
+      setError(null);
+      return;
+    }
+    let alive = true;
+    repo
+      .tagsOfPapers(checkedPaperIds)
+      .then((rows) => {
+        if (alive) setExisting(rows);
+      })
+      .catch(() => {
+        if (alive) setExisting([]);
+      });
+    return () => {
+      alive = false;
+    };
+    // checkedPaperIds 是打开时冻结的快照，不会中途变化。
+  }, [open, checkedPaperIds]);
+
+  const pending = input
+    .split(/[,，、;；]/)
+    .map((tag) => tag.trim())
+    .filter(Boolean);
+
+  async function add() {
+    if (busy) return;
+    if (!pending.length) {
+      setError("请先输入要添加的标签（逗号分隔，可一次多个）。");
+      return;
+    }
+    setError(null);
+    setBusy(true);
+    try {
+      await addTagsToChecked(pending);
+    } catch (err) {
+      setBusy(false);
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function remove(tag: string) {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await removeTagsFromChecked([tag]);
+    } catch (err) {
+      setBusy(false);
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  return (
+    <Dialog
+      open={open}
+      title="批量修改标签"
+      onClose={closeDialog}
+      footer={
+        <>
+          <Button type="button" onClick={closeDialog}>
+            取消
+          </Button>
+          <Button type="button" variant="primary" disabled={busy} onClick={() => void add()}>
+            添加标签
+          </Button>
+        </>
+      }
+    >
+      <p>
+        将作用于选中的 <strong>{checkedPaperIds.length}</strong> 篇论文。标签写入后按「手动」来源保护，AI 补全不会覆盖。
+      </p>
+      <div className="ef-tag-batch-row">
+        <input
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              void add();
+            }
+          }}
+          placeholder="新标签，逗号分隔，如：benchmark, 综述"
+          aria-label="要添加的标签"
+          disabled={busy}
+        />
+      </div>
+      {existing.length ? (
+        <div className="ef-tag-batch-existing">
+          <span className="ef-tag-batch-hint">这批论文已有的标签（点 × 从全部选中论文移除）：</span>
+          <ul>
+            {existing.map((item) => (
+              <li key={item.tag}>
+                <span>
+                  {item.tag}
+                  <small className="mono"> ×{item.count}</small>
+                </span>
+                <button
+                  type="button"
+                  aria-label={`移除标签 ${item.tag}`}
+                  title={`从 ${item.count} 篇论文移除标签「${item.tag}」`}
+                  disabled={busy}
+                  onClick={() => void remove(item.tag)}
+                >
+                  <Icon name="close" />
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : (
+        <p className="ef-tag-batch-hint">这批论文还没有标签。</p>
+      )}
+      {error ? <p className="ef-error">{error}</p> : null}
     </Dialog>
   );
 }

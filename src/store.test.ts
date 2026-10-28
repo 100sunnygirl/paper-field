@@ -15,6 +15,8 @@ vi.mock("./lib/repo", () => ({
     listFailedMineru: vi.fn(async () => [] as string[]),
     createDomain: vi.fn(),
     updatePaper: vi.fn(async () => undefined),
+    movePapers: vi.fn(async () => undefined),
+    applyTagsToPapers: vi.fn(async () => undefined),
     setReadingStatus: vi.fn(async () => undefined),
     setMineruState: vi.fn(async () => undefined),
     resetMineru: vi.fn(async () => undefined),
@@ -83,6 +85,8 @@ beforeEach(() => {
   vi.mocked(repo.setMineruState).mockReset();
   vi.mocked(repo.createDomain).mockReset();
   vi.mocked(repo.updatePaper).mockClear();
+  vi.mocked(repo.movePapers).mockClear();
+  vi.mocked(repo.applyTagsToPapers).mockClear();
   vi.mocked(repo.deletePapers).mockReset();
 });
 
@@ -585,5 +589,54 @@ describe("setFlash × notify：通知唯一收口", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("批量操作（移动 / 标状态 / 标签）", () => {
+  it("moveCheckedPapers：按打开对话框时冻结的勾选集移动，提示带目标领域名", async () => {
+    const DOMAINS = [
+      { id: "d-1", name: "多模态", code: "MM-01", summary: null, sortOrder: 1, createdAt: "2024-01-01T00:00:00.000Z" },
+      { id: "d-2", name: "指令对齐", code: "AL-02", summary: null, sortOrder: 2, createdAt: "2024-01-02T00:00:00.000Z" },
+    ];
+    // refresh 会用 repo.listDomains 的返回覆盖 store：让 mock 返回同一份领域。
+    vi.mocked(repo.listDomains).mockResolvedValue(DOMAINS);
+    useField.setState({
+      mode: "field",
+      selectedDomainId: "d-1",
+      domains: DOMAINS,
+      batchMode: true,
+      checkedPaperIds: ["a", "b", "x"],
+    });
+    useField.getState().openDialog("move-checked");
+    // 打开后后台把勾选改成别的：本批不受影响。
+    useField.setState({ checkedPaperIds: ["z"] });
+    await useField.getState().moveCheckedPapers("d-2");
+    expect(repo.movePapers).toHaveBeenCalledWith(["a", "b", "x"], "d-2");
+    expect(useField.getState().dialog).toBeNull();
+    expect(useField.getState().flash?.tone).toBe("ok");
+    expect(useField.getState().flash?.text).toContain("已将 3 篇论文移动到「指令对齐」");
+  });
+
+  it("setCheckedReadingStatus：逐篇写库并汇总提示（用户批量入口，非 AI）", async () => {
+    useField.setState({ mode: "field", checkedPaperIds: ["a", "b"] });
+    await useField.getState().setCheckedReadingStatus("read");
+    expect(repo.setReadingStatus).toHaveBeenCalledTimes(2);
+    expect(repo.setReadingStatus).toHaveBeenCalledWith("a", "read");
+    expect(repo.setReadingStatus).toHaveBeenCalledWith("b", "read");
+    expect(useField.getState().flash?.text).toContain("已将 2 篇论文标为已读");
+  });
+
+  it("addTagsToChecked / removeTagsFromChecked：作用于冻结集并给汇总提示", async () => {
+    useField.setState({ checkedPaperIds: ["a", "b"] });
+    useField.getState().openDialog("tag-checked");
+    await useField.getState().addTagsToChecked(["综述", "综述", " "]);
+    expect(repo.applyTagsToPapers).toHaveBeenCalledWith(["a", "b"], ["综述"], "add");
+    expect(useField.getState().flash?.text).toContain("已为 2 篇论文添加标签：综述");
+
+    // add 之后 refresh 把勾选裁剪到（空的）可见列表：重新勾选再开对话框。
+    useField.setState({ checkedPaperIds: ["a", "b"] });
+    useField.getState().openDialog("tag-checked");
+    await useField.getState().removeTagsFromChecked(["综述"]);
+    expect(repo.applyTagsToPapers).toHaveBeenCalledWith(["a", "b"], ["综述"], "remove");
   });
 });

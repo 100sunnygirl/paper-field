@@ -355,3 +355,68 @@ describe("PaperNav · 标已读的 +1 微反馈", () => {
     expect(document.querySelector(".ef-progress")).not.toHaveClass("is-read-pulse");
   });
 });
+
+describe("PaperNav · 批量工具栏扩展（移动 / 标状态 / 标签 / 入库作业）", () => {
+  it("批量模式提供移动、标为已读、标为在读、标签与删除；点击走对应动作或对话框", () => {
+    const setCheckedReadingStatus = vi.fn(async () => undefined);
+    useField.setState({
+      mode: "field",
+      papers: [intakeItem("a", null), intakeItem("b", null)],
+      batchMode: true,
+      checkedPaperIds: ["a"],
+      setCheckedReadingStatus,
+    });
+    render(<PaperNav />);
+
+    fireEvent.click(screen.getByRole("button", { name: "移动到领域" }));
+    expect(useField.getState().dialog).toBe("move-checked");
+    expect(useField.getState().dialogPaperIds).toEqual(["a"]);
+
+    fireEvent.click(screen.getByRole("button", { name: "标为已读" }));
+    expect(setCheckedReadingStatus).toHaveBeenCalledWith("read");
+    fireEvent.click(screen.getByRole("button", { name: "标为在读" }));
+    expect(setCheckedReadingStatus).toHaveBeenCalledWith("reading");
+
+    fireEvent.click(screen.getByRole("button", { name: "标签…" }));
+    expect(useField.getState().dialog).toBe("tag-checked");
+
+    expect(screen.getByRole("button", { name: "删除" })).toBeInTheDocument();
+  });
+
+  it("无勾选时新动作与删除一样禁用", () => {
+    useField.setState({
+      mode: "field",
+      papers: [intakeItem("a", null)],
+      batchMode: true,
+      checkedPaperIds: [],
+    });
+    render(<PaperNav />);
+    expect(screen.getByRole("button", { name: "移动到领域" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "标为已读" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "标签…" })).toBeDisabled();
+  });
+
+  it("入库页批量工具栏额外提供「解析选中」「补全选中」；阅读页不提供", () => {
+    const retryMineruPapers = vi.fn(async () => undefined);
+    const retryFailedMetaJobs = vi.fn(async () => undefined);
+    useField.setState({
+      mode: "intake",
+      intake: [intakeItem("a", "error")],
+      batchMode: true,
+      checkedPaperIds: ["a"],
+      retryMineruPapers,
+      retryFailedMetaJobs,
+    });
+    const { unmount } = render(<PaperNav />);
+    fireEvent.click(screen.getByRole("button", { name: "解析选中" }));
+    expect(retryMineruPapers).toHaveBeenCalledWith(["a"]);
+    fireEvent.click(screen.getByRole("button", { name: "补全选中" }));
+    expect(retryFailedMetaJobs).toHaveBeenCalledWith(["a"]);
+    unmount();
+
+    useField.setState({ mode: "field", papers: [intakeItem("a", null)], intake: [] });
+    render(<PaperNav />);
+    expect(screen.queryByRole("button", { name: "解析选中" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "补全选中" })).toBeNull();
+  });
+});

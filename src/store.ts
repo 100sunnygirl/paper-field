@@ -125,6 +125,8 @@ interface FieldState {
     | "move-paper"
     | "delete-paper"
     | "delete-checked"
+    | "move-checked"
+    | "tag-checked"
     | "pick-domain"
     | "edit-paper"
     | null;
@@ -179,7 +181,10 @@ interface FieldState {
   setArchiveFilter: (value: OpenSource | "all") => Promise<void>;
   /** reselect：当前选中不在新列表里时改选第一篇（切换模式等用户导航）；平时只在论文被删时回落。 */
   refresh: (options?: { reselect?: boolean }) => Promise<void>;
-  /** target：论文对话框的目标论文（缺省为当前论文）；delete-checked 为冻结的勾选集。 */
+  /**
+   * target：论文对话框的目标论文（缺省为当前论文）；delete-checked / move-checked /
+   * tag-checked 为打开时冻结的勾选集（确认期间后台刷新改动勾选也不影响）。
+   */
   openDialog: (dialog: FieldState["dialog"], target?: string | string[]) => void;
   closeDialog: () => void;
   createDomain: (input: { name: string; code: string; summary?: string }) => Promise<void>;
@@ -235,6 +240,14 @@ interface FieldState {
   setCheckedPaperIds: (ids: string[]) => void;
   /** 删除 delete-checked 对话框打开时冻结的那批论文。 */
   deleteCheckedPapers: () => Promise<void>;
+  /** 批量移动：把 move-checked 对话框打开时冻结的那批移入指定领域。 */
+  moveCheckedPapers: (domainId: string) => Promise<void>;
+  /** 批量标记阅读状态（只有用户入口调用；与单篇 setReadingStatus 同一写库路径）。 */
+  setCheckedReadingStatus: (status: "unread" | "reading" | "read") => Promise<void>;
+  /** 批量添加标签（作用于 tag-checked 冻结的那批；与单篇编辑同口径记 user 来源）。 */
+  addTagsToChecked: (tags: string[]) => Promise<void>;
+  /** 批量移除标签（作用于 tag-checked 冻结的那批）。 */
+  removeTagsFromChecked: (tags: string[]) => Promise<void>;
   setJobsOpen: (open: boolean) => void;
   /** 作业面板「移出队列」：该篇轮到时直接跳过（不提交 MinerU），解析状态保持不变。 */
   dequeueMineruPaper: (batchId: number, paperId: string) => void;
@@ -566,10 +579,11 @@ export const useField = create<FieldState>((set, get) => ({
       dialog === "move-paper" ||
       dialog === "confirm-meta" ||
       dialog === "confirm-notes";
+    const checkedScoped = dialog === "delete-checked" || dialog === "move-checked" || dialog === "tag-checked";
     set({
       dialog,
       dialogPaperId: paperScoped ? (typeof target === "string" ? target : state.paper?.id ?? state.selectedPaperId) : null,
-      dialogPaperIds: dialog === "delete-checked" ? (Array.isArray(target) ? [...target] : [...state.checkedPaperIds]) : [],
+      dialogPaperIds: checkedScoped ? (Array.isArray(target) ? [...target] : [...state.checkedPaperIds]) : [],
     });
   },
   closeDialog: () => set({ dialog: null, dialogPaperId: null, dialogPaperIds: [], pendingDraftJob: null }),
@@ -1225,6 +1239,78 @@ export const useField = create<FieldState>((set, get) => ({
       get().setFlash({ tone: "ok", text: `已删除 ${ids.length} 篇论文。` });
     } catch (err) {
       get().setFlash({ tone: "error", text: `批量删除失败：${errText(err)}，数据未改动。` });
+      throw err;
+    }
+  },
+
+  moveCheckedPapers: async (domainId) => {
+    // 移动 move-checked 对话框打开时冻结的那批：确认期间勾选变化不影响本批。
+    const frozen = get().dialogPaperIds;
+    const ids = frozen.length ? [...frozen] : [...get().checkedPaperIds];
+    if (!ids.length) return;
+    try {
+      await repo.movePapers(ids, domainId);
+      selectionEpoch += 1;
+      set({ dialog: null, dialogPaperIds: [] });
+      // 批量模式保留：refresh 会把勾选裁剪到当前可见列表（移走的自动退出勾选集）。
+      await get().refresh();
+      const domain = get().domains.find((d) => d.id === domainId);
+      get().setFlash({
+        tone: "ok",
+        text: domain ? `已将 ${ids.length} 篇论文移动到「${domain.name}」。` : `已将 ${ids.length} 篇论文移动到新领域。`,
+      });
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `批量移动失败：${errText(err)}，数据未改动。` });
+      throw err;
+    }
+  },
+
+  setCheckedReadingStatus: async (status) => {
+    const ids = [...new Set(get().checkedPaperIds)].filter(Boolean);
+    if (!ids.length) return;
+    const labels = { unread: "未读", reading: "在读", read: "已读" };
+    try {
+      for (const id of ids) {
+        // 只有用户入口走到这里（AI 永远不会批量标已读）；repo 内维护 read_at 往返语义。
+        await repo.setReadingStatus(id, status);
+        noteReadingStatus(id, status);
+      }
+      await get().refresh();
+      get().setFlash({ tone: "ok", text: `已将 ${ids.length} 篇论文标为${labels[status]}。` });
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `批量标记失败：${errText(err)}，数据未改动。` });
+      throw err;
+    }
+  },
+
+  addTagsToChecked: async (tags) => {
+    const frozen = get().dialogPaperIds;
+    const ids = frozen.length ? [...frozen] : [...get().checkedPaperIds];
+    const wanted = [...new Set(tags.map((tag) => tag.trim()).filter(Boolean))];
+    if (!ids.length || !wanted.length) return;
+    try {
+      await repo.applyTagsToPapers(ids, wanted, "add");
+      set({ dialog: null, dialogPaperIds: [] });
+      await get().refresh();
+      get().setFlash({ tone: "ok", text: `已为 ${ids.length} 篇论文添加标签：${wanted.join("、")}。` });
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `批量添加标签失败：${errText(err)}，数据未改动。` });
+      throw err;
+    }
+  },
+
+  removeTagsFromChecked: async (tags) => {
+    const frozen = get().dialogPaperIds;
+    const ids = frozen.length ? [...frozen] : [...get().checkedPaperIds];
+    const wanted = [...new Set(tags.map((tag) => tag.trim()).filter(Boolean))];
+    if (!ids.length || !wanted.length) return;
+    try {
+      await repo.applyTagsToPapers(ids, wanted, "remove");
+      set({ dialog: null, dialogPaperIds: [] });
+      await get().refresh();
+      get().setFlash({ tone: "ok", text: `已从 ${ids.length} 篇论文移除标签：${wanted.join("、")}。` });
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `批量移除标签失败：${errText(err)}，数据未改动。` });
       throw err;
     }
   },

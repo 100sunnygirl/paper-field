@@ -3905,6 +3905,56 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 }
 .ef-domain-create-row input:focus { outline: none; }
 .ef-domain-create-row input::placeholder { color: var(--pf-muted); }
+/* 批量标签对话框：输入添加 + 已有标签按覆盖篇数移除。 */
+.ef-tag-batch-row { display: flex; gap: 8px; margin: 4px 0 14px; }
+.ef-tag-batch-row input {
+  flex: 1;
+  min-width: 0;
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--pf-divider);
+  border-radius: var(--pf-radius);
+  background: var(--pf-surface);
+  font: inherit;
+  color: var(--pf-ink);
+}
+.ef-tag-batch-row input:focus { outline: none; border-color: var(--pf-ink); }
+.ef-tag-batch-row input::placeholder { color: var(--pf-muted); }
+.ef-tag-batch-hint { font-size: var(--pf-fs-caption); color: var(--pf-muted); }
+.ef-tag-batch-existing ul {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0 0;
+  padding: 0;
+}
+.ef-tag-batch-existing li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px 3px 10px;
+  border: 1px solid var(--pf-control-border);
+  border-radius: 999px;
+  background: var(--pf-surface);
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+}
+.ef-tag-batch-existing li small { color: var(--pf-muted); }
+.ef-tag-batch-existing li button {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--pf-muted);
+  cursor: pointer;
+}
+.ef-tag-batch-existing li button:hover { background: var(--pf-danger-bg); color: var(--pf-danger); }
+.ef-tag-batch-existing li button .ef-ico { width: 11px; height: 11px; }
 /* Current option: the 3px signal bar lives on a ::before so pf-marker-in can
    grow it once from the top; the corner notch marks it as the active field. */
 .ef-domain-option.is-current {

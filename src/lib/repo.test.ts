@@ -950,3 +950,58 @@ describe("手动添加的 PDF 进文库", () => {
     expect(await repo.adoptManualPdf("/home/u/b.pdf")).toEqual({ libraryPath: "/home/u/b.pdf", originalPath: "/home/u/b.pdf" });
   });
 });
+
+describe("批量移动与批量标签（movePapers / tagsOfPapers / applyTagsToPapers）", () => {
+  async function seedThree(): Promise<{ d1: string; d2: string; papers: string[] }> {
+    const d1 = await makeDomain("MM-01");
+    const d2 = await makeDomain("AL-02");
+    const papers: string[] = [];
+    for (const title of ["A", "B", "C"]) {
+      const paper = await repo.createPaper({ domainId: d1, title });
+      papers.push(paper.id);
+    }
+    return { d1, d2, papers };
+  }
+
+  it("movePapers 把整批论文改到目标领域（同事务）", async () => {
+    const { d1, d2, papers } = await seedThree();
+    await repo.movePapers(papers, d2);
+    for (const id of papers) {
+      const paper = await repo.getPaper(id);
+      expect(paper?.domainId).toBe(d2);
+    }
+    void d1;
+  });
+
+  it("tagsOfPapers 汇总这批论文的标签与覆盖篇数", async () => {
+    const { d1, papers } = await seedThree();
+    await repo.updatePaper(papers[0], { tags: ["benchmark", "综述"] }, true);
+    await repo.updatePaper(papers[1], { tags: ["benchmark"] }, true);
+    void d1;
+    const tags = await repo.tagsOfPapers(papers);
+    expect(tags).toEqual([
+      { tag: "benchmark", count: 2 },
+      { tag: "综述", count: 1 },
+    ]);
+  });
+
+  it("applyTagsToPapers add 合并去重、remove 整批剔除，并把 tags 记为手动来源", async () => {
+    const { papers } = await seedThree();
+    await repo.applyTagsToPapers(papers, ["benchmark", "综述"], "add");
+    expect((await repo.getPaper(papers[0]))?.tags.sort()).toEqual(["benchmark", "综述"]);
+    expect((await repo.getPaper(papers[2]))?.tags.sort()).toEqual(["benchmark", "综述"]);
+
+    await repo.applyTagsToPapers(papers, ["综述"], "remove");
+    const after = await repo.getPaper(papers[1]);
+    expect(after?.tags).toEqual(["benchmark"]);
+    expect(after?.fieldSources?.tags).toBe("user");
+    expect(after?.userMetaTouched).toBe(true);
+  });
+
+  it("applyTagsToPapers 空标签或空 id 集不写库", async () => {
+    const { papers } = await seedThree();
+    await repo.applyTagsToPapers(papers, ["  "], "add");
+    await repo.applyTagsToPapers([], ["x"], "add");
+    expect((await repo.getPaper(papers[0]))?.tags).toEqual([]);
+  });
+});

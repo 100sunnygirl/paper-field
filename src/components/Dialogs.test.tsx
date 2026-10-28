@@ -4,7 +4,7 @@ import { recordDomainVisit } from "../lib/domainRecent";
 import { pickPdfFiles, pickPdfFolder } from "../lib/mineru";
 import { repo } from "../lib/repo";
 import { useField } from "../store";
-import { DeleteCheckedPapersDialog, DomainDialog, DomainPickerDialog, PaperDialog } from "./Dialogs";
+import { DeleteCheckedPapersDialog, DomainDialog, DomainPickerDialog, PaperDialog, TagCheckedPapersDialog } from "./Dialogs";
 import type { Domain, Paper } from "../lib/types";
 
 vi.mock("../lib/mineru", async (importOriginal) => {
@@ -23,6 +23,7 @@ vi.mock("../lib/repo", () => ({
     listArchive: vi.fn(async () => []),
     listIntake: vi.fn(async () => []),
     getPaper: vi.fn(async () => null),
+    tagsOfPapers: vi.fn(async () => [] as Array<{ tag: string; count: number }>),
   },
 }));
 
@@ -631,5 +632,94 @@ describe("DomainPickerDialog · 移动模式就地新建领域并移入", () => 
     fireEvent.click(screen.getByRole("button", { name: "创建并移入" }));
     expect(await screen.findByText("领域名称必填")).toBeInTheDocument();
     expect(screen.getByLabelText("新领域名称")).toHaveValue("x");
+  });
+});
+
+describe("TagCheckedPapersDialog · 批量标签", () => {
+  beforeEach(() => {
+    vi.mocked(repo.tagsOfPapers).mockReset();
+    vi.mocked(repo.tagsOfPapers).mockResolvedValue([
+      { tag: "benchmark", count: 3 },
+      { tag: "综述", count: 1 },
+    ]);
+  });
+
+  function openTagDialog() {
+    useField.setState({ checkedPaperIds: ["a", "b", "c"] });
+    act(() => useField.getState().openDialog("tag-checked"));
+    return render(<TagCheckedPapersDialog />);
+  }
+
+  it("显示作用篇数与已有标签（含覆盖篇数）；空输入提交给中文提示", async () => {
+    openTagDialog();
+    expect(screen.getByText("批量修改标签")).toBeInTheDocument();
+    expect(await screen.findByText("benchmark")).toBeInTheDocument();
+    expect(screen.getByText("综述")).toBeInTheDocument();
+    expect(screen.getByText(/这批论文已有的标签/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "添加标签" }));
+    expect(screen.getByText("请先输入要添加的标签（逗号分隔，可一次多个）。")).toBeInTheDocument();
+  });
+
+  it("逗号/中文逗号分隔解析后统一添加；Enter 也可提交", async () => {
+    const addTagsToChecked = vi.fn(async () => undefined);
+    useField.setState({ addTagsToChecked });
+    openTagDialog();
+    const input = screen.getByLabelText("要添加的标签");
+    fireEvent.change(input, { target: { value: "rlhf, 综述、alignment" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(addTagsToChecked).toHaveBeenCalledTimes(1));
+    expect(addTagsToChecked).toHaveBeenCalledWith(["rlhf", "综述", "alignment"]);
+  });
+
+  it("点已有标签的 × 从整批移除", async () => {
+    const removeTagsFromChecked = vi.fn(async () => undefined);
+    useField.setState({ removeTagsFromChecked });
+    openTagDialog();
+    const chip = await screen.findByText("benchmark");
+    fireEvent.click(screen.getByRole("button", { name: "移除标签 benchmark" }));
+    await waitFor(() => expect(removeTagsFromChecked).toHaveBeenCalledWith(["benchmark"]));
+    void chip;
+  });
+
+  it("勾选为空时不渲染", () => {
+    useField.setState({ checkedPaperIds: [] });
+    act(() => useField.getState().openDialog("tag-checked"));
+    render(<TagCheckedPapersDialog />);
+    expect(screen.queryByText("批量修改标签")).toBeNull();
+  });
+});
+
+describe("DomainPickerDialog · 批量移动（move-checked）", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it("标题与说明写明作用篇数，点击领域行执行批量移动", () => {
+    const moveCheckedPapers = vi.fn(async () => undefined);
+    useField.setState({
+      moveCheckedPapers,
+      checkedPaperIds: ["a", "b"],
+      domains: PICKER_DOMAINS,
+      selectedDomainId: "d-1",
+    });
+    act(() => useField.getState().openDialog("move-checked"));
+    render(<DomainPickerDialog />);
+    expect(screen.getByText("移动选中论文到其他领域")).toBeInTheDocument();
+    expect(screen.getByText("把选中的 2 篇论文移入哪个领域？")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /指令对齐/ }));
+    expect(moveCheckedPapers).toHaveBeenCalledTimes(1);
+    expect(moveCheckedPapers).toHaveBeenCalledWith("d-2");
+  });
+
+  it("批量移动不提供「新建领域并移入」入口（就地新建仅单篇移动）", () => {
+    useField.setState({
+      checkedPaperIds: ["a"],
+      domains: PICKER_DOMAINS,
+      selectedDomainId: "d-1",
+    });
+    act(() => useField.getState().openDialog("move-checked"));
+    render(<DomainPickerDialog />);
+    expect(screen.queryByRole("button", { name: "新建领域并移入" })).toBeNull();
   });
 });

@@ -863,6 +863,84 @@ export const repo = {
     await engine.batch(steps);
   },
 
+  /** 批量移动：把多篇论文改到同一领域（同一事务；IN 列表按 500 分块）。 */
+  async movePapers(ids: string[], domainId: string): Promise<void> {
+    if (!ids.length) return;
+    const engine = await getEngine();
+    const at = nowIso();
+    const steps: BatchStep[] = [];
+    for (let i = 0; i < ids.length; i += 500) {
+      const chunk = ids.slice(i, i + 500);
+      const placeholders = chunk.map(() => "?").join(", ");
+      steps.push({
+        sql: `UPDATE papers SET domain_id = ?, updated_at = ? WHERE id IN (${placeholders})`,
+        params: [domainId, at, ...chunk],
+      });
+    }
+    await engine.batch(steps);
+  },
+
+  /** 这批论文现有哪些标签、各覆盖几篇（批量标签对话框的移除候选）。 */
+  async tagsOfPapers(ids: string[]): Promise<Array<{ tag: string; count: number }>> {
+    const unique = [...new Set(ids)].filter(Boolean);
+    if (!unique.length) return [];
+    const engine = await getEngine();
+    const counts = new Map<string, number>();
+    for (let start = 0; start < unique.length; start += 400) {
+      const chunk = unique.slice(start, start + 400);
+      const rows = await engine.select<{ tags: string }>(
+        `SELECT tags FROM papers WHERE id IN (${chunk.map(() => "?").join(", ")})`,
+        chunk,
+      );
+      for (const row of rows) {
+        for (const tag of parseJsonArray<string>(row.tags, [])) {
+          counts.set(tag, (counts.get(tag) ?? 0) + 1);
+        }
+      }
+    }
+    return [...counts.entries()]
+      .map(([tag, count]) => ({ tag, count }))
+      .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag));
+  },
+
+  /**
+   * 批量增删标签：与各篇现有 tags 合并 / 剔除后整批写回（同一事务）。
+   * 与单篇编辑同一口径：tags 来源记 user、bump meta_rev，AI 不会覆盖这些标签。
+   */
+  async applyTagsToPapers(ids: string[], tags: string[], mode: "add" | "remove"): Promise<void> {
+    const unique = [...new Set(ids)].filter(Boolean);
+    const wanted = [...new Set(tags.map((tag) => tag.trim()).filter(Boolean))];
+    if (!unique.length || !wanted.length) return;
+    const engine = await getEngine();
+    const at = nowIso();
+    const rows: Array<{ id: string; tags: string }> = [];
+    for (let start = 0; start < unique.length; start += 400) {
+      const chunk = unique.slice(start, start + 400);
+      rows.push(
+        ...(await engine.select<{ id: string; tags: string }>(
+          `SELECT id, tags FROM papers WHERE id IN (${chunk.map(() => "?").join(", ")})`,
+          chunk,
+        )),
+      );
+    }
+    const steps: BatchStep[] = rows.map((row) => {
+      const current = parseJsonArray<string>(row.tags, []);
+      const next =
+        mode === "add"
+          ? [...new Set([...current, ...wanted])]
+          : current.filter((tag) => !wanted.includes(tag));
+      return {
+        sql: `UPDATE papers SET tags = ?,
+                field_sources = json_set(COALESCE(field_sources, '{}'), '$.tags', 'user'),
+                field_providers = json_remove(COALESCE(field_providers, '{}'), '$.tags'),
+                user_meta_touched = 1, meta_rev = meta_rev + 1, updated_at = ?
+              WHERE id = ?`,
+        params: [JSON.stringify(next), at, row.id],
+      };
+    });
+    if (steps.length) await engine.batch(steps);
+  },
+
   async replaceAuthors(
     paperId: string,
     authors: Array<{

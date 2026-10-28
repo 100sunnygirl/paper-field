@@ -53,6 +53,9 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
   const setBatchMode = useField((s) => s.setBatchMode);
   const toggleCheckedPaper = useField((s) => s.toggleCheckedPaper);
   const setCheckedPaperIds = useField((s) => s.setCheckedPaperIds);
+  const setCheckedReadingStatus = useField((s) => s.setCheckedReadingStatus);
+  const retryMineruPapers = useField((s) => s.retryMineruPapers);
+  const retryFailedMetaJobs = useField((s) => s.retryFailedMetaJobs);
   const [censusEpoch, setCensusEpoch] = useState(0);
 
   if (mode === "field" && selectedDomainId && !search.trim()) {
@@ -237,6 +240,66 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
               已选 {checkedPaperIds.length} / {list.length}
             </span>
             <span className="ef-batch-actions">
+              {/* 批量不止删除：整理归属（移动）、推进阅读（标状态）、入库积压（解析/补全）都可整批做。
+                  移动/标签走对话框并预览将作用的篇数；状态与作业类就地执行（操作后仍留在批量模式）。 */}
+              <Button
+                type="button"
+                size="sm"
+                disabled={!checkedPaperIds.length}
+                title="把选中的论文移动到其他领域"
+                onClick={() => openDialog("move-checked")}
+              >
+                移动到领域
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                disabled={!checkedPaperIds.length}
+                title="把选中的论文标记为已读（只有你本人能标记）"
+                onClick={() => void setCheckedReadingStatus("read")}
+              >
+                标为已读
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                disabled={!checkedPaperIds.length}
+                title="把选中的论文标记为在读"
+                onClick={() => void setCheckedReadingStatus("reading")}
+              >
+                标为在读
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                disabled={!checkedPaperIds.length}
+                title="为选中的论文统一添加或移除标签"
+                onClick={() => openDialog("tag-checked")}
+              >
+                标签…
+              </Button>
+              {mode === "intake" ? (
+                <>
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={!checkedPaperIds.length}
+                    title="把选中的论文重新提交给 MinerU 解析"
+                    onClick={() => void retryMineruPapers(checkedPaperIds)}
+                  >
+                    解析选中
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={!checkedPaperIds.length}
+                    title="把选中的论文排入 AI 补全队列"
+                    onClick={() => void retryFailedMetaJobs(checkedPaperIds)}
+                  >
+                    补全选中
+                  </Button>
+                </>
+              ) : null}
               <Button
                 type="button"
                 size="sm"
