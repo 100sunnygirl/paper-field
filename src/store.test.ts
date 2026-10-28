@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PaperDetail, PaperListItem } from "./lib/types";
-import { useField } from "./store";
+import { DEFAULT_ARCHIVE_VIEW, useField } from "./store";
 
 vi.mock("./lib/repo", () => ({
   repo: {
@@ -560,5 +560,37 @@ describe("setFlash × notify：通知唯一收口", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("归档筛选记住上次选择（本机 localStorage）", () => {
+  beforeEach(() => {
+    localStorage.removeItem("paper-field.archive-view");
+  });
+
+  it("setArchiveFilter / setArchiveView 写入 localStorage；applySavedArchiveView 恢复并剔除已删领域", async () => {
+    await useField.getState().setArchiveFilter("open");
+    useField.getState().setArchiveView({ year: 2024, sort: "title", notesIncomplete: true, domainId: "d-9" });
+    const raw = localStorage.getItem("paper-field.archive-view");
+    expect(raw).toContain('"openSource":"open"');
+    expect(raw).toContain('"year":2024');
+
+    // 状态重置后恢复：开源档与视图回来；记住的领域已不在领域表里则剔除。
+    useField.setState({ archiveFilter: "all", archiveView: DEFAULT_ARCHIVE_VIEW });
+    useField.getState().applySavedArchiveView([
+      { id: "d-1", name: "多模态", code: "MM-01", summary: null, sortOrder: 1, createdAt: "now" },
+    ]);
+    expect(useField.getState().archiveFilter).toBe("open");
+    expect(useField.getState().archiveView.year).toBe(2024);
+    expect(useField.getState().archiveView.sort).toBe("title");
+    expect(useField.getState().archiveView.notesIncomplete).toBe(true);
+    expect(useField.getState().archiveView.domainId).toBeNull();
+  });
+
+  it("坏数据整包丢弃：applySavedArchiveView 不动现有状态", () => {
+    localStorage.setItem("paper-field.archive-view", "{oops");
+    useField.setState({ archiveFilter: "closed", archiveView: DEFAULT_ARCHIVE_VIEW });
+    useField.getState().applySavedArchiveView();
+    expect(useField.getState().archiveFilter).toBe("closed");
   });
 });

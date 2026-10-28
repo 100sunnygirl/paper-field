@@ -98,7 +98,61 @@ export const DEFAULT_ARCHIVE_VIEW: ArchiveView = {
   searchFulltext: false,
   sort: "recent-read",
   groupByDomain: false,
-};/** 导出格式：按领域分文件夹的 Markdown / 单文件合并版 / BibTeX。 */
+};
+
+/** 归档视图偏好（记住上次筛选）的本机存储：开源档 + 客户端视图一起记，坏数据整包丢弃。 */
+const ARCHIVE_PREFS_KEY = "paper-field.archive-view";
+const ARCHIVE_SORT_VALUES: ReadonlySet<string> = new Set([
+  "recent-read",
+  "oldest-read",
+  "notes-recent",
+  "year",
+  "title",
+]);
+const OPEN_SOURCE_VALUES: ReadonlySet<string> = new Set(["all", "open", "closed", "request", "unknown"]);
+
+interface ArchivePrefs {
+  openSource: OpenSource | "all";
+  view: ArchiveView;
+}
+
+function loadArchivePrefs(): ArchivePrefs | null {
+  try {
+    const raw = typeof localStorage === "undefined" ? null : localStorage.getItem(ARCHIVE_PREFS_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { openSource?: unknown; view?: Record<string, unknown> };
+    if (!parsed || typeof parsed !== "object" || !parsed.view) return null;
+    const openSource =
+      typeof parsed.openSource === "string" && OPEN_SOURCE_VALUES.has(parsed.openSource)
+        ? (parsed.openSource as OpenSource | "all")
+        : "all";
+    const v = parsed.view;
+    const view: ArchiveView = {
+      domainId: typeof v.domainId === "string" && v.domainId ? v.domainId : null,
+      year: typeof v.year === "number" ? v.year : null,
+      notesIncomplete: v.notesIncomplete === true,
+      searchNotes: v.searchNotes === true,
+      searchFulltext: v.searchFulltext === true,
+      sort: typeof v.sort === "string" && ARCHIVE_SORT_VALUES.has(v.sort) ? (v.sort as ArchiveSort) : "recent-read",
+      groupByDomain: v.groupByDomain === true,
+    };
+    return { openSource, view };
+  } catch {
+    return null;
+  }
+}
+
+function saveArchivePrefs(state: FieldState): void {
+  try {
+    if (typeof localStorage === "undefined") return;
+    localStorage.setItem(
+      ARCHIVE_PREFS_KEY,
+      JSON.stringify({ openSource: state.archiveFilter, view: state.archiveView } satisfies ArchivePrefs),
+    );
+  } catch {
+    // 存不下（隐私模式等）：本次会话内筛选仍有效，只是不再被记住。
+  }
+}/** 导出格式：按领域分文件夹的 Markdown / 单文件合并版 / BibTeX。 */
 export type ExportFormat = "folders" | "merged" | "bibtex";
 
 /** 一次导出的完整计划：范围 + 格式 + 内容选择。 */
@@ -136,6 +190,8 @@ interface FieldState {
   /** 归档客户端视图（领域/年份筛选、排序、分组）；与 archiveFilter 分开存放。 */
   archiveView: ArchiveView;
   setArchiveView: (patch: Partial<ArchiveView>) => void;
+  /** 启动时恢复本机记住的上次归档筛选（init 内调用；domains 可选用于剔除已删除的领域）。 */
+  applySavedArchiveView: (domains?: Domain[]) => void;
   settings: LlmSettings;
   mineru: MineruSettingsV2;
   biblio: BiblioStatus;
@@ -634,6 +690,8 @@ export const useField = create<FieldState>((set, get) => ({
       settingsLoadError.secrets = llmLoaded.secretsError;
       const selectedDomainId = domains[0]?.id ?? null;
       set({ domains, selectedDomainId, settings, mineru, biblio, settingsLoadError, ready: true, error: null });
+      // 恢复上次归档筛选（开源档 + 领域/年份/排序视图），已删除的领域被剔除。
+      get().applySavedArchiveView(domains);
       await get().refresh();
       // 探测不阻断 ready：浏览器预览直接返回 []，桌面端最多 20s，完成后异步更新状态条。
       void get().probeMineru();
@@ -762,11 +820,24 @@ export const useField = create<FieldState>((set, get) => ({
 
   setArchiveFilter: async (value) => {
     set({ archiveFilter: value });
+    saveArchivePrefs(get());
     await get().refresh({ reselect: true });
   },
 
   setArchiveView: (patch) => {
     set({ archiveView: { ...get().archiveView, ...patch } });
+    saveArchivePrefs(get());
+  },
+
+  applySavedArchiveView: (domains) => {
+    const prefs = loadArchivePrefs();
+    if (!prefs) return;
+    // 记住的领域可能已被删除：对照当前领域表剔除，避免恢复出一个永远空白的筛选。
+    const domainId =
+      prefs.view.domainId && (!domains || domains.some((d) => d.id === prefs.view.domainId))
+        ? prefs.view.domainId
+        : null;
+    set({ archiveFilter: prefs.openSource, archiveView: { ...prefs.view, domainId } });
   },
 
   createDomain: async (input) => {
