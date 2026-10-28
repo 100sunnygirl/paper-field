@@ -3192,6 +3192,24 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   margin: 4px 0 12px;
   background: var(--pf-surface);
 }
+/* 手动添加的「粘贴识别」框：单框收整段粘贴（arXiv / DOI / BibTeX），
+   识别结论以一行浅色说明回显，「已找到」命中行加侧标。 */
+.ef-manual-paper .ef-field textarea.ef-paste-box {
+  min-height: 64px;
+  font-family: var(--pf-font-mono);
+  font-size: var(--pf-fs-caption);
+}
+.ef-paste-recognized {
+  margin: 2px 0 10px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+}
+.ef-paste-recognized.is-hit {
+  padding-left: 8px;
+  border-left: var(--pf-marker) solid var(--pf-ink);
+  color: var(--pf-ink);
+}
+.ef-paste-recognized.is-miss { color: var(--pf-muted); }
 /* 「将导入到：领域名」：导入对话框顶部与 INTAKE 页头部共用的目标领域选择器。
    下拉清单浮在内容之上，宽度不超过父容器；当前目标加侧标强调。 */
 .ef-import-target {

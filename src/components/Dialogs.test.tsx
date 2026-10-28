@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { lookupPaper } from "../lib/lookup";
 import { pickPdfFiles, pickPdfFolder } from "../lib/mineru";
 import { repo } from "../lib/repo";
 import { useField } from "../store";
@@ -10,6 +11,10 @@ vi.mock("../lib/mineru", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/mineru")>();
   return { ...actual, pickPdfFiles: vi.fn(), pickPdfFolder: vi.fn() };
 });
+
+vi.mock("../lib/lookup", () => ({
+  lookupPaper: vi.fn(async () => ({ meta: null, notices: [], openalexRemainingUsd: null, openalexLimitUsd: null })),
+}));
 
 vi.mock("../lib/repo", () => ({
   repo: {
@@ -476,6 +481,90 @@ describe("PaperDialog · 手动添加表单校验", () => {
       pdfPath: undefined,
     });
     expect(screen.queryByText(/标题必填/)).toBeNull();
+  });
+});
+
+describe("PaperDialog · 手动添加粘贴识别", () => {
+  const BIB = `@article{vaswani2017attention,
+    title = {Attention Is All You Need},
+    author = {Vaswani, Ashish},
+    journal = {NeurIPS},
+    year = {2017},
+  }`;
+
+  it("粘贴 arXiv 链接自动识别并填入 arXiv 字段", () => {
+    render(<PaperDialog />);
+    fireEvent.change(screen.getByLabelText("粘贴链接 / 标识符 / BibTeX（自动识别）"), {
+      target: { value: "https://arxiv.org/abs/1706.03762v2" },
+    });
+    expect(screen.getByText(/已识别：arXiv 1706\.03762/)).toBeInTheDocument();
+    expect(screen.getByLabelText("arXiv ID")).toHaveValue("1706.03762");
+  });
+
+  it("粘贴 BibTeX 自动拆出标题填入标题字段", () => {
+    render(<PaperDialog />);
+    fireEvent.change(screen.getByLabelText("粘贴链接 / 标识符 / BibTeX（自动识别）"), { target: { value: BIB } });
+    expect(screen.getByText(/已识别：BibTeX「Attention Is All You Need」/)).toBeInTheDocument();
+    expect(screen.getByLabelText("标题（必填）")).toHaveValue("Attention Is All You Need");
+  });
+
+  it("已手填的字段不被粘贴覆盖", () => {
+    render(<PaperDialog />);
+    fireEvent.change(screen.getByLabelText("标题（必填）"), { target: { value: "我的暂定标题" } });
+    fireEvent.change(screen.getByLabelText("粘贴链接 / 标识符 / BibTeX（自动识别）"), { target: { value: BIB } });
+    expect(screen.getByLabelText("标题（必填）")).toHaveValue("我的暂定标题");
+  });
+
+  it("粘贴 DOI 失焦查文献库回显「已找到：标题（年份）」，可一键采用", async () => {
+    vi.mocked(lookupPaper).mockResolvedValueOnce({
+      meta: {
+        title: "Attention Is All You Need",
+        titleZh: null,
+        abstract: "",
+        year: 2017,
+        venue: "NeurIPS",
+        doi: "10.5555/3294771.3295384",
+        arxivId: null,
+        authors: [],
+        labs: [],
+        codeOpenSource: "unknown",
+        codeURL: null,
+        projectPage: null,
+        pdfURL: null,
+        tags: [],
+        fieldProviders: {},
+      },
+      notices: [],
+      openalexRemainingUsd: null,
+      openalexLimitUsd: null,
+    });
+    render(<PaperDialog />);
+    const pasteBox = screen.getByLabelText("粘贴链接 / 标识符 / BibTeX（自动识别）");
+    fireEvent.change(pasteBox, { target: { value: "https://doi.org/10.5555/3294771.3295384" } });
+    fireEvent.blur(pasteBox);
+    expect(await screen.findByText("已找到：Attention Is All You Need（2017）")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "用这个标题" }));
+    expect(screen.getByLabelText("标题（必填）")).toHaveValue("Attention Is All You Need");
+    expect(lookupPaper).toHaveBeenCalledWith(
+      expect.objectContaining({ arxivId: null, doi: "10.5555/3294771.3295384", title: "" }),
+    );
+  });
+
+  it("查不到时给诚实的后续说明，不填假著录", async () => {
+    render(<PaperDialog />);
+    const pasteBox = screen.getByLabelText("粘贴链接 / 标识符 / BibTeX（自动识别）");
+    fireEvent.change(pasteBox, { target: { value: "1706.03762" } });
+    fireEvent.blur(pasteBox);
+    expect(await screen.findByText(/文献库这次没查到/)).toBeInTheDocument();
+    expect(screen.getByLabelText("标题（必填）")).toHaveValue("");
+  });
+
+  it("没识别出标识符时提示可直接手填", () => {
+    render(<PaperDialog />);
+    fireEvent.change(screen.getByLabelText("粘贴链接 / 标识符 / BibTeX（自动识别）"), {
+      target: { value: "随手敲的一句话" },
+    });
+    expect(screen.getByText(/未识别出 arXiv \/ DOI \/ BibTeX/)).toBeInTheDocument();
   });
 });
 

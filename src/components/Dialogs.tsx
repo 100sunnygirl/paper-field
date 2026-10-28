@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { lookupPaper } from "../lib/lookup";
 import { pickPdfFiles, pickPdfFolder } from "../lib/mineru";
+import { parsePastedRef, type ParsedRef } from "../lib/pasteRef";
 import { repo } from "../lib/repo";
 import type { Author, PaperDetail } from "../lib/types";
 import { isTauri } from "../lib/util";
@@ -232,6 +234,13 @@ function ManualPaperForm({ onCreated, primary = false }: { onCreated: () => void
   const [pdfPath, setPdfPath] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // 粘贴识别：一段文本自动拆出 arXiv / DOI / BibTeX 字段；失焦查文献库回显「已找到」。
+  const [pasted, setPasted] = useState("");
+  const [parsed, setParsed] = useState<ParsedRef | null>(null);
+  const [lookupBusy, setLookupBusy] = useState(false);
+  const [found, setFound] = useState<{ title: string; year: number | null } | null>(null);
+  const [lookupMissed, setLookupMissed] = useState(false);
+  const lastLookupKey = useRef<string | null>(null);
 
   async function pickPdf() {
     setError(null);
@@ -244,10 +253,96 @@ function ManualPaperForm({ onCreated, primary = false }: { onCreated: () => void
     }
   }
 
+  /** 粘贴内容变化即识别并拆字段（只覆盖仍为空的字段，不冲掉手填内容）。 */
+  function applyPasted(text: string) {
+    setPasted(text);
+    setFound(null);
+    setLookupMissed(false);
+    const ref = parsePastedRef(text);
+    setParsed(ref);
+    if (!ref) return;
+    if (ref.arxivId && !arxivId.trim()) setArxivId(ref.arxivId);
+    if (ref.doi && !doi.trim()) setDoi(ref.doi);
+    if (ref.title && !title.trim()) setTitle(ref.title);
+  }
+
+  /** 失焦回显：有标识符时查一次文献库，找到就显示「已找到：标题（年份）」。 */
+  async function lookupOnBlur() {
+    const key = [parsed?.arxivId ?? "", parsed?.doi ?? "", parsed?.title ?? ""].join("|");
+    if (!parsed || (!parsed.arxivId && !parsed.doi) || key === lastLookupKey.current) return;
+    lastLookupKey.current = key;
+    setLookupBusy(true);
+    setFound(null);
+    setLookupMissed(false);
+    try {
+      // 只用标识符查（不拿半截标题当键）；浏览器预览查不到，同样给出诚实提示。
+      const result = await lookupPaper({
+        title: "",
+        arxivId: parsed.arxivId ?? null,
+        doi: parsed.doi ?? null,
+        year: null,
+        authors: [],
+      });
+      if (result.meta?.title) setFound({ title: result.meta.title, year: result.meta.year ?? null });
+      else setLookupMissed(true);
+    } finally {
+      setLookupBusy(false);
+    }
+  }
+
   const titleMissing = Boolean(busy === false && error && !title.trim());
 
   return (
     <div className="ef-manual-paper pf-enter">
+      <Field label="粘贴链接 / 标识符 / BibTeX（自动识别）">
+        <textarea
+          value={pasted}
+          onChange={(e) => applyPasted(e.target.value)}
+          onBlur={() => void lookupOnBlur()}
+          placeholder="粘贴 arXiv 链接、DOI、doi.org/arXiv.org 地址或整段 BibTeX，自动拆到下方字段"
+          className="ef-paste-box"
+          aria-describedby={parsed ? "ef-paste-recognized" : undefined}
+        />
+      </Field>
+      {parsed ? (
+        <p className="ef-paste-recognized" id="ef-paste-recognized">
+          已识别：
+          {parsed.kind === "bibtex"
+            ? `BibTeX${parsed.title ? `「${parsed.title}」` : ""}${parsed.venue ? ` · ${parsed.venue}` : ""}`
+            : parsed.kind === "arxiv"
+              ? `arXiv ${parsed.arxivId}`
+              : `DOI ${parsed.doi}`}
+          {parsed.kind !== "bibtex" ? "，已填入下方字段；失焦可先查一次著录。" : "，已填入下方字段。"}
+        </p>
+      ) : pasted.trim() ? (
+        <p className="ef-paste-recognized is-miss">未识别出 arXiv / DOI / BibTeX，可直接在下方手填。</p>
+      ) : null}
+      {lookupBusy ? <p className="ef-paste-recognized">正在查询文献库…</p> : null}
+      {found ? (
+        <p className="ef-paste-recognized is-hit">
+          已找到：{found.title}
+          {found.year ? `（${found.year}）` : ""}
+          {found.title !== title ? (
+            <>
+              {" "}
+              <Button
+                type="button"
+                size="sm"
+                variant="text"
+                onClick={() => {
+                  setTitle(found.title);
+                  setPasted("");
+                  setParsed(null);
+                }}
+              >
+                用这个标题
+              </Button>
+            </>
+          ) : null}
+        </p>
+      ) : lookupMissed ? (
+        <p className="ef-paste-recognized">文献库这次没查到；创建论文后仍会自动查询并补全著录。</p>
+      ) : null}
       <Field label="标题（必填）">
         <input
           value={title}
