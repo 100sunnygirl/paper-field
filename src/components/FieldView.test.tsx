@@ -476,6 +476,52 @@ describe("PaperNav · 阅读成果统计卡与归档空态指引", () => {
   });
 });
 
+describe("PaperNav · 入库按解析状态分组（失败置顶）", () => {
+  it("chips 带计数：点击只留该状态；失败永远排在最前", () => {
+    useField.setState({
+      mode: "intake",
+      intake: [
+        intakeItem("a", "done"),
+        intakeItem("b", "error"),
+        intakeItem("c", "parsing"),
+        intakeItem("d", "queued"),
+        intakeItem("e", "pending"),
+        intakeItem("f", null),
+      ],
+    });
+    const { rerender } = render(<PaperNav />);
+    const chips = document.querySelector('[aria-label="按解析状态分组"]');
+    expect(chips?.textContent).toContain("全部 6");
+    expect(chips?.textContent).toContain("解析失败 1");
+    expect(chips?.textContent).toContain("解析中 1");
+    expect(chips?.textContent).toContain("排队中 1");
+    expect(chips?.textContent).toContain("待解析 1");
+    expect(chips?.textContent).toContain("已解析待读 2");
+
+    // 失败置顶：error 行出现在 done 行之前。
+    const titles = () => [...document.querySelectorAll(".ef-row h3")].map((n) => n.textContent);
+    expect(titles().indexOf("论文 b")).toBeLessThan(titles().indexOf("论文 a"));
+
+    // 点「已解析待读」：只剩 done 与无 PDF 条目。
+    fireEvent.click(screen.getByRole("button", { name: "已解析待读 2" }));
+    rerender(<PaperNav />);
+    expect(document.querySelectorAll(".ef-row")).toHaveLength(2);
+    expect(useField.getState().intakeStage).toBe("ready");
+
+    // 空筛选给可行动文案。
+    fireEvent.click(screen.getByRole("button", { name: "排队中 1" }));
+    useField.setState({ intake: useField.getState().intake.filter((p) => p.mineruStatus !== "queued") });
+    rerender(<PaperNav />);
+    expect(screen.getByText("当前筛选下没有论文。可以切换上方的解析状态分组或调整搜索词。")).toBeInTheDocument();
+  });
+
+  it("空入库不渲染分组行", () => {
+    useField.setState({ mode: "intake", intake: [] });
+    render(<PaperNav />);
+    expect(document.querySelector('[aria-label="按解析状态分组"]')).toBeNull();
+  });
+});
+
 describe("PaperNav · 领域计数不随搜索改写", () => {
   it("搜索过滤列表，阅读进度和本领域论文仍按未过滤领域计算", () => {
     const read = { ...intakeItem("a", null), readingStatus: "read" as const };

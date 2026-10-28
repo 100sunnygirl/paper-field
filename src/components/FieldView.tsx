@@ -13,7 +13,7 @@ import { jobStageLine } from "../lib/jobsView";
 import { repo } from "../lib/repo";
 import { isArchiveStatsDismissed, readingStatsFrom, setArchiveStatsDismissed } from "../lib/readingStats";
 import { pad2, shortcut } from "../lib/util";
-import { useField, type ArchiveSort, type ArchiveView } from "../store";
+import { useField, type ArchiveSort, type ArchiveView, type IntakeStage, type IntakeStageFilter } from "../store";
 import { useReadPulse } from "./useReadPulse";
 import { CheckSquare, PaperMatrix, PaperRow } from "./PaperMatrix";
 import { PaperSearch } from "./PaperSearch";
@@ -37,6 +37,44 @@ const ARCHIVE_SORTS: Array<{ value: ArchiveSort; label: string }> = [
   { value: "year", label: "发表年份" },
   { value: "title", label: "标题" },
 ];
+
+const INTAKE_STAGES: Array<{ value: IntakeStageFilter; label: string }> = [
+  { value: "all", label: "全部" },
+  { value: "error", label: "解析失败" },
+  { value: "parsing", label: "解析中" },
+  { value: "queued", label: "排队中" },
+  { value: "pending", label: "待解析" },
+  { value: "ready", label: "已解析待读" },
+];
+
+/** 论文在入库页的解析进度分组：失败 / 解析中（含已提交）/ 排队 / 待解析（含已取消）/ 已解析待读（含无 PDF 条目）。 */
+export function intakeStageOf(paper: PaperListItem): IntakeStage {
+  switch (paper.mineruStatus) {
+    case "error":
+      return "error";
+    case "parsing":
+    case "submitted":
+      return "parsing";
+    case "queued":
+      return "queued";
+    case "pending":
+    case "cancelled":
+      return "pending";
+    default:
+      return "ready";
+  }
+}
+
+/** 入库列表排序：解析失败永远置顶（优先级最高的处理对象），其余保持库里的时间序。 */
+export function sortIntakeByStage(items: PaperListItem[]): PaperListItem[] {
+  const sorted = [...items];
+  sorted.sort((a, b) => {
+    const fa = a.mineruStatus === "error" ? 0 : 1;
+    const fb = b.mineruStatus === "error" ? 0 : 1;
+    return fa - fb;
+  });
+  return sorted;
+}
 
 function timeOf(value: string | null | undefined): number {
   if (!value) return 0;
@@ -176,6 +214,8 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
   const setArchiveFilter = useField((s) => s.setArchiveFilter);
   const archiveView = useField((s) => s.archiveView);
   const setArchiveView = useField((s) => s.setArchiveView);
+  const intakeStage = useField((s) => s.intakeStage);
+  const setIntakeStage = useField((s) => s.setIntakeStage);
   const cancelJob = useField((s) => s.cancelJob);
   const retryFailedMineru = useField((s) => s.retryFailedMineru);
   const setJobsOpen = useField((s) => s.setJobsOpen);
@@ -221,7 +261,16 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
   // 归档客户端视图：领域 / 年份筛选 + 多维排序（开源状态与搜索仍由 SQL 完成）。
   const archiveItems =
     mode === "archive" ? sortArchiveItems(filterArchiveItems(archive, archiveView), archiveView.sort) : [];
-  const visible = mode === "archive" ? archiveItems : list;
+  // 入库按解析进度筛选 + 失败置顶（chips 见列表上方的分组行）。
+  const intakeStageCounts = new Map<IntakeStage, number>();
+  if (mode === "intake") {
+    for (const paper of intake) intakeStageCounts.set(intakeStageOf(paper), (intakeStageCounts.get(intakeStageOf(paper)) ?? 0) + 1);
+  }
+  const intakeItems =
+    mode === "intake"
+      ? sortIntakeByStage(intake.filter((p) => intakeStage === "all" || intakeStageOf(p) === intakeStage))
+      : [];
+  const visible = mode === "archive" ? archiveItems : mode === "intake" ? intakeItems : list;
   // 按领域分组：只列归档里实际出现的领域（组头带已读数），行号在组间连续。
   const archiveDomains = domains.filter((d) => archive.some((p) => p.domainId === d.id));
   const archiveYears = [...new Set(archive.map((p) => p.year).filter((y): y is number => y != null))].sort(
@@ -533,6 +582,23 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
         </div>
       ) : null}
 
+      {mode === "intake" && intake.length ? (
+        <div className="filter-row" role="group" aria-label="按解析状态分组">
+          {INTAKE_STAGES.map((item) => (
+            <Button
+              key={item.value}
+              type="button"
+              size="sm"
+              className={intakeStage === item.value ? "is-active" : ""}
+              aria-pressed={intakeStage === item.value}
+              onClick={() => setIntakeStage(item.value)}
+            >
+              {item.value === "all" ? `全部 ${intake.length}` : `${item.label} ${intakeStageCounts.get(item.value) ?? 0}`}
+            </Button>
+          ))}
+        </div>
+      ) : null}
+
       {mode === "intake" ? (
         <div className="ef-job-list">
           {/* 只显示进行中的作业：完成/失败的历史堆在这里会刷屏（曾经的「MinerU 解析 · 完成」墙），
@@ -674,9 +740,11 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
                 ? archive.length
                   ? "没有符合条件的已读论文。可以调整上方的领域 / 年份筛选或开源状态。"
                   : "还没有手动标记已读的论文。"
-                : mode === "intake"
-                  ? "没有待处理论文。"
-                  : "此领域还没有论文。"}
+              : mode === "intake"
+                ? intake.length
+                  ? "当前筛选下没有论文。可以切换上方的解析状态分组或调整搜索词。"
+                  : "没有待处理论文。"
+                : "此领域还没有论文。"}
           </p>
         )
       ) : mode === "archive" && archiveView.groupByDomain ? (

@@ -100,6 +100,10 @@ export const DEFAULT_ARCHIVE_VIEW: ArchiveView = {
   groupByDomain: false,
 };
 
+/** 入库页按解析进度的分组口径（「已解析待读」含无 PDF 的手动条目）。 */
+export type IntakeStage = "error" | "parsing" | "queued" | "pending" | "ready";
+export type IntakeStageFilter = IntakeStage | "all";
+
 /** 归档视图偏好（记住上次筛选）的本机存储：开源档 + 客户端视图一起记，坏数据整包丢弃。 */
 const ARCHIVE_PREFS_KEY = "paper-field.archive-view";
 const ARCHIVE_SORT_VALUES: ReadonlySet<string> = new Set([
@@ -190,6 +194,9 @@ interface FieldState {
   /** 归档客户端视图（领域/年份筛选、排序、分组）；与 archiveFilter 分开存放。 */
   archiveView: ArchiveView;
   setArchiveView: (patch: Partial<ArchiveView>) => void;
+  /** 入库页的解析进度筛选（chips；失败默认置顶展示）。 */
+  intakeStage: IntakeStageFilter;
+  setIntakeStage: (value: IntakeStageFilter) => void;
   /** 启动时恢复本机记住的上次归档筛选（init 内调用；domains 可选用于剔除已删除的领域）。 */
   applySavedArchiveView: (domains?: Domain[]) => void;
   settings: LlmSettings;
@@ -444,6 +451,7 @@ export const useField = create<FieldState>((set, get) => ({
   search: "",
   archiveFilter: "all",
   archiveView: DEFAULT_ARCHIVE_VIEW,
+  intakeStage: "all",
   settings: { version: 2, providers: [], usage: {} },
   mineru: DEFAULT_MINERU,
   biblio: DEFAULT_BIBLIO,
@@ -828,6 +836,8 @@ export const useField = create<FieldState>((set, get) => ({
     set({ archiveView: { ...get().archiveView, ...patch } });
     saveArchivePrefs(get());
   },
+
+  setIntakeStage: (value) => set({ intakeStage: value }),
 
   applySavedArchiveView: (domains) => {
     const prefs = loadArchivePrefs();
