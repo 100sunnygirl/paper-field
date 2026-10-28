@@ -330,6 +330,25 @@ describe("PaperNav · 归档筛选、分组与排序", () => {
     );
   });
 
+  it("归档行内「重新在读」快捷动作：不改选中直接切阅读状态", () => {
+    const setReadingStatus = vi.fn(async () => undefined);
+    const selectPaper = vi.fn(async () => undefined);
+    useField.setState({
+      mode: "archive",
+      domains,
+      archive: archiveOf(),
+      setReadingStatus,
+      selectPaper,
+    });
+    render(<PaperNav />);
+    const buttons = screen.getAllByRole("button", { name: "重新在读" });
+    expect(buttons.length).toBeGreaterThan(0);
+    fireEvent.click(buttons[0]);
+    expect(setReadingStatus).toHaveBeenCalledWith("reading", expect.any(String));
+    // 快捷动作不打开论文。
+    expect(selectPaper).not.toHaveBeenCalled();
+  });
+
   it("现场模式批量工具栏不提供「对照表」", () => {
     useField.setState({ mode: "field", papers: [intakeItem("a", null)], batchMode: true });
     render(<PaperNav />);

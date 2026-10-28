@@ -185,6 +185,7 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
   const search = useField((s) => s.search);
   const selectDomain = useField((s) => s.selectDomain);
   const setFlash = useField((s) => s.setFlash);
+  const setReadingStatus = useField((s) => s.setReadingStatus);
   const batchMode = useField((s) => s.batchMode);
   const checkedPaperIds = useField((s) => s.checkedPaperIds);
   const setBatchMode = useField((s) => s.setBatchMode);
@@ -318,6 +319,15 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
       >
         在所属领域中打开
         <Icon name="right" />
+      </button>
+      {/* 重新在读：归档整理时不必打开资料栏 select 往返；首次已读时间戳由 repo 保护不重算。 */}
+      <button
+        type="button"
+        className="ef-row-domain-open"
+        title="把这篇论文改回「在读」（首次标记已读的时间保留不变）"
+        onClick={() => void setReadingStatus("reading", paper.id)}
+      >
+        重新在读
       </button>
     </div>
   );
