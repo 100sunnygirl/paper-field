@@ -349,6 +349,22 @@ describe("PaperNav · 归档筛选、分组与排序", () => {
     expect(selectPaper).not.toHaveBeenCalled();
   });
 
+  it("归档批量模式「导出所选」：无勾选禁用，有勾选打开导出对话框并冻结勾选集", () => {
+    useField.setState({
+      mode: "archive",
+      archive: [archiveItem("a", "d-1", 2023, "2026-01-01T00:00:00.000Z"), archiveItem("b", "d-1", 2024, "2026-02-01T00:00:00.000Z")],
+      batchMode: true,
+    });
+    const { rerender } = render(<PaperNav />);
+    expect(screen.getByRole("button", { name: "导出所选" })).toBeDisabled();
+
+    useField.setState({ checkedPaperIds: ["a", "b"] });
+    rerender(<PaperNav />);
+    fireEvent.click(screen.getByRole("button", { name: "导出所选" }));
+    expect(useField.getState().dialog).toBe("export-checked");
+    expect(useField.getState().dialogPaperIds).toEqual(["a", "b"]);
+  });
+
   it("现场模式批量工具栏不提供「对照表」", () => {
     useField.setState({ mode: "field", papers: [intakeItem("a", null)], batchMode: true });
     render(<PaperNav />);

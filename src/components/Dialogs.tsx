@@ -10,8 +10,9 @@ import {
   type PaperDetail,
 } from "../lib/types";
 import { isTauri } from "../lib/util";
-import { useField } from "../store";
+import { useField, type ExportFormat } from "../store";
 import { Button, Dialog, Field, Icon } from "./ui";
+import { DEFAULT_EXPORT_CONTENT, type ExportContentOptions } from "../lib/export";
 
 export function PaperDialog() {
   const dialog = useField((s) => s.dialog);
@@ -728,6 +729,110 @@ export function CompareNotesDialog() {
           </table>
         </div>
       )}
+    </Dialog>
+  );
+}
+
+/**
+ * 批量勾选后的导出对话框：格式（合并 Markdown / BibTeX 书目 / 按领域分文件夹）+
+ * 内容选择（笔记 / 摘要 / 解析全文，仅 Markdown 类格式）。走 store.exportPapers 的
+ * scope="checked" 通道（勾选集可能跨领域，桌面端按领域分文件夹、浏览器下载单文件）。
+ */
+export function ExportCheckedDialog() {
+  const dialog = useField((s) => s.dialog);
+  const closeDialog = useField((s) => s.closeDialog);
+  // 打开时冻结的勾选集。
+  const ids = useField((s) => s.dialogPaperIds);
+  const exportPapers = useField((s) => s.exportPapers);
+  const [format, setFormat] = useState<ExportFormat>("merged");
+  const [include, setInclude] = useState<ExportContentOptions>(DEFAULT_EXPORT_CONTENT);
+  const [busy, setBusy] = useState(false);
+  const open = dialog === "export-checked" && ids.length > 0;
+
+  useEffect(() => {
+    if (open) {
+      setFormat("merged");
+      setInclude(DEFAULT_EXPORT_CONTENT);
+      setBusy(false);
+    }
+  }, [open]);
+
+  async function run() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await exportPapers({ scope: "checked", format, include });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog
+      open={open}
+      title={`导出所选 ${ids.length} 篇`}
+      onClose={closeDialog}
+      footer={
+        <>
+          <Button type="button" onClick={closeDialog}>
+            取消
+          </Button>
+          <Button type="button" variant="primary" disabled={busy} onClick={() => void run()}>
+            {busy ? "导出中…" : "导出"}
+          </Button>
+        </>
+      }
+    >
+      <p>
+        只导出勾选的 <strong>{ids.length}</strong> 篇论文；勾选集可能跨领域，桌面端选择目标文件夹后写入，浏览器预览下载单个文件。
+      </p>
+      <Field label="导出格式">
+        <select
+          aria-label="导出格式"
+          value={format}
+          onChange={(e) => setFormat(e.target.value as ExportFormat)}
+          disabled={busy}
+        >
+          <option value="merged">合并 Markdown（单文件，含所选内容）</option>
+          <option value="bibtex">BibTeX 书目（仅著录信息）</option>
+          <option value="folders">按领域分文件夹（每篇一个 Markdown）</option>
+        </select>
+      </Field>
+      {format === "bibtex" ? (
+        <p className="ef-save-rules">BibTeX 只含著录信息（标题 / 作者 / 年份 / 出处 / DOI 等），不含笔记与全文。</p>
+      ) : (
+        <fieldset className="ef-export-content">
+          <legend>导出内容</legend>
+          <label>
+            <input
+              type="checkbox"
+              checked={include.notes}
+              onChange={(e) => setInclude((cur) => ({ ...cur, notes: e.target.checked }))}
+              disabled={busy}
+            />
+            五块现场笔记
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={include.abstract}
+              onChange={(e) => setInclude((cur) => ({ ...cur, abstract: e.target.checked }))}
+              disabled={busy}
+            />
+            摘要
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={include.parsedText}
+              onChange={(e) => setInclude((cur) => ({ ...cur, parsedText: e.target.checked }))}
+              disabled={busy}
+            />
+            解析全文（可能很长）
+          </label>
+        </fieldset>
+      )}
+      <p className="ef-save-rules">导出立即执行，只读不改动库内数据；密钥与令牌永不写入导出文件。</p>
     </Dialog>
   );
 }

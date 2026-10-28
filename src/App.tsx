@@ -9,6 +9,7 @@ import {
   DomainDialog,
   DomainPickerDialog,
   EditPaperDialog,
+  ExportCheckedDialog,
   PaperDialog,
 } from "./components/Dialogs";
 import { ReadingStage } from "./components/Dossier";
@@ -263,6 +264,7 @@ export default function App() {
       <DeletePaperDialog />
       <DeleteCheckedPapersDialog />
       <CompareNotesDialog />
+      <ExportCheckedDialog />
       <EditPaperDialog />
       <ConfirmNotesDialog />
       <ConfirmMetaDialog />

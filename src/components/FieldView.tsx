@@ -601,15 +601,26 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
             </span>
             <span className="ef-batch-actions">
               {mode === "archive" ? (
-                <Button
-                  type="button"
-                  size="sm"
-                  disabled={checkedPaperIds.length < 2}
-                  title="勾选至少两篇已读论文后，生成五块笔记对照表"
-                  onClick={() => openDialog("compare-notes")}
-                >
-                  对照表
-                </Button>
+                <>
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={checkedPaperIds.length < 2}
+                    title="勾选至少两篇已读论文后，生成五块笔记对照表"
+                    onClick={() => openDialog("compare-notes")}
+                  >
+                    对照表
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={!checkedPaperIds.length}
+                    title="把勾选的论文导出为 Markdown / BibTeX"
+                    onClick={() => openDialog("export-checked")}
+                  >
+                    导出所选
+                  </Button>
+                </>
               ) : null}
               <Button
                 type="button"

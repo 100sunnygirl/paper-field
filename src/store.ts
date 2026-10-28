@@ -155,12 +155,13 @@ interface FieldState {
     | "delete-paper"
     | "delete-checked"
     | "compare-notes"
+    | "export-checked"
     | "pick-domain"
     | "edit-paper"
     | null;
   /** 对话框打开时锁定的目标论文：之后选中怎么变，对话框都只作用于它。 */
   dialogPaperId: string | null;
-  /** delete-checked / compare-notes 打开时冻结的勾选集。 */
+  /** delete-checked / compare-notes / export-checked 打开时冻结的勾选集。 */
   dialogPaperIds: string[];
   pendingDraftJob: string | null;
   /** 正在编辑、尚未保存的笔记草稿，按论文分开存：切换论文不丢，切回来还在。 */
@@ -599,7 +600,7 @@ export const useField = create<FieldState>((set, get) => ({
       dialog,
       dialogPaperId: paperScoped ? (typeof target === "string" ? target : state.paper?.id ?? state.selectedPaperId) : null,
       dialogPaperIds:
-        dialog === "delete-checked" || dialog === "compare-notes"
+        dialog === "delete-checked" || dialog === "compare-notes" || dialog === "export-checked"
           ? Array.isArray(target)
             ? [...target]
             : [...state.checkedPaperIds]
