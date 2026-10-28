@@ -117,6 +117,10 @@ interface FieldState {
   lookupHint: { paperId: string; notices: LookupResult["notices"] } | null;
   mineruHealth: ProviderHealth[];
   effectiveProvider: MineruProviderKind | null;
+  /** 是否正在探测解析源（启动 / 手动重探的窗口期）：状态条显示「正在检测」而非「未配置」。 */
+  mineruProbing: boolean;
+  /** 最近一次探测完成的时刻（epoch 毫秒）；null = 本次启动还没有探测结果。 */
+  mineruProbedAt: number | null;
   dialog:
     | "paper"
     | "domain"
@@ -371,6 +375,8 @@ export const useField = create<FieldState>((set, get) => ({
   lookupHint: null,
   mineruHealth: [],
   effectiveProvider: null,
+  mineruProbing: false,
+  mineruProbedAt: null,
   dialog: null,
   dialogPaperId: null,
   dialogPaperIds: [],
@@ -1533,13 +1539,20 @@ export const useField = create<FieldState>((set, get) => ({
   },
 
   probeMineru: async () => {
-    const healths = await mineruProbe();
-    const mineru = get().mineru;
-    set({
-      mineruHealth: healths,
-      effectiveProvider: pickProviderFromHealths(mineru.order, healths),
-    });
-    return healths;
+    // 探测窗口期先亮「正在检测」：桌面端最长 20 秒，期间不再误显「未配置 / 不可用」。
+    set({ mineruProbing: true });
+    try {
+      const healths = await mineruProbe();
+      const mineru = get().mineru;
+      set({
+        mineruHealth: healths,
+        effectiveProvider: pickProviderFromHealths(mineru.order, healths),
+        mineruProbedAt: Date.now(),
+      });
+      return healths;
+    } finally {
+      set({ mineruProbing: false });
+    }
   },
 
   startMetaBackfill: async () => {

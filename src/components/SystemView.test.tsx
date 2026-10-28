@@ -138,6 +138,33 @@ describe("SystemView · MinerU 三源卡片", () => {
     expect(screen.getByText("尚未启用任何解析源，导入将只入库、不解析。")).toBeInTheDocument();
   });
 
+  it("五态：已启用但尚未探测时提示「尚未探测」，不再直接判不可用", () => {
+    useField.setState({ mineru: mineruState(), effectiveProvider: null, mineruHealth: [], mineruProbing: false });
+    render(<SystemView />);
+    expect(screen.getByText(/已启用解析源，尚未探测/)).toBeInTheDocument();
+    expect(screen.queryByText(/已启用的解析源均未通过探测/)).toBeNull();
+  });
+
+  it("五态：全局探测进行中（启动 / 保存触发）状态条显示探测中", () => {
+    useField.setState({ mineru: mineruState(), effectiveProvider: null, mineruHealth: [], mineruProbing: true });
+    render(<SystemView />);
+    expect(screen.getByText("正在探测各解析源…")).toBeInTheDocument();
+    expect(screen.queryByText(/尚未探测/)).toBeNull();
+  });
+
+  it("五态：显示最近一次探测时间", () => {
+    const at = new Date();
+    at.setHours(9, 5, 0, 0);
+    useField.setState({
+      mineru: mineruState(),
+      effectiveProvider: "local",
+      mineruProbedAt: at.getTime(),
+      mineruHealth: healths([["local", true, "doclib 可达"]]),
+    });
+    render(<SystemView />);
+    expect(screen.getByText(/上次探测 今天 09:05/)).toBeInTheDocument();
+  });
+
   it("探测成功的源显示延迟毫秒数", () => {
     useField.setState({
       mineru: mineruState(),
@@ -146,6 +173,34 @@ describe("SystemView · MinerU 三源卡片", () => {
     });
     render(<SystemView />);
     expect(screen.getByText(/doclib 可达/)).toHaveTextContent("15ms");
+  });
+});
+
+describe("SystemView · 页码范围为公共设置", () => {
+  beforeEach(() => {
+    useField.setState(useField.getInitialState(), true);
+    localStorage.clear();
+  });
+
+  it("只启用官方 API（无本地 / SSH）时页码范围同样可见，无需展开高级项", () => {
+    useField.setState({
+      mineru: mineruState({
+        local: { enabled: false, socketPath: "~/.mineru/doclib.sock" },
+        ssh: { ...DEFAULT_MINERU.ssh, enabled: false },
+      }),
+      effectiveProvider: "api",
+    });
+    render(<SystemView />);
+    expect(screen.getByLabelText("页码范围")).toBeInTheDocument();
+    // 解析档位仍只在本地 / SSH 启用时出现。
+    expect(screen.queryByLabelText("解析档位")).toBeNull();
+  });
+
+  it("页码范围标注各源接受的写法", () => {
+    useField.setState({ mineru: mineruState(), effectiveProvider: "local" });
+    render(<SystemView />);
+    expect(screen.getByText(/官方 API 非 all 时随提交带上 page_ranges/)).toBeInTheDocument();
+    expect(screen.getByText(/在取回全文时按该范围截取/)).toBeInTheDocument();
   });
 });
 

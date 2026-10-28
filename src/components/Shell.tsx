@@ -331,14 +331,21 @@ export function StatusStrip() {
   const stats = useField((s) => s.stats);
   const settings = useField((s) => s.settings);
   const mineru = useField((s) => s.mineru);
+  const mineruHealth = useField((s) => s.mineruHealth);
   const effectiveProvider = useField((s) => s.effectiveProvider);
+  const mineruProbing = useField((s) => s.mineruProbing);
   // 标已读时状态条的已读计数做一次轻量跳动（与领域进度条同一脉冲源）。
   const readPulse = useReadPulse();
-  const mineruLabel = effectiveProvider
-    ? `MinerU：${MINERU_PROVIDER_LABELS[effectiveProvider]}`
-    : mineru.configured
-      ? "MinerU 不可用，可到设置页查看原因"
-      : "MinerU 未配置";
+  // 五态：未配置 / 尚未探测 / 探测中 / 可用 / 暂不可用。探测窗口期不再误显「不可用」。
+  const mineruLabel = mineruProbing && mineru.configured
+    ? "MinerU：正在检测解析源…"
+    : effectiveProvider
+      ? `MinerU：${MINERU_PROVIDER_LABELS[effectiveProvider]}`
+      : mineru.configured
+        ? mineruHealth.length
+          ? "MinerU 不可用，可到设置页查看原因"
+          : "MinerU：尚未探测"
+        : "MinerU 未配置";
   return (
     <footer className="ef-status">
       <span>

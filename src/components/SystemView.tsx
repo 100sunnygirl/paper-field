@@ -1801,6 +1801,8 @@ function MineruSettings({ focused }: { focused: boolean }) {
   const saved = useField((s) => s.mineru);
   const healths = useField((s) => s.mineruHealth);
   const effective = useField((s) => s.effectiveProvider);
+  const storeProbing = useField((s) => s.mineruProbing);
+  const probedAt = useField((s) => s.mineruProbedAt);
   const saveMineru = useField((s) => s.saveMineruSettings);
   const probeMineru = useField((s) => s.probeMineru);
 
@@ -2073,8 +2075,20 @@ function MineruSettings({ focused }: { focused: boolean }) {
 
   const enabledCount = [localEnabled, sshEnabled, saved.api.hasToken || Boolean(apiToken.trim())].filter(Boolean).length;
   const failureSummary = saved.configured && !effective && healths.length ? summarizeHealths(saved.order, healths) : "";
-  const statusTone = probing ? "is-busy" : effective ? "is-ok" : saved.configured ? "is-error" : "is-idle";
+  // 探测中 = 本页的「重新探测」或启动/保存触发的全局探测任一在进行（五态的「探测中」）。
+  const probingAny = probing || storeProbing;
+  // 五态：未配置 / 尚未探测 / 探测中 / 可用 / 暂不可用（状态条同一口径）。
+  const notProbedYet = saved.configured && !healths.length && !probingAny;
+  const statusTone = probingAny ? "is-busy" : effective ? "is-ok" : saved.configured ? (notProbedYet ? "" : "is-error") : "is-idle";
   const apiEnabled = saved.api.hasToken || Boolean(apiToken.trim());
+  /** 最近探测时间的可读写法：今天只给时分，跨天带月日。 */
+  const probedAtText = (() => {
+    if (!probedAt) return null;
+    const d = new Date(probedAt);
+    const now = new Date();
+    const hm = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+    return d.toDateString() === now.toDateString() ? `今天 ${hm}` : `${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${hm}`;
+  })();
 
   return (
     <article
@@ -2097,9 +2111,9 @@ function MineruSettings({ focused }: { focused: boolean }) {
       ) : null}
       <SettingsLoadError which="mineru" />
 
-      <div className={`ef-statusbar ${statusTone}`} aria-live="polite">
+      <div className={`ef-statusbar ${statusTone}`.trim()} aria-live="polite">
         <span className="ef-statusbar-dot" aria-hidden="true" />
-        {probing ? (
+        {probingAny ? (
           <span className="ef-statusbar-text">正在探测各解析源…</span>
         ) : effective ? (
           <span className="ef-statusbar-text">
@@ -2107,12 +2121,17 @@ function MineruSettings({ focused }: { focused: boolean }) {
             <span className="ef-probe-ms">按回退顺序自动选择</span>
           </span>
         ) : saved.configured ? (
-          <span className="ef-statusbar-text is-error">已启用的解析源均未通过探测，导入将只入库、不解析。</span>
+          notProbedYet ? (
+            <span className="ef-statusbar-text">已启用解析源，尚未探测——点「重新探测全部」查看可用性。</span>
+          ) : (
+            <span className="ef-statusbar-text is-error">已启用的解析源均未通过探测，导入将只入库、不解析。</span>
+          )
         ) : (
           <span className="ef-statusbar-text">尚未启用任何解析源，导入将只入库、不解析。</span>
         )}
-        <Button type="button" size="sm" disabled={probing} onClick={() => void reprobe()}>
-          {probing ? "探测中…" : "重新探测全部"}
+        {probedAtText ? <span className="ef-probe-ms">上次探测 {probedAtText}</span> : null}
+        <Button type="button" size="sm" disabled={probingAny} onClick={() => void reprobe()}>
+          {probingAny ? "探测中…" : "重新探测全部"}
         </Button>
       </div>
       {failureSummary ? (
@@ -2369,12 +2388,22 @@ function MineruSettings({ focused }: { focused: boolean }) {
               <option value="advanced">advanced</option>
             </select>
           </Field>
-          <Field label="页码范围（默认 all；官方 API 非 all 时按页码提交）">
-            <input value={pageRange} onChange={(e) => setPageRange(e.target.value)} placeholder="all" />
-          </Field>
           </AdvancedFields>
         </div>
       ) : null}
+
+      {/* 公共解析参数：各启用源都可见（只配官方 API 或只配本地时同样找得到页码范围），
+          不藏进「高级」——这是长论文省配额的主要手段。 */}
+      <div className="ef-params">
+        <span className="ef-params-label">公共解析参数（全部启用源）</span>
+        <Field label="页码范围（默认 all；写法如 1-3,5）">
+          <input value={pageRange} onChange={(e) => setPageRange(e.target.value)} placeholder="all" aria-label="页码范围" />
+        </Field>
+        <p className="ef-advanced-hint">
+          官方 API 非 all 时随提交带上 page_ranges（逗号分隔区间与单页，如 1-3,5）；本地 / SSH
+          在取回全文时按该范围截取。解析档位仅作用于本地 / SSH（官方 API 用模型版本替代）。
+        </p>
+      </div>
 
       <p className="ef-save-rules">
         生效规则：字段修改需点「保存设置」；回退顺序调整、测试连接与清除 Token 立即生效并落盘。
