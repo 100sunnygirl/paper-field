@@ -181,6 +181,62 @@ describe("PaperDialog · 单篇导入", () => {
   });
 });
 
+describe("PaperDialog · 导入目标领域常驻可见", () => {
+  beforeEach(() => {
+    asTauri();
+    useField.setState({
+      domains: [
+        { id: "d-1", name: "多模态", code: "MM-01", summary: null, sortOrder: 1, createdAt: "2024-01-01T00:00:00.000Z" },
+        { id: "d-2", name: "指令对齐", code: "AL-02", summary: null, sortOrder: 2, createdAt: "2024-01-01T00:00:00.000Z" },
+      ],
+    });
+  });
+
+  it("顶部常驻「将导入到：领域名」，确认按钮写明目标领域并按其导入", async () => {
+    vi.mocked(pickPdfFiles).mockResolvedValue(["/papers/a.pdf"]);
+    const importPdfs = vi.fn(
+      async (
+        _paths: string[],
+        _onProgress?: (done: number, total: number, current: string) => void,
+        _domainId?: string,
+      ) => undefined,
+    );
+    useField.setState({ importPdfs });
+    render(<PaperDialog />);
+    expect(screen.getByText("「多模态」")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /选择 PDF/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "导入 1 篇到「多模态」" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "导入 1 篇到「多模态」" }));
+    await waitFor(() => expect(importPdfs).toHaveBeenCalledTimes(1));
+    // 第三个参数显式带上目标领域（store.importPdfs 的 domainId 形参）
+    expect(importPdfs.mock.calls[0][2]).toBe("d-1");
+  });
+
+  it("就地切换目标领域后，按钮与导入目标同步更换", async () => {
+    vi.mocked(pickPdfFiles).mockResolvedValue(["/papers/a.pdf"]);
+    const importPdfs = vi.fn(
+      async (
+        _paths: string[],
+        _onProgress?: (done: number, total: number, current: string) => void,
+        _domainId?: string,
+      ) => undefined,
+    );
+    useField.setState({ importPdfs });
+    render(<PaperDialog />);
+
+    fireEvent.click(screen.getByRole("button", { name: /选择 PDF/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "导入 1 篇到「多模态」" })).toBeEnabled());
+
+    fireEvent.click(screen.getByRole("button", { name: /将导入到/ }));
+    fireEvent.click(screen.getByRole("button", { name: /指令对齐/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "导入 1 篇到「指令对齐」" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "导入 1 篇到「指令对齐」" }));
+    await waitFor(() => expect(importPdfs).toHaveBeenCalledTimes(1));
+    expect(importPdfs.mock.calls[0][2]).toBe("d-2");
+  });
+});
+
 describe("PaperDialog · 文件夹批量导入", () => {
   beforeEach(() => asTauri());
 

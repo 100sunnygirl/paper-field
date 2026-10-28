@@ -3192,6 +3192,96 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   margin: 4px 0 12px;
   background: var(--pf-surface);
 }
+/* 「将导入到：领域名」：导入对话框顶部与 INTAKE 页头部共用的目标领域选择器。
+   下拉清单浮在内容之上，宽度不超过父容器；当前目标加侧标强调。 */
+.ef-import-target {
+  position: relative;
+  margin: 0 0 10px;
+}
+.ef-import-target-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--pf-control-border);
+  border-radius: var(--pf-radius);
+  background: var(--pf-surface);
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+  cursor: pointer;
+  transition: border-color var(--pf-direct), background var(--pf-direct);
+}
+.ef-import-target-btn strong {
+  color: var(--pf-ink);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ef-import-target-btn .ef-ico { width: 14px; height: 14px; flex: none; }
+.ef-import-target-btn:hover { border-color: var(--pf-ink); background: var(--pf-hover-flat); }
+.ef-import-target-menu {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: min(280px, 100%);
+  max-height: 240px;
+  overflow: auto;
+  padding: 6px;
+  border: 1px solid var(--pf-divider);
+  border-left: var(--pf-marker) solid var(--pf-ink);
+  border-radius: var(--pf-radius);
+  background: var(--pf-surface);
+  box-shadow: 0 10px 24px rgba(24, 25, 23, 0.14);
+}
+.ef-import-target-empty {
+  margin: 4px 6px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
+}
+.ef-import-target-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 7px 8px;
+  border: 0;
+  background: none;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-ink);
+  text-align: left;
+  cursor: pointer;
+}
+.ef-import-target-option .mono { color: var(--pf-muted); }
+.ef-import-target-option:hover { background: var(--pf-hover-flat); }
+.ef-import-target-option.is-current { background: var(--pf-hover-flat); font-weight: 600; }
+.ef-import-target-new {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 6px 4px 2px;
+  border-top: 1px solid var(--pf-divider);
+  margin-top: 4px;
+}
+.ef-import-target-new input {
+  flex: 1;
+  min-width: 0;
+  min-height: var(--pf-control-height);
+  padding: 6px 10px;
+  border: 1px solid var(--pf-control-border);
+  border-radius: var(--pf-radius);
+  background: var(--pf-surface);
+  color: var(--pf-ink);
+  font-size: var(--pf-fs-caption);
+}
+.ef-import-target-new input:focus {
+  outline: none;
+  border-color: var(--pf-ink);
+  box-shadow: 0 0 0 1px var(--pf-ink);
+}
 
 /* ---- Status strip ----
    底栏与顶栏同为墨色，把工作台上下框住；条目以竖向发丝线分隔。 */

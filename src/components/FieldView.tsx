@@ -13,6 +13,7 @@ import { pad2, shortcut } from "../lib/util";
 import { useField } from "../store";
 import { useReadPulse } from "./useReadPulse";
 import { CheckSquare, PaperMatrix } from "./PaperMatrix";
+import { ImportTarget } from "./ImportTarget";
 import { PaperSearch } from "./PaperSearch";
 import { Button, Icon } from "./ui";
 
@@ -151,6 +152,8 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
             <h2>入库</h2>
           </div>
           <p className="ef-nav-sum">未手动标为已读的论文，以及 MinerU 解析和 AI 补全作业。</p>
+          {/* 从入库页发起的导入默认落进当前选中领域却不可见：常驻「将导入到」可就地更换或新建。 */}
+          <ImportTarget />
           {failedParseCount ? (
             <div className="ef-job-row">
               <span className="status-error">解析失败 · {failedParseCount} 篇</span>

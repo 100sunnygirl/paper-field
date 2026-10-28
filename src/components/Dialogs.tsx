@@ -4,12 +4,19 @@ import { repo } from "../lib/repo";
 import type { Author, PaperDetail } from "../lib/types";
 import { isTauri } from "../lib/util";
 import { useField } from "../store";
+import { ImportTarget } from "./ImportTarget";
 import { Button, Dialog, Field, Icon } from "./ui";
 
 export function PaperDialog() {
   const dialog = useField((s) => s.dialog);
   const closeDialog = useField((s) => s.closeDialog);
   const importPdfs = useField((s) => s.importPdfs);
+  const domains = useField((s) => s.domains);
+  // 导入目标：显式改选（含就地新建）优先，缺省跟随当前选中领域；对话框顶部常驻可见。
+  const importTargetDomainId = useField((s) => s.importTargetDomainId);
+  const selectedDomainId = useField((s) => s.selectedDomainId);
+  const targetDomainId = importTargetDomainId ?? selectedDomainId;
+  const targetDomain = domains.find((d) => d.id === targetDomainId) ?? null;
   const [items, setItems] = useState<Array<{ path: string; name: string; duplicate: boolean; excluded: boolean }>>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -96,7 +103,7 @@ export function PaperDialog() {
                 setBusy(true);
                 void importPdfs(fresh.map((item) => item.path), (done, total, current) =>
                   setProgress({ done, total, current }),
-                )
+                targetDomainId ?? undefined)
                   .catch((err: unknown) => {
                     setError(err instanceof Error ? err.message : String(err));
                   })
@@ -106,7 +113,11 @@ export function PaperDialog() {
                   });
               }}
             >
-              {busy ? "导入中…" : `导入 ${fresh.length}`}
+              {busy
+                ? "导入中…"
+                : targetDomain
+                  ? `导入 ${fresh.length} 篇到「${targetDomain.name}」`
+                  : `导入 ${fresh.length}`}
             </Button>
           ) : null}
         </>
@@ -116,6 +127,8 @@ export function PaperDialog() {
         选择本机 PDF，或一个目录中的全部 PDF（只读所选目录本身，不进入子目录）。加入后先在下方清单里勾选，排除不是论文的
         PDF，再完成导入。文件名会先当作标题，导入后立即交给 MinerU 解析。没有 PDF 时也可手动添加论文。
       </p>
+      {/* 目标领域常驻可见可改：从 INTAKE 发起导入也能看清要导入哪、就地下拉更换或新建。 */}
+      <ImportTarget />
       {isTauri() ? (
         <div className="ef-import-actions">
           <Button type="button" onClick={() => void pickFiles()} disabled={busy}>

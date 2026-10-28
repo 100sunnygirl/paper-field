@@ -102,6 +102,13 @@ interface FieldState {
   paper: PaperDetail | null;
   archive: PaperListItem[];
   intake: PaperListItem[];
+  /**
+   * 导入目标领域（导入对话框与 INTAKE 页头部共享；null = 跟随当前选中领域）。
+   * 从 INTAKE 发起导入时当前选中领域不可见，这一份显式目标让「导入到哪」始终可读可改。
+   * 用户在阅读页切换领域时清空，目标重新跟随选中。
+   */
+  importTargetDomainId: string | null;
+  setImportTargetDomainId: (id: string | null) => void;
   jobs: LlmJob[];
   stats: FieldStats;
   search: string;
@@ -351,6 +358,7 @@ export const useField = create<FieldState>((set, get) => ({
   paper: null,
   archive: [],
   intake: [],
+  importTargetDomainId: null,
   jobs: [],
   stats: { read: 0, total: 0, openSource: 0, queued: 0, running: 0 },
   search: "",
@@ -672,10 +680,13 @@ export const useField = create<FieldState>((set, get) => ({
     await get().refresh({ reselect: true });
   },
 
+  setImportTargetDomainId: (id) => set({ importTargetDomainId: id }),
+
   selectDomain: async (id) => {
     try {
       selectionEpoch += 1;
-      set({ selectedDomainId: id, selectedPaperId: null, paper: null, mode: "field", dialog: null, dialogPaperId: null, dialogPaperIds: [] });
+      // 切换领域后导入目标重新跟随新选中的领域（此前的显式改选不再延续）。
+      set({ selectedDomainId: id, selectedPaperId: null, paper: null, mode: "field", dialog: null, dialogPaperId: null, dialogPaperIds: [], importTargetDomainId: null });
       await get().refresh();
     } catch (err) {
       get().setFlash({ tone: "error", text: `切换领域失败：${errText(err)}，数据未改动。` });
@@ -752,7 +763,7 @@ export const useField = create<FieldState>((set, get) => ({
       await forgetPapers(await repo.paperIdsInDomain(id));
       await repo.deleteDomain(id);
       const domains = await repo.listDomains();
-      set({ selectedDomainId: domains[0]?.id ?? null, dialog: null, selectedPaperId: null, paper: null });
+      set({ selectedDomainId: domains[0]?.id ?? null, dialog: null, selectedPaperId: null, paper: null, importTargetDomainId: null });
       await get().refresh();
     } catch (err) {
       get().setFlash({ tone: "error", text: `删除领域失败：${errText(err)}，数据未改动。` });

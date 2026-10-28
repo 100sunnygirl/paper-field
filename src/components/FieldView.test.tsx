@@ -63,6 +63,32 @@ describe("PaperNav · 入库文案", () => {
   });
 });
 
+describe("PaperNav · 入库页导入目标常驻", () => {
+  it("INTAKE 头部显示「将导入到：当前领域」并可就地切换", () => {
+    useField.setState({
+      mode: "intake",
+      intake: [],
+      domains: [
+        { id: "d-1", name: "多模态", code: "MM-01", summary: null, sortOrder: 1, createdAt: "2024-01-01T00:00:00.000Z" },
+        { id: "d-2", name: "指令对齐", code: "AL-02", summary: null, sortOrder: 2, createdAt: "2024-01-01T00:00:00.000Z" },
+      ],
+      selectedDomainId: "d-1",
+    });
+    render(<PaperNav />);
+    expect(screen.getByText("「多模态」")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /将导入到/ }));
+    fireEvent.click(screen.getByRole("button", { name: /指令对齐/ }));
+    expect(useField.getState().importTargetDomainId).toBe("d-2");
+    expect(screen.getByText("「指令对齐」")).toBeInTheDocument();
+  });
+
+  it("现场页头部不显示导入目标选择器", () => {
+    useField.setState({ mode: "field", selectedDomainId: "d-1", domains: [] });
+    render(<PaperNav />);
+    expect(screen.queryByRole("button", { name: /将导入到/ })).toBeNull();
+  });
+});
+
 describe("PaperNav · INTAKE 批量重试入口", () => {
   it("有解析失败论文时显示计数与「全部重试」，点击触发批量重试", () => {
     const retryFailedMineru = vi.fn(async () => undefined);
