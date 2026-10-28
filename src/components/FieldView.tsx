@@ -119,6 +119,12 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
           </div>
           <DomainMenu />
           <p className="ef-nav-sum">{domain?.summary ?? "选择或创建领域，开始组织论文。"}</p>
+          {domain?.keyQuestion ? (
+            <p className="ef-domain-question" title={domain.keyQuestion}>
+              <span className="ef-domain-question-label">关键问题</span>
+              {domain.keyQuestion}
+            </p>
+          ) : null}
           <div className="ef-progress-label">
             <span>阅读进度</span>
             <span className="ef-progress-value">

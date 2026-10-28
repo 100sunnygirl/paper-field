@@ -1,4 +1,4 @@
-import { ConflictError, getEngine, type BatchStep } from "./engine";
+import { ConflictError, getEngine, type BatchStep, type SqlEngine } from "./engine";
 import { planPreparedMeta } from "./mergeMeta";
 import { seedIfEmpty } from "./seed";
 import type {
@@ -168,6 +168,53 @@ function mapDomain(row: DomainRow): Domain {
   };
 }
 
+/**
+ * 领域附加字段（关键问题 / 强调色）存在 app_meta 的一个 JSON 键里：不动 domains 表
+ * 结构（schema 版本与桌面端恢复逻辑锁步），且随数据库一起进备份、跨设备保留。
+ */
+const DOMAIN_EXTRA_KEY = "domain-extra";
+
+export interface DomainExtraPatch {
+  keyQuestion?: string | null;
+  accent?: string | null;
+}
+
+type DomainExtras = Record<string, DomainExtraPatch>;
+
+async function readDomainExtras(engine: SqlEngine): Promise<DomainExtras> {
+  const rows = await engine.select<{ value: string }>(
+    "SELECT value FROM app_meta WHERE key = ?",
+    [DOMAIN_EXTRA_KEY],
+  );
+  const raw = rows[0]?.value;
+  if (!raw) return {};
+  try {
+    const value = JSON.parse(raw) as unknown;
+    return value && typeof value === "object" && !Array.isArray(value) ? (value as DomainExtras) : {};
+  } catch {
+    return {};
+  }
+}
+
+function applyDomainExtra(domain: Domain, extra: DomainExtraPatch | undefined): Domain {
+  // 总是归一化出两个可选字段（空一律为 null），调用方不区分 undefined / null。
+  return {
+    ...domain,
+    keyQuestion:
+      typeof extra?.keyQuestion === "string" && extra.keyQuestion.trim() ? extra.keyQuestion.trim() : null,
+    accent: typeof extra?.accent === "string" && extra.accent.trim() ? extra.accent.trim() : null,
+  };
+}
+
+/** 读出全部领域（含附加字段）。 */
+async function domainsWithExtras(engine: SqlEngine, where = ""): Promise<Domain[]> {
+  const rows = await engine.select<DomainRow>(
+    `SELECT * FROM domains ${where} ORDER BY sort_order ASC, created_at ASC`,
+  );
+  const extras = await readDomainExtras(engine);
+  return rows.map((row) => applyDomainExtra(mapDomain(row), extras[row.id]));
+}
+
 function mapPaper(row: PaperRow): Paper {
   return {
     id: row.id,
@@ -209,6 +256,30 @@ function mapPaper(row: PaperRow): Paper {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+
+/** 把领域附加字段的一个补丁合并进 app_meta 的 JSON 键（读-合-写，单键低频操作）。 */
+async function writeDomainExtra(engine: SqlEngine, id: string, patch: DomainExtraPatch): Promise<void> {
+  const extras = await readDomainExtras(engine);
+  const current = extras[id] ?? {};
+  const next: DomainExtraPatch = { ...current };
+  for (const key of Object.keys(patch) as Array<keyof DomainExtraPatch>) {
+    const value = patch[key];
+    next[key] = value && typeof value === "string" && value.trim() ? value.trim() : null;
+  }
+  // accent 可能未定义（undefined）：用真值判断，两者都空才删条目。
+  if (!next.keyQuestion && !next.accent) delete extras[id];
+  else extras[id] = next;
+  // 全空时顺手删掉键，app_meta 不残留 "{}" 空行。
+  if (Object.keys(extras).length) {
+    await engine.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)", [
+      DOMAIN_EXTRA_KEY,
+      JSON.stringify(extras),
+    ]);
+  } else {
+    await engine.execute("DELETE FROM app_meta WHERE key = ?", [DOMAIN_EXTRA_KEY]);
+  }
 }
 
 function titleFromPdf(path: string): string {
@@ -372,10 +443,7 @@ export const repo = {
 
   async listDomains(): Promise<Domain[]> {
     const engine = await getEngine();
-    const rows = await engine.select<DomainRow>(
-      "SELECT * FROM domains ORDER BY sort_order ASC, created_at ASC",
-    );
-    return rows.map(mapDomain);
+    return domainsWithExtras(engine);
   },
 
   /** 各领域论文概览（总数 / 三态 / 最近已读 / 最近活跃 / 本周新增）：一次 GROUP BY 读全。 */
@@ -419,10 +487,12 @@ export const repo = {
   async getDomain(id: string): Promise<Domain | null> {
     const engine = await getEngine();
     const rows = await engine.select<DomainRow>("SELECT * FROM domains WHERE id = ?", [id]);
-    return rows[0] ? mapDomain(rows[0]) : null;
+    if (!rows[0]) return null;
+    const extras = await readDomainExtras(engine);
+    return applyDomainExtra(mapDomain(rows[0]), extras[id]);
   },
 
-  async createDomain(input: { name: string; code: string; summary?: string }): Promise<Domain> {
+  async createDomain(input: { name: string; code: string; summary?: string; keyQuestion?: string | null }): Promise<Domain> {
     const engine = await getEngine();
     const existing = await engine.select<{ max_order: number | null }>(
       "SELECT MAX(sort_order) AS max_order FROM domains",
@@ -434,6 +504,7 @@ export const repo = {
       // 短码可选：留空时按排序自动生成（D-01 递增），保证界面恒有短码可显示。
       code: domainCodeOf(input.code, sortOrder),
       summary: input.summary?.trim() || null,
+      keyQuestion: input.keyQuestion?.trim() || null,
       sortOrder,
       createdAt: nowIso(),
     };
@@ -441,10 +512,14 @@ export const repo = {
       "INSERT INTO domains (id, name, code, summary, sort_order, created_at) VALUES (?, ?, ?, ?, ?, ?)",
       [domain.id, domain.name, domain.code, domain.summary, domain.sortOrder, domain.createdAt],
     );
+    if (domain.keyQuestion) await writeDomainExtra(engine, domain.id, { keyQuestion: domain.keyQuestion });
     return domain;
   },
 
-  async updateDomain(id: string, input: { name: string; code: string; summary?: string }): Promise<void> {
+  async updateDomain(
+    id: string,
+    input: { name: string; code: string; summary?: string; keyQuestion?: string | null },
+  ): Promise<void> {
     const engine = await getEngine();
     const code = domainCodeOf(input.code, 0);
     // 编辑时清空短码 → 保留原短码而不是写空串，列表/标题处恒有值。
@@ -459,6 +534,9 @@ export const repo = {
       input.summary?.trim() || null,
       id,
     ]);
+    if (input.keyQuestion !== undefined) {
+      await writeDomainExtra(engine, id, { keyQuestion: input.keyQuestion?.trim() || null });
+    }
   },
 
   /** 手动排序：把给定顺序写回 sort_order（1 起连续编号，同一事务）。 */

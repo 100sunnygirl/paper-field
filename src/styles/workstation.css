@@ -1000,6 +1000,31 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   text-overflow: ellipsis;
 }
 .ef-last-read .mono { flex: none; font-size: var(--pf-fs-tag); color: var(--pf-muted); }
+/* 领域关键问题：进入领域时的一句话提示（简介之外的「为什么读这些」）。 */
+.ef-domain-question {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 10px 0 0;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+  line-height: 1.7;
+}
+.ef-domain-question-label {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid var(--pf-control-border);
+  border-radius: 999px;
+  font-size: var(--pf-fs-tag);
+  font-weight: 500;
+  color: var(--pf-muted);
+}
+.ef-field-hint {
+  display: block;
+  margin-top: 4px;
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-muted);
+}
 .ef-list-head {
   display: flex;
   align-items: center;

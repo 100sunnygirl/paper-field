@@ -775,3 +775,33 @@ describe("DomainPickerDialog · 手动排序（写回 sort_order）", () => {
     expect(selectDomain).toHaveBeenCalledWith("d-2");
   });
 });
+
+describe("DomainDialog · 关键问题字段", () => {
+  it("编辑模式回显关键问题，保存时随 updateDomain 提交", () => {
+    const updateDomain = vi.fn(async () => undefined);
+    useField.setState({
+      dialog: "edit-domain",
+      selectedDomainId: "d-1",
+      domains: [
+        { id: "d-1", name: "多模态", code: "MM-01", summary: null, keyQuestion: "旧问题", sortOrder: 1, createdAt: "2024-01-01T00:00:00.000Z" },
+      ],
+      updateDomain,
+    });
+    render(<DomainDialog />);
+    const field = screen.getByLabelText(/关键问题（可选）/);
+    expect(field).toHaveValue("旧问题");
+    fireEvent.change(field, { target: { value: "新问题" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存修改" }));
+    expect(updateDomain).toHaveBeenCalledWith(expect.objectContaining({ keyQuestion: "新问题" }));
+  });
+
+  it("新建模式从空开始，填写后随 createDomain 提交", () => {
+    const createDomain = vi.fn(async () => undefined);
+    useField.setState({ dialog: "domain", createDomain });
+    render(<DomainDialog />);
+    fireEvent.change(screen.getByLabelText(/名称 \/ 中文（必填）/), { target: { value: "世界模型" } });
+    fireEvent.change(screen.getByLabelText(/关键问题（可选）/), { target: { value: "Q" } });
+    fireEvent.click(screen.getByRole("button", { name: "创建领域" }));
+    expect(createDomain).toHaveBeenCalledWith(expect.objectContaining({ keyQuestion: "Q" }));
+  });
+});

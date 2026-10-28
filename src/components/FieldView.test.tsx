@@ -446,3 +446,38 @@ describe("PaperNav · 上次阅读一键续读", () => {
     expect(screen.queryByRole("button", { name: /上次阅读/ })).toBeNull();
   });
 });
+
+describe("PaperNav · 领域关键问题提示", () => {
+  it("领域设置了关键问题时在领域头显示一句话提示", () => {
+    useField.setState({
+      mode: "field",
+      selectedDomainId: "d-1",
+      domains: [
+        {
+          id: "d-1",
+          name: "多模态",
+          code: "MM-01",
+          summary: null,
+          keyQuestion: "视觉与语言在哪个粒度上对齐最有效？",
+          sortOrder: 1,
+          createdAt: "2024-01-01T00:00:00.000Z",
+        },
+      ],
+    });
+    render(<PaperNav />);
+    expect(screen.getByText("关键问题")).toBeInTheDocument();
+    expect(screen.getByText(/视觉与语言在哪个粒度上对齐最有效/)).toBeInTheDocument();
+  });
+
+  it("未设置时不显示提示行", () => {
+    useField.setState({
+      mode: "field",
+      selectedDomainId: "d-1",
+      domains: [
+        { id: "d-1", name: "多模态", code: "MM-01", summary: null, sortOrder: 1, createdAt: "2024-01-01T00:00:00.000Z" },
+      ],
+    });
+    render(<PaperNav />);
+    expect(screen.queryByText("关键问题")).toBeNull();
+  });
+});

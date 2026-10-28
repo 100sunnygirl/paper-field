@@ -61,6 +61,10 @@ export interface Domain {
   name: string;
   code: string;
   summary: string | null;
+  /** 关键问题 / 研究意图：进入领域时作为一句话提示显示（可选）。 */
+  keyQuestion?: string | null;
+  /** 领域强调色（accent id，见 lib/domainExtras）：进度条 / 短码 / 领域条同色归组（可选）。 */
+  accent?: string | null;
   sortOrder: number;
   createdAt: string;
 }

@@ -1026,3 +1026,35 @@ describe("reorderDomains（手动排序写回 sort_order）", () => {
     expect((await repo.listDomains()).map((d) => d.id)).toEqual([d1]);
   });
 });
+
+describe("领域关键问题（app_meta 附加字段）", () => {
+  it("createDomain 带关键问题写入，listDomains / getDomain 读回", async () => {
+    const domain = await repo.createDomain({
+      name: "世界模型",
+      code: "",
+      keyQuestion: "  具身智能需要什么样的世界模型？ ",
+    });
+    expect(domain.keyQuestion).toBe("具身智能需要什么样的世界模型？");
+    const listed = await repo.listDomains();
+    expect(listed[listed.length - 1].keyQuestion).toBe("具身智能需要什么样的世界模型？");
+    const got = await repo.getDomain(domain.id);
+    expect(got?.keyQuestion).toBe("具身智能需要什么样的世界模型？");
+  });
+
+  it("updateDomain 清空关键问题后读回 null（不残留 app_meta 空条目）", async () => {
+    const domain = await repo.createDomain({ name: "A", code: "", keyQuestion: "Q?" });
+    await repo.updateDomain(domain.id, { name: "A", code: "AA", keyQuestion: "  " });
+    expect((await repo.getDomain(domain.id))?.keyQuestion).toBeNull();
+    const meta = await holder.engine!.select<{ value: string }>(
+      "SELECT value FROM app_meta WHERE key = 'domain-extra'",
+    );
+    expect(meta).toHaveLength(0);
+  });
+
+  it("updateDomain 未传 keyQuestion 时不动已有值", async () => {
+    const domain = await repo.createDomain({ name: "A", code: "", keyQuestion: "Q?" });
+    await repo.updateDomain(domain.id, { name: "A2", code: "" });
+    expect((await repo.getDomain(domain.id))?.keyQuestion).toBe("Q?");
+    expect((await repo.getDomain(domain.id))?.name).toBe("A2");
+  });
+});

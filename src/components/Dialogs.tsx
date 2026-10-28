@@ -311,6 +311,7 @@ export function DomainDialog() {
   const [name, setName] = useState("");
   const [code, setCode] = useState("");
   const [summary, setSummary] = useState("");
+  const [keyQuestion, setKeyQuestion] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const open = dialog === "domain" || dialog === "edit-domain";
@@ -321,10 +322,12 @@ export function DomainDialog() {
       setName(current.name);
       setCode(current.code);
       setSummary(current.summary ?? "");
+      setKeyQuestion(current.keyQuestion ?? "");
     } else if (!editing) {
       setName("");
       setCode("");
       setSummary("");
+      setKeyQuestion("");
     }
     setError(null);
     setConfirmDelete(false);
@@ -362,8 +365,8 @@ export function DomainDialog() {
               onClick={() => {
                 setError(null);
                 const run = editing
-                  ? updateDomain({ name, code, summary })
-                  : createDomain({ name, code, summary });
+                  ? updateDomain({ name, code, summary, keyQuestion })
+                  : createDomain({ name, code, summary, keyQuestion });
                 void run.catch((err: unknown) =>
                   setError(err instanceof Error ? err.message : String(err)),
                 );
@@ -392,6 +395,14 @@ export function DomainDialog() {
           </Field>
           <Field label="简介（可选）">
             <textarea value={summary} onChange={(e) => setSummary(e.target.value)} />
+          </Field>
+          <Field label="关键问题（可选）">
+            <input
+              value={keyQuestion}
+              onChange={(e) => setKeyQuestion(e.target.value)}
+              placeholder="这个领域最想回答的一个问题"
+            />
+            <small className="ef-field-hint">进入领域时会显示为一句提示，提醒自己为什么读这些论文。</small>
           </Field>
         </>
       )}
