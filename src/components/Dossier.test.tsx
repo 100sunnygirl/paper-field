@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { setContextFolded } from "../lib/contextFold";
+import { listReReads } from "../lib/reReads";
 import { NOTE_HINT_QUESTIONS } from "../lib/noteHints";
 import { NOTE_DISPLAY_ORDER, type NoteKind, type PaperDetail } from "../lib/types";
 import { useField } from "../store";
@@ -654,5 +655,46 @@ describe("ReadingStage · 工作台无障碍", () => {
     expect(document.querySelector(".ef-read .sr-only[role='status']")?.textContent).toBe(
       "已切换到第 2 篇（共 2 篇）：《第二篇论文》",
     );
+  });
+});
+
+describe("ReadingStage · 复读记录（已读论文）", () => {
+  beforeEach(() => {
+    localStorage.removeItem("paper-field.re-reads");
+  });
+
+  function readPaper(): PaperDetail {
+    const read = paper({});
+    (read as { readingStatus: "read" }).readingStatus = "read";
+    (read as { readAt: string | null }).readAt = "2025-06-01T00:00:00.000Z";
+    return read;
+  }
+
+  it("已读论文显示首次读完与「记录一次复读」；未读论文不显示", () => {
+    useField.setState({ mode: "field", paper: readPaper() });
+    const { unmount } = renderStage();
+    expect(screen.getByText(/首次读完 2025\.06\.01/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "记录一次复读" })).toBeInTheDocument();
+    unmount();
+
+    useField.setState({ mode: "field", paper: paper({}) });
+    renderStage();
+    expect(screen.queryByRole("button", { name: "记录一次复读" })).toBeNull();
+  });
+
+  it("记录一次复读（可带备注）：计数与备注列表更新、给提示，可清除", () => {
+    useField.setState({ mode: "field", paper: readPaper() });
+    renderStage();
+    expect(screen.getByText(/尚未记录复读/)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("复读备注"), { target: { value: "第二遍看消融" } });
+    fireEvent.click(screen.getByRole("button", { name: "记录一次复读" }));
+    expect(screen.getByText(/复读 1 次/)).toBeInTheDocument();
+    expect(screen.getByText("第二遍看消融")).toBeInTheDocument();
+    expect(useField.getState().flash?.text).toContain("已记录一次复读并保存备注");
+
+    fireEvent.click(screen.getByRole("button", { name: "清除" }));
+    expect(screen.getByText(/尚未记录复读/)).toBeInTheDocument();
+    expect(listReReads("p1")).toEqual([]);
   });
 });

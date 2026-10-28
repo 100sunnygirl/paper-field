@@ -37,6 +37,7 @@ import { onMarkdownClick, renderMarkdown } from "../lib/markdown";
 import { isNoteHintDismissed, NOTE_HINT_QUESTIONS, setNoteHintDismissed } from "../lib/noteHints";
 import { loadNoteLayout, moveNoteKind as moveNoteKindInOrder, saveNoteLayout, type NoteLayout } from "../lib/noteLayout";
 import { loadReadingSpots, saveReadingSpot } from "../lib/readingSpot";
+import { clearReReads, listReReads, recordReRead } from "../lib/reReads";
 import { daysInto, readingSinceFor } from "../lib/readingSince";
 import { openLocalPdf } from "../lib/mineru";
 import {
@@ -61,6 +62,72 @@ import { Button, Dialog, Empty, ExternalResource, Icon, SourceBadge, type IconNa
 
 /** 本页目录里解析全文章节二级项的显示上限：更长的全文只列前若干节并注明其余节数。 */
 const TOC_SECTION_LIMIT = 30;
+
+/**
+ * 复读记录块（已读论文的资料栏）：首次读完来自库里的 read_at（往返不重算），
+ * 之后每次「记录一次复读」+ 可选备注记在本机（见 lib/reReads 的存储口径说明）。
+ */
+function ReReadBlock({ paperId, firstReadAt }: { paperId: string; firstReadAt: string | null }) {
+  const setFlash = useField((s) => s.setFlash);
+  const [records, setRecords] = useState(() => listReReads(paperId));
+  const [note, setNote] = useState("");
+  useEffect(() => {
+    setRecords(listReReads(paperId));
+    setNote("");
+  }, [paperId]);
+
+  const last = records[records.length - 1];
+  return (
+    <div className="ef-reread">
+      <p className="ef-reread-summary">
+        {firstReadAt ? `首次读完 ${formatDate(firstReadAt)}` : "首次读完时间未知"}
+        {records.length ? ` · 复读 ${records.length} 次（最近 ${formatDate(last!.at)}）` : " · 尚未记录复读"}
+        <span className="ef-reread-hint">本机记录</span>
+      </p>
+      <div className="ef-reread-actions">
+        <input
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder="复读备注（可选）"
+          aria-label="复读备注"
+        />
+        <Button type="button" size="sm" onClick={() => {
+          setRecords(recordReRead(paperId, note));
+          setNote("");
+          setFlash({ tone: "ok", text: note.trim() ? "已记录一次复读并保存备注。" : "已记录一次复读。" });
+        }}>
+          记录一次复读
+        </Button>
+        {records.length ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="text"
+            onClick={() => {
+              clearReReads(paperId);
+              setRecords([]);
+            }}
+          >
+            清除
+          </Button>
+        ) : null}
+      </div>
+      {records.length ? (
+        <ul className="ef-reread-list">
+          {records
+            .slice()
+            .reverse()
+            .map((record) => (
+              <li key={record.at}>
+                <span className="mono">{formatDate(record.at)}</span>
+                {record.note ? <span>{record.note}</span> : null}
+              </li>
+            ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
 
 /** 把区段锚点 id 转成浮标 / 提示里可读的中文标签。 */
 function spotSectionLabel(section: string, headings: ReturnType<typeof extractFulltextHeadings>): string {
@@ -811,6 +878,7 @@ function ContextPanel({
               ? readingDayLine(paper.id, paper.createdAt)
               : "阅读状态由你手动标记"}
         </p>
+        {paper.readingStatus === "read" ? <ReReadBlock paperId={paper.id} firstReadAt={paper.readAt} /> : null}
       </section>
 
       <ContextBlock id="links" title="资料与链接">
