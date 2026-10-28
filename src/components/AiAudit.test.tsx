@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { recordAiWrite, snapshotMeta, snapshotNotes } from "../lib/aiAudit";
 import { NOTE_DISPLAY_ORDER, type PaperDetail } from "../lib/types";
 import { useField } from "../store";
-import { AiDiffDialog } from "./AiAudit";
+import { AiDiffDialog, MetaPreviewDialog } from "./AiAudit";
 
 function detail(): PaperDetail {
   return {
@@ -116,5 +116,68 @@ describe("AiDiffDialog · AI 写入的变更查看与撤销", () => {
     fireEvent.click(restoreButtons[0]);
     await waitFor(() => expect(restoreNoteVersion).toHaveBeenCalledWith("p1", "summary", "AI 草稿"));
     expect(screen.getByText(/版本只保存在本次会话中/)).toBeInTheDocument();
+  });
+});
+
+describe("MetaPreviewDialog · 干跑预览确认", () => {
+  beforeEach(() => {
+    localStorage.removeItem("paper-field.ai-preview-first");
+  });
+
+  it("列出将写入的字段与来源；写入调用 applyMetaPreview，不写入走 dismissMetaPreview", async () => {
+    const applyMetaPreview = vi.fn(async () => undefined);
+    const dismissMetaPreview = vi.fn();
+    useField.setState({
+      dialog: "ai-preview",
+      dialogPaperId: "p1",
+      metaPreview: {
+        paperId: "p1",
+        paperTitle: "Real Title",
+        at: Date.now(),
+        startedRev: 0,
+        overwrite: false,
+        apiMeta: null,
+        llmMeta: null,
+        before: snapshotMeta(detail()),
+        changes: [
+          { field: "title", from: "文件名标题", to: "Real Title", incoming: "api", provider: "crossref" },
+          { field: "titleZh", from: "", to: "中文标题", incoming: "llm", provider: null },
+        ],
+      },
+      applyMetaPreview,
+      dismissMetaPreview,
+    });
+    render(<MetaPreviewDialog />);
+    expect(screen.getByText(/还没有写库/)).toBeInTheDocument();
+    expect(screen.getByText("英文标题")).toBeInTheDocument();
+    expect(screen.getByText("来源：数据库 · Crossref")).toBeInTheDocument();
+    expect(screen.getByText("来源：模型")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "写入 2 项" }));
+    await waitFor(() => expect(applyMetaPreview).toHaveBeenCalledTimes(1));
+    // 重新打开改为放弃
+    useField.setState({ dialog: "ai-preview", dialogPaperId: "p1" });
+    fireEvent.click(screen.getByRole("button", { name: "不写入" }));
+    expect(dismissMetaPreview).toHaveBeenCalledTimes(1);
+  });
+
+  it("没有可写字段时写入按钮禁用并说明", () => {
+    useField.setState({
+      dialog: "ai-preview",
+      dialogPaperId: "p1",
+      metaPreview: {
+        paperId: "p1",
+        paperTitle: "Real Title",
+        at: Date.now(),
+        startedRev: 0,
+        overwrite: false,
+        apiMeta: null,
+        llmMeta: null,
+        before: snapshotMeta(detail()),
+        changes: [],
+      },
+    });
+    render(<MetaPreviewDialog />);
+    expect(screen.getByText(/没有需要写入的字段/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "写入 0 项" })).toBeDisabled();
   });
 });

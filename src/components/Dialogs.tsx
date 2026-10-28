@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { loadPreviewFirst } from "../lib/aiPrefs";
 import { pickPdfFiles, pickPdfFolder } from "../lib/mineru";
 import { repo } from "../lib/repo";
 import {
@@ -757,7 +758,13 @@ export function ConfirmMetaDialog() {
 
   function run(overwrite: boolean) {
     closeDialog();
-    if (paper) void runPrepareMeta(paper.id, overwrite, false, { allowFields: overwrite ? [...checked] : undefined });
+    if (!paper) return;
+    // 「先预览再写入」开启时，确认后仍先出干跑预览，确认才写库。
+    const dryRun = loadPreviewFirst();
+    void runPrepareMeta(paper.id, overwrite, false, {
+      allowFields: overwrite ? [...checked] : undefined,
+      ...(dryRun ? { dryRun: true } : {}),
+    });
   }
 
   return (

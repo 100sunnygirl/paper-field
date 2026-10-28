@@ -656,3 +656,34 @@ describe("ReadingStage · 工作台无障碍", () => {
     );
   });
 });
+
+describe("ReadingStage · AI 助手「先预览再写入」干跑开关", () => {
+  beforeEach(() => {
+    localStorage.removeItem("paper-field.ai-preview-first");
+  });
+
+  it("默认关闭：补全论文信息直接执行；开启后带 dryRun 并写进本机记忆", () => {
+    const runPrepareMeta = vi.fn(async () => undefined);
+    const settings = {
+      version: 2 as const,
+      usage: {},
+      providers: [
+        { id: "a", presetId: "deepseek", label: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-chat", enabled: true, hasKey: true, requiresKey: true },
+      ],
+    };
+    useField.setState({ mode: "field", paper: paper({}), selectedPaperId: "p1", settings, runPrepareMeta });
+    renderStage();
+    fireEvent.click(screen.getByRole("button", { name: "补全论文信息" }));
+    expect(runPrepareMeta).toHaveBeenLastCalledWith("p1", false, false, undefined);
+
+    fireEvent.click(screen.getByLabelText("先预览再写入"));
+    expect(localStorage.getItem("paper-field.ai-preview-first")).toBe("1");
+    fireEvent.click(screen.getByRole("button", { name: "补全论文信息" }));
+    expect(runPrepareMeta).toHaveBeenLastCalledWith("p1", false, false, { dryRun: true });
+    // 关掉开关恢复直接执行，本机记忆同步清除。
+    fireEvent.click(screen.getByLabelText("先预览再写入"));
+    expect(localStorage.getItem("paper-field.ai-preview-first")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "补全论文信息" }));
+    expect(runPrepareMeta).toHaveBeenLastCalledWith("p1", false, false, undefined);
+  });
+});

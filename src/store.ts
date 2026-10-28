@@ -39,10 +39,12 @@ import {
   dismissAiWrite,
   findAiWrite,
   metaValueText,
+  planMetaPreview,
   pushNoteVersion,
   recordAiWrite,
   snapshotMeta,
   snapshotNotes,
+  type MetaPreview,
 } from "./lib/aiAudit";
 import { cancelJob as cancelTrackedJob, jobDoneStep, runTracked } from "./lib/jobs";
 import { pickProviderFromHealths, providerLabel, summarizeHealths } from "./lib/mineruPlan";
@@ -69,6 +71,7 @@ import type {
   OpenSource,
   PaperDetail,
   PaperListItem,
+  PreparedMeta,
 } from "./lib/types";
 import { NOTE_DISPLAY_ORDER, NOTE_KINDS, NOTE_LABELS, META_FIELD_LABELS } from "./lib/types";
 import { extractJson } from "./lib/util";
@@ -133,6 +136,7 @@ interface FieldState {
     | "confirm-notes"
     | "confirm-meta"
     | "ai-diff"
+    | "ai-preview"
     | "edit-domain"
     | "move-paper"
     | "delete-paper"
@@ -145,6 +149,8 @@ interface FieldState {
   /** delete-checked 打开时冻结的勾选集。 */
   dialogPaperIds: string[];
   pendingDraftJob: string | null;
+  /** 干跑（先预览不写入）得到的补全预览：确认后才按同一载荷写库。 */
+  metaPreview: MetaPreview | null;
   /** 正在编辑、尚未保存的笔记草稿，按论文分开存：切换论文不丢，切回来还在。 */
   drafts: Record<string, Partial<Record<NoteKind, string>>>;
   loadError: string | null;
@@ -268,7 +274,7 @@ interface FieldState {
     paperId?: string,
     overwrite?: boolean,
     quiet?: boolean,
-    options?: { llm?: boolean; allowFields?: MetaField[] },
+    options?: { llm?: boolean; allowFields?: MetaField[]; dryRun?: boolean },
   ) => Promise<void>;
   runRefreshLinks: (paperId?: string) => Promise<void>;
   runDraftNotes: (paperId?: string, overwrite?: boolean, options?: { kinds?: NoteKind[] }) => Promise<void>;
@@ -280,6 +286,10 @@ interface FieldState {
   undoAiWrite: (recordId: number) => Promise<void>;
   /** 把某块笔记恢复到会话内记录的某个历史版本（作为手动保存落库）。 */
   restoreNoteVersion: (paperId: string, kind: NoteKind, content: string) => Promise<void>;
+  /** 确认干跑预览：按预览载荷写库（meta_rev 条件更新，期间的手改仍受保护）。 */
+  applyMetaPreview: () => Promise<void>;
+  /** 放弃干跑预览（不写库）。 */
+  dismissMetaPreview: () => void;
   /**
    * deferBackfill：测试连接 / 拉模型等“只查不启动”的保存暂不排自动补全，
    * 由用户在测试通过后点「启用自动补全」显式启动（startMetaBackfill）。
@@ -401,6 +411,7 @@ export const useField = create<FieldState>((set, get) => ({
   dialogPaperId: null,
   dialogPaperIds: [],
   pendingDraftJob: null,
+  metaPreview: null,
   drafts: loadDrafts(),
   loadError: null,
   jobsOpen: false,
@@ -598,14 +609,23 @@ export const useField = create<FieldState>((set, get) => ({
       dialog === "move-paper" ||
       dialog === "confirm-meta" ||
       dialog === "confirm-notes" ||
-      dialog === "ai-diff";
+      dialog === "ai-diff" ||
+      dialog === "ai-preview";
     set({
       dialog,
       dialogPaperId: paperScoped ? (typeof target === "string" ? target : state.paper?.id ?? state.selectedPaperId) : null,
       dialogPaperIds: dialog === "delete-checked" ? (Array.isArray(target) ? [...target] : [...state.checkedPaperIds]) : [],
     });
   },
-  closeDialog: () => set({ dialog: null, dialogPaperId: null, dialogPaperIds: [], pendingDraftJob: null }),
+  closeDialog: () =>
+    set({
+      dialog: null,
+      dialogPaperId: null,
+      dialogPaperIds: [],
+      pendingDraftJob: null,
+      // 预览对话框被关闭（Esc / 右上角）= 放弃这次干跑：不写库。
+      ...(get().dialog === "ai-preview" ? { metaPreview: null } : {}),
+    }),
 
   init: async () => {
     try {
@@ -1270,6 +1290,10 @@ export const useField = create<FieldState>((set, get) => ({
       const beforeMeta = snapshotMeta(paper);
       // 有 PDF 的手动建档只先查文献库：模型留到解析出全文之后再补，免得只凭标题补完就被标成「已补全」。
       const useLlm = options?.llm !== false && hasUsableProvider(get().settings);
+      // 干跑：只查询与生成，不写库；载荷与合并计划留到用户确认后再写入。
+      const dry = options?.dryRun === true;
+      let dryApiMeta: PreparedMeta | null = null;
+      let dryLlmMeta: PreparedMeta | null = null;
       let foundMeta = false;
       // 查文献库与请求模型是同一个作业：两段都能在作业面板里看到、都能取消。
       const result = await runTracked(
@@ -1280,17 +1304,23 @@ export const useField = create<FieldState>((set, get) => ({
           rememberLookup(set, get, id, found);
           foundMeta = Boolean(found.meta);
           if (found.meta) {
-            const applied = await repo.applyPreparedMeta(id, found.meta, overwrite, {
-              startedRev,
-              source: "api",
-              jobId: ctx.jobId,
-              allowFields,
-            });
-            if (applied === "cancelled") return "cancelled";
+            if (dry) {
+              dryApiMeta = found.meta;
+            } else {
+              const applied = await repo.applyPreparedMeta(id, found.meta, overwrite, {
+                startedRev,
+                source: "api",
+                jobId: ctx.jobId,
+                allowFields,
+              });
+              if (applied === "cancelled") return "cancelled";
+            }
           }
           if (!useLlm) {
-            await dropUnreachableLinks(id);
-            const resultJson = found.meta ? JSON.stringify({ source: "api", confidence: found.meta.confidence ?? null }) : null;
+            if (!dry) await dropUnreachableLinks(id);
+            const resultJson = found.meta
+              ? JSON.stringify({ source: "api", confidence: found.meta.confidence ?? null, ...(dry ? { dryRun: true } : {}) })
+              : null;
             return (await repo.finishJob(ctx.jobId, "done", { resultJson })) ? "done" : "cancelled";
           }
           const fresh = (await repo.getPaper(id)) ?? paper;
@@ -1302,6 +1332,10 @@ export const useField = create<FieldState>((set, get) => ({
           await ctx.checkpoint();
           ctx.stage("apply");
           const meta = normalizeMeta(extractJson(raw));
+          if (dry) {
+            dryLlmMeta = meta;
+            return (await repo.finishJob(ctx.jobId, "done", { resultJson: JSON.stringify({ dryRun: true }) })) ? "done" : "cancelled";
+          }
           // 模型结果与「作业 → done」同一个事务：回写那一刻被取消就整批不写。
           const applied = await repo.applyPreparedMeta(id, meta, overwrite, {
             startedRev,
@@ -1317,6 +1351,37 @@ export const useField = create<FieldState>((set, get) => ({
         },
       );
       await get().refresh();
+      if (dry && result.outcome === "done") {
+        // 干跑完成：合并计划在内存里跑一遍，产出「确认后将写入」的预览；不写库。
+        const { changes } = planMetaPreview({
+          paper,
+          apiMeta: dryApiMeta,
+          llmMeta: dryLlmMeta,
+          overwrite,
+          allowFields,
+        });
+        const preview: MetaPreview = {
+          paperId: id,
+          paperTitle: paper.titleZh || paper.title,
+          at: Date.now(),
+          startedRev,
+          overwrite,
+          allowFields,
+          apiMeta: dryApiMeta,
+          llmMeta: dryLlmMeta,
+          before: beforeMeta,
+          changes,
+        };
+        set({ metaPreview: preview });
+        get().openDialog("ai-preview", id);
+        get().setFlash({
+          tone: "ok",
+          text: changes.length
+            ? `已生成预览：将写入 ${changes.length} 项，确认后才写库。`
+            : "预览完成：没有需要写入的字段（手改过的内容都保留）。",
+        });
+        return;
+      }
       // 完成后的审计记录：前后快照 + 逐字段 diff（会话内可查看、可撤销）。
       let recordId: number | null = null;
       if (result.outcome === "done") {
@@ -1595,6 +1660,70 @@ export const useField = create<FieldState>((set, get) => ({
   restoreNoteVersion: async (paperId, kind, content) => {
     await get().saveNote(paperId, kind, content);
     get().setFlash({ tone: "ok", text: `已把${NOTE_LABELS[kind].zh}恢复到所选版本。` });
+  },
+
+  applyMetaPreview: async () => {
+    const preview = get().metaPreview;
+    if (!preview) return;
+    try {
+      // 与真实写入同一顺序：先文献库后模型；meta_rev 条件更新 + userEditedSince
+      // 保证预览期间的手改不被覆盖（冲突时 applyPreparedMeta 内部重读重算）。
+      if (preview.apiMeta) {
+        const applied = await repo.applyPreparedMeta(preview.paperId, preview.apiMeta, preview.overwrite, {
+          startedRev: preview.startedRev,
+          source: "api",
+          allowFields: preview.allowFields ? new Set(preview.allowFields) : undefined,
+        });
+        if (applied === "conflict") {
+          get().setFlash({ tone: "warn", text: "预览期间论文信息有变化，本次没有写入。请重新预览后再确认。" });
+          set({ metaPreview: null, dialog: null, dialogPaperId: null });
+          await get().refresh();
+          return;
+        }
+      }
+      if (preview.llmMeta) {
+        const applied = await repo.applyPreparedMeta(preview.paperId, preview.llmMeta, preview.overwrite, {
+          startedRev: preview.startedRev,
+          source: "llm",
+          allowFields: preview.allowFields ? new Set(preview.allowFields) : undefined,
+        });
+        if (applied === "conflict") {
+          get().setFlash({ tone: "warn", text: "预览期间论文信息有变化，模型字段没有写入。请重新预览后再确认。" });
+        }
+      }
+      await dropUnreachableLinks(preview.paperId);
+      // 写入后的审计记录：预览快照为旧值，写后为新值（撤销可用）。
+      let viewChanges: { label: string; run: () => void } | undefined;
+      const afterPaper = await repo.getPaper(preview.paperId);
+      if (afterPaper) {
+        const afterMeta = snapshotMeta(afterPaper);
+        const changes = diffMeta(preview.before, afterMeta);
+        if (changes.length) {
+          recordAiWrite({
+            paperId: preview.paperId,
+            paperTitle: preview.paperTitle,
+            kind: "meta",
+            meta: { before: preview.before, after: afterMeta, changes },
+          });
+          viewChanges = { label: "查看变更", run: () => get().openDialog("ai-diff", preview.paperId) };
+        }
+      }
+      set({ metaPreview: null, dialog: null, dialogPaperId: null });
+      await get().refresh();
+      get().setFlash({
+        tone: "ok",
+        text: "已按预览写入论文信息。阅读状态未改动。",
+        ...(viewChanges ? { action: viewChanges } : {}),
+      });
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `写入预览结果失败：${errText(err)}，数据未改动。` });
+      throw err;
+    }
+  },
+
+  dismissMetaPreview: () => {
+    set({ metaPreview: null, dialog: null, dialogPaperId: null });
+    get().setFlash({ tone: "ok", text: "已放弃这次预览，没有写入任何内容。" });
   },
 
   cancelJob: async (jobId, options) => {

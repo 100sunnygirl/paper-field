@@ -34,6 +34,7 @@ import {
   type FulltextSelection,
 } from "../lib/fulltext";
 import { onMarkdownClick, renderMarkdown } from "../lib/markdown";
+import { loadPreviewFirst, savePreviewFirst } from "../lib/aiPrefs";
 import { isNoteHintDismissed, NOTE_HINT_QUESTIONS, setNoteHintDismissed } from "../lib/noteHints";
 import { loadNoteLayout, moveNoteKind as moveNoteKindInOrder, saveNoteLayout, type NoteLayout } from "../lib/noteLayout";
 import { loadReadingSpots, saveReadingSpot } from "../lib/readingSpot";
@@ -636,6 +637,8 @@ function ContextPanel({
   const setFlash = useField((s) => s.setFlash);
   const markRead = useField((s) => s.markRead);
   const setJobsOpen = useField((s) => s.setJobsOpen);
+  // 「先预览再写入」：补全论文信息的干跑开关（本机记忆）。
+  const [previewFirst, setPreviewFirst] = useState(loadPreviewFirst);
   const active = jobs.filter(
     (job) => job.paperId === paper.id && (job.status === "running" || job.status === "queued"),
   );
@@ -1108,12 +1111,27 @@ function ContextPanel({
                 openDialog("confirm-meta", paper.id);
                 return;
               }
-              void runPrepareMeta(paper.id, false);
+              // 干跑开关：先查询与生成，预览确认后才写库。
+              void runPrepareMeta(paper.id, false, false, previewFirst ? { dryRun: true } : undefined);
             }}
           >
             <Icon name="file" />
             补全论文信息
           </Button>
+          <label
+            className={`ef-ai-preview-toggle${previewFirst ? " is-on" : ""}`}
+            title="开启后先查询与生成并展示将写入的字段，确认后才写库（不会多花一次模型请求）"
+          >
+            <input
+              type="checkbox"
+              checked={previewFirst}
+              onChange={(e) => {
+                setPreviewFirst(e.target.checked);
+                savePreviewFirst(e.target.checked);
+              }}
+            />
+            先预览再写入
+          </label>
           <Button type="button" disabled={Boolean(active.length)} onClick={() => void runRefreshLinks(paper.id)}>
             <Icon name="link" />
             刷新链接

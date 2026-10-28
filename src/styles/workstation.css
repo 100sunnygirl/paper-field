@@ -3720,6 +3720,22 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   white-space: nowrap;
   color: var(--pf-secondary);
 }
+/* AI 助手块的「先预览再写入」干跑开关：安静的小标签，不与主按钮争夺注意力。 */
+.ef-ai-preview-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+.ef-ai-preview-toggle.is-on { color: var(--pf-ink); }
+.ef-preview-source {
+  flex: none;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+}
 .ef-dialog-foot {
   display: flex;
   gap: 10px;

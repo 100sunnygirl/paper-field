@@ -194,3 +194,148 @@ describe("AI 写入审计与撤销（快照还原）", () => {
     expect(useField.getState().flash?.text).toContain("恢复到所选版本");
   });
 });
+
+describe("干跑预览（先预览不写入）", () => {
+  it("dryRun 只查询与生成不写库；applyMetaPreview 确认后按载荷写入并记审计", async () => {
+    const domain = await repo.createDomain({ name: "多模态", code: "MM-05" });
+    const paper = await repo.createPaper({
+      domainId: domain.id,
+      pdfPath: "library/y.pdf",
+      pdfOriginalPath: "/papers/文件名标题.pdf",
+    });
+    vi.mocked(lookupPaper).mockResolvedValue({
+      meta: {
+        title: "Real Title",
+        titleZh: null,
+        abstract: "biblio abstract",
+        year: 2017,
+        venue: null,
+        doi: null,
+        arxivId: null,
+        authors: [],
+        labs: [],
+        codeOpenSource: "unknown",
+        codeURL: null,
+        projectPage: null,
+        pdfURL: null,
+        tags: [],
+      },
+      notices: [],
+      openalexRemainingUsd: null,
+      openalexLimitUsd: null,
+    });
+    vi.mocked(completeChat).mockResolvedValue(
+      JSON.stringify({ titleZh: "中文标题", tags: ["llm-tag"], authors: [], labs: [], codeOpenSource: "unknown" }),
+    );
+
+    await useField.getState().runPrepareMeta(paper.id, false, false, { dryRun: true });
+
+    // 干跑：不写库。
+    const mid = (await repo.getPaper(paper.id))!;
+    expect(mid.title).toContain("文件名标题");
+    expect(mid.titleZh).toBeNull();
+    // 预览已生成并自动打开对话框。
+    const preview = useField.getState().metaPreview!;
+    expect(preview.paperId).toBe(paper.id);
+    expect(useField.getState().dialog).toBe("ai-preview");
+    expect(useField.getState().dialogPaperId).toBe(paper.id);
+    // 预览列出两段合并后的拟写入字段（文献库 + 模型）。
+    const fields = preview.changes.map((change) => change.field);
+    expect(fields).toEqual(expect.arrayContaining(["title", "abstract", "year", "titleZh"]));
+    const titleChange = preview.changes.find((change) => change.field === "title")!;
+    expect(titleChange.incoming).toBe("api");
+    expect(titleChange.to).toBe("Real Title");
+    expect(preview.changes.find((change) => change.field === "titleZh")!.incoming).toBe("llm");
+
+    // 确认写入：按同一载荷落库，并留下可撤销的审计记录。
+    await useField.getState().applyMetaPreview();
+
+    const after = (await repo.getPaper(paper.id))!;
+    expect(after.title).toBe("Real Title");
+    expect(after.titleZh).toBe("中文标题");
+    expect(useField.getState().metaPreview).toBeNull();
+    expect(useField.getState().dialog).toBeNull();
+    const record = latestAiWrite(paper.id)!;
+    expect(record.kind).toBe("meta");
+    expect(record.meta?.before.title).toContain("文件名标题");
+    expect(record.meta?.after.title).toBe("Real Title");
+  });
+
+  it("dryRun 期间字段级白名单照常生效：未勾选的手动字段不出现在预览里", async () => {
+    const domain = await repo.createDomain({ name: "多模态", code: "MM-06" });
+    const paper = await repo.createPaper({ domainId: domain.id, title: "用户标题", userOwned: true });
+    vi.mocked(lookupPaper).mockResolvedValue({
+      meta: {
+        title: "API 标题",
+        titleZh: null,
+        abstract: "",
+        year: null,
+        venue: null,
+        doi: null,
+        arxivId: null,
+        authors: [],
+        labs: [],
+        codeOpenSource: "unknown",
+        codeURL: null,
+        projectPage: null,
+        pdfURL: null,
+        tags: [],
+      },
+      notices: [],
+      openalexRemainingUsd: null,
+      openalexLimitUsd: null,
+    });
+    vi.mocked(completeChat).mockResolvedValue("{}");
+
+    // overwrite=true 但白名单不含 title：预览不应列 title（不会被替换）。
+    await useField.getState().runPrepareMeta(paper.id, true, false, { dryRun: true, allowFields: [] });
+    const preview = useField.getState().metaPreview!;
+    expect(preview.changes.map((change) => change.field)).not.toContain("title");
+
+    // 放弃预览：不写库。
+    useField.getState().dismissMetaPreview();
+    const after = (await repo.getPaper(paper.id))!;
+    expect(after.title).toBe("用户标题");
+    expect(useField.getState().dialog).toBeNull();
+  });
+
+  it("预览期间手改的字段在确认写入时保留（meta_rev 条件更新保护）", async () => {
+    const domain = await repo.createDomain({ name: "多模态", code: "MM-07" });
+    const paper = await repo.createPaper({
+      domainId: domain.id,
+      pdfPath: "library/z.pdf",
+      pdfOriginalPath: "/papers/文件名标题.pdf",
+    });
+    vi.mocked(lookupPaper).mockResolvedValue({
+      meta: {
+        title: "Real Title",
+        titleZh: null,
+        abstract: "biblio abstract",
+        year: null,
+        venue: null,
+        doi: null,
+        arxivId: null,
+        authors: [],
+        labs: [],
+        codeOpenSource: "unknown",
+        codeURL: null,
+        projectPage: null,
+        pdfURL: null,
+        tags: [],
+      },
+      notices: [],
+      openalexRemainingUsd: null,
+      openalexLimitUsd: null,
+    });
+    vi.mocked(completeChat).mockResolvedValue("{}");
+    await useField.getState().runPrepareMeta(paper.id, true, false, { dryRun: true });
+
+    // 预览期间用户手改摘要（user 来源）。
+    await repo.updatePaper(paper.id, { abstract: "我自己的摘要" }, true);
+
+    await useField.getState().applyMetaPreview();
+    const after = (await repo.getPaper(paper.id))!;
+    expect(after.abstract).toBe("我自己的摘要");
+    expect(after.title).toBe("Real Title"); // 未被再改的字段照常写入
+  });
+});

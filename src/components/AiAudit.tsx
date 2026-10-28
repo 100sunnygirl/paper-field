@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { latestAiWrite, noteVersions, type AiWriteRecord, type NoteVersion } from "../lib/aiAudit";
-import { META_FIELD_LABELS, NOTE_DISPLAY_ORDER, NOTE_LABELS, type NoteKind } from "../lib/types";
+import { BIBLIO_PROVIDER_LABELS, META_FIELD_LABELS, NOTE_DISPLAY_ORDER, NOTE_LABELS, type NoteKind } from "../lib/types";
 import { formatDate } from "../lib/util";
 import { useField } from "../store";
 import { Button, Dialog, Icon } from "./ui";
@@ -162,6 +162,82 @@ export function AiDiffDialog() {
             ))}
           </section>
         </>
+      )}
+    </Dialog>
+  );
+}
+
+/**
+ * 干跑预览（dialog="ai-preview"）：补全论文信息的「先预览不写入」结果。
+ * 列出确认后将写入的字段（当前值 → 将写入的值 + 拟写入来源），用户确认才落库；
+ * 预览期间手改的字段在写入时仍受 meta_rev 条件更新保护。
+ */
+export function MetaPreviewDialog() {
+  const dialog = useField((s) => s.dialog);
+  const metaPreview = useField((s) => s.metaPreview);
+  const dismissMetaPreview = useField((s) => s.dismissMetaPreview);
+  const applyMetaPreview = useField((s) => s.applyMetaPreview);
+  const open = dialog === "ai-preview" && Boolean(metaPreview);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!open) setBusy(false);
+  }, [open]);
+
+  async function apply() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await applyMetaPreview();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!metaPreview) return null;
+  return (
+    <Dialog
+      open={open}
+      title="补全预览（尚未写入）"
+      onClose={dismissMetaPreview}
+      className="is-wide"
+      footer={
+        <>
+          <Button type="button" onClick={dismissMetaPreview}>
+            不写入
+          </Button>
+          <Button type="button" variant="primary" disabled={busy || !metaPreview.changes.length} onClick={() => void apply()}>
+            {busy ? "写入中…" : `写入 ${metaPreview.changes.length} 项`}
+          </Button>
+        </>
+      }
+    >
+      <p>
+        《{metaPreview.paperTitle}》· 这次补全只做了查询与生成，还没有写库。下面是确认后将写入的字段；
+        预览期间你手动改过的内容在写入时仍会保留。
+      </p>
+      {metaPreview.changes.length ? (
+        <section className="ef-diff-block" aria-label="将写入的字段">
+          <ul className="ef-diff-list">
+            {metaPreview.changes.map((change) => (
+              <li key={change.field}>
+                <span className="ef-diff-field">{META_FIELD_LABELS[change.field]}</span>
+                <span className="ef-diff-pair">
+                  <del>{clampText(change.from) || "（空白）"}</del>
+                  <Icon name="right" />
+                  <ins>{clampText(change.to) || "（空白）"}</ins>
+                </span>
+                <span className="ef-preview-source">
+                  {change.incoming === "api"
+                    ? `来源：数据库${change.provider ? ` · ${BIBLIO_PROVIDER_LABELS[change.provider] ?? change.provider}` : ""}`
+                    : "来源：模型"}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : (
+        <p>没有需要写入的字段：空白已补齐或你手动改过的内容都保留原样。</p>
       )}
     </Dialog>
   );
