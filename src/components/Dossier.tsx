@@ -1586,7 +1586,17 @@ export function ReadingStage({
           <span className="ef-toolbar-crumb">
             <Icon name="file" />
             论文详情<span className="ef-toolbar-sep">/</span>
-            {paper.domain.name}
+            {/* 面包屑上的领域名即「移动到其他领域」的直达入口（高频动作不再藏进 ⋯ 菜单）。 */}
+            <button
+              type="button"
+              className="ef-crumb-domain"
+              title={`移动到其他领域（当前：${paper.domain.name}）`}
+              aria-label={`移动到其他领域：${paper.domain.name}`}
+              onClick={() => openDialog("move-paper", paper.id)}
+            >
+              {paper.domain.name}
+              <Icon name="right" />
+            </button>
           </span>
           <span className="ef-toolbar-title" aria-hidden="true">
             {title}

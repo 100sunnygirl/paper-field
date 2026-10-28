@@ -656,3 +656,22 @@ describe("ReadingStage · 工作台无障碍", () => {
     );
   });
 });
+
+describe("ReadingStage · 面包屑直达「移动到其他领域」", () => {
+  it("点击工具条面包屑上的领域名直接打开移动对话框（目标锁定当前论文）", () => {
+    const openDialog = vi.fn();
+    useField.setState({ mode: "field", paper: paper({}), openDialog });
+    renderStage();
+    const crumb = screen.getByRole("button", { name: "移动到其他领域：多模态" });
+    expect(crumb).toBeInTheDocument();
+    fireEvent.click(crumb);
+    expect(openDialog).toHaveBeenCalledWith("move-paper", "p1");
+  });
+
+  it("面包屑仍显示「论文详情 / 领域名」的层级文字", () => {
+    useField.setState({ mode: "field", paper: paper({}) });
+    renderStage();
+    const crumb = screen.getByText("论文详情").closest(".ef-toolbar-crumb")!;
+    expect(crumb.textContent).toContain("多模态");
+  });
+});

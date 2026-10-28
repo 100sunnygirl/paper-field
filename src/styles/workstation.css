@@ -1240,6 +1240,23 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 }
 .ef-toolbar-crumb .ef-ico { width: 16px; height: 16px; }
 .ef-toolbar-sep { color: var(--pf-line-strong); margin: 0 -2px; }
+/* 面包屑领域名：可点的「移动到其他领域」直达入口（安静文字样式 + 悬停下划线，右箭头悬停才现身）。 */
+.ef-crumb-domain {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.ef-crumb-domain .ef-ico { width: 12px; height: 12px; opacity: 0; transition: opacity 0.15s var(--pf-ease-direct); }
+.ef-crumb-domain:hover,
+.ef-crumb-domain:focus-visible { text-decoration: underline; }
+.ef-crumb-domain:hover .ef-ico,
+.ef-crumb-domain:focus-visible .ef-ico { opacity: 0.8; }
 .ef-toolbar-title {
   padding-left: 12px;
   border-left: var(--pf-marker) solid var(--pf-signal);
