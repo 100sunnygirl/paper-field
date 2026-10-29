@@ -1932,6 +1932,23 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   color: var(--pf-on-dark-2);
 }
 
+.ef-import-failures {
+  position: fixed;
+  z-index: 40;
+  left: 16px;
+  bottom: 52px;
+  width: min(380px, calc(100vw - 32px));
+  padding: 12px 14px;
+  background: var(--pf-surface);
+  border: 1px solid var(--pf-line-strong);
+  box-shadow: var(--pf-edge-hard);
+}
+.ef-import-failures h2 { margin: 0 0 8px; font-size: var(--pf-fs-ui); }
+.ef-import-failures ul { list-style: none; margin: 0 0 8px; padding: 0; }
+.ef-import-failures li { margin: 0 0 6px; }
+.ef-import-failures label { display: flex; gap: 8px; align-items: baseline; }
+.ef-import-failures small { color: var(--pf-muted); }
+
 /* ---- System ---- */
 .ef-system {
   height: 100%;

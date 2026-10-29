@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { pickPdfFiles, pickPdfFolder } from "../lib/mineru";
 import { repo } from "../lib/repo";
 import { useField } from "../store";
-import { DeleteCheckedPapersDialog, DomainDialog, PaperDialog } from "./Dialogs";
+import { DeleteCheckedPapersDialog, DomainDialog, ImportFailureList, PaperDialog } from "./Dialogs";
 import type { Paper } from "../lib/types";
 
 vi.mock("../lib/mineru", async (importOriginal) => {
@@ -264,6 +264,7 @@ describe("PaperDialog · 扫描结果挑选排除", () => {
       "/papers/folder/paper-a.pdf",
       "/papers/folder/paper-b.pdf",
     ]);
+    expect(importPdfs.mock.calls[0][2]).toBe("d-1");
   });
 
   it("被排除的行显示删除线；重复项复选框禁用且不可勾选", async () => {
@@ -309,6 +310,47 @@ describe("PaperDialog · 扫描结果挑选排除", () => {
     expect(screen.getByLabelText("a.pdf")).toBeChecked();
     expect(screen.getByLabelText("b.pdf")).not.toBeChecked();
     expect(screen.getByRole("button", { name: "导入 1" })).toBeEnabled();
+  });
+});
+
+describe("PaperDialog · 导入目标", () => {
+  beforeEach(() => asTauri());
+
+  const domains = [
+    { id: "d-1", name: "多模态", code: "MM", summary: null, sortOrder: 0, createdAt: "" },
+    { id: "d-2", name: "指令对齐", code: "AL", summary: null, sortOrder: 1, createdAt: "" },
+  ];
+
+  it("打开时记住当前领域，之后改选导入目标不会切换领域", () => {
+    const selectDomain = vi.fn(async () => undefined);
+    useField.setState({ domains, selectDomain });
+    render(<PaperDialog />);
+    const select = screen.getByRole("combobox", { name: "导入到" });
+    expect(select).toHaveValue("d-1");
+    fireEvent.change(select, { target: { value: "d-2" } });
+    expect(selectDomain).not.toHaveBeenCalled();
+    expect(select).toHaveValue("d-2");
+    act(() => useField.setState({ selectedDomainId: "d-9" }));
+    expect(screen.getByRole("combobox", { name: "导入到" })).toHaveValue("d-2");
+  });
+});
+
+describe("ImportFailureList", () => {
+  it("对话框关闭后仍可勾选，移除只删行", () => {
+    const dismissImportFailures = vi.fn();
+    useField.setState({
+      dialog: null,
+      importFailures: [
+        { path: "/x/a.pdf", name: "a.pdf", domainId: "d-1", message: "磁盘已满" },
+        { path: "/x/b.pdf", name: "b.pdf", domainId: "d-2", message: "坏文件" },
+      ],
+      dismissImportFailures,
+    });
+    render(<ImportFailureList />);
+    expect(screen.getByRole("region", { name: "导入失败" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("checkbox", { name: "a.pdf" }));
+    fireEvent.click(screen.getByRole("button", { name: "移除" }));
+    expect(dismissImportFailures).toHaveBeenCalledWith(["/x/a.pdf"]);
   });
 });
 

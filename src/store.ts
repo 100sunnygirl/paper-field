@@ -127,6 +127,8 @@ interface FieldState {
   pendingReadingUndo: (ReadingUndo & { gen: number }) | null;
   restorePreview: { phase: "idle" } | { phase: "previewed" | "staged"; diff: PartitionedTitles };
   loadError: string | null;
+  /** Failed PDF imports for this session. Not written to localStorage or the database. */
+  importFailures: ImportFailure[];
   /** 作业面板（状态条「作业」入口 / ⌘J）：非模态浮层，不拦截阅读区操作。 */
   jobsOpen: boolean;
   init: () => Promise<void>;
@@ -151,6 +153,8 @@ interface FieldState {
     /** 导入到哪个领域；缺省为发起时选中的领域（重试时由闭包带上原领域）。 */
     domainId?: string,
   ) => Promise<void>;
+  retryImportFailures: (paths: string[]) => Promise<void>;
+  dismissImportFailures: (paths: string[]) => void;
   createManualPaper: (input: {
     title: string;
     arxivId?: string;
@@ -208,6 +212,34 @@ function currentList(state: FieldState): PaperListItem[] {
 }
 
 const IMPORT_FAILURES_SHOWN = 5;
+
+export interface ImportFailure {
+  path: string;
+  name: string;
+  domainId: string;
+  message: string;
+}
+
+function mergeImportFailures(current: ImportFailure[], attempted: readonly string[], failed: readonly ImportFailure[]): ImportFailure[] {
+  const failedByPath = new Map(failed.map((row) => [row.path, row]));
+  const attemptedSet = new Set(attempted);
+  const next: ImportFailure[] = [];
+  const seen = new Set<string>();
+  for (const row of current) {
+    if (!attemptedSet.has(row.path)) {
+      next.push(row);
+      continue;
+    }
+    const updated = failedByPath.get(row.path);
+    if (!updated) continue;
+    next.push(updated);
+    seen.add(row.path);
+  }
+  for (const row of failed) {
+    if (!seen.has(row.path)) next.push(row);
+  }
+  return next;
+}
 /** Rust errors often carry full local paths; the toast keeps a short reason, the log keeps all of it. */
 export const IMPORT_REASON_MAX = 60;
 
@@ -342,6 +374,7 @@ export const useField = create<FieldState>((set, get) => ({
   pendingReadingUndo: null,
   restorePreview: { phase: "idle" },
   loadError: null,
+  importFailures: [],
   jobsOpen: false,
 
   // 【通知唯一入口 / 日志唯一收口】flash 字段的唯一写入口就是本函数：写入镜像的同时
@@ -654,9 +687,16 @@ export const useField = create<FieldState>((set, get) => ({
       // 只关导入对话框本身：长时间导入期间用户打开的其他对话框不被顺手关掉。
       if (get().dialog === "paper") set({ dialog: null });
       if (created[0]) selectionEpoch += 1;
+      const failedRows: ImportFailure[] = failed.map((row) => ({
+        path: row.path,
+        name: row.name,
+        domainId,
+        message: row.message,
+      }));
       set({
         selectedPaperId: created[0] ?? get().selectedPaperId,
         mode: "field",
+        importFailures: mergeImportFailures(get().importFailures, unique, failedRows),
       });
       await get().refresh();
       const skippedText = skippedCount ? `，跳过 ${skippedCount} 篇已在库中` : "";
@@ -667,11 +707,10 @@ export const useField = create<FieldState>((set, get) => ({
           text: `已导入 ${created.length} 篇${skippedText}，${failed.length} 篇失败：${importFailureList(failed)}。${failed.length > 1 ? "完整失败列表见日志。" : ""}`,
           action: {
             label: failed.length > 1 ? `重试这 ${failed.length} 篇` : "重试",
-            // Only the failed paths go back in; already-imported ones are not re-sent.
             run: () => {
-              const retry = failed.map((f) => f.path);
-              get()
-                .importPdfs(retry, undefined, domainId)
+              const paths = get().importFailures.map((row) => row.path);
+              void get()
+                .retryImportFailures(paths)
                 .catch((err) => get().setFlash({ tone: "error", text: `重试导入失败：${errText(err)}` }));
             },
           },
@@ -704,6 +743,25 @@ export const useField = create<FieldState>((set, get) => ({
       get().setFlash({ tone: "error", text: `导入失败：${errText(err)}，数据未改动。` });
       throw err;
     }
+  },
+
+  retryImportFailures: async (paths) => {
+    const wanted = new Set(paths);
+    const groups = new Map<string, string[]>();
+    for (const row of get().importFailures) {
+      if (!wanted.has(row.path)) continue;
+      const list = groups.get(row.domainId) ?? [];
+      list.push(row.path);
+      groups.set(row.domainId, list);
+    }
+    for (const [domainId, domainPaths] of groups) {
+      await get().importPdfs(domainPaths, undefined, domainId);
+    }
+  },
+
+  dismissImportFailures: (paths) => {
+    const drop = new Set(paths);
+    set({ importFailures: get().importFailures.filter((row) => !drop.has(row.path)) });
   },
 
   createManualPaper: async (input) => {

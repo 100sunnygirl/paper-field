@@ -81,6 +81,37 @@ describe("retry failed imports", () => {
     expect(importLocalPdfs).toHaveBeenCalledWith("d-1", ["/x/bad.pdf"]);
   });
 
+  it("a dismissed failure is not imported when the toast retries", async () => {
+    importLocalPdfs.mockImplementation(async () => {
+      throw new Error("坏文件");
+    });
+    await useField.getState().importPdfs(["/x/a.pdf", "/x/b.pdf"]);
+    useField.getState().dismissImportFailures(["/x/a.pdf"]);
+    importLocalPdfs.mockReset();
+    importLocalPdfs.mockImplementation(async (_d: string, [p]: string[]) => ({ created: [{ id: p }], skipped: [] }));
+    render(createElement(Toasts));
+    fireEvent.click(screen.getByRole("button", { name: "重试这 2 篇" }));
+    await vi.waitFor(() => expect(importLocalPdfs).toHaveBeenCalledTimes(1));
+    expect(importLocalPdfs).toHaveBeenCalledWith("d-1", ["/x/b.pdf"]);
+  });
+
+  it("retries each stored domain once and does not persist the paths", async () => {
+    const setItem = vi.spyOn(Storage.prototype, "setItem");
+    useField.setState({
+      importFailures: [
+        { path: "/x/a.pdf", name: "a.pdf", domainId: "d-1", message: "坏" },
+        { path: "/x/b.pdf", name: "b.pdf", domainId: "d-2", message: "坏" },
+      ],
+    } as never);
+    importLocalPdfs.mockImplementation(async (_d: string, [p]: string[]) => ({ created: [{ id: p }], skipped: [] }));
+    await useField.getState().retryImportFailures(["/x/a.pdf", "/x/b.pdf"]);
+    expect(importLocalPdfs).toHaveBeenNthCalledWith(1, "d-1", ["/x/a.pdf"]);
+    expect(importLocalPdfs).toHaveBeenNthCalledWith(2, "d-2", ["/x/b.pdf"]);
+    expect(setItem.mock.calls.some((call) => String(call[1]).includes("/x/a.pdf"))).toBe(false);
+    expect(useField.getState().importFailures).toEqual([]);
+    setItem.mockRestore();
+  });
+
   it("several failures label the button with the count", async () => {
     importLocalPdfs.mockImplementation(async () => {
       throw new Error("坏文件");

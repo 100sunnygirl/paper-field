@@ -4,18 +4,73 @@ import { repo } from "../lib/repo";
 import { defaultNotePermit, type NotePermit, type PartitionedTitles } from "../lib/readingHolds";
 import { NOTE_DISPLAY_ORDER, NOTE_KINDS, NOTE_LABELS, type NoteKind, type Author, type PaperDetail } from "../lib/types";
 import { isTauri } from "../lib/util";
-import { useField } from "../store";
+import { shortReason, useField } from "../store";
 import { Button, Dialog, Field, Icon } from "./ui";
+
+export function ImportFailureList() {
+  const failures = useField((s) => s.importFailures);
+  const retryImportFailures = useField((s) => s.retryImportFailures);
+  const dismissImportFailures = useField((s) => s.dismissImportFailures);
+  const [checked, setChecked] = useState<string[]>([]);
+  const visible = failures.map((row) => row.path).join("\n");
+
+  useEffect(() => {
+    const live = new Set(visible ? visible.split("\n") : []);
+    setChecked((current) => {
+      const next = current.filter((path) => live.has(path));
+      return next.length === current.length ? current : next;
+    });
+  }, [visible]);
+
+  if (!failures.length) return null;
+  const selected = failures.filter((row) => checked.includes(row.path)).map((row) => row.path);
+
+  return (
+    <section className="ef-import-failures" aria-label="导入失败">
+      <h2>导入失败</h2>
+      <ul>
+        {failures.map((row) => (
+          <li key={row.path}>
+            <label>
+              <input
+                type="checkbox"
+                checked={checked.includes(row.path)}
+                aria-label={row.name}
+                onChange={(event) => {
+                  setChecked((current) =>
+                    event.target.checked ? [...current, row.path] : current.filter((path) => path !== row.path),
+                  );
+                }}
+              />
+              <span>{row.name}</span>
+              <small>{shortReason(row.message)}</small>
+            </label>
+          </li>
+        ))}
+      </ul>
+      <div className="ef-import-review-actions">
+        <Button type="button" size="sm" disabled={!selected.length} onClick={() => void retryImportFailures(selected)}>
+          重试所选
+        </Button>
+        <Button type="button" size="sm" disabled={!selected.length} onClick={() => dismissImportFailures(selected)}>
+          移除
+        </Button>
+      </div>
+    </section>
+  );
+}
 
 export function PaperDialog() {
   const dialog = useField((s) => s.dialog);
   const closeDialog = useField((s) => s.closeDialog);
   const importPdfs = useField((s) => s.importPdfs);
+  const domains = useField((s) => s.domains);
   const [items, setItems] = useState<Array<{ path: string; name: string; duplicate: boolean; excluded: boolean }>>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<{ done: number; total: number; current: string } | null>(null);
   const [manualOpen, setManualOpen] = useState(false);
+  const [targetDomainId, setTargetDomainId] = useState<string | null>(null);
   const open = dialog === "paper";
 
   useEffect(() => {
@@ -25,6 +80,7 @@ export function PaperDialog() {
     setBusy(false);
     setProgress(null);
     setManualOpen(false);
+    setTargetDomainId(useField.getState().selectedDomainId);
   }, [open]);
 
   async function addPaths(paths: string[]) {
@@ -95,8 +151,10 @@ export function PaperDialog() {
               onClick={() => {
                 setError(null);
                 setBusy(true);
-                void importPdfs(fresh.map((item) => item.path), (done, total, current) =>
-                  setProgress({ done, total, current }),
+                void importPdfs(
+                  fresh.map((item) => item.path),
+                  (done, total, current) => setProgress({ done, total, current }),
+                  targetDomainId ?? undefined,
                 )
                   .catch((err: unknown) => {
                     setError(err instanceof Error ? err.message : String(err));
@@ -117,6 +175,15 @@ export function PaperDialog() {
         选择本机 PDF，或一个目录中的全部 PDF（只读所选目录本身，不进入子目录）。加入后先在下方清单里勾选，排除不是论文的
         PDF，再完成导入。文件名会先当作标题，导入后立即交给 MinerU 解析。没有 PDF 时也可手动添加论文。
       </p>
+      <Field label="导入到">
+        <select aria-label="导入到" value={targetDomainId ?? ""} onChange={(event) => setTargetDomainId(event.target.value)}>
+          {domains.map((domain) => (
+            <option key={domain.id} value={domain.id}>
+              {domain.name}
+            </option>
+          ))}
+        </select>
+      </Field>
       {isTauri() ? (
         <div className="ef-import-actions">
           <Button type="button" onClick={() => void pickFiles()} disabled={busy}>
