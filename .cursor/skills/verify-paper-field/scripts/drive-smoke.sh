@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Launch the browser preview (unless this skill already did) and drive one or more journeys.
-# Usage: drive-smoke.sh [reading-shell|paper-list-and-notes|add-paper-manual|mark-reading-status|system-settings|reading-holds|all]
+# Usage: drive-smoke.sh [reading-shell|paper-list-and-notes|add-paper-manual|mark-reading-status|system-settings|reading-holds|reading-next|all]
 set -euo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source "${HERE}/_env.sh"
