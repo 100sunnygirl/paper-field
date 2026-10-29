@@ -19,7 +19,7 @@ import { hasUsableProvider } from "../lib/settings";
 import { arxivAbsUrl, arxivPdfUrl, doiUrl, openExternal, safeHttpUrl } from "../lib/urls";
 import { formatDate, pad2 } from "../lib/util";
 import { diffStage, type StageField } from "../lib/readingHolds";
-import { useField } from "../store";
+import { hasDraft, useField } from "../store";
 import { Button, Dialog, Empty, ExternalResource, Icon, SourceBadge } from "./ui";
 
 function NoteEditor({
@@ -100,6 +100,12 @@ function NoteEditor({
             value={value}
             onChange={(e) => setNoteDraft(paper.id, kind, e.target.value)}
             aria-label={`${label.zh}内容`}
+            onKeyDown={(event) => {
+              if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
+                event.preventDefault();
+                void commit();
+              }
+            }}
           />
           <div className="ef-edit-actions">
             <span className="ef-edit-hint">
@@ -434,6 +440,8 @@ export function ReadingStage({
   const search = useField((s) => s.search);
   const openDialog = useField((s) => s.openDialog);
   const setNoteDraft = useField((s) => s.setNoteDraft);
+  const saveOpenDrafts = useField((s) => s.saveOpenDrafts);
+  const openDraft = useField((s) => hasDraft(s, s.paper?.id));
   const setFlash = useField((s) => s.setFlash);
   const papers = useField((s) => s.papers);
   const archive = useField((s) => s.archive);
@@ -786,6 +794,11 @@ export function ReadingStage({
                 </small>
                 <i className="ef-section-rule" aria-hidden="true" />
               </h2>
+              {openDraft ? (
+                <Button type="button" size="sm" onClick={() => void saveOpenDrafts(paper.id)}>
+                  保存全部
+                </Button>
+              ) : null}
             </div>
             <p className="ef-notes-caption">每块笔记都标注来源：手动笔记或 AI 起草；AI 不会静默覆盖你改过的笔记。</p>
             {NOTE_DISPLAY_ORDER.map((kind, index) => (

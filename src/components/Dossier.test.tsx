@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { NOTE_DISPLAY_ORDER, type NoteKind, type PaperDetail } from "../lib/types";
 import { useField } from "../store";
@@ -71,6 +71,49 @@ describe("ReadingStage · 笔记与论文信息的入口不重复", () => {
     expect(screen.getByRole("button", { name: "编辑总结" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "编辑亮点" })).toBeNull();
     expect(screen.getByRole("button", { name: "写亮点" })).toBeInTheDocument();
+  });
+
+  it("Cmd or Ctrl S on the note saves it, and Escape does not cancel it", async () => {
+    const saveNote = vi.fn(async () => undefined);
+    const setNoteDraft = vi.fn();
+    useField.setState({
+      mode: "field",
+      paper: paper({}),
+      drafts: { p1: { summary: "草稿" } },
+      saveNote,
+      setNoteDraft,
+    });
+    renderStage();
+    const box = screen.getByRole("textbox", { name: "总结内容" });
+    expect(fireEvent.keyDown(box, { key: "s", ctrlKey: true })).toBe(false);
+    await waitFor(() => expect(screen.getByRole("button", { name: "保存笔记" })).toBeEnabled());
+    expect(saveNote).toHaveBeenCalledTimes(1);
+    expect(fireEvent.keyDown(box, { key: "s", metaKey: true })).toBe(false);
+    await waitFor(() => expect(saveNote).toHaveBeenCalledTimes(2));
+    expect(saveNote).toHaveBeenNthCalledWith(1, "p1", "summary", "草稿");
+    expect(saveNote).toHaveBeenNthCalledWith(2, "p1", "summary", "草稿");
+    fireEvent.keyDown(box, { key: "Escape" });
+    expect(setNoteDraft).not.toHaveBeenCalled();
+  });
+
+  it("shows 保存全部 only while a draft is open", () => {
+    const saveOpenDrafts = vi.fn(async () => undefined);
+    useField.setState({ mode: "field", paper: paper({}), saveOpenDrafts });
+    const view = renderStage();
+    expect(screen.queryByRole("button", { name: "保存全部" })).toBeNull();
+    useField.setState({ drafts: { p1: { summary: "" } } });
+    view.rerender(
+      <ReadingStage
+        focus={false}
+        onToggleFocus={() => {}}
+        listOpen={false}
+        onToggleList={() => {}}
+        contextOpen={false}
+        onToggleContext={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "保存全部" }));
+    expect(saveOpenDrafts).toHaveBeenCalledWith("p1");
   });
 
   it("点击空块的「写…」在原位打开该块的编辑框", () => {

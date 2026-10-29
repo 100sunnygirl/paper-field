@@ -59,7 +59,7 @@ import type {
   PaperDetail,
   PaperListItem,
 } from "./lib/types";
-import { NOTE_KINDS } from "./lib/types";
+import { NOTE_KINDS, NOTE_LABELS } from "./lib/types";
 import { extractJson, isTauri } from "./lib/util";
 
 
@@ -167,6 +167,7 @@ interface FieldState {
   savePaperPatch: (paperId: string, patch: Parameters<typeof repo.updatePaper>[1]) => Promise<void>;
   saveAuthors: (paperId: string, authors: PaperDetail["authors"]) => Promise<void>;
   saveNote: (paperId: string, kind: NoteKind, content: string) => Promise<void>;
+  saveOpenDrafts: (paperId: string) => Promise<void>;
   /** 写入 / 清除（null）一块笔记草稿。 */
   setNoteDraft: (paperId: string, kind: NoteKind, value: string | null) => void;
   markRead: (paperId?: string) => Promise<void>;
@@ -260,6 +261,8 @@ const refreshInflight = new Set<string>();
 const draftInflight = new Set<string>();
 let readingUndoGen = 0;
 let createMoveFlight: Promise<void> | null = null;
+/** One toast for 保存全部. saveNote stays the only writer and has no quiet flag. */
+let noteSaveFrame: { saved: number; failed: string[] } | null = null;
 
 export const SEARCH_DEBOUNCE_MS = 250;
 let refreshSeq = 0;
@@ -904,7 +907,8 @@ export const useField = create<FieldState>((set, get) => ({
       if (!row) throw new Error("论文不存在");
       if (!noteWriteNeeded(row.notes[kind].content, content)) {
         get().setNoteDraft(paperId, kind, null);
-        get().setFlash({ tone: "ok", text: "笔记已保存。" });
+        if (noteSaveFrame) noteSaveFrame.saved += 1;
+        else get().setFlash({ tone: "ok", text: "笔记已保存。" });
         return;
       }
       await repo.updateNote(paperId, kind, content, "manual", true);
@@ -915,14 +919,47 @@ export const useField = create<FieldState>((set, get) => ({
       }
       get().setNoteDraft(paperId, kind, null);
       await get().refresh();
-      get().setFlash({ tone: "ok", text: "笔记已保存。" });
+      if (noteSaveFrame) noteSaveFrame.saved += 1;
+      else get().setFlash({ tone: "ok", text: "笔记已保存。" });
     } catch (err) {
-      get().setFlash({
-        tone: "error",
-        text: err instanceof Error ? `笔记保存失败：${err.message}` : "笔记保存失败，输入已保留，请重试。",
-      });
+      if (noteSaveFrame) noteSaveFrame.failed.push(NOTE_LABELS[kind].zh);
+      else {
+        get().setFlash({
+          tone: "error",
+          text: err instanceof Error ? `笔记保存失败：${err.message}` : "笔记保存失败，输入已保留，请重试。",
+        });
+      }
       throw err;
     }
+  },
+
+  saveOpenDrafts: async (paperId) => {
+    const kinds = Object.keys(get().drafts[paperId] ?? {}) as NoteKind[];
+    if (!kinds.length) return;
+    const frame = { saved: 0, failed: [] as string[] };
+    noteSaveFrame = frame;
+    try {
+      for (const kind of kinds) {
+        const value = get().drafts[paperId]?.[kind];
+        if (value === undefined) continue;
+        try {
+          await get().saveNote(paperId, kind, value);
+        } catch {
+          // The failed draft stays. The frame names it in the single toast.
+        }
+      }
+    } finally {
+      noteSaveFrame = null;
+    }
+    if (frame.failed.length) {
+      const names = frame.failed.join("、");
+      get().setFlash({
+        tone: frame.saved ? "warn" : "error",
+        text: frame.saved ? `已保存 ${frame.saved} 块笔记，${names}保存失败，草稿仍保留。` : `笔记保存失败：${names}。草稿仍保留。`,
+      });
+      return;
+    }
+    get().setFlash({ tone: "ok", text: "笔记已保存。" });
   },
 
   markRead: async (paperId) => {
