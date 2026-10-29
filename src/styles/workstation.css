@@ -922,6 +922,12 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   outline: 1px solid var(--pf-ink);
   outline-offset: -1px;
 }
+.ef-row-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+}
 .ef-row h3 {
   margin: 0;
   font-size: var(--pf-fs-title);

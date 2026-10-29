@@ -18,7 +18,7 @@ import {
 import { hasUsableProvider } from "../lib/settings";
 import { arxivAbsUrl, arxivPdfUrl, doiUrl, openExternal, safeHttpUrl } from "../lib/urls";
 import { formatDate, pad2 } from "../lib/util";
-import { diffStage, type StageField } from "../lib/readingHolds";
+import { diffStage, titleIsFile, type StageField } from "../lib/readingHolds";
 import { hasDraft, useField } from "../store";
 import { Button, Dialog, Empty, ExternalResource, Icon, SourceBadge } from "./ui";
 
@@ -604,7 +604,7 @@ export function ReadingStage({
   const margin = prose ? diffStage(prose, paper) : [];
   const title = prose ? prose.titleZh || prose.title : paper.titleZh || paper.title;
   const english = prose ? (prose.titleZh ? prose.title : "") : paper.titleZh ? paper.title : "";
-  const fileTitle = paper.fieldSources?.title === "file";
+  const fileTitle = titleIsFile(paper.fieldSources);
   // 选中的论文只是被搜索或筛选挡在列表外时仍保持打开（不自动跳到别的论文），这里说明一下。
   const visibleList = mode === "archive" ? archive : mode === "intake" ? intake : papers;
   const outOfList = mode !== "system" && !visibleList.some((item) => item.id === paper.id);

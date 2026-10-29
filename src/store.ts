@@ -42,6 +42,7 @@ import {
   RESTORE_TITLE_CAP,
   stageFieldsInPatch,
   stageProseFrom,
+  titleIsFile,
   type NotePermit,
   type NoteProposal,
   type PartitionedTitles,
@@ -1129,7 +1130,7 @@ export const useField = create<FieldState>((set, get) => ({
 
   claimFileTitle: async (paperId) => {
     const row = await repo.getPaper(paperId);
-    if (!row || row.fieldSources?.title !== "file") return;
+    if (!row || !titleIsFile(row.fieldSources)) return;
     try {
       await repo.updatePaper(paperId, { title: row.title }, true);
       const fresh = await repo.getPaper(paperId);

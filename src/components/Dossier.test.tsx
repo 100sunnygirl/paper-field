@@ -137,7 +137,9 @@ describe("ReadingStage · 笔记与论文信息的入口不重复", () => {
     row.fieldSources = { title: "file" };
     useField.setState({ mode: "field", paper: row });
     renderStage();
-    expect(document.getElementById("paper-title")?.textContent).toBe("smoke");
+    const title = document.getElementById("paper-title");
+    expect(title?.textContent).toBe("smoke");
+    expect(title?.contains(screen.getByText("文件名"))).toBe(false);
     expect(screen.getByText("文件名")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "认领标题" })).toBeInTheDocument();
   });
