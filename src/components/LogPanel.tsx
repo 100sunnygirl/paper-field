@@ -28,7 +28,7 @@ function asText(entries: LogEntry[]): string {
     .join("\n");
 }
 
-export function LogPanel() {
+export function LogPanel({ id }: { id?: string }) {
   const setFlash = useField((s) => s.setFlash);
   const [filter, setFilter] = useState<LogFilter>("all");
   const [confirmClear, setConfirmClear] = useState(false);
@@ -55,7 +55,7 @@ export function LogPanel() {
   }
 
   return (
-    <article className="page-block pf-stagger" style={{ "--pf-i": 2 } as CSSProperties}>
+    <article id={id} className="page-block pf-stagger" style={{ "--pf-i": 2 } as CSSProperties}>
       <header className="ef-block-head">
         <h3>运行日志</h3>
         <p>最近 {all.length} 条本机运行记录（错误与警告通知自动入列）。日志只保存在本机，用于排查问题。</p>

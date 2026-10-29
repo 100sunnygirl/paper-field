@@ -1,5 +1,12 @@
 import { create } from "zustand";
-import { exportDomain } from "./lib/export";
+import {
+  assignExportFolders,
+  browserExportFilename,
+  buildDomainExport,
+  deliverExport,
+  libraryExportFilename,
+  type ExportFile,
+} from "./lib/export";
 import {
   DEFAULT_MINERU,
   loadMineruSettings,
@@ -208,7 +215,7 @@ interface FieldState {
   saveMineruSettings: (input: MineruSaveInput) => Promise<void>;
   saveBiblioSettings: (input: BiblioSaveInput) => Promise<void>;
   probeMineru: () => Promise<ProviderHealth[]>;
-  exportCurrentDomain: () => Promise<void>;
+  exportLibrary: (target: { kind: "domain"; domainId: string } | { kind: "all" }) => Promise<void>;
   backupLibrary: () => Promise<void>;
   restoreLibrary: () => Promise<void>;
   navigatePapers: (delta: number) => Promise<void>;
@@ -1595,15 +1602,33 @@ export const useField = create<FieldState>((set, get) => ({
     set({ dialog: null, dialogPaperId: null, dialogPaperIds: [], pendingDraftJob: null, restorePreview: { phase: "idle" } });
   },
 
-  exportCurrentDomain: async () => {
-    const domainId = get().selectedDomainId;
-    if (!domainId) return;
-    const domain = await repo.getDomain(domainId);
-    if (!domain) return;
-    const papers = await repo.papersForExport(domainId);
+  exportLibrary: async (target) => {
+    const now = new Date();
     try {
-      const where = await exportDomain(domain, papers);
-      get().setFlash({ tone: "ok", text: `已导出 ${papers.length} 篇 · ${where}` });
+      let files: ExportFile[];
+      let downloadName: string;
+      let count: number;
+      if (target.kind === "domain") {
+        const domain = await repo.getDomain(target.domainId);
+        if (!domain) return;
+        const papers = await repo.papersForExport(domain.id);
+        files = buildDomainExport(domain, papers, now);
+        downloadName = browserExportFilename(domain);
+        count = papers.length;
+      } else {
+        const domains = await repo.listDomains();
+        const groups = [];
+        count = 0;
+        for (const domain of domains) {
+          const papers = await repo.papersForExport(domain.id);
+          count += papers.length;
+          groups.push({ domainId: domain.id, files: buildDomainExport(domain, papers, now) });
+        }
+        files = assignExportFolders(groups);
+        downloadName = libraryExportFilename(now);
+      }
+      const where = await deliverExport(files, downloadName);
+      get().setFlash({ tone: "ok", text: `已导出 ${count} 篇 · ${where}` });
     } catch (err) {
       if (String(err).includes("EXPORT_CANCELLED")) return;
       get().setFlash({ tone: "error", text: err instanceof Error ? err.message : String(err) });
