@@ -247,7 +247,13 @@ describe("PaperDialog · 扫描结果挑选排除", () => {
 
   it("取消勾选后不计入导入数，导入只包含仍勾选的文件", async () => {
     setupScan(["/papers/folder/paper-a.pdf", "/papers/folder/manual.pdf", "/papers/folder/paper-b.pdf"]);
-    const importPdfs = vi.fn(async (_paths: string[]) => undefined);
+    const importPdfs = vi.fn(
+      async (
+        _paths: string[],
+        _onProgress?: (done: number, total: number, current: string) => void,
+        _domainId?: string,
+      ) => undefined,
+    );
     useField.setState({ importPdfs });
     render(<PaperDialog />);
     fireEvent.click(screen.getByRole("button", { name: /选择文件夹/ }));
