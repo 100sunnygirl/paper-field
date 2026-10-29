@@ -22,6 +22,44 @@ import { diffStage, type StageField } from "../lib/readingHolds";
 import { hasDraft, useField } from "../store";
 import { Button, Dialog, Empty, ExternalResource, Icon, SourceBadge } from "./ui";
 
+function NoteReview({ paperId }: { paperId: string }) {
+  const review = useField((s) => (s.noteReview?.paperId === paperId ? s.noteReview : null));
+  const settleNoteReview = useField((s) => s.settleNoteReview);
+  if (!review?.proposals.length) return null;
+  return (
+    <section className="ef-note-review" aria-label="笔记确认">
+      {review.proposals.map((proposal) => (
+        <article key={proposal.kind} className="ef-note-review-block">
+          <h3>{NOTE_LABELS[proposal.kind].zh}</h3>
+          <p className="ef-note-review-label">之前</p>
+          <p>{proposal.before || "（空）"}</p>
+          <p className="ef-note-review-label">之后</p>
+          <p>{proposal.after || "（空）"}</p>
+          <div className="ef-note-review-actions">
+            <Button type="button" size="sm" variant="primary" onClick={() => void settleNoteReview({ accept: [proposal.kind] })}>
+              接受
+            </Button>
+            <Button type="button" size="sm" onClick={() => void settleNoteReview({ skip: [proposal.kind] })}>
+              跳过
+            </Button>
+          </div>
+        </article>
+      ))}
+      <Button
+        type="button"
+        size="sm"
+        onClick={() => {
+          const current = useField.getState().noteReview;
+          if (!current || current.paperId !== paperId) return;
+          void settleNoteReview({ accept: current.proposals.map((item) => item.kind) });
+        }}
+      >
+        接受全部
+      </Button>
+    </section>
+  );
+}
+
 function NoteEditor({
   kind,
   index,
@@ -801,6 +839,7 @@ export function ReadingStage({
               ) : null}
             </div>
             <p className="ef-notes-caption">每块笔记都标注来源：手动笔记或 AI 起草；AI 不会静默覆盖你改过的笔记。</p>
+            <NoteReview paperId={paper.id} />
             {NOTE_DISPLAY_ORDER.map((kind, index) => (
               <NoteEditor
                 key={kind}

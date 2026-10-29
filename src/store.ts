@@ -28,6 +28,7 @@ import { resetEngine } from "./lib/engine";
 import {
   adoptProse,
   libraryLabel,
+  noteProposals,
   noteWriteNeeded,
   partitionTitles,
   readingUndoPlan,
@@ -35,6 +36,7 @@ import {
   stageFieldsInPatch,
   stageProseFrom,
   type NotePermit,
+  type NoteProposal,
   type PartitionedTitles,
   type ReadingUndo,
   type StageProse,
@@ -51,6 +53,7 @@ import { dismissAll, notify, type ToastAction } from "./toasts";
 import type {
   AppMode,
   Domain,
+  DraftedNotes,
   FieldStats,
   LlmJob,
   LlmSettings,
@@ -125,6 +128,8 @@ interface FieldState {
   /** 正在编辑、尚未保存的笔记草稿，按论文分开存：切换论文不丢，切回来还在。 */
   drafts: Record<string, Partial<Record<NoteKind, string>>>;
   stageHold: { paperId: string; prose: StageProse } | null;
+  /** Model note drafts waiting for one settleNoteReview write. Idle when null. */
+  noteReview: { paperId: string; proposals: NoteProposal[] } | null;
   pendingReadingUndo: { gen: number; papers: ReadingUndo[] } | null;
   restorePreview: { phase: "idle" } | { phase: "previewed" | "staged"; diff: PartitionedTitles };
   loadError: string | null;
@@ -193,6 +198,7 @@ interface FieldState {
   runPrepareMeta: (paperId?: string, overwrite?: boolean, quiet?: boolean, options?: { llm?: boolean }) => Promise<void>;
   runRefreshLinks: (paperId?: string) => Promise<void>;
   runDraftNotes: (paperId?: string, permit?: NotePermit) => Promise<void>;
+  settleNoteReview: (decision: { accept?: NoteKind[]; skip?: NoteKind[] }) => Promise<void>;
   claimFileTitle: (paperId: string) => Promise<void>;
   undoMarkRead: (gen: number) => Promise<void>;
   confirmRestore: () => Promise<void>;
@@ -377,6 +383,7 @@ export const useField = create<FieldState>((set, get) => ({
   pendingDraftJob: null,
   drafts: loadDrafts(),
   stageHold: null,
+  noteReview: null,
   pendingReadingUndo: null,
   restorePreview: { phase: "idle" },
   loadError: null,
@@ -1345,13 +1352,6 @@ export const useField = create<FieldState>((set, get) => ({
       return;
     }
     if (get().dialog === "confirm-notes") set({ dialog: null, dialogPaperId: null, pendingDraftJob: null });
-    const openDrafts = get().drafts[id] ?? {};
-    const revs = Object.fromEntries(
-      NOTE_KINDS.map((kind) => {
-        const allowed = permit[kind] === true && openDrafts[kind] === undefined;
-        return [kind, allowed ? (paper.notes?.[kind]?.rev ?? 0) : -1];
-      }),
-    ) as Record<NoteKind, number>;
     const prompt = draftNotesUserPrompt(paper);
     try {
       const result = await runTracked(
@@ -1362,17 +1362,16 @@ export const useField = create<FieldState>((set, get) => ({
           await ctx.checkpoint();
           ctx.stage("apply");
           const notes = normalizeNotes(extractJson(raw));
-          const kept = await repo.applyDraftedNotes(id, notes, true, revs, jobDoneStep(ctx.jobId, raw));
-          if (kept === null) return "cancelled";
-          const withheld = kept.filter((kind) => revs[kind] !== -1);
-          if (withheld.length) {
-            get().setFlash({
-              tone: "warn",
-              text: `起草期间你修改了 ${withheld.length} 块笔记，这些块保留你的内容，其余已写入 AI 草稿。`,
-            });
-          } else {
-            get().setFlash({ tone: "ok", text: "AI 作业完成。阅读状态未改动。" });
-          }
+          const finished = await repo.finishJob(ctx.jobId, "done", { resultJson: raw });
+          if (!finished) return "cancelled";
+          const proposals = noteProposals(permit, paper.notes, get().drafts[id] ?? {}, notes);
+          set({ noteReview: proposals.length ? { paperId: id, proposals } : null });
+          get().setFlash({
+            tone: "ok",
+            text: proposals.length
+              ? "笔记草稿已生成，确认后才会写入。阅读状态未改动。"
+              : "AI 作业完成。阅读状态未改动。",
+          });
           return "done";
         },
       );
@@ -1384,6 +1383,56 @@ export const useField = create<FieldState>((set, get) => ({
     } finally {
       draftInflight.delete(id);
       await get().refresh();
+    }
+  },
+
+  settleNoteReview: async (decision) => {
+    const review = get().noteReview;
+    if (!review) return;
+    const skip = new Set(decision.skip ?? []);
+    const requested = (decision.accept ?? []).filter((kind) => !skip.has(kind));
+    const written = new Set<NoteKind>();
+    if (requested.length) {
+      const paper = await repo.getPaper(review.paperId);
+      const drafts = get().drafts[review.paperId] ?? {};
+      const byKind = new Map(review.proposals.map((item) => [item.kind, item]));
+      const writing = requested.filter((kind) => {
+        const proposal = byKind.get(kind);
+        if (!proposal) return false;
+        if (drafts[kind] !== undefined) return false;
+        if (paper?.notes[kind]?.userEdited) return false;
+        return true;
+      });
+      const revs = Object.fromEntries(NOTE_KINDS.map((kind) => [kind, -1])) as Record<NoteKind, number>;
+      const drafted = {} as DraftedNotes;
+      for (const kind of NOTE_KINDS) {
+        drafted[kind] = byKind.get(kind)?.after ?? "";
+        if (writing.includes(kind)) revs[kind] = byKind.get(kind)!.rev;
+      }
+      try {
+        const kept = await repo.applyDraftedNotes(review.paperId, drafted, true, revs);
+        const keptSet = new Set(kept ?? NOTE_KINDS);
+        for (const kind of writing) {
+          if (!keptSet.has(kind)) written.add(kind);
+        }
+      } catch (err) {
+        get().setFlash({ tone: "error", text: `写入笔记失败：${errText(err)}，数据未改动。` });
+        throw err;
+      }
+      await get().refresh();
+    }
+    const latest = get().noteReview;
+    if (!latest || latest.paperId !== review.paperId) return;
+    const drop = new Set<NoteKind>([...skip, ...written]);
+    if (!drop.size) return;
+    const proposals = latest.proposals.filter((item) => !drop.has(item.kind));
+    set({ noteReview: proposals.length ? { paperId: latest.paperId, proposals } : null });
+    if (written.size && proposals.length) {
+      get().setFlash({ tone: "ok", text: "已写入笔记。其余仍待确认。阅读状态未改动。" });
+    } else if (written.size) {
+      get().setFlash({ tone: "ok", text: "已写入笔记。阅读状态未改动。" });
+    } else if (!proposals.length && skip.size) {
+      get().setFlash({ tone: "ok", text: "已跳过笔记草稿。" });
     }
   },
 

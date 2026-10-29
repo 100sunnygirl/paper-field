@@ -1506,6 +1506,31 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   color: var(--pf-muted);
   line-height: 1.6;
 }
+.ef-note-review {
+  display: grid;
+  gap: 16px;
+  margin: 12px 0 20px;
+  padding: 12px 14px;
+  border: 1px solid var(--pf-line-strong);
+  background: var(--pf-surface);
+}
+.ef-note-review-block {
+  display: grid;
+  gap: 4px;
+}
+.ef-note-review-block h3,
+.ef-note-review-block p {
+  margin: 0;
+}
+.ef-note-review-label {
+  color: var(--pf-muted);
+  font-size: var(--pf-fs-caption);
+}
+.ef-note-review-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
 .ef-note {
   position: relative;
   border-bottom: 1px solid var(--pf-divider);
