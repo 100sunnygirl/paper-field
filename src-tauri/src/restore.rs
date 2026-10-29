@@ -1117,6 +1117,8 @@ pub struct StagedTitle {
     pub id: String,
     pub title: String,
     pub title_zh: Option<String>,
+    pub year: Option<String>,
+    pub venue: Option<String>,
 }
 
 pub async fn read_staged_titles(db: &Path) -> Result<Vec<StagedTitle>, String> {
@@ -1128,10 +1130,28 @@ pub async fn read_staged_titles(db: &Path) -> Result<Vec<StagedTitle>, String> {
         .connect_with(options)
         .await
         .map_err(|e| format!("无法打开暂存文库：{e}"))?;
-    let result = sqlx::query("SELECT id, title, title_zh FROM papers WHERE id != '' ORDER BY id")
-        .fetch_all(&pool)
-        .await
-        .map_err(|e| format!("无法读取暂存文库标题：{e}"));
+    let info = sqlx::query("PRAGMA table_info(papers)").fetch_all(&pool).await;
+    let columns = match info {
+        Ok(rows) => rows.into_iter().filter_map(|row| row.try_get::<String, _>("name").ok()).collect::<Vec<_>>(),
+        Err(e) => {
+            pool.close().await;
+            return Err(format!("无法读取暂存文库标题：{e}"));
+        }
+    };
+    let expr = |name: &str, cast: bool| -> String {
+        if columns.iter().any(|column| column == name) {
+            if cast { format!("CAST({name} AS TEXT)") } else { name.to_string() }
+        } else {
+            "NULL".to_string()
+        }
+    };
+    let sql = format!(
+        "SELECT id, title, {} AS title_zh, {} AS year, {} AS venue FROM papers WHERE id != '' ORDER BY id",
+        expr("title_zh", false),
+        expr("year", true),
+        expr("venue", false),
+    );
+    let result = sqlx::query(&sql).fetch_all(&pool).await.map_err(|e| format!("无法读取暂存文库标题：{e}"));
     pool.close().await;
     let rows = result?;
     let mut out = Vec::new();
@@ -1140,6 +1160,8 @@ pub async fn read_staged_titles(db: &Path) -> Result<Vec<StagedTitle>, String> {
             id: row.try_get("id").map_err(|e| e.to_string())?,
             title: row.try_get("title").map_err(|e| e.to_string())?,
             title_zh: row.try_get("title_zh").ok().flatten(),
+            year: row.try_get("year").ok().flatten(),
+            venue: row.try_get("venue").ok().flatten(),
         });
     }
     Ok(out)
@@ -1184,8 +1206,65 @@ mod tests {
             assert_eq!(rows[0].id, "a");
             assert_eq!(rows[0].title, "File.pdf");
             assert_eq!(rows[1].title_zh.as_deref(), Some("保留"));
+            assert_eq!(rows[0].year, None);
+            assert_eq!(rows[0].venue, None);
+            assert_eq!(rows[1].year, None);
+            assert_eq!(rows[1].venue, None);
         });
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_staged_titles_reads_year_and_venue_only_when_the_column_exists() {
+        let path = std::env::temp_dir().join(format!("pf-staged-cite-{}.db", std::process::id()));
+        let missing = std::env::temp_dir().join(format!("pf-staged-cite-missing-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&missing);
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let opts = SqliteConnectOptions::new().filename(&path).create_if_missing(true);
+            let pool = SqlitePoolOptions::new().max_connections(1).connect_with(opts).await.unwrap();
+            sqlx::query("CREATE TABLE papers (id TEXT, title TEXT, title_zh TEXT, year INTEGER, venue TEXT)")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query(
+                "INSERT INTO papers (id, title, title_zh, year, venue) VALUES \
+                 ('p1', 'Has both', '有', 2020, 'CVPR'), \
+                 ('p2', 'Null cells', NULL, NULL, NULL)",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            pool.close().await;
+            let rows = read_staged_titles(&path).await.unwrap();
+            assert_eq!(rows[0].id, "p1");
+            assert_eq!(rows[0].title_zh.as_deref(), Some("有"));
+            assert_eq!(rows[0].year.as_deref(), Some("2020"));
+            assert_eq!(rows[0].venue.as_deref(), Some("CVPR"));
+            assert_eq!(rows[1].title_zh, None);
+            assert_eq!(rows[1].year, None);
+            assert_eq!(rows[1].venue, None);
+
+            let opts = SqliteConnectOptions::new().filename(&missing).create_if_missing(true);
+            let pool = SqlitePoolOptions::new().max_connections(1).connect_with(opts).await.unwrap();
+            sqlx::query("CREATE TABLE papers (id TEXT, title TEXT, year INTEGER)")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO papers (id, title, year) VALUES ('p3', 'No venue column', 1999)")
+                .execute(&pool)
+                .await
+                .unwrap();
+            pool.close().await;
+            let rows = read_staged_titles(&missing).await.unwrap();
+            assert_eq!(rows[0].title, "No venue column");
+            assert_eq!(rows[0].title_zh, None);
+            assert_eq!(rows[0].year.as_deref(), Some("1999"));
+            assert_eq!(rows[0].venue, None);
+        });
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&missing);
     }
 
     fn tmp(n: &str) -> PathBuf {

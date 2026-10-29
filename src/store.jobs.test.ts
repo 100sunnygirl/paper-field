@@ -22,6 +22,7 @@ import { runTracked } from "./lib/jobs";
 import { repo } from "./lib/repo";
 import { cancelChat, completeChat } from "./lib/settings";
 import { allowEveryNote } from "./lib/readingHolds";
+import { NOTE_KINDS } from "./lib/types";
 import { useField } from "./store";
 import { dismissAll } from "./toasts";
 
@@ -150,6 +151,85 @@ describe("AI 作业的阶段实况", () => {
     reply.resolve('{"summary":"s"}');
     await Promise.all([first, second]);
     expect(vi.mocked(completeChat)).toHaveBeenCalledTimes(1);
+  });
+
+  it("stores proposals and writes only from settleNoteReview", async () => {
+    const id = await makePaper();
+    vi.mocked(completeChat).mockResolvedValue('{"summary":"新总结","highlights":"新亮点"}');
+    const apply = vi.spyOn(repo, "applyDraftedNotes");
+    await useField.getState().runDraftNotes(id, allowEveryNote());
+    expect(apply).not.toHaveBeenCalled();
+    expect((await repo.getPaper(id))!.notes.summary.content).toBe("");
+    const summary = useField.getState().noteReview?.proposals.find((item) => item.kind === "summary");
+    expect(summary).toMatchObject({ before: "", after: "新总结" });
+    expect(summary!.rev).toBeGreaterThanOrEqual(0);
+
+    await useField.getState().settleNoteReview({ accept: ["summary"] });
+    expect(apply).toHaveBeenCalledTimes(1);
+    const revs = apply.mock.calls[0][3] as Record<string, number>;
+    expect(revs.summary).toBe(summary!.rev);
+    for (const kind of NOTE_KINDS) {
+      if (kind !== "summary") expect(revs[kind]).toBe(-1);
+    }
+    expect((await repo.getPaper(id))!.notes.summary.content).toBe("新总结");
+    expect((await repo.getPaper(id))!.notes.highlights.content).toBe("");
+    const pending = useField.getState().noteReview?.proposals.map((item) => item.kind);
+    expect(pending).not.toContain("summary");
+    expect(pending).toContain("highlights");
+
+    await useField.getState().settleNoteReview({ skip: ["highlights"] });
+    expect(apply).toHaveBeenCalledTimes(1);
+    expect(useField.getState().noteReview?.proposals.map((item) => item.kind)).not.toContain("highlights");
+    expect((await repo.getPaper(id))!.notes.highlights.content).toBe("");
+    apply.mockRestore();
+  });
+
+  it("keeps a kind pending when a draft or a user edit appears before accept", async () => {
+    const id = await makePaper();
+    vi.mocked(completeChat).mockResolvedValue('{"summary":"新总结","highlights":"新亮点","remarks":"注"}');
+    await useField.getState().runDraftNotes(id, allowEveryNote());
+    useField.getState().setNoteDraft(id, "summary", "我的草稿");
+    await repo.updateNote(id, "highlights", "手写", "manual", true);
+    const apply = vi.spyOn(repo, "applyDraftedNotes");
+    await useField.getState().settleNoteReview({ accept: ["summary", "highlights", "remarks"] });
+    const revs = apply.mock.calls[0][3] as Record<string, number>;
+    expect(revs.summary).toBe(-1);
+    expect(revs.highlights).toBe(-1);
+    expect(revs.remarks).toBeGreaterThanOrEqual(0);
+    const paper = (await repo.getPaper(id))!;
+    expect(paper.notes.summary.content).toBe("");
+    expect(paper.notes.highlights.content).toBe("手写");
+    expect(paper.notes.remarks.content).toBe("注");
+    const left = useField.getState().noteReview?.proposals.map((item) => item.kind);
+    expect(left).toContain("summary");
+    expect(left).toContain("highlights");
+    expect(left).not.toContain("remarks");
+    apply.mockRestore();
+  });
+
+  it("drops an open draft and a user-edited block before they become proposals", async () => {
+    const id = await makePaper();
+    await repo.updateNote(id, "highlights", "手写", "manual", true);
+    useField.getState().setNoteDraft(id, "summary", "草稿");
+    vi.mocked(completeChat).mockResolvedValue('{"summary":"新总结","highlights":"新亮点","remarks":"注"}');
+    await useField.getState().runDraftNotes(id, allowEveryNote());
+    const kinds = useField.getState().noteReview?.proposals.map((item) => item.kind);
+    expect(kinds).not.toContain("summary");
+    expect(kinds).not.toContain("highlights");
+    expect(kinds).toContain("remarks");
+  });
+
+  it("accepts every current proposal in one write and then goes idle", async () => {
+    const id = await makePaper();
+    vi.mocked(completeChat).mockResolvedValue('{"summary":"新总结"}');
+    const apply = vi.spyOn(repo, "applyDraftedNotes");
+    await useField.getState().runDraftNotes(id, allowEveryNote());
+    const kinds = useField.getState().noteReview!.proposals.map((item) => item.kind);
+    await useField.getState().settleNoteReview({ accept: kinds });
+    expect(apply).toHaveBeenCalledTimes(1);
+    expect(useField.getState().noteReview).toBeNull();
+    expect((await repo.getPaper(id))!.notes.summary.content).toBe("新总结");
+    apply.mockRestore();
   });
 });
 

@@ -1,8 +1,9 @@
 import type { CSSProperties } from "react";
+import { titleIsFile } from "../lib/readingHolds";
 import { MINERU_STATUS_LABELS, READING_STATUS_LABELS, type PaperListItem } from "../lib/types";
 import { pad2 } from "../lib/util";
 import { hasDraft as paperHasDraft, useField } from "../store";
-import { Icon } from "./ui";
+import { Icon, SourceBadge } from "./ui";
 
 /** 批量模式与「全选」共用的复选方块：行首替代序号出现，视觉与状态徽标同源。 */
 export function CheckSquare({ on }: { on: boolean }) {
@@ -62,7 +63,10 @@ export function PaperRow({
           {READING_STATUS_LABELS[paper.readingStatus]}
         </span>
       </div>
-      <h3>{title}</h3>
+      <div className="ef-row-title">
+        <h3>{title}</h3>
+        {titleIsFile(paper.fieldSources) ? <SourceBadge source="file" /> : null}
+      </div>
       {english ? <p className="ef-row-en">{english}</p> : null}
       <div className="ef-row-meta">
         <span>{[paper.venue, paper.year].filter(Boolean).join(" · ") || "会议 / 期刊待补充"}</span>

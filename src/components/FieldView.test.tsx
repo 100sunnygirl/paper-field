@@ -158,6 +158,18 @@ describe("PaperNav · 领域计数不随搜索改写", () => {
     expect(document.querySelector(".ef-count")?.textContent).toBe("02");
   });
 
+  it("文件名徽章在列表标题外面，标题文本只有题名", () => {
+    const row = intakeItem("file", null);
+    row.title = "visual-instruction-tuning.pdf";
+    row.fieldSources = { title: "file" };
+    useField.setState({ mode: "field", papers: [row] });
+    render(<PaperNav />);
+    const heading = screen.getByRole("heading", { name: "visual-instruction-tuning.pdf" });
+    expect(heading.textContent).toBe("visual-instruction-tuning.pdf");
+    expect(heading.contains(screen.getByText("文件名"))).toBe(false);
+    expect(screen.getByText("文件名")).toBeInTheDocument();
+  });
+
   it("空领域提示此领域还没有论文", () => {
     useField.setState({ mode: "field", papers: [], search: "" });
     render(<PaperNav />);
@@ -235,6 +247,25 @@ describe("PaperNav · 批量选择与批量删除", () => {
     expect(screen.getByText("已选 1 / 1")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "删除" }));
     expect(useField.getState().dialog).toBe("delete-checked");
+  });
+
+  it("移动到领域冻结勾选，标为已读把勾选交给 markRead", () => {
+    const markRead = vi.fn(async () => undefined);
+    useField.setState({
+      mode: "field",
+      papers: [intakeItem("a", null), intakeItem("b", null)],
+      batchMode: true,
+      checkedPaperIds: ["a", "b"],
+      markRead,
+    });
+    render(<PaperNav />);
+    expect(screen.getByRole("button", { name: "移动到领域" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "标为已读" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "移动到领域" }));
+    expect(useField.getState().dialog).toBe("move-checked");
+    expect(useField.getState().dialogPaperIds).toEqual(["a", "b"]);
+    fireEvent.click(screen.getByRole("button", { name: "标为已读" }));
+    expect(markRead).toHaveBeenCalledWith(["a", "b"]);
   });
 });
 

@@ -1,5 +1,12 @@
 import { create } from "zustand";
-import { exportDomain } from "./lib/export";
+import {
+  assignExportFolders,
+  browserExportFilename,
+  buildDomainExport,
+  deliverExport,
+  libraryExportFilename,
+  type ExportFile,
+} from "./lib/export";
 import {
   DEFAULT_MINERU,
   loadMineruSettings,
@@ -28,13 +35,16 @@ import { resetEngine } from "./lib/engine";
 import {
   adoptProse,
   libraryLabel,
+  noteProposals,
   noteWriteNeeded,
   partitionTitles,
   readingUndoPlan,
   RESTORE_TITLE_CAP,
   stageFieldsInPatch,
   stageProseFrom,
+  titleIsFile,
   type NotePermit,
+  type NoteProposal,
   type PartitionedTitles,
   type ReadingUndo,
   type StageProse,
@@ -51,6 +61,7 @@ import { dismissAll, notify, type ToastAction } from "./toasts";
 import type {
   AppMode,
   Domain,
+  DraftedNotes,
   FieldStats,
   LlmJob,
   LlmSettings,
@@ -59,7 +70,7 @@ import type {
   PaperDetail,
   PaperListItem,
 } from "./lib/types";
-import { NOTE_KINDS } from "./lib/types";
+import { NOTE_KINDS, NOTE_LABELS } from "./lib/types";
 import { extractJson, isTauri } from "./lib/util";
 
 
@@ -110,6 +121,7 @@ interface FieldState {
     | "confirm-meta"
     | "edit-domain"
     | "move-paper"
+    | "move-checked"
     | "delete-paper"
     | "delete-checked"
     | "pick-domain"
@@ -118,20 +130,26 @@ interface FieldState {
     | null;
   /** 对话框打开时锁定的目标论文：之后选中怎么变，对话框都只作用于它。 */
   dialogPaperId: string | null;
-  /** delete-checked 打开时冻结的勾选集。 */
+  /** delete-checked / move-checked 打开时冻结的勾选集。 */
   dialogPaperIds: string[];
   pendingDraftJob: string | null;
   /** 正在编辑、尚未保存的笔记草稿，按论文分开存：切换论文不丢，切回来还在。 */
   drafts: Record<string, Partial<Record<NoteKind, string>>>;
   stageHold: { paperId: string; prose: StageProse } | null;
-  pendingReadingUndo: (ReadingUndo & { gen: number }) | null;
+  /** Model note drafts waiting for one settleNoteReview write. Idle when null. */
+  noteReview: { paperId: string; proposals: NoteProposal[] } | null;
+  pendingReadingUndo: { gen: number; papers: ReadingUndo[] } | null;
   restorePreview: { phase: "idle" } | { phase: "previewed" | "staged"; diff: PartitionedTitles };
   loadError: string | null;
+  /** Failed PDF imports for this session. Not written to localStorage or the database. */
+  importFailures: ImportFailure[];
   /** 作业面板（状态条「作业」入口 / ⌘J）：非模态浮层，不拦截阅读区操作。 */
   jobsOpen: boolean;
   init: () => Promise<void>;
   setMode: (mode: AppMode) => Promise<void>;
-  selectDomain: (id: string | null) => Promise<void>;
+  selectDomain: (id: string | null, paperId?: string) => Promise<void>;
+  /** One landing from the jobs panel. A null domain id is read from the paper. */
+  landOnPaper: (paperId: string, domainId: string | null) => Promise<void>;
   selectPaper: (id: string | null) => Promise<void>;
   setSearch: (value: string) => Promise<void>;
   setArchiveFilter: (value: OpenSource | "all") => Promise<void>;
@@ -149,6 +167,8 @@ interface FieldState {
     /** 导入到哪个领域；缺省为发起时选中的领域（重试时由闭包带上原领域）。 */
     domainId?: string,
   ) => Promise<void>;
+  retryImportFailures: (paths: string[]) => Promise<void>;
+  dismissImportFailures: (paths: string[]) => void;
   createManualPaper: (input: {
     title: string;
     arxivId?: string;
@@ -161,13 +181,17 @@ interface FieldState {
   savePaperPatch: (paperId: string, patch: Parameters<typeof repo.updatePaper>[1]) => Promise<void>;
   saveAuthors: (paperId: string, authors: PaperDetail["authors"]) => Promise<void>;
   saveNote: (paperId: string, kind: NoteKind, content: string) => Promise<void>;
+  saveOpenDrafts: (paperId: string) => Promise<void>;
   /** 写入 / 清除（null）一块笔记草稿。 */
   setNoteDraft: (paperId: string, kind: NoteKind, value: string | null) => void;
-  markRead: (paperId?: string) => Promise<void>;
+  markRead: (paperIds: string[]) => Promise<void>;
   markReading: (paperId?: string) => Promise<void>;
   markUnread: (paperId?: string) => Promise<void>;
   setReadingStatus: (status: "unread" | "reading" | "read", paperId?: string) => Promise<void>;
-  movePaper: (domainId: string, paperId?: string) => Promise<void>;
+  movePapers: (
+    ids: string[],
+    target: { kind: "domain"; domainId: string } | { kind: "create"; name: string },
+  ) => Promise<void>;
   deletePaper: (paperId?: string) => Promise<void>;
   setBatchMode: (on: boolean) => void;
   toggleCheckedPaper: (id: string) => void;
@@ -182,7 +206,7 @@ interface FieldState {
   runPrepareMeta: (paperId?: string, overwrite?: boolean, quiet?: boolean, options?: { llm?: boolean }) => Promise<void>;
   runRefreshLinks: (paperId?: string) => Promise<void>;
   runDraftNotes: (paperId?: string, permit?: NotePermit) => Promise<void>;
-  createDomainAndMove: (name: string) => Promise<void>;
+  settleNoteReview: (decision: { accept?: NoteKind[]; skip?: NoteKind[] }) => Promise<void>;
   claimFileTitle: (paperId: string) => Promise<void>;
   undoMarkRead: (gen: number) => Promise<void>;
   confirmRestore: () => Promise<void>;
@@ -192,7 +216,7 @@ interface FieldState {
   saveMineruSettings: (input: MineruSaveInput) => Promise<void>;
   saveBiblioSettings: (input: BiblioSaveInput) => Promise<void>;
   probeMineru: () => Promise<ProviderHealth[]>;
-  exportCurrentDomain: () => Promise<void>;
+  exportLibrary: (target: { kind: "domain"; domainId: string } | { kind: "all" }) => Promise<void>;
   backupLibrary: () => Promise<void>;
   restoreLibrary: () => Promise<void>;
   navigatePapers: (delta: number) => Promise<void>;
@@ -206,6 +230,34 @@ function currentList(state: FieldState): PaperListItem[] {
 }
 
 const IMPORT_FAILURES_SHOWN = 5;
+
+export interface ImportFailure {
+  path: string;
+  name: string;
+  domainId: string;
+  message: string;
+}
+
+function mergeImportFailures(current: ImportFailure[], attempted: readonly string[], failed: readonly ImportFailure[]): ImportFailure[] {
+  const failedByPath = new Map(failed.map((row) => [row.path, row]));
+  const attemptedSet = new Set(attempted);
+  const next: ImportFailure[] = [];
+  const seen = new Set<string>();
+  for (const row of current) {
+    if (!attemptedSet.has(row.path)) {
+      next.push(row);
+      continue;
+    }
+    const updated = failedByPath.get(row.path);
+    if (!updated) continue;
+    next.push(updated);
+    seen.add(row.path);
+  }
+  for (const row of failed) {
+    if (!seen.has(row.path)) next.push(row);
+  }
+  return next;
+}
 /** Rust errors often carry full local paths; the toast keeps a short reason, the log keeps all of it. */
 export const IMPORT_REASON_MAX = 60;
 
@@ -226,6 +278,8 @@ const refreshInflight = new Set<string>();
 const draftInflight = new Set<string>();
 let readingUndoGen = 0;
 let createMoveFlight: Promise<void> | null = null;
+/** One toast for 保存全部. saveNote stays the only writer and has no quiet flag. */
+let noteSaveFrame: { saved: number; failed: string[] } | null = null;
 
 export const SEARCH_DEBOUNCE_MS = 250;
 let refreshSeq = 0;
@@ -260,12 +314,19 @@ export function hasDraft(state: Pick<FieldState, "drafts">, paperId: string | nu
   return Boolean(paperId && state.drafts[paperId] && Object.keys(state.drafts[paperId]!).length);
 }
 
-async function liveLibraryTitles(): Promise<Array<{ id: string; label: string }>> {
+async function liveLibraryTitles(): Promise<Array<{ id: string; label: string; year: string; venue: string }>> {
   const domains = await repo.listDomains();
-  const rows: Array<{ id: string; label: string }> = [];
+  const rows: Array<{ id: string; label: string; year: string; venue: string }> = [];
   for (const domain of domains) {
     const papers = await repo.listPapers(domain.id);
-    for (const item of papers) rows.push({ id: item.id, label: libraryLabel(item.title, item.titleZh) });
+    for (const item of papers) {
+      rows.push({
+        id: item.id,
+        label: libraryLabel(item.title, item.titleZh),
+        year: item.year == null ? "" : String(item.year),
+        venue: item.venue ?? "",
+      });
+    }
   }
   return rows;
 }
@@ -288,6 +349,16 @@ export {
 } from "./lib/readingHolds";
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
 let searchWaiters: { resolve: () => void; reject: (err: unknown) => void }[] = [];
+
+function takeSearchWaiters(): { resolve: () => void; reject: (err: unknown) => void }[] {
+  if (searchTimer) {
+    clearTimeout(searchTimer);
+    searchTimer = null;
+  }
+  const waiters = searchWaiters;
+  searchWaiters = [];
+  return waiters;
+}
 
 export const useField = create<FieldState>((set, get) => ({
   ready: false,
@@ -320,9 +391,11 @@ export const useField = create<FieldState>((set, get) => ({
   pendingDraftJob: null,
   drafts: loadDrafts(),
   stageHold: null,
+  noteReview: null,
   pendingReadingUndo: null,
   restorePreview: { phase: "idle" },
   loadError: null,
+  importFailures: [],
   jobsOpen: false,
 
   // 【通知唯一入口 / 日志唯一收口】flash 字段的唯一写入口就是本函数：写入镜像的同时
@@ -386,7 +459,12 @@ export const useField = create<FieldState>((set, get) => ({
     set({
       dialog,
       dialogPaperId: paperScoped ? (typeof target === "string" ? target : state.paper?.id ?? state.selectedPaperId) : null,
-      dialogPaperIds: dialog === "delete-checked" ? (Array.isArray(target) ? [...target] : [...state.checkedPaperIds]) : [],
+      dialogPaperIds:
+        dialog === "delete-checked" || dialog === "move-checked"
+          ? Array.isArray(target)
+            ? [...target]
+            : [...state.checkedPaperIds]
+          : [],
     });
   },
   closeDialog: () => {
@@ -496,15 +574,40 @@ export const useField = create<FieldState>((set, get) => ({
     await get().refresh({ reselect: true });
   },
 
-  selectDomain: async (id) => {
+  selectDomain: async (id, paperId) => {
+    const waiters = takeSearchWaiters();
     try {
       selectionEpoch += 1;
-      set({ selectedDomainId: id, selectedPaperId: null, paper: null, mode: "field", dialog: null, dialogPaperId: null, dialogPaperIds: [] });
-      await get().refresh();
+      set({
+        selectedDomainId: id,
+        selectedPaperId: paperId ?? null,
+        paper: null,
+        search: "",
+        mode: "field",
+        dialog: null,
+        dialogPaperId: null,
+        dialogPaperIds: [],
+      });
+      const pending = get().refresh();
+      pending.then(
+        () => waiters.forEach((waiter) => waiter.resolve()),
+        (err) => waiters.forEach((waiter) => waiter.reject(err)),
+      );
+      await pending;
     } catch (err) {
       get().setFlash({ tone: "error", text: `切换领域失败：${errText(err)}，数据未改动。` });
       throw err;
     }
+  },
+
+  landOnPaper: async (paperId, domainId) => {
+    let id = domainId;
+    if (!id) {
+      const loaded = await repo.getPaper(paperId);
+      if (!loaded) return;
+      id = loaded.domainId;
+    }
+    await get().selectDomain(id, paperId);
   },
 
   selectPaper: async (id) => {
@@ -610,9 +713,16 @@ export const useField = create<FieldState>((set, get) => ({
       // 只关导入对话框本身：长时间导入期间用户打开的其他对话框不被顺手关掉。
       if (get().dialog === "paper") set({ dialog: null });
       if (created[0]) selectionEpoch += 1;
+      const failedRows: ImportFailure[] = failed.map((row) => ({
+        path: row.path,
+        name: row.name,
+        domainId,
+        message: row.message,
+      }));
       set({
         selectedPaperId: created[0] ?? get().selectedPaperId,
         mode: "field",
+        importFailures: mergeImportFailures(get().importFailures, unique, failedRows),
       });
       await get().refresh();
       const skippedText = skippedCount ? `，跳过 ${skippedCount} 篇已在库中` : "";
@@ -623,11 +733,10 @@ export const useField = create<FieldState>((set, get) => ({
           text: `已导入 ${created.length} 篇${skippedText}，${failed.length} 篇失败：${importFailureList(failed)}。${failed.length > 1 ? "完整失败列表见日志。" : ""}`,
           action: {
             label: failed.length > 1 ? `重试这 ${failed.length} 篇` : "重试",
-            // Only the failed paths go back in; already-imported ones are not re-sent.
             run: () => {
-              const retry = failed.map((f) => f.path);
-              get()
-                .importPdfs(retry, undefined, domainId)
+              const paths = get().importFailures.map((row) => row.path);
+              void get()
+                .retryImportFailures(paths)
                 .catch((err) => get().setFlash({ tone: "error", text: `重试导入失败：${errText(err)}` }));
             },
           },
@@ -660,6 +769,25 @@ export const useField = create<FieldState>((set, get) => ({
       get().setFlash({ tone: "error", text: `导入失败：${errText(err)}，数据未改动。` });
       throw err;
     }
+  },
+
+  retryImportFailures: async (paths) => {
+    const wanted = new Set(paths);
+    const groups = new Map<string, string[]>();
+    for (const row of get().importFailures) {
+      if (!wanted.has(row.path)) continue;
+      const list = groups.get(row.domainId) ?? [];
+      list.push(row.path);
+      groups.set(row.domainId, list);
+    }
+    for (const [domainId, domainPaths] of groups) {
+      await get().importPdfs(domainPaths, undefined, domainId);
+    }
+  },
+
+  dismissImportFailures: (paths) => {
+    const drop = new Set(paths);
+    set({ importFailures: get().importFailures.filter((row) => !drop.has(row.path)) });
   },
 
   createManualPaper: async (input) => {
@@ -802,7 +930,8 @@ export const useField = create<FieldState>((set, get) => ({
       if (!row) throw new Error("论文不存在");
       if (!noteWriteNeeded(row.notes[kind].content, content)) {
         get().setNoteDraft(paperId, kind, null);
-        get().setFlash({ tone: "ok", text: "笔记已保存。" });
+        if (noteSaveFrame) noteSaveFrame.saved += 1;
+        else get().setFlash({ tone: "ok", text: "笔记已保存。" });
         return;
       }
       await repo.updateNote(paperId, kind, content, "manual", true);
@@ -813,52 +942,111 @@ export const useField = create<FieldState>((set, get) => ({
       }
       get().setNoteDraft(paperId, kind, null);
       await get().refresh();
-      get().setFlash({ tone: "ok", text: "笔记已保存。" });
+      if (noteSaveFrame) noteSaveFrame.saved += 1;
+      else get().setFlash({ tone: "ok", text: "笔记已保存。" });
     } catch (err) {
-      get().setFlash({
-        tone: "error",
-        text: err instanceof Error ? `笔记保存失败：${err.message}` : "笔记保存失败，输入已保留，请重试。",
-      });
+      if (noteSaveFrame) noteSaveFrame.failed.push(NOTE_LABELS[kind].zh);
+      else {
+        get().setFlash({
+          tone: "error",
+          text: err instanceof Error ? `笔记保存失败：${err.message}` : "笔记保存失败，输入已保留，请重试。",
+        });
+      }
       throw err;
     }
   },
 
-  markRead: async (paperId) => {
-    const id = paperId ?? get().paper?.id ?? get().selectedPaperId;
-    if (!id) return;
-    const loaded = await repo.getPaper(id);
-    const row = loaded ?? (get().paper?.id === id ? get().paper : null);
-    if (!row) {
-      await repo.setReadingStatus(id, "read");
+  saveOpenDrafts: async (paperId) => {
+    const kinds = Object.keys(get().drafts[paperId] ?? {}) as NoteKind[];
+    if (!kinds.length) return;
+    const frame = { saved: 0, failed: [] as string[] };
+    noteSaveFrame = frame;
+    try {
+      for (const kind of kinds) {
+        const value = get().drafts[paperId]?.[kind];
+        if (value === undefined) continue;
+        try {
+          await get().saveNote(paperId, kind, value);
+        } catch {
+          // The failed draft stays. The frame names it in the single toast.
+        }
+      }
+    } finally {
+      noteSaveFrame = null;
+    }
+    if (frame.failed.length) {
+      const names = frame.failed.join("、");
+      get().setFlash({
+        tone: frame.saved ? "warn" : "error",
+        text: frame.saved ? `已保存 ${frame.saved} 块笔记，${names}保存失败，草稿仍保留。` : `笔记保存失败：${names}。草稿仍保留。`,
+      });
+      return;
+    }
+    get().setFlash({ tone: "ok", text: "笔记已保存。" });
+  },
+
+  markRead: async (paperIds) => {
+    const ids = [...paperIds];
+    const changed: ReadingUndo[] = [];
+    const labels = new Map<string, string>();
+    try {
+      for (const id of ids) {
+        const loaded = await repo.getPaper(id);
+        const row = loaded ?? (get().paper?.id === id ? get().paper : null);
+        if (!row) {
+          await repo.setReadingStatus(id, "read");
+          continue;
+        }
+        if (row.readingStatus === "read") continue;
+        await repo.setReadingStatus(id, "read");
+        changed.push({ paperId: id, status: row.readingStatus, readAt: row.readAt });
+        labels.set(id, libraryLabel(row.title, row.titleZh));
+      }
+    } catch (err) {
+      if (changed.length) {
+        const gen = ++readingUndoGen;
+        set({ pendingReadingUndo: { gen, papers: changed } });
+        get().setFlash({
+          tone: "error",
+          text: `更新阅读状态失败：${errText(err)}`,
+          action: { label: "撤销", run: () => void get().undoMarkRead(gen) },
+        });
+        await get().refresh().catch(() => undefined);
+      } else {
+        get().setFlash({ tone: "error", text: `更新阅读状态失败：${errText(err)}，数据未改动。` });
+      }
+      throw err;
+    }
+    if (!changed.length) {
       await get().refresh();
       return;
     }
-    const undo: ReadingUndo = { paperId: id, status: row.readingStatus, readAt: row.readAt };
-    try {
-      await repo.setReadingStatus(id, "read");
-      if (undo.status !== "read") {
-        const gen = ++readingUndoGen;
-        set({ pendingReadingUndo: { gen, ...undo } });
-        get().setFlash({
-          tone: "ok",
-          text: `已将「${libraryLabel(row.title, row.titleZh)}」标为已读。`,
-          action: { label: "撤销", run: () => void get().undoMarkRead(gen) },
-        });
-      }
-      await get().refresh();
-    } catch (err) {
-      get().setFlash({ tone: "error", text: `更新阅读状态失败：${errText(err)}，数据未改动。` });
-      throw err;
-    }
+    const gen = ++readingUndoGen;
+    set({ pendingReadingUndo: { gen, papers: changed } });
+    const text =
+      changed.length === 1
+        ? `已将「${labels.get(changed[0].paperId) ?? ""}」标为已读。`
+        : `已将 ${changed.length} 篇标为已读。`;
+    get().setFlash({
+      tone: "ok",
+      text,
+      action: { label: "撤销", run: () => void get().undoMarkRead(gen) },
+    });
+    await get().refresh();
   },
 
   undoMarkRead: async (gen) => {
     const armed = get().pendingReadingUndo;
     if (!armed || armed.gen !== gen) return;
-    set({ pendingReadingUndo: null });
     try {
-      for (const status of readingUndoPlan(armed)) {
-        await repo.setReadingStatus(armed.paperId, status);
+      for (const paper of armed.papers) {
+        for (const status of readingUndoPlan(paper)) {
+          await repo.setReadingStatus(paper.paperId, status);
+        }
+        const latest = get().pendingReadingUndo;
+        if (!latest || latest.gen !== gen) return;
+        const rest = latest.papers.filter((row) => row.paperId !== paper.paperId);
+        set({ pendingReadingUndo: rest.length ? { gen, papers: rest } : null });
       }
       await get().refresh();
       get().setFlash({ tone: "ok", text: "已撤销标记已读。" });
@@ -891,25 +1079,58 @@ export const useField = create<FieldState>((set, get) => ({
     }
   },
 
-  createDomainAndMove: async (name) => {
-    if (createMoveFlight) return createMoveFlight;
-    createMoveFlight = (async () => {
-      const trimmed = name.trim();
-      if (!trimmed) throw new Error("领域名称必填");
-      const paperId = get().dialogPaperId;
-      if (get().dialog !== "move-paper" || !paperId) throw new Error("没有锁定的论文");
-      const domain = await repo.createDomain({ name: trimmed, code: "" });
+  movePapers: async (ids, target) => {
+    const unique = [...new Set(ids)];
+    if (!unique.length) return;
+    const run = async (domainId: string) => {
+      try {
+        for (const id of unique) await repo.updatePaper(id, { domainId });
+      } catch (err) {
+        get().setFlash({
+          tone: "error",
+          text: `移动论文失败：${errText(err)}${unique.length === 1 ? "，数据未改动。" : ""}`,
+        });
+        throw err;
+      }
+      selectionEpoch += 1;
+      set({
+        dialog: null,
+        dialogPaperId: null,
+        dialogPaperIds: [],
+        selectedPaperId: unique[0],
+        selectedDomainId: domainId,
+        mode: "field",
+      });
       await get().refresh();
-      await get().movePaper(domain.id, paperId);
-    })().finally(() => {
-      createMoveFlight = null;
-    });
-    return createMoveFlight;
+      const domain = get().domains.find((item) => item.id === domainId);
+      const text =
+        unique.length === 1
+          ? domain
+            ? `论文已移动到「${domain.name}」。`
+            : "论文已移动到新领域。"
+          : domain
+            ? `已将 ${unique.length} 篇移动到「${domain.name}」。`
+            : `已将 ${unique.length} 篇移动到新领域。`;
+      get().setFlash({ tone: "ok", text });
+    };
+    if (target.kind === "create") {
+      if (createMoveFlight) return createMoveFlight;
+      createMoveFlight = (async () => {
+        const trimmed = target.name.trim();
+        if (!trimmed) throw new Error("领域名称必填");
+        const domain = await repo.createDomain({ name: trimmed, code: "" });
+        await run(domain.id);
+      })().finally(() => {
+        createMoveFlight = null;
+      });
+      return createMoveFlight;
+    }
+    await run(target.domainId);
   },
 
   claimFileTitle: async (paperId) => {
     const row = await repo.getPaper(paperId);
-    if (!row || row.fieldSources?.title !== "file") return;
+    if (!row || !titleIsFile(row.fieldSources)) return;
     try {
       await repo.updatePaper(paperId, { title: row.title }, true);
       const fresh = await repo.getPaper(paperId);
@@ -921,25 +1142,6 @@ export const useField = create<FieldState>((set, get) => ({
       get().setFlash({ tone: "ok", text: "标题已记为你的。" });
     } catch (err) {
       get().setFlash({ tone: "error", text: `认领标题失败：${errText(err)}，数据未改动。` });
-      throw err;
-    }
-  },
-
-  movePaper: async (domainId, paperId) => {
-    const id = paperId ?? get().dialogPaperId ?? get().selectedPaperId;
-    if (!id) return;
-    try {
-      await repo.updatePaper(id, { domainId });
-      selectionEpoch += 1;
-      set({ dialog: null, dialogPaperId: null, selectedPaperId: id, selectedDomainId: domainId, mode: "field" });
-      await get().refresh();
-      const domain = get().domains.find((d) => d.id === domainId);
-      get().setFlash({
-        tone: "ok",
-        text: domain ? `论文已移动到「${domain.name}」。` : "论文已移动到新领域。",
-      });
-    } catch (err) {
-      get().setFlash({ tone: "error", text: `移动论文失败：${errText(err)}，数据未改动。` });
       throw err;
     }
   },
@@ -1158,13 +1360,6 @@ export const useField = create<FieldState>((set, get) => ({
       return;
     }
     if (get().dialog === "confirm-notes") set({ dialog: null, dialogPaperId: null, pendingDraftJob: null });
-    const openDrafts = get().drafts[id] ?? {};
-    const revs = Object.fromEntries(
-      NOTE_KINDS.map((kind) => {
-        const allowed = permit[kind] === true && openDrafts[kind] === undefined;
-        return [kind, allowed ? (paper.notes?.[kind]?.rev ?? 0) : -1];
-      }),
-    ) as Record<NoteKind, number>;
     const prompt = draftNotesUserPrompt(paper);
     try {
       const result = await runTracked(
@@ -1175,17 +1370,16 @@ export const useField = create<FieldState>((set, get) => ({
           await ctx.checkpoint();
           ctx.stage("apply");
           const notes = normalizeNotes(extractJson(raw));
-          const kept = await repo.applyDraftedNotes(id, notes, true, revs, jobDoneStep(ctx.jobId, raw));
-          if (kept === null) return "cancelled";
-          const withheld = kept.filter((kind) => revs[kind] !== -1);
-          if (withheld.length) {
-            get().setFlash({
-              tone: "warn",
-              text: `起草期间你修改了 ${withheld.length} 块笔记，这些块保留你的内容，其余已写入 AI 草稿。`,
-            });
-          } else {
-            get().setFlash({ tone: "ok", text: "AI 作业完成。阅读状态未改动。" });
-          }
+          const finished = await repo.finishJob(ctx.jobId, "done", { resultJson: raw });
+          if (!finished) return "cancelled";
+          const proposals = noteProposals(permit, paper.notes, get().drafts[id] ?? {}, notes);
+          set({ noteReview: proposals.length ? { paperId: id, proposals } : null });
+          get().setFlash({
+            tone: "ok",
+            text: proposals.length
+              ? "笔记草稿已生成，确认后才会写入。阅读状态未改动。"
+              : "AI 作业完成。阅读状态未改动。",
+          });
           return "done";
         },
       );
@@ -1197,6 +1391,56 @@ export const useField = create<FieldState>((set, get) => ({
     } finally {
       draftInflight.delete(id);
       await get().refresh();
+    }
+  },
+
+  settleNoteReview: async (decision) => {
+    const review = get().noteReview;
+    if (!review) return;
+    const skip = new Set(decision.skip ?? []);
+    const requested = (decision.accept ?? []).filter((kind) => !skip.has(kind));
+    const written = new Set<NoteKind>();
+    if (requested.length) {
+      const paper = await repo.getPaper(review.paperId);
+      const drafts = get().drafts[review.paperId] ?? {};
+      const byKind = new Map(review.proposals.map((item) => [item.kind, item]));
+      const writing = requested.filter((kind) => {
+        const proposal = byKind.get(kind);
+        if (!proposal) return false;
+        if (drafts[kind] !== undefined) return false;
+        if (paper?.notes[kind]?.userEdited) return false;
+        return true;
+      });
+      const revs = Object.fromEntries(NOTE_KINDS.map((kind) => [kind, -1])) as Record<NoteKind, number>;
+      const drafted = {} as DraftedNotes;
+      for (const kind of NOTE_KINDS) {
+        drafted[kind] = byKind.get(kind)?.after ?? "";
+        if (writing.includes(kind)) revs[kind] = byKind.get(kind)!.rev;
+      }
+      try {
+        const kept = await repo.applyDraftedNotes(review.paperId, drafted, true, revs);
+        const keptSet = new Set(kept ?? NOTE_KINDS);
+        for (const kind of writing) {
+          if (!keptSet.has(kind)) written.add(kind);
+        }
+      } catch (err) {
+        get().setFlash({ tone: "error", text: `写入笔记失败：${errText(err)}，数据未改动。` });
+        throw err;
+      }
+      await get().refresh();
+    }
+    const latest = get().noteReview;
+    if (!latest || latest.paperId !== review.paperId) return;
+    const drop = new Set<NoteKind>([...skip, ...written]);
+    if (!drop.size) return;
+    const proposals = latest.proposals.filter((item) => !drop.has(item.kind));
+    set({ noteReview: proposals.length ? { paperId: latest.paperId, proposals } : null });
+    if (written.size && proposals.length) {
+      get().setFlash({ tone: "ok", text: "已写入笔记。其余仍待确认。阅读状态未改动。" });
+    } else if (written.size) {
+      get().setFlash({ tone: "ok", text: "已写入笔记。阅读状态未改动。" });
+    } else if (!proposals.length && skip.size) {
+      get().setFlash({ tone: "ok", text: "已跳过笔记草稿。" });
     }
   },
 
@@ -1295,14 +1539,21 @@ export const useField = create<FieldState>((set, get) => ({
       const summary = await invoke<{ papers: number } | null>("restore_library_backup");
       if (!summary) return;
       try {
-        const backup = await invoke<Array<{ id: string; title: string; titleZh?: string | null }>>("restore_staged_titles");
+        const backup = await invoke<
+          Array<{ id: string; title: string; titleZh?: string | null; year?: string | null; venue?: string | null }>
+        >("restore_staged_titles");
         const current = await liveLibraryTitles();
         set({
           restorePreview: {
             phase: "previewed",
             diff: partitionTitles(
               current,
-              backup.map((row) => ({ id: row.id, label: libraryLabel(row.title, row.titleZh) })),
+              backup.map((row) => ({
+                id: row.id,
+                label: libraryLabel(row.title, row.titleZh),
+                year: row.year ?? "",
+                venue: row.venue ?? "",
+              })),
               RESTORE_TITLE_CAP,
             ),
           },
@@ -1352,15 +1603,33 @@ export const useField = create<FieldState>((set, get) => ({
     set({ dialog: null, dialogPaperId: null, dialogPaperIds: [], pendingDraftJob: null, restorePreview: { phase: "idle" } });
   },
 
-  exportCurrentDomain: async () => {
-    const domainId = get().selectedDomainId;
-    if (!domainId) return;
-    const domain = await repo.getDomain(domainId);
-    if (!domain) return;
-    const papers = await repo.papersForExport(domainId);
+  exportLibrary: async (target) => {
+    const now = new Date();
     try {
-      const where = await exportDomain(domain, papers);
-      get().setFlash({ tone: "ok", text: `已导出 ${papers.length} 篇 · ${where}` });
+      let files: ExportFile[];
+      let downloadName: string;
+      let count: number;
+      if (target.kind === "domain") {
+        const domain = await repo.getDomain(target.domainId);
+        if (!domain) return;
+        const papers = await repo.papersForExport(domain.id);
+        files = buildDomainExport(domain, papers, now);
+        downloadName = browserExportFilename(domain);
+        count = papers.length;
+      } else {
+        const domains = await repo.listDomains();
+        const groups = [];
+        count = 0;
+        for (const domain of domains) {
+          const papers = await repo.papersForExport(domain.id);
+          count += papers.length;
+          groups.push({ domainId: domain.id, files: buildDomainExport(domain, papers, now) });
+        }
+        files = assignExportFolders(groups);
+        downloadName = libraryExportFilename(now);
+      }
+      const where = await deliverExport(files, downloadName);
+      get().setFlash({ tone: "ok", text: `已导出 ${count} 篇 · ${where}` });
     } catch (err) {
       if (String(err).includes("EXPORT_CANCELLED")) return;
       get().setFlash({ tone: "error", text: err instanceof Error ? err.message : String(err) });

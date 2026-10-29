@@ -52,6 +52,14 @@ describe("StatusStrip · 作业入口", () => {
     resetActivity();
   });
 
+  it("shows the draft count only when a note draft is open", () => {
+    const { rerender } = render(<StatusStrip />);
+    expect(screen.queryByText(/笔记草稿/)).toBeNull();
+    useField.setState({ drafts: { p1: { summary: "" }, p2: { highlights: "x" } } });
+    rerender(<StatusStrip />);
+    expect(screen.getByText(/笔记草稿/)).toHaveTextContent("笔记草稿 2");
+  });
+
   it("空闲时显示「队列空闲」，点击展开作业面板（aria-expanded 同步）", () => {
     render(<StatusStrip />);
     const toggle = screen.getByRole("button", { name: /队列空闲/ });

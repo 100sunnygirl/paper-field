@@ -139,8 +139,8 @@ describe("PaperSearch · 跨领域搜索下拉", () => {
     fireEvent.change(screen.getByLabelText("搜索论文"), { target: { value: "vision" } });
     const row = await screen.findByText("Vision Transformer");
     fireEvent.click(row.closest("button")!);
-    await waitFor(() => expect(selectDomain).toHaveBeenCalledWith(item.domainId));
-    expect(selectPaper).toHaveBeenCalledWith("p1");
+    await waitFor(() => expect(selectDomain).toHaveBeenCalledWith(item.domainId, item.id));
+    expect(selectPaper).not.toHaveBeenCalled();
   });
 
   it("下拉开时按 Esc 收起且不冒泡（不触发 App 级关闭）", async () => {

@@ -19,6 +19,7 @@ import {
 } from "../lib/settings";
 import type { LlmProviderView } from "../lib/types";
 import { biblioEmailConfigured, type BiblioSaveInput } from "../lib/biblio";
+import { keyPresence, type KeyPresenceState } from "../lib/keyPresence";
 import { checkForAppUpdate } from "../lib/updater";
 import { openExternal } from "../lib/urls";
 import { formatDate, pad2, shortcut, uid } from "../lib/util";
@@ -31,8 +32,30 @@ function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+export const SETTINGS_BLOCKS = [
+  { id: "settings-llm", title: "AI 服务设置" },
+  { id: "settings-keys", title: "密钥" },
+  { id: "settings-export", title: "数据导出" },
+  { id: "settings-backup", title: "备份与恢复" },
+  { id: "settings-shortcuts", title: "快捷键" },
+  { id: "settings-update", title: "软件更新" },
+  { id: "settings-mineru", title: "MinerU 解析源" },
+  { id: "settings-biblio", title: "文献库" },
+  { id: "settings-logs", title: "运行日志" },
+] as const;
+
+function settingsBlockId(title: (typeof SETTINGS_BLOCKS)[number]["title"]): string {
+  return SETTINGS_BLOCKS.find((block) => block.title === title)!.id;
+}
+
+const KEY_STATE_LABEL: Record<KeyPresenceState, string> = {
+  present: "已配置",
+  absent: "未配置",
+  unreadable: "无法读取",
+};
+
 export function SystemView() {
-  const exportCurrentDomain = useField((s) => s.exportCurrentDomain);
+  const exportLibrary = useField((s) => s.exportLibrary);
   const domains = useField((s) => s.domains);
   const selectedDomainId = useField((s) => s.selectedDomainId);
   const domain = domains.find((d) => d.id === selectedDomainId);
@@ -46,24 +69,44 @@ export function SystemView() {
             <p className="lede">
               AI Key 与 MinerU Token 只保存在本机。没有 AI Key 也能完整手动录入论文与笔记；AI 不会自动把论文标成已读。
             </p>
+            <nav className="ef-settings-nav" aria-label="设置">
+              {SETTINGS_BLOCKS.map((block) => (
+                <a key={block.id} href={`#${block.id}`}>
+                  {block.title}
+                </a>
+              ))}
+            </nav>
           </div>
 
           <div className="ef-system-blocks">
             <LlmSettingsBlock />
 
-              <article className="page-block pf-stagger" style={{ "--pf-i": 3 } as CSSProperties}>
+              <KeyOverview />
+
+              <article id={settingsBlockId("数据导出")} className="page-block pf-stagger" style={{ "--pf-i": 3 } as CSSProperties}>
                 <header className="ef-block-head">
                   <h3>数据导出</h3>
-                  <p>将当前领域导出为 Markdown 文件夹（README + 每篇论文一个文件）。</p>
+                  <p>导出为 Markdown 文件夹（README + 每篇论文一个文件）。全部领域包含没有论文的领域。</p>
                 </header>
-                <Button type="button" onClick={() => void exportCurrentDomain()}>
-                  导出 {domain?.name ?? "当前领域"}
-                </Button>
+                <div className="ef-ai-buttons">
+                  <Button
+                    type="button"
+                    disabled={!domain}
+                    onClick={() => {
+                      if (domain) void exportLibrary({ kind: "domain", domainId: domain.id });
+                    }}
+                  >
+                    导出 {domain?.name ?? "当前领域"}
+                  </Button>
+                  <Button type="button" onClick={() => void exportLibrary({ kind: "all" })}>
+                    导出全部领域
+                  </Button>
+                </div>
               </article>
 
               <BackupBlock />
 
-              <article className="page-block pf-stagger" style={{ "--pf-i": 4 } as CSSProperties}>
+              <article id={settingsBlockId("快捷键")} className="page-block pf-stagger" style={{ "--pf-i": 4 } as CSSProperties}>
                 <header className="ef-block-head">
                   <h3>快捷键</h3>
                 </header>
@@ -105,11 +148,41 @@ export function SystemView() {
 
               <BiblioSettings />
 
-              <LogPanel />
+              <LogPanel id={settingsBlockId("运行日志")} />
           </div>
         </div>
       </div>
     </section>
+  );
+}
+
+function KeyOverview() {
+  const providers = useField((s) => s.settings.providers);
+  const hasToken = useField((s) => s.mineru.api.hasToken);
+  const hasOpenalexKey = useField((s) => s.biblio.hasOpenalexKey);
+  const hasS2Key = useField((s) => s.biblio.hasS2Key);
+  const rows = keyPresence({
+    hasKey: providers.some((provider) => provider.hasKey),
+    keyState: providers.some((provider) => provider.keyState === "unreadable") ? "unreadable" : null,
+    hasToken,
+    hasOpenalexKey,
+    hasS2Key,
+  });
+  return (
+    <article id={settingsBlockId("密钥")} className="page-block pf-stagger" style={{ "--pf-i": 2 } as CSSProperties}>
+      <header className="ef-block-head">
+        <h3>密钥</h3>
+        <p>只显示是否已经配置，不显示密钥本身。</p>
+      </header>
+      <ul className="ef-kbd-list">
+        {rows.map((row) => (
+          <li key={row.label}>
+            <span>{row.label}</span>
+            <span>{KEY_STATE_LABEL[row.state]}</span>
+          </li>
+        ))}
+      </ul>
+    </article>
   );
 }
 
@@ -118,7 +191,7 @@ function BackupBlock() {
   const restore = useField((s) => s.restoreLibrary);
   const [confirming, setConfirming] = useState(false);
   return (
-    <article className="page-block pf-stagger" style={{ "--pf-i": 4 } as CSSProperties}>
+    <article id={settingsBlockId("备份与恢复")} className="page-block pf-stagger" style={{ "--pf-i": 4 } as CSSProperties}>
       <header className="ef-block-head">
         <h3>备份与恢复</h3>
         <p>打包数据库、文库中的 PDF 和设置。API Key 与 MinerU Token 不写入压缩包。恢复前会先另存当前数据库。</p>
@@ -372,7 +445,7 @@ function LlmSettingsBlock() {
   const statusTone = firstUsable ? "is-ok" : rows.length ? "is-error" : "";
 
   return (
-    <article className="page-block pf-stagger" style={{ "--pf-i": 0 } as CSSProperties}>
+    <article id={settingsBlockId("AI 服务设置")} className="page-block pf-stagger" style={{ "--pf-i": 0 } as CSSProperties}>
       <header className="ef-block-head">
         <h3>AI 服务设置</h3>
         <p>
@@ -690,7 +763,7 @@ function BiblioSettings() {
   const remaining = saved.openalexRemainingUsd;
 
   return (
-    <article className="page-block pf-stagger" style={{ "--pf-i": 2 } as CSSProperties}>
+    <article id={settingsBlockId("文献库")} className="page-block pf-stagger" style={{ "--pf-i": 2 } as CSSProperties}>
       <header className="ef-block-head">
         <h3>文献库</h3>
         <p>不填写也能查询。邮箱和 Key 只改变请求走哪条通道、多快、每天能查多少，不改变查哪些库、按什么顺序查。</p>
@@ -980,7 +1053,7 @@ function MineruSettings() {
   const apiEnabled = saved.api.hasToken || Boolean(apiToken.trim());
 
   return (
-    <article className="page-block pf-stagger" style={{ "--pf-i": 1 } as CSSProperties}>
+    <article id={settingsBlockId("MinerU 解析源")} className="page-block pf-stagger" style={{ "--pf-i": 1 } as CSSProperties}>
       <header className="ef-block-head">
         <h3>MinerU 解析源</h3>
         <p>导入 PDF 后自动送解析：按回退顺序探测，上方解析源不可用时自动切到下一个。</p>
@@ -1296,7 +1369,7 @@ function UpdateBlock() {
   const [busy, setBusy] = useState(false);
 
   return (
-    <article className="page-block pf-stagger" style={{ "--pf-i": 5 } as CSSProperties}>
+    <article id={settingsBlockId("软件更新")} className="page-block pf-stagger" style={{ "--pf-i": 5 } as CSSProperties}>
       <header className="ef-block-head">
         <h3>软件更新</h3>
         <p>从 GitHub Releases 检查新版本。未配置签名公钥时不会联网。</p>

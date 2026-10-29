@@ -8,6 +8,7 @@ import {
   DomainDialog,
   DomainPickerDialog,
   EditPaperDialog,
+  ImportFailureList,
   PaperDialog,
   RestoreDiffDialog,
 } from "./components/Dialogs";
@@ -52,7 +53,7 @@ export function requestMarkRead(event?: { preventDefault: () => void; target: Ev
   if (typingTarget(target) || state.dialog || state.mode === "system") return;
   const paperId = state.paper?.id ?? state.selectedPaperId;
   if (!paperId) return;
-  void state.markRead(paperId);
+  void state.markRead([paperId]);
 }
 import { setPersistFailureHandler } from "./lib/engine";
 import { notify } from "./toasts";
@@ -249,6 +250,7 @@ export default function App() {
       <StatusStrip />
       {/* 作业面板：从状态条「作业」入口上拉的非模态浮层，层级低于对话框、高于列表抽屉。 */}
       <JobsPanel />
+      <ImportFailureList />
       <PaperDialog />
       <RestoreDiffDialog />
       <DomainDialog />

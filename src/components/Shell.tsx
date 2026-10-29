@@ -1,6 +1,7 @@
 import { useMemo, useSyncExternalStore, type CSSProperties } from "react";
 import { getActivity, subscribeActivity } from "../lib/activity";
 import { deriveJobsView } from "../lib/jobsView";
+import { draftPaperCount } from "../lib/readingHolds";
 import { hasUsableProvider } from "../lib/settings";
 import {
   MINERU_PROVIDER_LABELS,
@@ -124,6 +125,7 @@ export function StatusStrip() {
   const settings = useField((s) => s.settings);
   const mineru = useField((s) => s.mineru);
   const effectiveProvider = useField((s) => s.effectiveProvider);
+  const draftCount = useField((s) => draftPaperCount(s.drafts));
   const mineruLabel = effectiveProvider
     ? `MinerU：${MINERU_PROVIDER_LABELS[effectiveProvider]}`
     : mineru.configured
@@ -134,6 +136,11 @@ export function StatusStrip() {
       <span>
         已读 <b>{stats.read}</b> / {stats.total}
       </span>
+      {draftCount > 0 ? (
+        <span>
+          笔记草稿 <b>{draftCount}</b>
+        </span>
+      ) : null}
       <span className="ok">
         开源 <b>{stats.openSource}</b>
       </span>
