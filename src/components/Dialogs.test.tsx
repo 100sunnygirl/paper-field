@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { pickPdfFiles, pickPdfFolder } from "../lib/mineru";
 import { repo } from "../lib/repo";
 import { useField } from "../store";
-import { DeleteCheckedPapersDialog, DomainDialog, ImportFailureList, PaperDialog } from "./Dialogs";
+import { DeleteCheckedPapersDialog, DomainDialog, ImportFailureList, PaperDialog, RestoreDiffDialog } from "./Dialogs";
 import type { Paper } from "../lib/types";
 
 vi.mock("../lib/mineru", async (importOriginal) => {
@@ -497,5 +497,30 @@ describe("DomainDialog · 删除确认", () => {
     fireEvent.click(screen.getByRole("button", { name: "确认删除领域" }));
     expect(deleteDomain).toHaveBeenCalledTimes(1);
     expect(updateDomain).not.toHaveBeenCalled();
+  });
+});
+
+describe("RestoreDiffDialog", () => {
+  it("prints venue and year, and a renamed row keeps both labels", () => {
+    useField.setState({
+      dialog: "restore-diff",
+      restorePreview: {
+        phase: "previewed",
+        diff: {
+          cap: 8,
+          onlyCurrent: { rows: [], hidden: 0 },
+          onlyBackup: { rows: [{ id: "c", label: "只在备份", year: "2021", venue: "" }], hidden: 0 },
+          both: {
+            rows: [{ id: "b", label: "旧名", backupLabel: "新名", renamed: true, year: "2020", venue: "NeurIPS" }],
+            hidden: 0,
+          },
+        },
+      },
+    });
+    render(<RestoreDiffDialog />);
+    expect(screen.getByText("只在备份 · 2021")).toBeInTheDocument();
+    expect(screen.getByText("旧名 · NeurIPS · 2020 → 新名")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "取消" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "恢复并重启" })).toBeInTheDocument();
   });
 });

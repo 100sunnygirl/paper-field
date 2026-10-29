@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { pickPdfFiles, pickPdfFolder } from "../lib/mineru";
 import { repo } from "../lib/repo";
-import { defaultNotePermit, type NotePermit, type PartitionedTitles } from "../lib/readingHolds";
+import { defaultNotePermit, restoreRowLabel, type NotePermit, type PartitionedTitles } from "../lib/readingHolds";
 import { NOTE_DISPLAY_ORDER, NOTE_KINDS, NOTE_LABELS, type NoteKind, type Author, type PaperDetail } from "../lib/types";
 import { isTauri } from "../lib/util";
 import { shortReason, useField } from "../store";
@@ -813,7 +813,7 @@ export function RestoreDiffDialog() {
           <ul>
             {bucket.rows.map((row) => (
               <li key={row.id}>
-                {"renamed" in row && row.renamed ? `${row.label} → ${row.backupLabel}` : row.label}
+                {restoreRowLabel(row)}
               </li>
             ))}
           </ul>
