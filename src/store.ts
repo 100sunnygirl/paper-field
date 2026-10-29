@@ -131,7 +131,9 @@ interface FieldState {
   jobsOpen: boolean;
   init: () => Promise<void>;
   setMode: (mode: AppMode) => Promise<void>;
-  selectDomain: (id: string | null) => Promise<void>;
+  selectDomain: (id: string | null, paperId?: string) => Promise<void>;
+  /** One landing from the jobs panel. A null domain id is read from the paper. */
+  landOnPaper: (paperId: string, domainId: string | null) => Promise<void>;
   selectPaper: (id: string | null) => Promise<void>;
   setSearch: (value: string) => Promise<void>;
   setArchiveFilter: (value: OpenSource | "all") => Promise<void>;
@@ -295,6 +297,16 @@ export {
 } from "./lib/readingHolds";
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
 let searchWaiters: { resolve: () => void; reject: (err: unknown) => void }[] = [];
+
+function takeSearchWaiters(): { resolve: () => void; reject: (err: unknown) => void }[] {
+  if (searchTimer) {
+    clearTimeout(searchTimer);
+    searchTimer = null;
+  }
+  const waiters = searchWaiters;
+  searchWaiters = [];
+  return waiters;
+}
 
 export const useField = create<FieldState>((set, get) => ({
   ready: false,
@@ -503,15 +515,40 @@ export const useField = create<FieldState>((set, get) => ({
     await get().refresh({ reselect: true });
   },
 
-  selectDomain: async (id) => {
+  selectDomain: async (id, paperId) => {
+    const waiters = takeSearchWaiters();
     try {
       selectionEpoch += 1;
-      set({ selectedDomainId: id, selectedPaperId: null, paper: null, mode: "field", dialog: null, dialogPaperId: null, dialogPaperIds: [] });
-      await get().refresh();
+      set({
+        selectedDomainId: id,
+        selectedPaperId: paperId ?? null,
+        paper: null,
+        search: "",
+        mode: "field",
+        dialog: null,
+        dialogPaperId: null,
+        dialogPaperIds: [],
+      });
+      const pending = get().refresh();
+      pending.then(
+        () => waiters.forEach((waiter) => waiter.resolve()),
+        (err) => waiters.forEach((waiter) => waiter.reject(err)),
+      );
+      await pending;
     } catch (err) {
       get().setFlash({ tone: "error", text: `切换领域失败：${errText(err)}，数据未改动。` });
       throw err;
     }
+  },
+
+  landOnPaper: async (paperId, domainId) => {
+    let id = domainId;
+    if (!id) {
+      const loaded = await repo.getPaper(paperId);
+      if (!loaded) return;
+      id = loaded.domainId;
+    }
+    await get().selectDomain(id, paperId);
   },
 
   selectPaper: async (id) => {

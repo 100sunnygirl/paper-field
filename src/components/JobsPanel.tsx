@@ -98,8 +98,7 @@ function JobsPanelBody() {
   const jobs = useField((s) => s.jobs);
   const settings = useField((s) => s.settings);
   const setJobsOpen = useField((s) => s.setJobsOpen);
-  const selectDomain = useField((s) => s.selectDomain);
-  const selectPaper = useField((s) => s.selectPaper);
+  const landOnPaper = useField((s) => s.landOnPaper);
   const activity = useSyncExternalStore(subscribeActivity, getActivity);
   const titleId = useId();
   const panelRef = useRef<HTMLElement>(null);
@@ -126,8 +125,7 @@ function JobsPanelBody() {
   }, []);
 
   async function jump(paperId: string, domainId: string | null) {
-    if (domainId) await selectDomain(domainId);
-    await selectPaper(paperId);
+    await landOnPaper(paperId, domainId);
   }
 
   const { counts } = view;
