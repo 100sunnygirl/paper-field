@@ -260,12 +260,19 @@ export function hasDraft(state: Pick<FieldState, "drafts">, paperId: string | nu
   return Boolean(paperId && state.drafts[paperId] && Object.keys(state.drafts[paperId]!).length);
 }
 
-async function liveLibraryTitles(): Promise<Array<{ id: string; label: string }>> {
+async function liveLibraryTitles(): Promise<Array<{ id: string; label: string; year: string; venue: string }>> {
   const domains = await repo.listDomains();
-  const rows: Array<{ id: string; label: string }> = [];
+  const rows: Array<{ id: string; label: string; year: string; venue: string }> = [];
   for (const domain of domains) {
     const papers = await repo.listPapers(domain.id);
-    for (const item of papers) rows.push({ id: item.id, label: libraryLabel(item.title, item.titleZh) });
+    for (const item of papers) {
+      rows.push({
+        id: item.id,
+        label: libraryLabel(item.title, item.titleZh),
+        year: item.year == null ? "" : String(item.year),
+        venue: item.venue ?? "",
+      });
+    }
   }
   return rows;
 }
@@ -1295,14 +1302,21 @@ export const useField = create<FieldState>((set, get) => ({
       const summary = await invoke<{ papers: number } | null>("restore_library_backup");
       if (!summary) return;
       try {
-        const backup = await invoke<Array<{ id: string; title: string; titleZh?: string | null }>>("restore_staged_titles");
+        const backup = await invoke<
+          Array<{ id: string; title: string; titleZh?: string | null; year?: string | null; venue?: string | null }>
+        >("restore_staged_titles");
         const current = await liveLibraryTitles();
         set({
           restorePreview: {
             phase: "previewed",
             diff: partitionTitles(
               current,
-              backup.map((row) => ({ id: row.id, label: libraryLabel(row.title, row.titleZh) })),
+              backup.map((row) => ({
+                id: row.id,
+                label: libraryLabel(row.title, row.titleZh),
+                year: row.year ?? "",
+                venue: row.venue ?? "",
+              })),
               RESTORE_TITLE_CAP,
             ),
           },

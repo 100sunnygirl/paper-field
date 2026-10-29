@@ -47,6 +47,9 @@ export interface ReadingUndo {
 export interface LibraryTitle {
   id: string;
   label: string;
+  /** "" when the cell is null or the column is missing. */
+  year: string;
+  venue: string;
 }
 
 export interface BothTitle {
@@ -54,6 +57,8 @@ export interface BothTitle {
   label: string;
   backupLabel: string;
   renamed: boolean;
+  year: string;
+  venue: string;
 }
 
 export interface TitleBucket<T> {
@@ -75,6 +80,69 @@ export function libraryLabel(title: string, titleZh: string | null | undefined):
   if (zh) return zh;
   const en = title.trim();
   return en || "未命名论文";
+}
+
+export function titleIsFile(sources: { title?: string | null } | null | undefined): boolean {
+  return sources?.title === "file";
+}
+
+/** Papers that still have an open note draft. An empty string still counts. */
+export function draftPaperCount(drafts: Record<string, object | undefined> | null | undefined): number {
+  if (!drafts) return 0;
+  let count = 0;
+  for (const bag of Object.values(drafts)) {
+    if (bag && Object.keys(bag).length > 0) count += 1;
+  }
+  return count;
+}
+
+export interface NoteProposal {
+  kind: NoteKind;
+  rev: number;
+  before: string;
+  after: string;
+}
+
+export function noteProposals(
+  permit: NotePermit,
+  notes: Partial<Record<NoteKind, { content?: string; userEdited?: boolean; rev?: number }>>,
+  openDrafts: Partial<Record<NoteKind, string | undefined>>,
+  drafted: Partial<Record<NoteKind, string>>,
+): NoteProposal[] {
+  const proposals: NoteProposal[] = [];
+  for (const kind of NOTE_KINDS) {
+    if (permit[kind] !== true) continue;
+    if (openDrafts[kind] !== undefined) continue;
+    if (notes[kind]?.userEdited === true) continue;
+    const rev = notes[kind]?.rev ?? 0;
+    if (rev < 0) continue;
+    proposals.push({
+      kind,
+      rev,
+      before: notes[kind]?.content ?? "",
+      after: drafted[kind] ?? "",
+    });
+  }
+  return proposals;
+}
+
+export function blankCite(venue: string | null | undefined, year: string | number | null | undefined): string {
+  const place = venue?.trim() ?? "";
+  const when = year == null ? "" : String(year).trim();
+  return [place, when].filter((part) => part.length > 0).join(" · ");
+}
+
+export function restoreRowLabel(row: {
+  label: string;
+  venue?: string;
+  year?: string;
+  backupLabel?: string;
+  renamed?: boolean;
+}): string {
+  const cite = blankCite(row.venue, row.year);
+  const current = cite ? `${row.label} · ${cite}` : row.label;
+  if (row.renamed && row.backupLabel) return `${current} → ${row.backupLabel}`;
+  return current;
 }
 
 export function noteWriteNeeded(stored: string, submitted: string): boolean {
@@ -208,11 +276,11 @@ export function stageFieldsInPatch(patch: object): StageField[] {
   return PATCH_FIELDS.filter((key) => record[key] !== undefined);
 }
 
-function indexTitles(rows: readonly LibraryTitle[]): Map<string, string> {
-  const map = new Map<string, string>();
+function indexTitles(rows: readonly LibraryTitle[]): Map<string, LibraryTitle> {
+  const map = new Map<string, LibraryTitle>();
   for (const row of rows) {
     if (!row.id || map.has(row.id)) continue;
-    map.set(row.id, row.label);
+    map.set(row.id, { id: row.id, label: row.label, year: row.year ?? "", venue: row.venue ?? "" });
   }
   return map;
 }
@@ -232,13 +300,22 @@ export function partitionTitles(
   const onlyCurrent: LibraryTitle[] = [];
   const onlyBackup: LibraryTitle[] = [];
   const both: BothTitle[] = [];
-  for (const [id, label] of cur) {
-    const other = bak.get(id);
-    if (other === undefined) onlyCurrent.push({ id, label });
-    else both.push({ id, label, backupLabel: other, renamed: other !== label });
+  for (const row of cur.values()) {
+    const other = bak.get(row.id);
+    if (other === undefined) onlyCurrent.push(row);
+    else {
+      both.push({
+        id: row.id,
+        label: row.label,
+        backupLabel: other.label,
+        renamed: other.label !== row.label,
+        year: row.year,
+        venue: row.venue,
+      });
+    }
   }
-  for (const [id, label] of bak) {
-    if (!cur.has(id)) onlyBackup.push({ id, label });
+  for (const row of bak.values()) {
+    if (!cur.has(row.id)) onlyBackup.push(row);
   }
   const byLabel = (a: { label: string; id: string }, b: { label: string; id: string }) =>
     a.label.localeCompare(b.label, "zh") || a.id.localeCompare(b.id);
