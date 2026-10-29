@@ -522,11 +522,13 @@ export function DomainPickerDialog() {
   const domains = useField((s) => s.domains);
   const selectedDomainId = useField((s) => s.selectedDomainId);
   const selectDomain = useField((s) => s.selectDomain);
-  const movePaper = useField((s) => s.movePaper);
-  const createDomainAndMove = useField((s) => s.createDomainAndMove);
+  const movePapers = useField((s) => s.movePapers);
   const openDialog = useField((s) => s.openDialog);
   const dialogPaperId = useField((s) => s.dialogPaperId);
-  const moving = dialog === "move-paper";
+  const dialogPaperIds = useField((s) => s.dialogPaperIds);
+  const batchMove = dialog === "move-checked";
+  const moving = dialog === "move-paper" || batchMove;
+  const moveIds = batchMove ? dialogPaperIds : dialogPaperId ? [dialogPaperId] : [];
   const open = dialog === "pick-domain" || moving;
   const [domainName, setDomainName] = useState("");
   const [moveError, setMoveError] = useState<string | null>(null);
@@ -540,7 +542,7 @@ export function DomainPickerDialog() {
   return (
     <Dialog
       open={open}
-      title={moving ? "移动到其他领域" : "切换研究领域"}
+      title={batchMove ? "移动到领域" : moving ? "移动到其他领域" : "切换研究领域"}
       onClose={closeDialog}
       footer={
         moving ? (
@@ -560,13 +562,15 @@ export function DomainPickerDialog() {
         )
       }
     >
-      <p>{moving ? "选择这篇论文要进入的领域。" : "选择要查看的研究领域。"}</p>
+      <p>
+        {batchMove ? "选择这些论文要进入的领域。" : moving ? "选择这篇论文要进入的领域。" : "选择要查看的研究领域。"}
+      </p>
       {moving ? (
         <form
           onSubmit={(event) => {
             event.preventDefault();
             setMoveError(null);
-            void createDomainAndMove(domainName).catch((err: unknown) =>
+            void movePapers(moveIds, { kind: "create", name: domainName }).catch((err: unknown) =>
               setMoveError(err instanceof Error ? err.message : String(err)),
             );
           }}
@@ -591,7 +595,7 @@ export function DomainPickerDialog() {
           type="button"
           className={`ef-domain-option ${domain.id === selectedDomainId ? "is-current" : ""}`}
           onClick={() => {
-            if (moving) void movePaper(domain.id, dialogPaperId ?? undefined);
+            if (moving) void movePapers(moveIds, { kind: "domain", domainId: domain.id });
             else void selectDomain(domain.id);
           }}
         >

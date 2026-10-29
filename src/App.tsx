@@ -53,7 +53,7 @@ export function requestMarkRead(event?: { preventDefault: () => void; target: Ev
   if (typingTarget(target) || state.dialog || state.mode === "system") return;
   const paperId = state.paper?.id ?? state.selectedPaperId;
   if (!paperId) return;
-  void state.markRead(paperId);
+  void state.markRead([paperId]);
 }
 import { setPersistFailureHandler } from "./lib/engine";
 import { notify } from "./toasts";

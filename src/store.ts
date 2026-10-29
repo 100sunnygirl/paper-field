@@ -110,6 +110,7 @@ interface FieldState {
     | "confirm-meta"
     | "edit-domain"
     | "move-paper"
+    | "move-checked"
     | "delete-paper"
     | "delete-checked"
     | "pick-domain"
@@ -118,13 +119,13 @@ interface FieldState {
     | null;
   /** 对话框打开时锁定的目标论文：之后选中怎么变，对话框都只作用于它。 */
   dialogPaperId: string | null;
-  /** delete-checked 打开时冻结的勾选集。 */
+  /** delete-checked / move-checked 打开时冻结的勾选集。 */
   dialogPaperIds: string[];
   pendingDraftJob: string | null;
   /** 正在编辑、尚未保存的笔记草稿，按论文分开存：切换论文不丢，切回来还在。 */
   drafts: Record<string, Partial<Record<NoteKind, string>>>;
   stageHold: { paperId: string; prose: StageProse } | null;
-  pendingReadingUndo: (ReadingUndo & { gen: number }) | null;
+  pendingReadingUndo: { gen: number; papers: ReadingUndo[] } | null;
   restorePreview: { phase: "idle" } | { phase: "previewed" | "staged"; diff: PartitionedTitles };
   loadError: string | null;
   /** Failed PDF imports for this session. Not written to localStorage or the database. */
@@ -170,11 +171,14 @@ interface FieldState {
   saveOpenDrafts: (paperId: string) => Promise<void>;
   /** 写入 / 清除（null）一块笔记草稿。 */
   setNoteDraft: (paperId: string, kind: NoteKind, value: string | null) => void;
-  markRead: (paperId?: string) => Promise<void>;
+  markRead: (paperIds: string[]) => Promise<void>;
   markReading: (paperId?: string) => Promise<void>;
   markUnread: (paperId?: string) => Promise<void>;
   setReadingStatus: (status: "unread" | "reading" | "read", paperId?: string) => Promise<void>;
-  movePaper: (domainId: string, paperId?: string) => Promise<void>;
+  movePapers: (
+    ids: string[],
+    target: { kind: "domain"; domainId: string } | { kind: "create"; name: string },
+  ) => Promise<void>;
   deletePaper: (paperId?: string) => Promise<void>;
   setBatchMode: (on: boolean) => void;
   toggleCheckedPaper: (id: string) => void;
@@ -189,7 +193,6 @@ interface FieldState {
   runPrepareMeta: (paperId?: string, overwrite?: boolean, quiet?: boolean, options?: { llm?: boolean }) => Promise<void>;
   runRefreshLinks: (paperId?: string) => Promise<void>;
   runDraftNotes: (paperId?: string, permit?: NotePermit) => Promise<void>;
-  createDomainAndMove: (name: string) => Promise<void>;
   claimFileTitle: (paperId: string) => Promise<void>;
   undoMarkRead: (gen: number) => Promise<void>;
   confirmRestore: () => Promise<void>;
@@ -441,7 +444,12 @@ export const useField = create<FieldState>((set, get) => ({
     set({
       dialog,
       dialogPaperId: paperScoped ? (typeof target === "string" ? target : state.paper?.id ?? state.selectedPaperId) : null,
-      dialogPaperIds: dialog === "delete-checked" ? (Array.isArray(target) ? [...target] : [...state.checkedPaperIds]) : [],
+      dialogPaperIds:
+        dialog === "delete-checked" || dialog === "move-checked"
+          ? Array.isArray(target)
+            ? [...target]
+            : [...state.checkedPaperIds]
+          : [],
     });
   },
   closeDialog: () => {
@@ -962,42 +970,68 @@ export const useField = create<FieldState>((set, get) => ({
     get().setFlash({ tone: "ok", text: "笔记已保存。" });
   },
 
-  markRead: async (paperId) => {
-    const id = paperId ?? get().paper?.id ?? get().selectedPaperId;
-    if (!id) return;
-    const loaded = await repo.getPaper(id);
-    const row = loaded ?? (get().paper?.id === id ? get().paper : null);
-    if (!row) {
-      await repo.setReadingStatus(id, "read");
+  markRead: async (paperIds) => {
+    const ids = [...paperIds];
+    const changed: ReadingUndo[] = [];
+    const labels = new Map<string, string>();
+    try {
+      for (const id of ids) {
+        const loaded = await repo.getPaper(id);
+        const row = loaded ?? (get().paper?.id === id ? get().paper : null);
+        if (!row) {
+          await repo.setReadingStatus(id, "read");
+          continue;
+        }
+        if (row.readingStatus === "read") continue;
+        await repo.setReadingStatus(id, "read");
+        changed.push({ paperId: id, status: row.readingStatus, readAt: row.readAt });
+        labels.set(id, libraryLabel(row.title, row.titleZh));
+      }
+    } catch (err) {
+      if (changed.length) {
+        const gen = ++readingUndoGen;
+        set({ pendingReadingUndo: { gen, papers: changed } });
+        get().setFlash({
+          tone: "error",
+          text: `更新阅读状态失败：${errText(err)}`,
+          action: { label: "撤销", run: () => void get().undoMarkRead(gen) },
+        });
+        await get().refresh().catch(() => undefined);
+      } else {
+        get().setFlash({ tone: "error", text: `更新阅读状态失败：${errText(err)}，数据未改动。` });
+      }
+      throw err;
+    }
+    if (!changed.length) {
       await get().refresh();
       return;
     }
-    const undo: ReadingUndo = { paperId: id, status: row.readingStatus, readAt: row.readAt };
-    try {
-      await repo.setReadingStatus(id, "read");
-      if (undo.status !== "read") {
-        const gen = ++readingUndoGen;
-        set({ pendingReadingUndo: { gen, ...undo } });
-        get().setFlash({
-          tone: "ok",
-          text: `已将「${libraryLabel(row.title, row.titleZh)}」标为已读。`,
-          action: { label: "撤销", run: () => void get().undoMarkRead(gen) },
-        });
-      }
-      await get().refresh();
-    } catch (err) {
-      get().setFlash({ tone: "error", text: `更新阅读状态失败：${errText(err)}，数据未改动。` });
-      throw err;
-    }
+    const gen = ++readingUndoGen;
+    set({ pendingReadingUndo: { gen, papers: changed } });
+    const text =
+      changed.length === 1
+        ? `已将「${labels.get(changed[0].paperId) ?? ""}」标为已读。`
+        : `已将 ${changed.length} 篇标为已读。`;
+    get().setFlash({
+      tone: "ok",
+      text,
+      action: { label: "撤销", run: () => void get().undoMarkRead(gen) },
+    });
+    await get().refresh();
   },
 
   undoMarkRead: async (gen) => {
     const armed = get().pendingReadingUndo;
     if (!armed || armed.gen !== gen) return;
-    set({ pendingReadingUndo: null });
     try {
-      for (const status of readingUndoPlan(armed)) {
-        await repo.setReadingStatus(armed.paperId, status);
+      for (const paper of armed.papers) {
+        for (const status of readingUndoPlan(paper)) {
+          await repo.setReadingStatus(paper.paperId, status);
+        }
+        const latest = get().pendingReadingUndo;
+        if (!latest || latest.gen !== gen) return;
+        const rest = latest.papers.filter((row) => row.paperId !== paper.paperId);
+        set({ pendingReadingUndo: rest.length ? { gen, papers: rest } : null });
       }
       await get().refresh();
       get().setFlash({ tone: "ok", text: "已撤销标记已读。" });
@@ -1030,20 +1064,53 @@ export const useField = create<FieldState>((set, get) => ({
     }
   },
 
-  createDomainAndMove: async (name) => {
-    if (createMoveFlight) return createMoveFlight;
-    createMoveFlight = (async () => {
-      const trimmed = name.trim();
-      if (!trimmed) throw new Error("领域名称必填");
-      const paperId = get().dialogPaperId;
-      if (get().dialog !== "move-paper" || !paperId) throw new Error("没有锁定的论文");
-      const domain = await repo.createDomain({ name: trimmed, code: "" });
+  movePapers: async (ids, target) => {
+    const unique = [...new Set(ids)];
+    if (!unique.length) return;
+    const run = async (domainId: string) => {
+      try {
+        for (const id of unique) await repo.updatePaper(id, { domainId });
+      } catch (err) {
+        get().setFlash({
+          tone: "error",
+          text: `移动论文失败：${errText(err)}${unique.length === 1 ? "，数据未改动。" : ""}`,
+        });
+        throw err;
+      }
+      selectionEpoch += 1;
+      set({
+        dialog: null,
+        dialogPaperId: null,
+        dialogPaperIds: [],
+        selectedPaperId: unique[0],
+        selectedDomainId: domainId,
+        mode: "field",
+      });
       await get().refresh();
-      await get().movePaper(domain.id, paperId);
-    })().finally(() => {
-      createMoveFlight = null;
-    });
-    return createMoveFlight;
+      const domain = get().domains.find((item) => item.id === domainId);
+      const text =
+        unique.length === 1
+          ? domain
+            ? `论文已移动到「${domain.name}」。`
+            : "论文已移动到新领域。"
+          : domain
+            ? `已将 ${unique.length} 篇移动到「${domain.name}」。`
+            : `已将 ${unique.length} 篇移动到新领域。`;
+      get().setFlash({ tone: "ok", text });
+    };
+    if (target.kind === "create") {
+      if (createMoveFlight) return createMoveFlight;
+      createMoveFlight = (async () => {
+        const trimmed = target.name.trim();
+        if (!trimmed) throw new Error("领域名称必填");
+        const domain = await repo.createDomain({ name: trimmed, code: "" });
+        await run(domain.id);
+      })().finally(() => {
+        createMoveFlight = null;
+      });
+      return createMoveFlight;
+    }
+    await run(target.domainId);
   },
 
   claimFileTitle: async (paperId) => {
@@ -1060,25 +1127,6 @@ export const useField = create<FieldState>((set, get) => ({
       get().setFlash({ tone: "ok", text: "标题已记为你的。" });
     } catch (err) {
       get().setFlash({ tone: "error", text: `认领标题失败：${errText(err)}，数据未改动。` });
-      throw err;
-    }
-  },
-
-  movePaper: async (domainId, paperId) => {
-    const id = paperId ?? get().dialogPaperId ?? get().selectedPaperId;
-    if (!id) return;
-    try {
-      await repo.updatePaper(id, { domainId });
-      selectionEpoch += 1;
-      set({ dialog: null, dialogPaperId: null, selectedPaperId: id, selectedDomainId: domainId, mode: "field" });
-      await get().refresh();
-      const domain = get().domains.find((d) => d.id === domainId);
-      get().setFlash({
-        tone: "ok",
-        text: domain ? `论文已移动到「${domain.name}」。` : "论文已移动到新领域。",
-      });
-    } catch (err) {
-      get().setFlash({ tone: "error", text: `移动论文失败：${errText(err)}，数据未改动。` });
       throw err;
     }
   },

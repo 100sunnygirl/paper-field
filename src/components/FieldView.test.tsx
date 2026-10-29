@@ -236,6 +236,25 @@ describe("PaperNav · 批量选择与批量删除", () => {
     fireEvent.click(screen.getByRole("button", { name: "删除" }));
     expect(useField.getState().dialog).toBe("delete-checked");
   });
+
+  it("移动到领域冻结勾选，标为已读把勾选交给 markRead", () => {
+    const markRead = vi.fn(async () => undefined);
+    useField.setState({
+      mode: "field",
+      papers: [intakeItem("a", null), intakeItem("b", null)],
+      batchMode: true,
+      checkedPaperIds: ["a", "b"],
+      markRead,
+    });
+    render(<PaperNav />);
+    expect(screen.getByRole("button", { name: "移动到领域" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "标为已读" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "移动到领域" }));
+    expect(useField.getState().dialog).toBe("move-checked");
+    expect(useField.getState().dialogPaperIds).toEqual(["a", "b"]);
+    fireEvent.click(screen.getByRole("button", { name: "标为已读" }));
+    expect(markRead).toHaveBeenCalledWith(["a", "b"]);
+  });
 });
 
 describe("PaperNav · 领域标题与批量入口", () => {
