@@ -45,6 +45,7 @@ import {
   snapshotMeta,
   snapshotNotes,
   type MetaPreview,
+  type MetaSnapshot,
 } from "./lib/aiAudit";
 import { cancelJob as cancelTrackedJob, jobDoneStep, runTracked } from "./lib/jobs";
 import { pickProviderFromHealths, providerLabel, summarizeHealths } from "./lib/mineruPlan";
@@ -1421,19 +1422,32 @@ export const useField = create<FieldState>((set, get) => ({
           ? { label: "查看变更", run: () => get().openDialog("ai-diff", id) }
           : undefined;
         if (useLlm) {
-          get().setFlash({
-            tone: "ok",
-            text: "AI 作业完成。阅读状态未改动。",
-            ...(viewChanges ? { action: viewChanges } : {}),
-          });
+          // 完成通知明说改了什么：新增字段（列名）、保留的手改、仍缺的项。
+          const afterPaper = await repo.getPaper(id);
+          if (afterPaper) {
+            get().setFlash({
+              tone: "ok",
+              text: metaSummaryLine(beforeMeta, afterPaper),
+              ...(viewChanges ? { action: viewChanges } : {}),
+            });
+          } else {
+            get().setFlash({ tone: "ok", text: "AI 作业完成。阅读状态未改动。" });
+          }
         } else if (!foundMeta) {
           get().setFlash({
             tone: "warn",
             text: "尚未配置可用的 AI 服务。可到设置页添加提供商，或继续手动录入。",
             action: { label: "去设置", run: () => get().openSystemCard("llm") },
           });
-        } else if (viewChanges) {
-          get().setFlash({ tone: "ok", text: "已从文献库补全著录。", action: viewChanges });
+        } else {
+          const afterPaper = await repo.getPaper(id);
+          if (afterPaper) {
+            get().setFlash({
+              tone: "ok",
+              text: metaSummaryLine(beforeMeta, afterPaper),
+              ...(viewChanges ? { action: viewChanges } : {}),
+            });
+          }
         }
       }
     } catch (err) {
@@ -1601,16 +1615,34 @@ export const useField = create<FieldState>((set, get) => ({
               viewChanges = { label: "查看变更", run: () => get().openDialog("ai-diff", id) };
             }
           }
+          // 完成通知明说改了什么：写入哪些块、保留/覆盖了哪些你改过的块、仍空着哪些块。
+          const writtenBlocks = requestedKinds.filter((kind) => !kept.includes(kind));
+          const stillEmpty = requestedKinds.filter(
+            (kind) => !kept.includes(kind) && !(afterPaper?.notes[kind]?.content ?? "").trim(),
+          );
+          // 覆盖语义下诚实说明：哪些块覆盖了「你此前改过」的内容（改动前 userEdited 且内容有变）。
+          const overwrittenUser = requestedKinds.filter(
+            (kind) => beforeNotes[kind].userEdited && (afterPaper?.notes[kind]?.content ?? "") !== beforeNotes[kind].content,
+          );
+          const parts: string[] = [];
+          if (writtenBlocks.length) {
+            parts.push(`写入 ${writtenBlocks.length} 块（${writtenBlocks.map((kind) => NOTE_LABELS[kind].zh).join("、")}）`);
+          } else {
+            parts.push("没有块被写入");
+          }
+          if (editedDuring.length) parts.push(`保留你改过的 ${editedDuring.length} 块（${editedDuring.map((kind) => NOTE_LABELS[kind].zh).join("、")}）`);
+          else if (overwrittenUser.length) parts.push(`覆盖你此前改过的 ${overwrittenUser.length} 块（${overwrittenUser.map((kind) => NOTE_LABELS[kind].zh).join("、")}）`);
+          if (stillEmpty.length) parts.push(`仍空着：${stillEmpty.map((kind) => NOTE_LABELS[kind].zh).join("、")}`);
           if (editedDuring.length) {
             get().setFlash({
               tone: "warn",
-              text: `起草期间你修改了 ${editedDuring.length} 块笔记，这些块保留你的内容，其余已写入 AI 草稿。`,
+              text: `AI 起草完成：${parts.join("；")}。`,
               ...(viewChanges ? { action: viewChanges } : {}),
             });
           } else {
             get().setFlash({
               tone: "ok",
-              text: "AI 作业完成。阅读状态未改动。",
+              text: `AI 起草完成：${parts.join("；")}。阅读状态未改动。`,
               ...(viewChanges ? { action: viewChanges } : {}),
             });
           }
@@ -2074,6 +2106,57 @@ export const useField = create<FieldState>((set, get) => ({
     if (next) await get().selectPaper(next.id);
   },
 }));
+
+const SUMMARY_KEY_FIELDS: Array<{ field: "abstract" | "year" | "venue" | "doi" | "arxivId" | "authors"; label: string; blank: (paper: PaperDetail) => boolean }> = [
+  { field: "abstract", label: "摘要", blank: (paper) => !paper.abstract.trim() },
+  { field: "year", label: "年份", blank: (paper) => paper.year == null },
+  { field: "venue", label: "出处", blank: (paper) => !paper.venue?.trim() },
+  {
+    field: "doi",
+    label: "标识符",
+    blank: (paper) => !paper.doi?.trim() && !paper.arxivId?.trim(),
+  },
+  { field: "authors", label: "作者", blank: (paper) => paper.authors.length === 0 },
+];
+
+/** 补全完成通知的一行小结：新增哪些字段、保留哪些手改、仍缺什么（可打开字段 diff 看全部）。 */
+function metaSummaryLine(before: MetaSnapshot, after: PaperDetail): string {
+  const changes = diffMeta(before, snapshotMeta(after));
+  const keptUser = SUMMARY_KEY_FIELDS.filter(({ field, label, blank }) => {
+    if (blank(after)) return false;
+    // 标识符组（DOI / arXiv 任一）：任一还是手改原值就算保留。
+    if (field === "doi") {
+      const doiKept =
+        after.fieldSources?.doi === "user" &&
+        metaValueText("doi", before.doi) === metaValueText("doi", after.doi) &&
+        Boolean(after.doi?.trim());
+      const arxivKept =
+        after.fieldSources?.arxivId === "user" &&
+        metaValueText("arxivId", before.arxivId) === metaValueText("arxivId", after.arxivId) &&
+        Boolean(after.arxivId?.trim());
+      return doiKept || arxivKept;
+    }
+    void label;
+    return (
+      after.fieldSources?.[field] === "user" &&
+      metaValueText(field, before[field]) === metaValueText(field, after[field])
+    );
+  }).map(({ label }) => label);
+  const missing = SUMMARY_KEY_FIELDS.filter(({ blank }) => blank(after)).map(({ label }) => label);
+  const parts: string[] = [];
+  if (changes.length) {
+    const names = changes
+      .slice(0, 3)
+      .map((change) => META_FIELD_LABELS[change.field])
+      .join("、");
+    parts.push(`新增/更新 ${changes.length} 项（${names}${changes.length > 3 ? " 等" : ""}）`);
+  } else {
+    parts.push("没有字段被改动");
+  }
+  if (keptUser.length) parts.push(`保留你的手改（${keptUser.join("、")}）`);
+  if (missing.length) parts.push(`仍缺：${missing.join("、")}`);
+  return `AI 补全完成：${parts.join("；")}。阅读状态未改动。`;
+}
 
 function rememberLookup(
   set: (partial: Partial<FieldState>) => void,

@@ -432,3 +432,68 @@ describe("笔记起草的块级控制与逐块采纳（干跑）", () => {
     expect(after.notes.highlights.content).toBe("AI 亮点");
   });
 });
+
+describe("AI 完成通知明说改了什么（新增/保留/仍缺）", () => {
+  it("补全通知列出新增字段名、保留的手改与仍缺的项，并附查看变更入口", async () => {
+    const domain = await repo.createDomain({ name: "多模态", code: "MM-12" });
+    const paper = await repo.createPaper({
+      domainId: domain.id,
+      pdfPath: "library/a.pdf",
+      pdfOriginalPath: "/papers/旧文件名.pdf",
+    });
+    // 用户手改了 arXiv id：合并后来源仍是 user，值不变 → 「保留你的手改」。
+    await repo.updatePaper(paper.id, { arxivId: "2401.00001" }, true);
+    vi.mocked(lookupPaper).mockResolvedValue({
+      meta: {
+        title: "Real Title",
+        titleZh: null,
+        abstract: "biblio abstract",
+        year: 2017,
+        venue: null,
+        doi: null,
+        arxivId: null,
+        authors: [],
+        labs: [],
+        codeOpenSource: "unknown",
+        codeURL: null,
+        projectPage: null,
+        pdfURL: null,
+        tags: [],
+      },
+      notices: [],
+      openalexRemainingUsd: null,
+      openalexLimitUsd: null,
+    });
+    vi.mocked(completeChat).mockResolvedValue("{}");
+
+    await useField.getState().runPrepareMeta(paper.id, false);
+
+    const flash = useField.getState().flash!;
+    expect(flash.tone).toBe("ok");
+    expect(flash.text).toContain("AI 补全完成");
+    expect(flash.text).toContain("新增/更新"); // 具体字段名
+    expect(flash.text).toContain("保留你的手改（标识符）");
+    expect(flash.text).toContain("仍缺：出处、作者");
+    expect(flash.action?.label).toBe("查看变更");
+  });
+
+  it("起草通知列出写入块、保留块与仍空块", async () => {
+    const domain = await repo.createDomain({ name: "多模态", code: "MM-13" });
+    const paper = await repo.createPaper({ domainId: domain.id, title: "Paper" });
+    await repo.updateNote(paper.id, "summary", "我自己的总结", "manual", true);
+    vi.mocked(completeChat).mockResolvedValue(
+      JSON.stringify({ remarks: "", summary: "AI 总结", highlights: "AI 亮点", weaknesses: "", implications: "" }),
+    );
+
+    // 已有手改笔记：走确认覆盖（整篇二选一的旧入口），通知仍按块报明细。
+    await useField.getState().runDraftNotes(paper.id, true);
+
+    const flash = useField.getState().flash!;
+    expect(flash.text).toContain("AI 起草完成");
+    expect(flash.text).toContain("写入");
+    expect(flash.text).toContain("亮点");
+    // 覆盖语义下诚实说明覆盖了手改块（总结此前是你写的）。
+    expect(flash.text).toContain("覆盖你此前改过的 1 块（总结）");
+    expect(flash.text).toContain("仍空着：备注、不足、启示");
+  });
+});
