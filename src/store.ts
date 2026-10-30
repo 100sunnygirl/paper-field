@@ -199,6 +199,8 @@ interface FieldState {
   /** 领域手动排序：把新顺序（id 数组）写回 sort_order 并同步 store 里的领域列表。 */
   applyDomainOrder: (orderedIds: string[]) => Promise<void>;
   deleteDomain: () => Promise<void>;
+  /** 迁移后删除：把该领域全部论文移入目标领域，再删除空的旧领域。 */
+  migrateDomainThenDelete: (toDomainId: string) => Promise<void>;
   importPdfs: (
     paths: string[],
     onProgress?: (done: number, total: number, current: string) => void,
@@ -835,6 +837,38 @@ export const useField = create<FieldState>((set, get) => ({
       await get().refresh();
     } catch (err) {
       get().setFlash({ tone: "error", text: `删除领域失败：${errText(err)}，数据未改动。` });
+      throw err;
+    }
+  },
+
+  migrateDomainThenDelete: async (toDomainId) => {
+    const from = get().selectedDomainId;
+    if (!from || from === toDomainId) return;
+    try {
+      const ids = await repo.paperIdsInDomain(from);
+      // 先取消在途作业再迁移：论文换域后旧队列项不再命中它们。
+      await forgetPapers(ids);
+      const moved = await repo.migrateDomainPapers(from, toDomainId);
+      await repo.deleteDomain(from);
+      const domains = await repo.listDomains();
+      const target = domains.find((domain) => domain.id === toDomainId);
+      selectionEpoch += 1;
+      set({
+        selectedDomainId: toDomainId,
+        dialog: null,
+        selectedPaperId: null,
+        paper: null,
+        domains,
+      });
+      await get().refresh();
+      get().setFlash({
+        tone: "ok",
+        text: target
+          ? `已把 ${moved} 篇论文迁入「${target.name}」，旧领域已删除。`
+          : `已迁移 ${moved} 篇论文，旧领域已删除。`,
+      });
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `迁移后删除失败：${errText(err)}，数据未改动。` });
       throw err;
     }
   },

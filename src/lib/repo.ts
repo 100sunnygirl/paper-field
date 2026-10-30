@@ -1451,6 +1451,43 @@ export const repo = {
     return rows.map((row) => row.id);
   },
 
+  /** 删除确认的损失清单：领域内论文数 / 笔记数 / 已读数（一次聚合查询）。 */
+  async domainDeletionStats(domainId: string): Promise<{ papers: number; notes: number; read: number }> {
+    const engine = await getEngine();
+    const rows = await engine.select<{ papers: number; notes: number; read: number }>(
+      `SELECT
+         (SELECT COUNT(*) FROM papers WHERE domain_id = ?) AS papers,
+         (SELECT COUNT(*) FROM notes n JOIN papers p ON p.id = n.paper_id WHERE p.domain_id = ?) AS notes,
+         (SELECT COUNT(*) FROM papers WHERE domain_id = ? AND reading_status = 'read') AS read`,
+      [domainId, domainId, domainId],
+    );
+    const row = rows[0];
+    return {
+      papers: Number(row?.papers ?? 0),
+      notes: Number(row?.notes ?? 0),
+      read: Number(row?.read ?? 0),
+    };
+  },
+
+  /** 迁移后删除：把整域论文改挂到目标领域（迁移前先取消在途作业由 store 层处理）。 */
+  async migrateDomainPapers(fromDomainId: string, toDomainId: string): Promise<number> {
+    const engine = await getEngine();
+    const at = nowIso();
+    const rows = await engine.select<{ id: string }>("SELECT id FROM papers WHERE domain_id = ?", [fromDomainId]);
+    const ids = rows.map((row) => row.id);
+    const steps: BatchStep[] = [];
+    for (let i = 0; i < ids.length; i += 500) {
+      const chunk = ids.slice(i, i + 500);
+      const placeholders = chunk.map(() => "?").join(", ");
+      steps.push({
+        sql: `UPDATE papers SET domain_id = ?, updated_at = ? WHERE id IN (${placeholders})`,
+        params: [toDomainId, at, ...chunk],
+      });
+    }
+    if (steps.length) await engine.batch(steps);
+    return ids.length;
+  },
+
   /** 重新解析：重置解析状态并收回所有权，旧的一轮写入不再生效。多篇在同一个事务里。 */
   async resetMineru(paperIds: string[]): Promise<void> {
     if (!paperIds.length) return;

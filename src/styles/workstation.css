@@ -5904,3 +5904,7 @@ mark.ef-ft-hit.is-current { background: var(--pf-signal); }
   cursor: pointer;
 }
 .ef-restored-search button:hover { color: var(--pf-ink); }
+/* 删除领域确认：损失清单 + 导出 / 迁移动作。 */
+.ef-domain-delete-review p { margin: 0 0 10px; }
+.ef-domain-delete-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.ef-domain-delete-migrate { margin-top: 4px; }

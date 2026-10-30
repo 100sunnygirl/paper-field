@@ -17,6 +17,9 @@ vi.mock("./lib/repo", () => ({
     updatePaper: vi.fn(async () => undefined),
     movePapers: vi.fn(async () => undefined),
     applyTagsToPapers: vi.fn(async () => undefined),
+    paperIdsInDomain: vi.fn(async () => [] as string[]),
+    deleteDomain: vi.fn(async () => undefined),
+    migrateDomainPapers: vi.fn(async () => 0),
     setReadingStatus: vi.fn(async () => undefined),
     setMineruState: vi.fn(async () => undefined),
     resetMineru: vi.fn(async () => undefined),
@@ -86,6 +89,9 @@ beforeEach(() => {
   vi.mocked(repo.createDomain).mockReset();
   vi.mocked(repo.updatePaper).mockClear();
   vi.mocked(repo.movePapers).mockClear();
+  vi.mocked(repo.paperIdsInDomain).mockReset();
+  vi.mocked(repo.deleteDomain).mockClear();
+  vi.mocked(repo.migrateDomainPapers).mockReset();
   vi.mocked(repo.applyTagsToPapers).mockClear();
   vi.mocked(repo.deletePapers).mockReset();
 });
@@ -693,5 +699,35 @@ describe("每领域记住搜索、选中与列表位置（domainSpot）", () => 
     await useField.getState().selectDomain("d-1");
     expect(useField.getState().search).toBe("clip");
     expect(useField.getState().selectedPaperId).toBe("a"); // refresh reselect 回落第一篇
+  });
+});
+
+describe("migrateDomainThenDelete（迁移后删除）", () => {
+  it("先取消在途作业，迁移论文到目标领域，删除旧领域并切到目标领域", async () => {
+    const DOMAINS = [
+      { id: "d-1", name: "旧领域", code: "D-01", summary: null, sortOrder: 1, createdAt: "2024-01-01T00:00:00.000Z" },
+      { id: "d-2", name: "收留领域", code: "D-02", summary: null, sortOrder: 2, createdAt: "2024-01-02T00:00:00.000Z" },
+    ];
+    vi.mocked(repo.listDomains).mockResolvedValue(DOMAINS);
+    vi.mocked(repo.paperIdsInDomain).mockResolvedValue(["p1", "p2"]);
+    vi.mocked(repo.migrateDomainPapers).mockResolvedValue(2);
+    useField.setState({
+      mode: "field",
+      selectedDomainId: "d-1",
+      domains: DOMAINS,
+      selectedPaperId: "p1",
+    });
+    await useField.getState().migrateDomainThenDelete("d-2");
+    expect(repo.migrateDomainPapers).toHaveBeenCalledWith("d-1", "d-2");
+    expect(repo.deleteDomain).toHaveBeenCalledWith("d-1");
+    expect(useField.getState().selectedDomainId).toBe("d-2");
+    expect(useField.getState().flash?.text).toContain("已把 2 篇论文迁入「收留领域」");
+  });
+
+  it("目标是当前领域时不动作", async () => {
+    useField.setState({ selectedDomainId: "d-1" });
+    await useField.getState().migrateDomainThenDelete("d-1");
+    expect(repo.migrateDomainPapers).not.toHaveBeenCalled();
+    expect(repo.deleteDomain).not.toHaveBeenCalled();
   });
 });

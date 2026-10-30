@@ -25,6 +25,7 @@ vi.mock("../lib/repo", () => ({
     getPaper: vi.fn(async () => null),
     tagsOfPapers: vi.fn(async () => [] as Array<{ tag: string; count: number }>),
     domainCensus: vi.fn(async () => [] as DomainCensus[]),
+    domainDeletionStats: vi.fn(async () => ({ papers: 0, notes: 0, read: 0 })),
   },
 }));
 
@@ -871,5 +872,64 @@ describe("DomainPickerDialog · 领域行显示论文数、已读进度与最近
     await waitFor(() => expect(repo.domainCensus).toHaveBeenCalled());
     expect(document.querySelector(".ef-domain-option-stats")).toBeNull();
     expect(screen.getAllByText(/MM-01/).length).toBeGreaterThan(0);
+  });
+});
+
+describe("DomainDialog · 删除确认升级（数量清单 / 先导出 / 迁移后删除）", () => {
+  beforeEach(() => {
+    vi.mocked(repo.domainCensus).mockReset();
+    vi.mocked(repo.domainCensus).mockResolvedValue([]);
+    vi.mocked(repo.domainDeletionStats).mockReset();
+  });
+
+  function openEditDomain() {
+    useField.setState({
+      dialog: "edit-domain",
+      selectedDomainId: "d-1",
+      domains: [
+        { id: "d-1", name: "待删领域", code: "D-09", summary: null, sortOrder: 1, createdAt: "2024-01-01T00:00:00.000Z" },
+        { id: "d-2", name: "收留领域", code: "D-10", summary: null, sortOrder: 2, createdAt: "2024-01-02T00:00:00.000Z" },
+      ],
+    });
+    return render(<DomainDialog />);
+  }
+
+  it("确认步列出论文/笔记数量（含已读）；统计读取失败时回落笼统警告", async () => {
+    vi.mocked(repo.domainDeletionStats).mockResolvedValue({ papers: 7, notes: 23, read: 3 });
+    const { rerender } = openEditDomain();
+    fireEvent.click(screen.getByRole("button", { name: "删除领域…" }));
+    expect(await screen.findByText(/篇论文/)).toBeInTheDocument();
+    const copy = document.querySelector(".ef-domain-delete-review")?.textContent ?? "";
+    expect(copy).toContain("7");
+    expect(copy).toContain("23");
+    expect(copy).toContain("已读 3 篇");
+    void rerender;
+  });
+
+  it("提供「先导出为 Markdown」与「迁移到其他领域后删除」；迁移选目标后执行并关闭", async () => {
+    vi.mocked(repo.domainDeletionStats).mockResolvedValue({ papers: 2, notes: 5, read: 1 });
+    const migrateDomainThenDelete = vi.fn(async () => undefined);
+    const exportPapers = vi.fn(async () => undefined);
+    useField.setState({ migrateDomainThenDelete, exportPapers });
+    openEditDomain();
+    fireEvent.click(screen.getByRole("button", { name: "删除领域…" }));
+    const exportBtn = await screen.findByRole("button", { name: "先导出为 Markdown 再删除" });
+    fireEvent.click(exportBtn);
+    expect(exportPapers).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "迁移到其他领域后删除…" }));
+    const select = screen.getByLabelText("迁入领域");
+    fireEvent.change(select, { target: { value: "d-2" } });
+    fireEvent.click(screen.getByRole("button", { name: "迁移并删除领域" }));
+    await waitFor(() => expect(migrateDomainThenDelete).toHaveBeenCalledWith("d-2"));
+  });
+
+  it("未选迁移目标时「迁移并删除领域」禁用；空领域导出按钮禁用", async () => {
+    vi.mocked(repo.domainDeletionStats).mockResolvedValue({ papers: 0, notes: 0, read: 0 });
+    openEditDomain();
+    fireEvent.click(screen.getByRole("button", { name: "删除领域…" }));
+    expect(await screen.findByRole("button", { name: "先导出为 Markdown 再删除" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "迁移到其他领域后删除…" }));
+    expect(screen.getByRole("button", { name: "迁移并删除领域" })).toBeDisabled();
   });
 });

@@ -305,6 +305,8 @@ export function DomainDialog() {
   const createDomain = useField((s) => s.createDomain);
   const updateDomain = useField((s) => s.updateDomain);
   const deleteDomain = useField((s) => s.deleteDomain);
+  const migrateDomainThenDelete = useField((s) => s.migrateDomainThenDelete);
+  const exportPapers = useField((s) => s.exportPapers);
   const domains = useField((s) => s.domains);
   const selectedDomainId = useField((s) => s.selectedDomainId);
   const current = domains.find((d) => d.id === selectedDomainId);
@@ -316,6 +318,10 @@ export function DomainDialog() {
   const [accent, setAccent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // 删除确认升级：损失清单（论文/笔记数）+ 先导出 + 迁移后删除三选一。
+  const [deletionStats, setDeletionStats] = useState<{ papers: number; notes: number; read: number } | null>(null);
+  const [migrateMode, setMigrateMode] = useState(false);
+  const [migrateTarget, setMigrateTarget] = useState("");
   const open = dialog === "domain" || dialog === "edit-domain";
 
   useEffect(() => {
@@ -335,7 +341,29 @@ export function DomainDialog() {
     }
     setError(null);
     setConfirmDelete(false);
+    setMigrateMode(false);
+    setMigrateTarget("");
   }, [open, editing, selectedDomainId]);
+
+  useEffect(() => {
+    // 进入确认步时读一次损失清单（当前领域）；读不到则降级为笼统警告。
+    if (!(open && confirmDelete && editing && current)) {
+      setDeletionStats(null);
+      return;
+    }
+    let alive = true;
+    repo
+      .domainDeletionStats(current.id)
+      .then((stats) => {
+        if (alive) setDeletionStats(stats);
+      })
+      .catch(() => {
+        if (alive) setDeletionStats(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [open, confirmDelete, editing, current]);
 
   return (
     <Dialog
@@ -349,9 +377,20 @@ export function DomainDialog() {
             <Button type="button" onClick={closeDialog}>
               取消
             </Button>
-            <Button type="button" className="ef-btn-danger-solid" onClick={() => void deleteDomain()}>
-              确认删除领域
-            </Button>
+            {migrateMode ? (
+              <Button
+                type="button"
+                variant="primary"
+                disabled={!migrateTarget}
+                onClick={() => void migrateDomainThenDelete(migrateTarget)}
+              >
+                迁移并删除领域
+              </Button>
+            ) : (
+              <Button type="button" className="ef-btn-danger-solid" onClick={() => void deleteDomain()}>
+                确认删除领域
+              </Button>
+            )}
           </>
         ) : (
           <>
@@ -383,7 +422,48 @@ export function DomainDialog() {
       }
     >
       {confirmDelete ? (
-        <p>将删除「{current?.name}」及其中全部论文与笔记。此操作不可撤销。</p>
+        <div className="ef-domain-delete-review">
+          {deletionStats ? (
+            <p>
+              将删除「{current?.name}」里的 <strong>{deletionStats.papers}</strong> 篇论文（已读{" "}
+              {deletionStats.read} 篇）与 <strong>{deletionStats.notes}</strong> 条笔记。级联删除不可撤销。
+            </p>
+          ) : (
+            <p>将删除「{current?.name}」及其中全部论文与笔记。此操作不可撤销。</p>
+          )}
+          {!migrateMode ? (
+            <div className="ef-domain-delete-actions">
+              <Button
+                type="button"
+                size="sm"
+                disabled={!deletionStats?.papers}
+                title={deletionStats?.papers ? "把当前领域的论文导出为 Markdown（删除前留一份）" : "这个领域没有论文可导出"}
+                onClick={() => void exportPapers({ scope: "current", format: "folders", include: { notes: true, abstract: true, parsedText: false } })}
+              >
+                先导出为 Markdown 再删除
+              </Button>
+              <Button type="button" size="sm" disabled={(domains.length ?? 0) < 2} onClick={() => setMigrateMode(true)}>
+                迁移到其他领域后删除…
+              </Button>
+            </div>
+          ) : (
+            <div className="ef-domain-delete-migrate">
+              <Field label="迁入领域">
+                <select value={migrateTarget} onChange={(e) => setMigrateTarget(e.target.value)}>
+                  <option value="">选择要迁入的领域…</option>
+                  {domains
+                    .filter((domain) => domain.id !== current?.id)
+                    .map((domain) => (
+                      <option key={domain.id} value={domain.id}>
+                        {domain.name}（{domain.code}）
+                      </option>
+                    ))}
+                </select>
+              </Field>
+              <p className="ef-field-hint">论文与笔记将完整移入目标领域，然后删除这个空领域。</p>
+            </div>
+          )}
+        </div>
       ) : (
         <>
           <Field label="名称 / 中文（必填）">
