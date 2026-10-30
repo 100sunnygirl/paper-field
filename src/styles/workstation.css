@@ -3815,6 +3815,21 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* 导入模式选择（只入库 / 入库并解析 / 解析后补全）+ 本批解析源说明。 */
+.ef-import-mode {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  margin: 0 0 8px;
+}
+.ef-import-mode-source {
+  flex: 1;
+  min-width: 160px;
+  text-align: right;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
+}
 /* 重复候选提示：匹配依据 + 「补充到已有条目」分支（由用户决定合并/保留/另建）。 */
 .ef-import-dup {
   display: inline-flex;

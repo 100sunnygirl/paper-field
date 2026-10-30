@@ -788,6 +788,61 @@ describe("PaperDialog · 「已在库中」直达原条目", () => {
   });
 });
 
+describe("PaperDialog · 导入模式选项", () => {
+  beforeEach(() => {
+    asTauri();
+    localStorage.removeItem("paper-field.import-mode");
+    useField.setState({
+      domains: [
+        { id: "d-1", name: "多模态", code: "MM-01", summary: null, sortOrder: 1, createdAt: "2024-01-01T00:00:00.000Z" },
+      ],
+    });
+  });
+
+  it("三个模式按钮，默认选中「解析后补全」并显示本批解析源", async () => {
+    useField.setState({ effectiveProvider: "local" });
+    vi.mocked(pickPdfFiles).mockResolvedValue(["/papers/a.pdf"]);
+    render(<PaperDialog />);
+    fireEvent.click(screen.getByRole("button", { name: /选择 PDF/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "导入 1 篇到「多模态」" })).toBeEnabled());
+    expect(screen.getByRole("group", { name: "导入模式" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "解析后补全" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByText(/本批解析源：本地 CLI/)).toBeInTheDocument();
+  });
+
+  it("选择「只入库」后导入不提交解析（flash 说明）", async () => {
+    vi.mocked(repo.importLocalPdfs).mockResolvedValue({ created: [paperOf("/papers/a.pdf")], skipped: [] });
+    vi.mocked(pickPdfFiles).mockResolvedValue(["/papers/a.pdf"]);
+    render(<PaperDialog />);
+    fireEvent.click(screen.getByRole("button", { name: /选择 PDF/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "导入 1 篇到「多模态」" })).toBeEnabled());
+
+    fireEvent.click(screen.getByRole("button", { name: "只入库" }));
+    fireEvent.click(screen.getByRole("button", { name: "导入 1 篇到「多模态」" }));
+    await waitFor(() => expect(useField.getState().flash?.text).toContain("未提交解析"));
+    expect(useField.getState().flash?.tone).toBe("ok");
+  });
+
+  it("模式记住上次选择：localStorage 为 library 时重开仍是「只入库」", async () => {
+    localStorage.setItem("paper-field.import-mode", "library");
+    vi.mocked(pickPdfFiles).mockResolvedValue(["/papers/a.pdf"]);
+    render(<PaperDialog />);
+    fireEvent.click(screen.getByRole("button", { name: /选择 PDF/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /导入 1 篇到/ })).toBeEnabled());
+    expect(screen.getByRole("button", { name: "只入库" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "解析后补全" })).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("未配置解析源时提示可先「只入库」", async () => {
+    useField.setState({ effectiveProvider: null, mineru: { ...useField.getState().mineru, configured: false } });
+    vi.mocked(pickPdfFiles).mockResolvedValue(["/papers/a.pdf"]);
+    render(<PaperDialog />);
+    fireEvent.click(screen.getByRole("button", { name: /选择 PDF/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "导入 1 篇到「多模态」" })).toBeEnabled());
+    expect(screen.getByText(/尚未配置解析源，可选「只入库」/)).toBeInTheDocument();
+  });
+});
+
 describe("DomainDialog · 删除确认", () => {
   it("确认步只显示取消和确认删除领域", () => {
     const deleteDomain = vi.fn(async () => undefined);

@@ -212,6 +212,8 @@ interface FieldState {
     onProgress?: (done: number, total: number, current: string) => void,
     /** 导入到哪个领域；缺省为发起时选中的领域（重试时由闭包带上原领域）。 */
     domainId?: string,
+    /** 导入模式（只入库 / 入库并解析 / 解析后补全）；缺省为既有流程（解析后补全）。 */
+    options?: { mode?: ImportMode },
   ) => Promise<ImportOutcome>;
   /**
    * 逐文件目标导入：导入预览里逐文件/按文件夹指定领域的执行端（跨领域收集不用先统一
@@ -220,6 +222,7 @@ interface FieldState {
   importPdfsPerFile: (
     entries: ImportFileEntry[],
     onProgress?: (done: number, total: number, current: string) => void,
+    options?: { mode?: ImportMode },
   ) => Promise<ImportOutcome>;
   createManualPaper: (input: {
     title: string;
@@ -346,6 +349,9 @@ export interface ImportOutcome {
   skipped: number;
   failed: Array<{ name: string; path: string; domainId: string; message: string }>;
 }
+
+/** 导入模式：只入库 / 入库并解析（不自动补全）/ 解析后补全（既有默认流程）。 */
+export type ImportMode = "library" | "parse" | "parse-meta";
 
 const prepareInflight = new Set<string>();
 const refreshInflight = new Set<string>();
@@ -843,7 +849,7 @@ export const useField = create<FieldState>((set, get) => ({
     }
   },
 
-  importPdfs: async (paths, onProgress, targetDomainId) => {
+  importPdfs: async (paths, onProgress, targetDomainId, options) => {
     const domainId = targetDomainId ?? get().selectedDomainId;
     if (!domainId) throw new Error("请先选择一个领域，再导入 PDF。");
     const unique = [...new Set(paths.map((path) => path.trim()).filter(Boolean))];
@@ -851,10 +857,11 @@ export const useField = create<FieldState>((set, get) => ({
     return get().importPdfsPerFile(
       unique.map((path) => ({ path, domainId })),
       onProgress,
+      options,
     );
   },
 
-  importPdfsPerFile: async (entries, onProgress) => {
+  importPdfsPerFile: async (entries, onProgress, options) => {
     // 同一路径只导一次（按首次出现的目标领域）；没带领域的条目按失败记账，不静默丢弃。
     const byPath = new Map<string, ImportFileEntry>();
     const failed: ImportOutcome["failed"] = [];
@@ -941,6 +948,14 @@ export const useField = create<FieldState>((set, get) => ({
         if (!failed.length) get().setFlash({ tone: "warn", text: "这些 PDF 已在库中。" });
         return { created: created.length, skipped: skippedCount, failed };
       }
+      // 「只入库」：不提交解析也不占用解析源判断，论文留在待解析队列，随时可续跑。
+      if ((options?.mode ?? "parse-meta") === "library") {
+        get().setFlash({
+          tone: "ok",
+          text: `已入库 ${created.length} 篇${skippedText}，未提交解析。可稍后在设置页「继续未完成的解析」或入库页重试。`,
+        });
+        return { created: created.length, skipped: skippedCount, failed };
+      }
       // 生效源判断：探测结果可能过期，无结果时先重探一次再下结论。
       let effective = get().effectiveProvider;
       if (!effective && get().mineru.configured) {
@@ -960,7 +975,8 @@ export const useField = create<FieldState>((set, get) => ({
           text: `已导入 ${created.length} 篇${skippedText}，正在用${providerLabel(effective)}解析。`,
         });
       }
-      enqueueMineruBatch(mineruHost(), created, false);
+      // 「入库并解析」：解析完不自动排队 AI 补全（host.autoMeta=false）；其余模式与既有流程一致。
+      enqueueMineruBatch(mineruHost(options?.mode === "parse" ? false : undefined), created, false);
       return { created: created.length, skipped: skippedCount, failed };
     } catch (err) {
       get().setFlash({ tone: "error", text: `导入失败：${errText(err)}，数据未改动。` });
@@ -1856,7 +1872,7 @@ async function persistPaperDrafts(paperId: string): Promise<{ saved: number; fai
   return { saved, failed };
 }
 
-function mineruHost() {
+function mineruHost(autoMeta?: boolean) {
   return {
     mineru: () => useField.getState().mineru,
     // 门禁派生口径：任一 enabled 且（requiresKey ? 已存 Key : 免 Key）的提供商。
@@ -1873,6 +1889,8 @@ function mineruHost() {
     showFailures: () => {
       void useField.getState().setMode("intake");
     },
+    // 缺省（undefined / true）：解析完成自动排队 AI 补全（既有流程）。
+    autoMeta: autoMeta === false ? false : true,
   };
 }
 

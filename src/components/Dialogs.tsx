@@ -2,13 +2,41 @@ import { Fragment, useEffect, useRef, useState, type CSSProperties } from "react
 import { scanImportItem, type ImportItemScan, type PaperRef } from "../lib/importScan";
 import { lookupPaper } from "../lib/lookup";
 import { pickPdfFiles, pickPdfFolder } from "../lib/mineru";
+import { providerLabel } from "../lib/mineruPlan";
 import { parsePastedRef, type ParsedRef } from "../lib/pasteRef";
 import { repo } from "../lib/repo";
 import type { Author, PaperDetail } from "../lib/types";
 import { isTauri } from "../lib/util";
-import { useField } from "../store";
+import { useField, type ImportMode } from "../store";
 import { ImportTarget } from "./ImportTarget";
 import { Button, Dialog, Field, Icon } from "./ui";
+
+/** 导入模式：导入即自动解析是默认流程，但不是每次收集都想立刻烧解析/补全额度。 */
+const IMPORT_MODES: Array<{ value: ImportMode; label: string; hint: string }> = [
+  { value: "library", label: "只入库", hint: "不提交解析；之后可在设置页「继续未完成的解析」" },
+  { value: "parse", label: "入库并解析", hint: "解析完成不自动排队 AI 补全" },
+  { value: "parse-meta", label: "解析后补全", hint: "既有默认流程：解析完成后自动补全元数据" },
+];
+const IMPORT_MODE_KEY = "paper-field.import-mode";
+
+/** 记住上次选择的导入模式（本机 localStorage）；认不出的旧值回落默认。 */
+function readImportMode(): ImportMode {
+  try {
+    const raw = localStorage.getItem(IMPORT_MODE_KEY);
+    const found = IMPORT_MODES.find((item) => item.value === raw);
+    return found ? found.value : "parse-meta";
+  } catch {
+    return "parse-meta";
+  }
+}
+
+function writeImportMode(mode: ImportMode): void {
+  try {
+    localStorage.setItem(IMPORT_MODE_KEY, mode);
+  } catch {
+    // 记不住就用本次会话的选择，不影响导入。
+  }
+}
 
 export function PaperDialog() {
   const dialog = useField((s) => s.dialog);
@@ -46,6 +74,10 @@ export function PaperDialog() {
   const [progress, setProgress] = useState<{ done: number; total: number; current: string } | null>(null);
   const [manualOpen, setManualOpen] = useState(false);
   const [attachBusy, setAttachBusy] = useState(false);
+  // 导入模式（只入库 / 入库并解析 / 解析后补全），记住上次选择。
+  const [mode, setMode] = useState<ImportMode>(() => readImportMode());
+  const effectiveProvider = useField((s) => s.effectiveProvider);
+  const mineru = useField((s) => s.mineru);
   const open = dialog === "paper";
 
   useEffect(() => {
@@ -296,9 +328,14 @@ export function PaperDialog() {
                 const onProgress = (done: number, total: number, current: string) =>
                   setProgress({ done, total, current });
                 // 单一目标领域：走原有 importPdfs 链路；逐文件多领域：走 importPdfsPerFile。
+                // 两种链路都带上导入模式（只入库 / 入库并解析 / 解析后补全）。
                 const run = multiDomain
-                  ? importPdfsPerFile(fresh.map((item) => ({ path: item.path, domainId: item.domainId })), onProgress)
-                  : importPdfs(fresh.map((item) => item.path), onProgress, fresh[0]?.domainId || undefined);
+                  ? importPdfsPerFile(
+                      fresh.map((item) => ({ path: item.path, domainId: item.domainId })),
+                      onProgress,
+                      { mode },
+                    )
+                  : importPdfs(fresh.map((item) => item.path), onProgress, fresh[0]?.domainId || undefined, { mode });
                 void run
                   .catch((err: unknown) => {
                     setError(err instanceof Error ? err.message : String(err));
@@ -415,6 +452,34 @@ export function PaperDialog() {
               </Button>
             </span>
           </div>
+          {isTauri() ? (
+            <div className="ef-import-mode" role="group" aria-label="导入模式">
+              {IMPORT_MODES.map((item) => (
+                <Button
+                  key={item.value}
+                  type="button"
+                  size="sm"
+                  className={mode === item.value ? "is-active" : ""}
+                  aria-pressed={mode === item.value}
+                  title={item.hint}
+                  disabled={busy}
+                  onClick={() => {
+                    setMode(item.value);
+                    writeImportMode(item.value);
+                  }}
+                >
+                  {item.label}
+                </Button>
+              ))}
+              <span className="ef-import-mode-source">
+                {effectiveProvider
+                  ? `本批解析源：${providerLabel(effectiveProvider)}`
+                  : mineru.configured
+                    ? "解析源当前探测未通过，可选「只入库」稍后再解析"
+                    : "尚未配置解析源，可选「只入库」稍后再解析"}
+              </span>
+            </div>
+          ) : null}
           <ul className="ef-import-list">
             {multiDir
               ? groupEntries.map(([dir, groupItems]) => (
