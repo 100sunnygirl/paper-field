@@ -1379,6 +1379,37 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   background: var(--pf-surface);
 }
 .ef-guide-actions { display: flex; gap: 8px; }
+/* 入库漏斗统计行：今日导入 / 解析中 / 排队 / 待读 / 失败，计数可点即筛选；
+   失败计数染危险色；「全库待处理 · 当前命中」并排说明筛选口径。 */
+.ef-intake-funnel {
+  margin-top: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
+}
+.ef-intake-funnel b {
+  font-size: var(--pf-fs-ui);
+  font-weight: 700;
+  color: var(--pf-ink);
+  margin-left: 2px;
+}
+.ef-intake-funnel > button {
+  display: inline-flex;
+  align-items: baseline;
+  border: none;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  color: var(--pf-muted);
+  cursor: pointer;
+}
+.ef-intake-funnel > button:hover { color: var(--pf-ink); text-decoration: underline; }
+.ef-intake-funnel .ef-funnel-error { color: var(--pf-danger); }
+.ef-intake-funnel .ef-funnel-error b { color: var(--pf-danger); }
+.ef-funnel-scope { margin-left: auto; color: var(--pf-muted); font-size: var(--pf-fs-tag); }
 .ef-job-list { padding: 14px 16px 0; display: flex; flex-direction: column; gap: 8px; }
 .ef-job-list .ef-nav-sum { margin: 0; }
 .ef-job-row {

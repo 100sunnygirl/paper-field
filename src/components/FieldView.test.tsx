@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PaperListItem } from "../lib/types";
 import { resetActivity, trackJob } from "../lib/activity";
@@ -64,8 +64,17 @@ describe("PaperNav · 入库文案", () => {
   });
 });
 
-describe("PaperNav · INTAKE 批量重试入口", () => {
-  it("有解析失败论文时显示计数与「全部重试」，点击触发批量重试", () => {
+describe("PaperNav · INTAKE 漏斗统计与批量重试入口", () => {
+  function todayItem(id: string, mineruStatus: PaperListItem["mineruStatus"]): PaperListItem {
+    const now = new Date();
+    const p = (n: number) => String(n).padStart(2, "0");
+    return {
+      ...intakeItem(id, mineruStatus),
+      createdAt: `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}T09:00:00.000`,
+    };
+  }
+
+  it("有解析失败论文时漏斗显示失败计数与「全部重试」，点击触发批量重试", () => {
     const retryFailedMineru = vi.fn(async () => undefined);
     useField.setState({
       mode: "intake",
@@ -74,13 +83,36 @@ describe("PaperNav · INTAKE 批量重试入口", () => {
     });
 
     render(<PaperNav />);
-    expect(screen.getByText("解析失败 · 2 篇")).toBeInTheDocument();
+    const funnel = document.querySelector(".ef-intake-funnel");
+    expect(funnel?.textContent).toContain("解析中 0");
+    expect(funnel?.textContent).toContain("待读 1");
+    expect(funnel?.textContent).toContain("失败 2");
+    expect(funnel?.textContent).toContain("全库待处理 3 · 当前命中 3");
 
     fireEvent.click(screen.getByRole("button", { name: "全部重试" }));
     expect(retryFailedMineru).toHaveBeenCalledTimes(1);
   });
 
-  it("没有失败论文时不显示入口", () => {
+  it("漏斗计数可点即筛选：失败计数进入失败分组", () => {
+    useField.setState({ mode: "intake", intake: [intakeItem("a", "error"), intakeItem("c", "done")] });
+    const { rerender } = render(<PaperNav />);
+    fireEvent.click(screen.getByRole("button", { name: "失败 1" }));
+    rerender(<PaperNav />);
+    expect(useField.getState().intakeStage).toBe("error");
+    expect(document.querySelectorAll(".ef-row")).toHaveLength(1);
+    expect(document.querySelector(".ef-intake-funnel")?.textContent).toContain("当前命中 1");
+  });
+
+  it("今日导入按本地自然日计数", () => {
+    useField.setState({
+      mode: "intake",
+      intake: [todayItem("a", "done"), todayItem("b", "error"), intakeItem("old", "done")],
+    });
+    render(<PaperNav />);
+    expect(document.querySelector(".ef-intake-funnel")?.textContent).toContain("今日导入 2");
+  });
+
+  it("没有失败论文时不显示「全部重试」", () => {
     useField.setState({
       mode: "intake",
       intake: [intakeItem("c", "done")],
@@ -123,9 +155,11 @@ describe("PaperNav · INTAKE 任务列表只显示进行中的作业", () => {
     render(<PaperNav />);
     expect(screen.getByText(/MinerU 解析 · 运行中/)).toBeInTheDocument();
     expect(screen.getByText(/MinerU 解析 · 等待/)).toBeInTheDocument();
-    expect(screen.queryByText(/完成/)).toBeNull();
-    expect(screen.queryByText(/失败/)).toBeNull();
-    expect(screen.queryByText(/已取消/)).toBeNull();
+    // 断言限定在作业列表里：头部漏斗行合法地包含「失败 N」计数。
+    const jobList = document.querySelector<HTMLElement>(".ef-job-list")!;
+    expect(within(jobList).queryByText(/完成/)).toBeNull();
+    expect(within(jobList).queryByText(/失败/)).toBeNull();
+    expect(within(jobList).queryByText(/已取消/)).toBeNull();
   });
 
   it("没有进行中作业时显示空态文案", () => {

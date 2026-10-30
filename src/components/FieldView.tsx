@@ -76,6 +76,19 @@ export function sortIntakeByStage(items: PaperListItem[]): PaperListItem[] {
   return sorted;
 }
 
+/** 今日导入：createdAt 落在本地今天（自然日）的篇数。 */
+export function countTodayImported(items: PaperListItem[], now: Date = new Date()): number {
+  return items.filter((paper) => {
+    const at = new Date(paper.createdAt);
+    return (
+      !Number.isNaN(at.getTime()) &&
+      at.getFullYear() === now.getFullYear() &&
+      at.getMonth() === now.getMonth() &&
+      at.getDate() === now.getDate()
+    );
+  }).length;
+}
+
 function timeOf(value: string | null | undefined): number {
   if (!value) return 0;
   const t = new Date(value).getTime();
@@ -270,6 +283,7 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
     mode === "intake"
       ? sortIntakeByStage(intake.filter((p) => intakeStage === "all" || intakeStageOf(p) === intakeStage))
       : [];
+  const todayImportedCount = mode === "intake" ? countTodayImported(intake) : 0;
   const visible = mode === "archive" ? archiveItems : mode === "intake" ? intakeItems : list;
   // 按领域分组：只列归档里实际出现的领域（组头带已读数），行号在组间连续。
   const archiveDomains = domains.filter((d) => archive.some((p) => p.domainId === d.id));
@@ -464,14 +478,38 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
             <h2>入库</h2>
           </div>
           <p className="ef-nav-sum">未手动标为已读的论文，以及 MinerU 解析和 AI 补全作业。</p>
-          {failedParseCount ? (
-            <div className="ef-job-row">
-              <span className="status-error">解析失败 · {failedParseCount} 篇</span>
+          {/* 入库漏斗：今日导入 / 解析中 / 排队 / 待读 / 失败，计数可点即筛选；
+              全库待处理 vs 当前命中并排可见（搜索与分组筛选都会改写「当前命中」）。 */}
+          <div className="ef-intake-funnel" aria-label="入库漏斗统计">
+            <span>
+              今日导入 <b className="mono">{todayImportedCount}</b>
+            </span>
+            <button type="button" onClick={() => setIntakeStage("parsing")} title="只看解析中的论文">
+              解析中 <b className="mono">{intakeStageCounts.get("parsing") ?? 0}</b>
+            </button>
+            <button type="button" onClick={() => setIntakeStage("queued")} title="只看排队中的论文">
+              排队 <b className="mono">{intakeStageCounts.get("queued") ?? 0}</b>
+            </button>
+            <button type="button" onClick={() => setIntakeStage("ready")} title="只看已解析待读的论文">
+              待读 <b className="mono">{intakeStageCounts.get("ready") ?? 0}</b>
+            </button>
+            <button
+              type="button"
+              className="ef-funnel-error"
+              onClick={() => setIntakeStage("error")}
+              title="只看解析失败的论文"
+            >
+              失败 <b className="mono">{failedParseCount}</b>
+            </button>
+            <span className="ef-funnel-scope">
+              全库待处理 {intake.length} · 当前命中 {visible.length}
+            </span>
+            {failedParseCount ? (
               <Button type="button" size="sm" onClick={() => void retryFailedMineru()}>
                 全部重试
               </Button>
-            </div>
-          ) : null}
+            ) : null}
+          </div>
         </div>
       ) : null}
 
