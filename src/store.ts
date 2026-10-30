@@ -219,6 +219,7 @@ interface FieldState {
     | "delete-checked"
     | "compare-notes"
     | "export-checked"
+    | "confirm-retry"
     | "pick-domain"
     | "edit-paper"
     | null;

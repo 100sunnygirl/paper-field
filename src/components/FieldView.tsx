@@ -259,7 +259,7 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
   const intakeStage = useField((s) => s.intakeStage);
   const setIntakeStage = useField((s) => s.setIntakeStage);
   const cancelJob = useField((s) => s.cancelJob);
-  const retryFailedMineru = useField((s) => s.retryFailedMineru);
+  const retryMineruPapers = useField((s) => s.retryMineruPapers);
   const setJobsOpen = useField((s) => s.setJobsOpen);
   const highlightJob = useField((s) => s.highlightJob);
   // 阶段一句话与作业面板同一口径：入库页行内直接看到「已解析 n/N 页」等实况。
@@ -437,6 +437,12 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
   const fill = domainPapers.length ? domainRead / domainPapers.length : 0;
   // 全选以「可见列表」为准：客户端筛选（领域/年份）后勾选集里可能残留不可见项。
   const allChecked = visible.length > 0 && visible.every((p) => checkedPaperIds.includes(p.id));
+  // 批量重试的候选：勾选中解析失败 / 尚未提交解析（有 PDF）的论文。
+  const retryableCheckedIds = checkedPaperIds.filter((id) => {
+    const paper = intake.find((p) => p.id === id);
+    return Boolean(paper?.pdfPath) && (paper?.mineruStatus === "error" || paper?.mineruStatus === "pending");
+  });
+  const retryableCheckedCount = retryableCheckedIds.length;
   // 标已读（⌘R / 下拉）时：领域进度条 + 已读计数做一次 +1 微反馈。
   const readPulse = useReadPulse();
 
@@ -540,7 +546,12 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
               全库待处理 {intake.length} · 当前命中 {visible.length}
             </span>
             {failedParseCount ? (
-              <Button type="button" size="sm" onClick={() => void retryFailedMineru()}>
+              <Button
+                type="button"
+                size="sm"
+                title="先看影响篇数与清单，再决定是否全部重试"
+                onClick={() => openDialog("confirm-retry")}
+              >
                 全部重试
               </Button>
             ) : null}
@@ -739,6 +750,21 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
               已选 {checkedPaperIds.length} / {visible.length}
             </span>
             <span className="ef-batch-actions">
+              {mode === "intake" ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={retryableCheckedCount === 0}
+                  title={
+                    retryableCheckedCount
+                      ? `把勾选中解析失败 / 尚未提交的 ${retryableCheckedCount} 篇重新提交解析`
+                      : "勾选解析失败或尚未提交解析的论文后可用"
+                  }
+                  onClick={() => void retryMineruPapers(retryableCheckedIds)}
+                >
+                  重试所选（{retryableCheckedCount}）
+                </Button>
+              ) : null}
               {mode === "archive" ? (
                 <>
                   <Button

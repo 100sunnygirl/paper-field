@@ -1416,6 +1416,39 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   color: var(--pf-muted);
   letter-spacing: 0.02em;
 }
+/* 「全部重试」影响预览清单：状态标注（失败/尚未提交）+ 标题 + 领域短码。 */
+.ef-retry-list {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  max-height: 240px;
+  overflow: auto;
+  border: 1px solid var(--pf-divider);
+  background: var(--pf-surface);
+  display: flex;
+  flex-direction: column;
+}
+.ef-retry-list li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-ink);
+  border-bottom: 1px solid var(--pf-divider);
+}
+.ef-retry-list li:last-child { border-bottom: none; }
+.ef-retry-list em {
+  flex: none;
+  font-style: normal;
+  font-size: var(--pf-fs-tag);
+  padding: 0 5px;
+  border: 1px solid var(--pf-divider);
+  border-radius: var(--pf-radius);
+  color: var(--pf-muted);
+}
+.ef-retry-list em.is-failed { color: var(--pf-danger); border-color: var(--pf-danger); }
+.ef-retry-list .mono { margin-left: auto; color: var(--pf-muted); flex: none; }
 .ef-job-list { padding: 14px 16px 0; display: flex; flex-direction: column; gap: 8px; }
 .ef-job-list .ef-nav-sum { margin: 0; }
 .ef-job-row {

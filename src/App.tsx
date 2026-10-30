@@ -4,6 +4,7 @@ import {
   ConfirmMetaDialog,
   ConfirmNotesDialog,
   CompareNotesDialog,
+  ConfirmRetryFailedDialog,
   DeleteCheckedPapersDialog,
   DeletePaperDialog,
   DomainDialog,
@@ -265,6 +266,7 @@ export default function App() {
       <DeleteCheckedPapersDialog />
       <CompareNotesDialog />
       <ExportCheckedDialog />
+      <ConfirmRetryFailedDialog />
       <EditPaperDialog />
       <ConfirmNotesDialog />
       <ConfirmMetaDialog />

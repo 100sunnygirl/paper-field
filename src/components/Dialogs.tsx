@@ -837,6 +837,101 @@ export function ExportCheckedDialog() {
   );
 }
 
+/**
+ * 「全部重试」的影响预览：列出全部解析失败（error）与尚未提交（pending）的论文，
+ * 跨领域、标注各自状态；确认后按这份冻结清单批量重试——预览什么就重试什么，
+ * 不受当前筛选影响。
+ */
+export function ConfirmRetryFailedDialog() {
+  const dialog = useField((s) => s.dialog);
+  const closeDialog = useField((s) => s.closeDialog);
+  const retryMineruPapers = useField((s) => s.retryMineruPapers);
+  const [targets, setTargets] = useState<Array<PaperDetail & { failed: boolean }> | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const open = dialog === "confirm-retry";
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setTargets(null);
+    setLoadError(null);
+    setBusy(false);
+    repo
+      .listFailedMineru()
+      .then(async (ids) => {
+        const details = await Promise.all(ids.map((id) => repo.getPaper(id)));
+        if (cancelled) return;
+        const found = details
+          .filter((row): row is PaperDetail => Boolean(row))
+          .map((row) => ({ ...row, failed: row.mineruStatus === "error" }));
+        setTargets(found);
+      })
+      .catch(() => {
+        if (!cancelled) setLoadError("读取失败清单出错，请稍后重试。");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+
+  const failedCount = targets?.filter((row) => row.failed).length ?? 0;
+  const pendingCount = (targets?.length ?? 0) - failedCount;
+
+  async function run() {
+    if (busy || !targets?.length) return;
+    setBusy(true);
+    try {
+      await retryMineruPapers(targets.map((row) => row.id));
+      closeDialog();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog
+      open={open}
+      title="全部重试解析？"
+      onClose={closeDialog}
+      footer={
+        <>
+          <Button type="button" onClick={closeDialog}>
+            取消
+          </Button>
+          <Button type="button" variant="primary" disabled={busy || !targets?.length} onClick={() => void run()}>
+            {busy ? "正在重试…" : `重试这 ${targets?.length ?? 0} 篇`}
+          </Button>
+        </>
+      }
+    >
+      {loadError ? (
+        <p className="ef-error">{loadError}</p>
+      ) : !targets ? (
+        <p aria-live="polite">正在统计受影响的论文…</p>
+      ) : targets.length === 0 ? (
+        <p>没有解析失败或尚未提交解析的论文。</p>
+      ) : (
+        <>
+          <p>
+            将影响 <strong>{targets.length}</strong> 篇（解析失败 {failedCount} 篇 · 尚未提交 {pendingCount} 篇），覆盖全部领域——
+            不只是当前筛选结果。会重置这些论文的解析状态并按回退顺序重新提交给 MinerU。
+          </p>
+          <ul className="ef-retry-list">
+            {targets.map((row) => (
+              <li key={row.id}>
+                <em className={row.failed ? "is-failed" : "is-pending"}>{row.failed ? "失败" : "尚未提交"}</em>
+                <span>{row.titleZh || row.title}</span>
+                <span className="mono">{row.domain.code || row.domain.name}</span>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </Dialog>
+  );
+}
+
 export function ConfirmNotesDialog() {
   const dialog = useField((s) => s.dialog);
   const closeDialog = useField((s) => s.closeDialog);

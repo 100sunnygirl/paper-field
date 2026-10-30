@@ -74,12 +74,10 @@ describe("PaperNav · INTAKE 漏斗统计与批量重试入口", () => {
     };
   }
 
-  it("有解析失败论文时漏斗显示失败计数与「全部重试」，点击触发批量重试", () => {
-    const retryFailedMineru = vi.fn(async () => undefined);
+  it("有解析失败论文时漏斗显示失败计数，「全部重试」打开影响预览对话框", () => {
     useField.setState({
       mode: "intake",
       intake: [intakeItem("a", "error"), intakeItem("b", "error"), intakeItem("c", "done")],
-      retryFailedMineru,
     });
 
     render(<PaperNav />);
@@ -90,7 +88,25 @@ describe("PaperNav · INTAKE 漏斗统计与批量重试入口", () => {
     expect(funnel?.textContent).toContain("全库待处理 3 · 当前命中 3");
 
     fireEvent.click(screen.getByRole("button", { name: "全部重试" }));
-    expect(retryFailedMineru).toHaveBeenCalledTimes(1);
+    expect(useField.getState().dialog).toBe("confirm-retry");
+  });
+
+  it("入库批量模式提供「重试所选」：只计勾选中解析失败/尚未提交的篇数并直接重试", async () => {
+    const retryMineruPapers = vi.fn(async () => undefined);
+    useField.setState({
+      mode: "intake",
+      intake: [intakeItem("a", "error"), intakeItem("b", "error"), intakeItem("c", "done"), intakeItem("d", "pending")],
+      batchMode: true,
+      checkedPaperIds: ["a", "c", "d"],
+      retryMineruPapers,
+    });
+    render(<PaperNav />);
+    // 勾选 a(error) c(done) d(pending)：可重试的是 a、d 两篇。
+    const button = screen.getByRole("button", { name: "重试所选（2）" });
+    fireEvent.click(button);
+    await waitFor(() => {
+      expect(retryMineruPapers).toHaveBeenCalledWith(["a", "d"]);
+    });
   });
 
   it("漏斗计数可点即筛选：失败计数进入失败分组", () => {
