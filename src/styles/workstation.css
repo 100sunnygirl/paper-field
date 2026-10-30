@@ -1001,6 +1001,37 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   background: var(--pf-tint-success);
   animation: pf-flash-out 700ms var(--pf-ease-out);
 }
+/* 领域头进度三段（未读/在读/已读）：纯展示的分段计数条。 */
+.ef-progress-segments {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+.ef-progress-segments span {
+  font-size: var(--pf-fs-tag);
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--pf-divider);
+  color: var(--pf-secondary);
+  background: var(--pf-surface);
+}
+.ef-progress-segments .seg-reading { border-color: var(--pf-control-border); color: var(--pf-ink); }
+.ef-progress-segments .seg-read { border-color: var(--pf-line-strong); background: var(--pf-hover-quiet); }
+/* 本周新增：小墨点 + 一行说明（冷置领域不显示，活跃度一眼可辨）。 */
+.ef-week-new {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 0 0;
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-secondary);
+}
+.ef-week-new i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--pf-domain-accent, var(--pf-ink));
+}
 .ef-progress-value b.is-read-pulse,
 .ef-status b.is-read-pulse {
   display: inline-block;

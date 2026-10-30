@@ -107,7 +107,14 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
   void censusEpoch;
   const failedParseCount = intake.filter((p) => p.mineruStatus === "error").length;
   const domainRead = domainPapers.filter((p) => p.readingStatus === "read").length;
+  const domainReading = domainPapers.filter((p) => p.readingStatus === "reading").length;
+  const domainUnread = domainPapers.length - domainRead - domainReading;
   const fill = domainPapers.length ? domainRead / domainPapers.length : 0;
+  // 本周新增：领域内 created_at 在最近 7 天内的论文数（跨搜索过滤，按未过滤领域算）。
+  const weekSince = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const domainNewThisWeek = domainPapers.filter(
+    (p) => new Date(p.createdAt).getTime() >= weekSince,
+  ).length;
   const allChecked = list.length > 0 && checkedPaperIds.length === list.length;
   // 标已读（⌘R / 下拉）时：领域进度条 + 已读计数做一次 +1 微反馈。
   const readPulse = useReadPulse();
@@ -155,9 +162,21 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
               <span className="mono"> / {domainPapers.length}</span>
             </span>
           </div>
+          {/* 三段化：未读 / 在读 / 已读一眼可见积压结构；本周新增标出活跃度。 */}
+          <div className="ef-progress-segments" role="img" aria-label={`未读 ${domainUnread} 篇，在读 ${domainReading} 篇，已读 ${domainRead} 篇`}>
+            <span className="seg-unread mono">未读 {domainUnread}</span>
+            <span className="seg-reading mono">在读 {domainReading}</span>
+            <span className="seg-read mono">已读 {domainRead}</span>
+          </div>
           <div className={`ef-progress${readPulse ? " is-read-pulse" : ""}`} aria-hidden="true">
             <i style={{ width: `${Math.round(fill * 100)}%` }} />
           </div>
+          {domainNewThisWeek > 0 ? (
+            <p className="ef-week-new" aria-label={`本周新增 ${domainNewThisWeek} 篇`}>
+              <i aria-hidden="true" />
+              本周新增 {domainNewThisWeek} 篇
+            </p>
+          ) : null}
           {lastRead ? (
             <button
               type="button"

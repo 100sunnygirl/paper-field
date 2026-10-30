@@ -533,3 +533,35 @@ describe("PaperNav · 恢复领域现场提示", () => {
     expect(screen.queryByText(/已恢复这个领域上次的搜索/)).toBeNull();
   });
 });
+
+describe("PaperNav · 领域头进度三段化与本周新增", () => {
+  function iso(daysAgo: number): string {
+    return new Date(Date.now() - daysAgo * 86400000).toISOString();
+  }
+
+  it("显示 未读/在读/已读 三段计数与本周新增 N 篇", () => {
+    const fresh = { ...intakeItem("f", null), createdAt: iso(1) };
+    const reading = { ...intakeItem("r", null), readingStatus: "reading" as const, createdAt: iso(20) };
+    const read = { ...intakeItem("d", null), readingStatus: "read" as const, createdAt: iso(30) };
+    useField.setState({
+      mode: "field",
+      selectedDomainId: "d-1",
+      papers: [fresh, reading, read],
+    });
+    render(<PaperNav />);
+    const segments = document.querySelector(".ef-progress-segments");
+    expect(segments?.getAttribute("aria-label")).toBe("未读 1 篇，在读 1 篇，已读 1 篇");
+    expect(segments?.textContent).toContain("未读 1");
+    expect(segments?.textContent).toContain("在读 1");
+    expect(segments?.textContent).toContain("已读 1");
+    expect(screen.getByText("本周新增 1 篇")).toBeInTheDocument();
+  });
+
+  it("没有本周新增时不显示活跃度行", () => {
+    const old = { ...intakeItem("o", null), createdAt: iso(30) };
+    useField.setState({ mode: "field", selectedDomainId: "d-1", papers: [old] });
+    render(<PaperNav />);
+    expect(screen.queryByText(/本周新增/)).toBeNull();
+    expect(document.querySelector(".ef-progress-segments")?.textContent).toContain("未读 1");
+  });
+});
