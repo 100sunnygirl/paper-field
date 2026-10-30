@@ -1,5 +1,5 @@
 import type { CSSProperties } from "react";
-import { MINERU_STATUS_LABELS, READING_STATUS_LABELS, type PaperListItem } from "../lib/types";
+import { MINERU_STATUS_LABELS, READING_STATUS_LABELS, type FieldSource, type PaperListItem } from "../lib/types";
 import { pad2 } from "../lib/util";
 import { hasDraft as paperHasDraft, useField } from "../store";
 import { Icon } from "./ui";
@@ -11,6 +11,31 @@ export function CheckSquare({ on }: { on: boolean }) {
       {on ? <Icon name="check" /> : null}
     </span>
   );
+}
+
+/**
+ * 「标题待确认」徽标：标题来源仍是文件名（fieldSources.title === "file"）的论文，
+ * 提示这个标题是占位、可校对。点击打开编辑论文信息（定位标题输入）。
+ */
+export function TitlePendingBadge({ onEdit }: { onEdit: () => void }) {
+  return (
+    <button
+      type="button"
+      className="ef-title-pending"
+      title="这个标题来自文件名，是占位值。点击打开论文信息修改，或到文献库重查著录。"
+      onClick={(event) => {
+        event.stopPropagation();
+        onEdit();
+      }}
+    >
+      标题待确认
+    </button>
+  );
+}
+
+/** 论文的标题来源是否仍是文件名（AI 补全与文献库都没有替换过）。 */
+export function titleStillFromFile(sources: Partial<Record<string, FieldSource>> | undefined): boolean {
+  return sources?.title === "file";
 }
 
 export function PaperRow({
@@ -35,6 +60,7 @@ export function PaperRow({
   const title = paper.titleZh || paper.title;
   const english = paper.titleZh ? paper.title : "";
   const hasDraft = useField((s) => paperHasDraft(s, paper.id));
+  const openDialog = useField((s) => s.openDialog);
   const className = [
     "ef-row",
     "pf-stagger",
@@ -62,7 +88,12 @@ export function PaperRow({
           {READING_STATUS_LABELS[paper.readingStatus]}
         </span>
       </div>
-      <h3>{title}</h3>
+      <h3>
+        {title}
+        {titleStillFromFile(paper.fieldSources) ? (
+          <TitlePendingBadge onEdit={() => openDialog("edit-paper", paper.id)} />
+        ) : null}
+      </h3>
       {english ? <p className="ef-row-en">{english}</p> : null}
       <div className="ef-row-meta">
         <span>{[paper.venue, paper.year].filter(Boolean).join(" · ") || "会议 / 期刊待补充"}</span>

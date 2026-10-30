@@ -3815,6 +3815,46 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* 「标题待确认」徽标：标题来源仍是文件名的论文，在列表行与正文标题旁提示可校对。 */
+.ef-title-pending {
+  margin-left: 8px;
+  padding: 1px 6px;
+  border: 1px solid var(--pf-control-border);
+  border-radius: var(--pf-radius);
+  background: var(--pf-hover-flat);
+  color: var(--pf-secondary);
+  font-size: 11px;
+  font-weight: 400;
+  white-space: nowrap;
+  vertical-align: 2px;
+  cursor: pointer;
+  transition: border-color var(--pf-direct), color var(--pf-direct);
+}
+.ef-title-pending:hover {
+  border-color: var(--pf-ink);
+  color: var(--pf-ink);
+}
+/* INTAKE 集中校对区标题行的补充说明（复用待重试清单的框架样式）。 */
+.ef-import-retry.is-title-review { border-left-color: var(--pf-ink); }
+.ef-import-retry-actions {
+  display: inline-flex;
+  gap: 2px;
+  flex: none;
+}
+.ef-import-retry-link {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--pf-ink);
+  cursor: pointer;
+  text-align: left;
+}
+.ef-import-retry-link:hover { text-decoration: underline; }
 /* 导入模式选择（只入库 / 入库并解析 / 解析后补全）+ 本批解析源说明。 */
 .ef-import-mode {
   display: flex;

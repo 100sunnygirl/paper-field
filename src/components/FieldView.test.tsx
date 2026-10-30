@@ -408,3 +408,36 @@ describe("PaperNav · 标已读的 +1 微反馈", () => {
     expect(document.querySelector(".ef-progress")).not.toHaveClass("is-read-pulse");
   });
 });
+
+describe("PaperNav · INTAKE 标题待确认集中校对", () => {
+  function fileTitleItem(id: string): PaperListItem {
+    return {
+      ...intakeItem(id, null),
+      title: `${id}-filename-title`,
+      fieldSources: { title: "file" },
+    };
+  }
+
+  it("列出标题仍是文件名的论文，可重查著录与编辑标题", async () => {
+    const runRefreshLinks = vi.fn(async () => undefined);
+    useField.setState({
+      mode: "intake",
+      intake: [fileTitleItem("a"), intakeItem("b", null)],
+      runRefreshLinks,
+    });
+    render(<PaperNav />);
+    expect(screen.getByText("标题待确认 · 1 篇")).toBeInTheDocument();
+    // 同名标题也会出现在上方论文列表里：把断言限定在校对区容器内
+    const section = document.querySelector(".ef-import-retry.is-title-review")!;
+    expect(section.textContent).toContain("a-filename-title");
+
+    fireEvent.click(screen.getByRole("button", { name: "重查著录" }));
+    expect(runRefreshLinks).toHaveBeenCalledWith("a");
+  });
+
+  it("没有这类论文时不显示区块", () => {
+    useField.setState({ mode: "intake", intake: [intakeItem("b", null)] });
+    render(<PaperNav />);
+    expect(screen.queryByText(/标题待确认/)).toBeNull();
+  });
+});

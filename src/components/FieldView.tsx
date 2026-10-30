@@ -12,7 +12,7 @@ import { repo } from "../lib/repo";
 import { pad2, shortcut } from "../lib/util";
 import { useField } from "../store";
 import { useReadPulse } from "./useReadPulse";
-import { CheckSquare, PaperMatrix } from "./PaperMatrix";
+import { CheckSquare, PaperMatrix, titleStillFromFile } from "./PaperMatrix";
 import { ImportTarget } from "./ImportTarget";
 import { PaperSearch } from "./PaperSearch";
 import { Button, Icon } from "./ui";
@@ -43,6 +43,7 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
   const setArchiveFilter = useField((s) => s.setArchiveFilter);
   const cancelJob = useField((s) => s.cancelJob);
   const retryFailedMineru = useField((s) => s.retryFailedMineru);
+  const runRefreshLinks = useField((s) => s.runRefreshLinks);
   const importFailures = useField((s) => s.importFailures);
   const removeImportFailure = useField((s) => s.removeImportFailure);
   const retryImportFailures = useField((s) => s.retryImportFailures);
@@ -85,6 +86,8 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
     mode === "field" && domainCensus?.domainId === selectedDomainId ? domainCensus.items : papers;
   void censusEpoch;
   const failedParseCount = intake.filter((p) => p.mineruStatus === "error").length;
+  // 标题来源仍是文件名的论文：导入完成后集中列出供批量校对（文献库没查到时标题不会永远停在文件名）。
+  const titlePending = intake.filter((p) => titleStillFromFile(p.fieldSources));
   const domainRead = domainPapers.filter((p) => p.readingStatus === "read").length;
   const fill = domainPapers.length ? domainRead / domainPapers.length : 0;
   const allChecked = list.length > 0 && checkedPaperIds.length === list.length;
@@ -192,6 +195,50 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
               <Button type="button" size="sm" onClick={() => void retryFailedMineru()}>
                 全部重试
               </Button>
+            </div>
+          ) : null}
+          {titlePending.length ? (
+            <div className="ef-import-retry is-title-review">
+              <div className="ef-import-retry-head">
+                <span>标题待确认 · {titlePending.length} 篇</span>
+                <span className="ef-nav-sum">标题仍是文件名</span>
+              </div>
+              <ul className="ef-import-retry-list">
+                {titlePending.slice(0, 4).map((paper) => (
+                  <li key={paper.id}>
+                    <button
+                      type="button"
+                      className="ef-import-retry-name ef-import-retry-link"
+                      title="打开这篇论文"
+                      onClick={() => void selectPaper(paper.id)}
+                    >
+                      {paper.titleZh || paper.title}
+                    </button>
+                    <span className="ef-import-retry-actions">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="text"
+                        title="到文献库重查著录（不调用模型）"
+                        onClick={() => void runRefreshLinks(paper.id)}
+                      >
+                        重查著录
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="text"
+                        onClick={() => openDialog("edit-paper", paper.id)}
+                      >
+                        编辑标题
+                      </Button>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              {titlePending.length > 4 ? (
+                <p className="ef-nav-sum">其余 {titlePending.length - 4} 篇在上方列表里逐篇处理。</p>
+              ) : null}
             </div>
           ) : null}
         </div>
