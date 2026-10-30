@@ -1147,3 +1147,40 @@ describe("领域合并（mergePreview / mergeDomains）", () => {
     expect(await repo.mergePreview(d1, "d-none")).toBeNull();
   });
 });
+
+describe("searchStructured（tag:/domain:/year: 结构化检索）", () => {
+  async function seedLibrary(): Promise<{ d1: string; d2: string }> {
+    const d1 = await makeDomain("MM-01");
+    const d2 = await makeDomain("AL-02");
+    const p1 = await repo.createPaper({ domainId: d1, title: "CLIP Revisit" });
+    await repo.updatePaper(p1.id, { tags: ["clip", "contrastive"], year: 2021 }, true);
+    const p2 = await repo.createPaper({ domainId: d2, title: "RLHF Survey" });
+    await repo.updatePaper(p2.id, { tags: ["rlhf"], year: 2024 }, true);
+    return { d1, d2 };
+  }
+
+  it("tag: 精确匹配标签", async () => {
+    await seedLibrary();
+    const rows = await repo.searchStructured({ tags: ["rlhf"], domains: [], years: [], text: "" });
+    expect(rows.map((row) => row.title)).toEqual(["RLHF Survey"]);
+  });
+
+  it("domain: 匹配领域名或短码；year: 匹配年份；可组合", async () => {
+    await seedLibrary();
+    const byCode = await repo.searchStructured({ tags: [], domains: ["AL-02"], years: [], text: "" });
+    expect(byCode.map((row) => row.title)).toEqual(["RLHF Survey"]);
+    // makeDomain 生成的领域名是「领域 AL-02」：按名称完整匹配只命中该域。
+    const byName = await repo.searchStructured({ tags: [], domains: ["领域 AL-02"], years: [], text: "" });
+    expect(byName.map((row) => row.title)).toEqual(["RLHF Survey"]);
+    const combined = await repo.searchStructured({ tags: ["clip"], domains: [], years: [2021], text: "" });
+    expect(combined.map((row) => row.title)).toEqual(["CLIP Revisit"]);
+    const none = await repo.searchStructured({ tags: ["clip"], domains: [], years: [2024], text: "" });
+    expect(none).toEqual([]);
+  });
+
+  it("自由文本部分仍走标题/作者等全文匹配", async () => {
+    await seedLibrary();
+    const rows = await repo.searchStructured({ tags: [], domains: [], years: [], text: "survey" });
+    expect(rows.map((row) => row.title)).toEqual(["RLHF Survey"]);
+  });
+});

@@ -605,6 +605,41 @@ export const repo = {
     return rows.map(mapListItem);
   },
 
+  /**
+   * 结构化检索（tag:/domain:/year: 前缀，可组合 + 自由文本）。
+   * domain: 同时匹配领域名称与短码；tag: 精确匹配标签；year: 匹配年份。
+   */
+  async searchStructured(
+    query: { tags: string[]; domains: string[]; years: number[]; text: string },
+  ): Promise<PaperListItem[]> {
+    const engine = await getEngine();
+    const clauses: string[] = [];
+    const params: unknown[] = [];
+    for (const tag of query.tags) {
+      clauses.push("EXISTS (SELECT 1 FROM json_each(p.tags) WHERE json_each.value = ?)");
+      params.push(tag);
+    }
+    for (const domain of query.domains) {
+      clauses.push("(d.name LIKE ? ESCAPE '\\' OR d.code LIKE ? ESCAPE '\\')");
+      const like = likePattern(domain);
+      params.push(like, like);
+    }
+    for (const year of query.years) {
+      clauses.push("p.year = ?");
+      params.push(year);
+    }
+    if (query.text.trim()) {
+      clauses.push(PAPER_SEARCH_MATCH_SQL);
+      params.push(...searchParams(likePattern(query.text.trim())));
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    const rows = await engine.select<PaperRow>(
+      `${PAPER_LIST_SQL} ${where} ORDER BY p.updated_at DESC`,
+      params,
+    );
+    return rows.map(mapListItem);
+  },
+
   async searchAll(search: string): Promise<PaperListItem[]> {
     const engine = await getEngine();
     const q = search.trim();

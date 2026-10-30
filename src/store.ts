@@ -44,6 +44,7 @@ import { redactSecrets } from "./lib/redact";
 import { noteReadingStatus } from "./lib/readingSince";
 import { recordDomainVisit } from "./lib/domainRecent";
 import { domainSpotOf, saveDomainSpot } from "./lib/domainSpot";
+import { hasStructuredQuery, parseSearchQuery } from "./lib/searchQuery";
 import { repo } from "./lib/repo";
 import { cancelChat, completeChat, hasUsableProvider, loadSettings, readLlmSettings, saveSettings, type LlmSaveInput } from "./lib/settings";
 import { log } from "./lib/logger";
@@ -673,7 +674,13 @@ export const useField = create<FieldState>((set, get) => ({
     ]);
     let papers: PaperListItem[] = [];
     if (state.selectedDomainId) {
-      papers = await repo.listPapers(state.selectedDomainId, state.search);
+      // tag:/domain:/year: 前缀走结构化检索（跨领域范围），普通词仍限本领域全文匹配。
+      const structured = parseSearchQuery(state.search);
+      if (hasStructuredQuery(state.search)) {
+        papers = await repo.searchStructured(structured);
+      } else {
+        papers = await repo.listPapers(state.selectedDomainId, state.search);
+      }
     }
     const archive = await repo.listArchive({
       search: state.mode === "archive" ? state.search : "",

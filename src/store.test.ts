@@ -20,6 +20,7 @@ vi.mock("./lib/repo", () => ({
     paperIdsInDomain: vi.fn(async () => [] as string[]),
     deleteDomain: vi.fn(async () => undefined),
     migrateDomainPapers: vi.fn(async () => 0),
+    searchStructured: vi.fn(async () => [] as import("./lib/types").PaperListItem[]),
     setReadingStatus: vi.fn(async () => undefined),
     setMineruState: vi.fn(async () => undefined),
     resetMineru: vi.fn(async () => undefined),
@@ -729,5 +730,21 @@ describe("migrateDomainThenDelete（迁移后删除）", () => {
     await useField.getState().migrateDomainThenDelete("d-1");
     expect(repo.migrateDomainPapers).not.toHaveBeenCalled();
     expect(repo.deleteDomain).not.toHaveBeenCalled();
+  });
+});
+
+describe("结构化检索（tag:/domain:/year: 走 searchStructured）", () => {
+  it("搜索词带 tag: 前缀时走 repo.searchStructured；普通词走 listPapers", async () => {
+    vi.mocked(repo.listPapers).mockResolvedValue([]);
+    const searchStructured = repo.searchStructured as ReturnType<typeof vi.fn>;
+    searchStructured.mockResolvedValue([]);
+    useField.setState({ mode: "field", selectedDomainId: "d-1", search: "" });
+    await useField.getState().setSearch("clip");
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(searchStructured).not.toHaveBeenCalled();
+    useField.setState({ search: "" });
+    await useField.getState().setSearch("tag:clip");
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(searchStructured).toHaveBeenCalledWith(expect.objectContaining({ tags: ["clip"] }));
   });
 });
