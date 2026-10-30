@@ -339,3 +339,25 @@ describe("干跑预览（先预览不写入）", () => {
     expect(after.title).toBe("Real Title"); // 未被再改的字段照常写入
   });
 });
+
+describe("查询落空的内联补救数据源（lookupOutcome）", () => {
+  it("文献库查不到时记录 found=false；查到时记录 found=true", async () => {
+    const domain = await repo.createDomain({ name: "多模态", code: "MM-08" });
+    const paper = await repo.createPaper({ domainId: domain.id, title: "Paper" });
+    vi.mocked(completeChat).mockResolvedValue("{}");
+
+    vi.mocked(lookupPaper).mockResolvedValue({ meta: null, notices: [], openalexRemainingUsd: null, openalexLimitUsd: null });
+    await useField.getState().runPrepareMeta(paper.id, false, true);
+    expect(useField.getState().lookupOutcome).toMatchObject({ paperId: paper.id, found: false });
+
+    vi.mocked(lookupPaper).mockResolvedValue({
+      meta: {
+        title: "Found", titleZh: null, abstract: "", year: null, venue: null, doi: null, arxivId: null,
+        authors: [], labs: [], codeOpenSource: "unknown", codeURL: null, projectPage: null, pdfURL: null, tags: [],
+      },
+      notices: [], openalexRemainingUsd: null, openalexLimitUsd: null,
+    });
+    await useField.getState().runPrepareMeta(paper.id, false, true);
+    expect(useField.getState().lookupOutcome).toMatchObject({ paperId: paper.id, found: true });
+  });
+});

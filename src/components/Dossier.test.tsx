@@ -687,3 +687,72 @@ describe("ReadingStage · AI 助手「先预览再写入」干跑开关", () => 
     expect(runPrepareMeta).toHaveBeenLastCalledWith("p1", false, false, undefined);
   });
 });
+
+describe("ReadingStage · 查询落空的内联「补充标识符再查」", () => {
+  it("落空且无标识符时展示表单；填 arXiv 后保存并跳过缓存重查", async () => {
+    const savePaperPatch = vi.fn(async () => undefined);
+    const runRefreshLinks = vi.fn(async () => undefined);
+    useField.setState({
+      mode: "field",
+      paper: paper({}),
+      selectedPaperId: "p1",
+      lookupOutcome: { paperId: "p1", at: Date.now(), found: false },
+      savePaperPatch,
+      runRefreshLinks,
+    });
+    renderStage();
+    expect(screen.getByText(/文献库没有查到这篇论文/)).toBeInTheDocument();
+    // 预填当前标识符（本例没有）
+    expect(screen.getByLabelText("arXiv 编号（重查用）")).toHaveValue("");
+    fireEvent.change(screen.getByLabelText("arXiv 编号（重查用）"), { target: { value: "1706.03762" } });
+    fireEvent.click(screen.getByRole("button", { name: "补充并重查" }));
+    await waitFor(() => expect(savePaperPatch).toHaveBeenCalledWith("p1", { arxivId: "1706.03762" }));
+    await waitFor(() => expect(runRefreshLinks).toHaveBeenCalledWith("p1"));
+  });
+
+  it("查到过（found）或已有 DOI 时只在落空时出现；已有标识符预填", async () => {
+    const savePaperPatch = vi.fn(async () => undefined);
+    const runRefreshLinks = vi.fn(async () => undefined);
+    const withDoi = { ...paper({}), doi: "10.4/x" } as PaperDetail;
+    useField.setState({
+      mode: "field",
+      paper: withDoi,
+      selectedPaperId: "p1",
+      lookupOutcome: { paperId: "p1", at: Date.now(), found: false },
+      savePaperPatch,
+      runRefreshLinks,
+    });
+    renderStage();
+    expect(screen.getByLabelText("DOI（重查用）")).toHaveValue("10.4/x");
+    fireEvent.change(screen.getByLabelText("arXiv 编号（重查用）"), { target: { value: "2401.00001" } });
+    fireEvent.click(screen.getByRole("button", { name: "补充并重查" }));
+    await waitFor(() =>
+      expect(savePaperPatch).toHaveBeenCalledWith("p1", { arxivId: "2401.00001", doi: "10.4/x" }),
+    );
+
+    // 查到过：不出现表单。
+    act(() => {
+      useField.setState({ lookupOutcome: { paperId: "p1", at: Date.now(), found: true } });
+    });
+    expect(screen.queryByText(/文献库没有查到这篇论文/)).toBeNull();
+  });
+
+  it("两个输入都为空时给出提示、不发起重查", () => {
+    const savePaperPatch = vi.fn(async () => undefined);
+    const runRefreshLinks = vi.fn(async () => undefined);
+    useField.setState({
+      mode: "field",
+      paper: paper({}),
+      selectedPaperId: "p1",
+      lookupOutcome: { paperId: "p1", at: Date.now(), found: false },
+      savePaperPatch,
+      runRefreshLinks,
+    });
+    renderStage();
+    fireEvent.click(screen.getByRole("button", { name: "补充并重查" }));
+    expect(useField.getState().flash?.tone).toBe("warn");
+    expect(useField.getState().flash?.text).toContain("先填 arXiv 编号或 DOI");
+    expect(savePaperPatch).not.toHaveBeenCalled();
+    expect(runRefreshLinks).not.toHaveBeenCalled();
+  });
+});

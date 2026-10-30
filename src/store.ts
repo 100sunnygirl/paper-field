@@ -128,6 +128,8 @@ interface FieldState {
   settingsLoadError: { mineru: string | null; biblio: string | null; llm: string | null; secrets: string | null };
   /** Quiet lookup hints for one paper. The dossier shows them only when that paper is open. */
   lookupHint: { paperId: string; notices: LookupResult["notices"] } | null;
+  /** 最近一次文献库查询的结果（落空时资料栏给「补充标识符再查」内联入口）。 */
+  lookupOutcome: { paperId: string; at: number; found: boolean } | null;
   mineruHealth: ProviderHealth[];
   effectiveProvider: MineruProviderKind | null;
   dialog:
@@ -405,6 +407,7 @@ export const useField = create<FieldState>((set, get) => ({
   biblio: DEFAULT_BIBLIO,
   settingsLoadError: { mineru: null, biblio: null, llm: null, secrets: null },
   lookupHint: null,
+  lookupOutcome: null,
   mineruHealth: [],
   effectiveProvider: null,
   dialog: null,
@@ -1991,6 +1994,8 @@ function rememberLookup(
   const budgetKnown = result.openalexRemainingUsd != null || result.openalexLimitUsd != null;
   set({
     lookupHint: hint ?? (current?.paperId === paperId ? null : current),
+    // 查询落空的记录：资料栏据此给「补充 arXiv / DOI 再查」内联入口。
+    lookupOutcome: { paperId, at: Date.now(), found: Boolean(result.meta) },
     ...(budgetKnown
       ? {
           biblio: {

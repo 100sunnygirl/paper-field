@@ -55,7 +55,7 @@ import {
   type ReadingStatus,
 } from "../lib/types";
 import { hasUsableProvider } from "../lib/settings";
-import { arxivAbsUrl, arxivPdfUrl, doiUrl, openExternal, safeHttpUrl } from "../lib/urls";
+import { arxivAbsUrl, arxivPdfUrl, doiUrl, normalizeArxivId, normalizeDoi, openExternal, safeHttpUrl } from "../lib/urls";
 import { formatDate, modLabel, pad2 } from "../lib/util";
 import { useField } from "../store";
 import { Button, Dialog, Empty, ExternalResource, Icon, SourceBadge, type IconName } from "./ui";
@@ -597,6 +597,77 @@ function ContextBlock({
   );
 }
 
+/**
+ * 查询落空时的内联补救：补充或更正 arXiv / DOI 后立即跳过缓存重查一次。
+ * 输入预填现有标识符（更正错误 id 与补新 id 是同一条恢复路径）。
+ */
+function LookupRetryForm({ paper }: { paper: PaperDetail }) {
+  const lookupOutcome = useField((s) => s.lookupOutcome);
+  const savePaperPatch = useField((s) => s.savePaperPatch);
+  const runRefreshLinks = useField((s) => s.runRefreshLinks);
+  const setFlash = useField((s) => s.setFlash);
+  const [arxivId, setArxivId] = useState(paper.arxivId ?? "");
+  const [doi, setDoi] = useState(paper.doi ?? "");
+  const [busy, setBusy] = useState(false);
+  // 查询落空之后用户改了论文（换了目标或重查成功）：表单随最新状态重置。
+  useEffect(() => {
+    setArxivId(paper.arxivId ?? "");
+    setDoi(paper.doi ?? "");
+  }, [paper.id, lookupOutcome?.at]);
+
+  async function retry() {
+    if (busy) return;
+    const patch: { arxivId?: string; doi?: string } = {};
+    const arxiv = normalizeArxivId(arxivId) ?? arxivId.trim();
+    const doiNorm = normalizeDoi(doi) ?? doi.trim();
+    if (arxiv) patch.arxivId = arxiv;
+    if (doiNorm) patch.doi = doiNorm;
+    if (!Object.keys(patch).length) {
+      setFlash({ tone: "warn", text: "先填 arXiv 编号或 DOI，再点「补充并重查」。" });
+      return;
+    }
+    setBusy(true);
+    try {
+      await savePaperPatch(paper.id, patch);
+      // 刷新链接跳过约一天的本地缓存，立即重查。
+      await runRefreshLinks(paper.id);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="ef-lookup-retry">
+      <p>文献库没有查到这篇论文。补充或更正标识符后立即重查：</p>
+      <div className="ef-lookup-retry-fields">
+        <label>
+          arXiv
+          <input
+            value={arxivId}
+            onChange={(e) => setArxivId(e.target.value)}
+            placeholder="1706.03762"
+            aria-label="arXiv 编号（重查用）"
+            disabled={busy}
+          />
+        </label>
+        <label>
+          DOI
+          <input
+            value={doi}
+            onChange={(e) => setDoi(e.target.value)}
+            placeholder="10.1038/…"
+            aria-label="DOI（重查用）"
+            disabled={busy}
+          />
+        </label>
+        <Button type="button" size="sm" disabled={busy} onClick={() => void retry()}>
+          {busy ? "重查中…" : "补充并重查"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function ContextPanel({
   paper,
   activeSection,
@@ -633,6 +704,7 @@ function ContextPanel({
   const savePaperPatch = useField((s) => s.savePaperPatch);
   const setMode = useField((s) => s.setMode);
   const lookupHint = useField((s) => s.lookupHint);
+  const lookupOutcome = useField((s) => s.lookupOutcome);
   const openDialog = useField((s) => s.openDialog);
   const setFlash = useField((s) => s.setFlash);
   const markRead = useField((s) => s.markRead);
@@ -1146,6 +1218,7 @@ function ContextPanel({
               </button>
             </div>
           ) : null}
+          {lookupOutcome?.paperId === paper.id && !lookupOutcome.found ? <LookupRetryForm paper={paper} /> : null}
           <Button
             type="button"
             disabled={!hasUsableProvider(settings) || Boolean(active.length)}
