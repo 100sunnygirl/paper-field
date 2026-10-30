@@ -19,6 +19,14 @@ const IMPORT_MODES: Array<{ value: ImportMode; label: string; hint: string }> = 
 ];
 const IMPORT_MODE_KEY = "paper-field.import-mode";
 
+/** 秒级时长的小时：秒 →「45 秒」，分 →「1 分 23 秒」。 */
+function formatSpanShort(ms: number): string {
+  const totalSeconds = Math.max(0, Math.round(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes ? `${minutes} 分 ${seconds} 秒` : `${seconds} 秒`;
+}
+
 /** 记住上次选择的导入模式（本机 localStorage）；认不出的旧值回落默认。 */
 function readImportMode(): ImportMode {
   try {
@@ -72,6 +80,9 @@ export function PaperDialog() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<{ done: number; total: number; current: string } | null>(null);
+  // 导入开始时刻：进度行据此显示「已用时间」与按均值的「预计剩余」（nowTick 仅驱动秒级重渲染）。
+  const [importStartedAt, setImportStartedAt] = useState<number | null>(null);
+  const [, setNowTick] = useState(0);
   const [manualOpen, setManualOpen] = useState(false);
   const [attachBusy, setAttachBusy] = useState(false);
   // 导入模式（只入库 / 入库并解析 / 解析后补全），记住上次选择。
@@ -86,9 +97,17 @@ export function PaperDialog() {
     setError(null);
     setBusy(false);
     setProgress(null);
+    setImportStartedAt(null);
     setManualOpen(false);
     setAttachBusy(false);
   }, [open]);
+
+  // 导入进行中每秒走一格表：即使单文件耗时很长，「已用时间」也在动（结束即停）。
+  useEffect(() => {
+    if (!busy || !importStartedAt) return;
+    const timer = setInterval(() => setNowTick((tick) => tick + 1), 1000);
+    return () => clearInterval(timer);
+  }, [busy, importStartedAt]);
 
   // 对话框目标领域变化时：没被单独改过的行跟着换目标（跨领域收集时先全部指到 A 再逐个改）。
   useEffect(() => {
@@ -325,6 +344,7 @@ export function PaperDialog() {
               onClick={() => {
                 setError(null);
                 setBusy(true);
+                setImportStartedAt(Date.now());
                 const onProgress = (done: number, total: number, current: string) =>
                   setProgress({ done, total, current });
                 // 单一目标领域：走原有 importPdfs 链路；逐文件多领域：走 importPdfsPerFile。
@@ -399,6 +419,11 @@ export function PaperDialog() {
           {progress ? (
             <p aria-live="polite">
               正在导入 {progress.done}/{progress.total} · {progress.current}
+              {importStartedAt ? ` · 已用 ${formatSpanShort(Date.now() - importStartedAt)}` : ""}
+              {/* 预计剩余按已完成各篇的均值估算；第一篇没跑完时不猜（诚实显示）。 */}
+              {importStartedAt && progress.done > 0 && progress.done < progress.total
+                ? ` · 预计剩余 ${formatSpanShort(((Date.now() - importStartedAt) / progress.done) * (progress.total - progress.done))}`
+                : ""}
             </p>
           ) : (
             <p aria-live="polite">正在导入…</p>

@@ -419,6 +419,38 @@ describe("PaperDialog · 导入执行与进度", () => {
     expect(screen.queryByText(/正在导入/)).toBeNull();
   });
 
+  it("进度行显示已用时间；完成第一篇后按均值给预计剩余", async () => {
+    setupTwoPdfs();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const importPdfs = vi.fn(
+      async (
+        _paths: string[],
+        onProgress?: (done: number, total: number, current: string) => void,
+      ): Promise<ImportOutcome> => {
+        onProgress?.(1, 2, "a.pdf");
+        await gate;
+        return emptyOutcome();
+      },
+    );
+    useField.setState({ importPdfs });
+
+    render(<PaperDialog />);
+    fireEvent.click(screen.getByRole("button", { name: /选择 PDF/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "导入 2" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "导入 2" }));
+
+    const line = await screen.findByText(/正在导入 1\/2 · a\.pdf/);
+    // 已用时间（秒级，几秒内必然是「0 秒」或「1 秒」档）与均值预估剩余
+    expect(line.textContent).toMatch(/已用 \d+ 秒/);
+    expect(line.textContent).toMatch(/预计剩余 \d+ 秒/);
+
+    release();
+    await waitFor(() => expect(screen.queryByText(/正在导入/)).toBeNull());
+  });
+
   it("重复导入产生「跳过 N 篇已在库中」提示（真实 store 链路 + mock repo）", async () => {
     setupTwoPdfs();
     // 组件层已过滤选择时已知重复；这里模拟「导入执行时才发现 b.pdf 已入库」
