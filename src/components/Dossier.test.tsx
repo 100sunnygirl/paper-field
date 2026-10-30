@@ -968,3 +968,52 @@ describe("ReadingStage · 溯源徽章点开字段详情", () => {
     expect(screen.getByRole("dialog", { name: "来源来源详情" }).textContent).toContain("未记录");
   });
 });
+
+describe("ReadingStage · AI 按钮置灰时浮层说明原因", () => {
+  it("未配置 AI：点击置灰按钮给出原因与「去设置」入口", () => {
+    useField.setState({ mode: "field", paper: paper({}), selectedPaperId: "p1" });
+    renderStage();
+    fireEvent.click(screen.getByRole("button", { name: /补全论文信息/ }));
+    const pop = screen.getByRole("tooltip");
+    expect(pop.textContent).toContain("尚未配置可用的 AI 服务");
+    fireEvent.click(within(pop).getByRole("button", { name: /去设置/ }));
+    expect(useField.getState().mode).toBe("system");
+  });
+
+  it("作业进行中：原因指向作业进行并给「查看作业面板」", () => {
+    const settings = {
+      version: 2 as const,
+      usage: {},
+      providers: [
+        { id: "a", presetId: "deepseek", label: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-chat", enabled: true, hasKey: true, requiresKey: true },
+      ],
+    };
+    const jobs = [
+      { id: "j1", paperId: "p1", type: "prepareMeta" as const, status: "running" as const, prompt: null, resultJson: null, error: null, createdAt: "", startedAt: null, finishedAt: null },
+    ];
+    useField.setState({ mode: "field", paper: paper({}), selectedPaperId: "p1", settings, jobs });
+    renderStage();
+    fireEvent.click(screen.getByRole("button", { name: /补全论文信息/ }));
+    const pop = screen.getByRole("tooltip");
+    expect(pop.textContent).toContain("AI 作业正在进行");
+    fireEvent.click(within(pop).getByRole("button", { name: /查看作业面板/ }));
+    expect(useField.getState().jobsOpen).toBe(true);
+  });
+
+  it("作业进行中时「起草阅读笔记…」同样给出原因浮层", () => {
+    const settings = {
+      version: 2 as const,
+      usage: {},
+      providers: [
+        { id: "a", presetId: "deepseek", label: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-chat", enabled: true, hasKey: true, requiresKey: true },
+      ],
+    };
+    const jobs = [
+      { id: "j1", paperId: "p1", type: "draftNotes" as const, status: "running" as const, prompt: null, resultJson: null, error: null, createdAt: "", startedAt: null, finishedAt: null },
+    ];
+    useField.setState({ mode: "field", paper: paper({}), selectedPaperId: "p1", settings, jobs });
+    renderStage();
+    fireEvent.click(screen.getByRole("button", { name: /起草阅读笔记/ }));
+    expect(screen.getByRole("tooltip").textContent).toContain("AI 作业正在进行");
+  });
+});

@@ -5761,3 +5761,7 @@ mark.ef-ft-hit.is-current { background: var(--pf-signal); }
   white-space: normal;
   max-width: 260px;
 }
+/* AI 按钮置灰原因浮层的触发壳。 */
+.ef-ai-gate { position: relative; display: inline-flex; }
+.ef-btn.is-gated { opacity: 0.55; cursor: not-allowed; }
+.ef-ai-gate-pop { left: 0; top: calc(100% + 6px); white-space: normal; max-width: 280px; }

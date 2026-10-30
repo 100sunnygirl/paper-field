@@ -678,6 +678,65 @@ function LookupRetryForm({ paper }: { paper: PaperDetail }) {
 }
 
 /**
+ * AI 动作的置灰原因浮层：按钮灰着时点击/悬停都能看到原因（未配置 Key / 有作业进行中），
+ * 未配置时浮层内直接给「去设置」入口，不再让新手卡在灰按钮前。
+ */
+function AiGateButton({
+  gated,
+  reason,
+  showConfigure,
+  action,
+  children,
+}: {
+  gated: boolean;
+  reason: string;
+  /** 置灰原因为「未配置」时提供去设置的入口。 */
+  showConfigure: boolean;
+  action: () => void;
+  children: ReactNode;
+}) {
+  const [showTip, setShowTip] = useState(false);
+  if (!gated) {
+    return (
+      <Button type="button" onClick={action}>
+        {children}
+      </Button>
+    );
+  }
+  return (
+    <span
+      className="ef-ai-gate"
+      onMouseEnter={() => setShowTip(true)}
+      onMouseLeave={() => setShowTip(false)}
+    >
+      <button
+        type="button"
+        className="ef-btn ef-btn-secondary is-gated"
+        aria-disabled="true"
+        onClick={() => setShowTip(true)}
+      >
+        {children}
+      </button>
+      {showTip ? (
+        <span className="ef-source-pop ef-ai-gate-pop" role="tooltip">
+          <span>{reason}</span>
+          {showConfigure ? (
+            <Button type="button" size="sm" variant="link" onClick={() => void useField.getState().setMode("system")}>
+              去设置
+              <Icon name="right" />
+            </Button>
+          ) : (
+            <Button type="button" size="sm" variant="link" onClick={() => useField.getState().setJobsOpen(true)}>
+              查看作业面板
+            </Button>
+          )}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+/**
  * AI 动作的事前展示：发请求前就能看到将用哪个提供商/模型、失败时按什么顺序回退
  * （与设置页「回退顺序」同源）。实际命中的提供商由桌面端执行，暂不回报前端。
  */
@@ -704,6 +763,10 @@ function DraftNotesControls({ paper, disabled, previewFirst }: { paper: PaperDet
   const runDraftNotes = useField((s) => s.runDraftNotes);
   const configured = hasUsableProvider(useField((s) => s.settings));
   const [open, setOpen] = useState(false);
+  const gated = !configured || disabled;
+  const gateReason = !configured
+    ? "尚未配置可用的 AI 服务：需要启用提供商并填写 API Key（免 Key 本地服务也可以）。"
+    : "这篇论文有 AI 作业正在进行：等它结束或取消后再发起新的。";
   // 勾选要起草的块：默认全部（与旧语义一致）；空块快捷入口只勾空块。
   const [kinds, setKinds] = useState<Set<NoteKind>>(() => new Set(NOTE_DISPLAY_ORDER));
   // 参考范围：默认摘要 + 解析全文；关掉后草稿只依据摘要与题录。
@@ -732,10 +795,10 @@ function DraftNotesControls({ paper, disabled, previewFirst }: { paper: PaperDet
   }
   return (
     <>
-      <Button type="button" disabled={!configured || disabled} onClick={() => setOpen((value) => !value)}>
+      <AiGateButton gated={gated} reason={gateReason} showConfigure={!configured} action={() => setOpen((value) => !value)}>
         <Icon name="edit" />
         起草阅读笔记…
-      </Button>
+      </AiGateButton>
       {open ? (
         <div className="ef-draft-controls">
           <p>
@@ -1306,10 +1369,15 @@ function ContextPanel({
         )}
         <AiChainPlan settings={settings} />
         <div className="ef-ai-buttons">
-          <Button
-            type="button"
-            disabled={!hasUsableProvider(settings) || Boolean(active.length)}
-            onClick={() => {
+          <AiGateButton
+            gated={!hasUsableProvider(settings) || Boolean(active.length)}
+            reason={
+              !hasUsableProvider(settings)
+                ? "尚未配置可用的 AI 服务：需要启用提供商并填写 API Key（免 Key 本地服务也可以）。"
+                : "这篇论文有 AI 作业正在进行：等它结束或取消后再发起新的。"
+            }
+            showConfigure={!hasUsableProvider(settings)}
+            action={() => {
               // AI 不会静默覆盖：手动改过的论文信息先经确认对话框选择保留或覆盖。
               if (paper.userMetaTouched) {
                 openDialog("confirm-meta", paper.id);
@@ -1321,7 +1389,7 @@ function ContextPanel({
           >
             <Icon name="file" />
             补全论文信息
-          </Button>
+          </AiGateButton>
           <label
             className={`ef-ai-preview-toggle${previewFirst ? " is-on" : ""}`}
             title="开启后先查询与生成并展示将写入的字段，确认后才写库（不会多花一次模型请求）"
