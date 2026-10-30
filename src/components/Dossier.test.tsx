@@ -414,7 +414,7 @@ describe("ReadingStage · 资料栏「本篇状态卡」", () => {
     renderStage();
     expect(within(card()).getByText("已完成")).toBeInTheDocument();
     expect(within(card()).getByText("5 / 5")).toBeInTheDocument(); // 著录齐全（笔记行是 1 / 5）
-    fireEvent.click(within(card()).getByRole("button", { name: "写亮点" }));
+    fireEvent.click(within(card()).getByRole("button", { name: "去补亮点" }));
     expect(document.querySelector('.ef-toc a[href="#note-highlights"]')).toHaveClass("is-active");
   });
 
@@ -654,5 +654,82 @@ describe("ReadingStage · 工作台无障碍", () => {
     expect(document.querySelector(".ef-read .sr-only[role='status']")?.textContent).toBe(
       "已切换到第 2 篇（共 2 篇）：《第二篇论文》",
     );
+  });
+});
+
+describe("ReadingStage · 面包屑直达「移动到其他领域」", () => {
+  it("点击工具条面包屑上的领域名直接打开移动对话框（目标锁定当前论文）", () => {
+    const openDialog = vi.fn();
+    useField.setState({ mode: "field", paper: paper({}), openDialog });
+    renderStage();
+    const crumb = screen.getByRole("button", { name: "移动到其他领域：多模态" });
+    expect(crumb).toBeInTheDocument();
+    fireEvent.click(crumb);
+    expect(openDialog).toHaveBeenCalledWith("move-paper", "p1");
+  });
+
+  it("面包屑仍显示「论文详情 / 领域名」的层级文字", () => {
+    useField.setState({ mode: "field", paper: paper({}) });
+    renderStage();
+    const crumb = screen.getByText("论文详情").closest(".ef-toolbar-crumb")!;
+    expect(crumb.textContent).toContain("多模态");
+  });
+});
+
+describe("ReadingStage · 拖入 PDF 关联（浏览器态降级）", () => {
+  it("浏览器态拖入文件给出降级提示（拿不到本机路径），不抛错", () => {
+    const setFlash = vi.fn();
+    useField.setState({ mode: "field", paper: paper({}), setFlash });
+    const { container } = renderStage();
+    const stage = container.querySelector("#stage")!;
+    fireEvent.drop(stage, { dataTransfer: { files: [{ name: "a.pdf" }] } });
+    expect(setFlash).toHaveBeenCalledWith(
+      expect.objectContaining({ tone: "warn", text: expect.stringContaining("浏览器预览拿不到本机文件路径") }),
+    );
+  });
+
+  it("拖入没有文件载荷（纯文本等）不弹提示", () => {
+    const setFlash = vi.fn();
+    useField.setState({ mode: "field", paper: paper({}), setFlash });
+    const { container } = renderStage();
+    const stage = container.querySelector("#stage")!;
+    fireEvent.drop(stage, { dataTransfer: { files: [] } });
+    expect(setFlash).not.toHaveBeenCalled();
+  });
+});
+
+describe("ReadingStage · 空领域第一步引导", () => {
+  it("空领域显示三步引导与「导入 PDF…」，点击打开添加论文对话框", () => {
+    const openDialog = vi.fn();
+    useField.setState({ mode: "field", paper: null, search: "", selectedDomainId: "d1", openDialog });
+    renderStage();
+    expect(screen.getByText("从第一篇论文开始")).toBeInTheDocument();
+    expect(screen.getByText("导入 PDF")).toBeInTheDocument();
+    expect(screen.getByText("写五块笔记")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "导入 PDF…" }));
+    expect(openDialog).toHaveBeenCalledWith("paper");
+  });
+
+  it("粘贴 arXiv 链接回车走快速建档；失败时行内提示", async () => {
+    const createQuickEntry = vi.fn(async (raw: string) => {
+      if (!raw.includes("arxiv")) throw new Error("不认识");
+    });
+    useField.setState({ mode: "field", paper: null, search: "", selectedDomainId: "d1", createQuickEntry });
+    renderStage();
+    const input = screen.getByLabelText("粘贴 arXiv 链接或 DOI 快速建档");
+    fireEvent.change(input, { target: { value: "https://arxiv.org/abs/2401.12345" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(createQuickEntry).toHaveBeenCalledWith("https://arxiv.org/abs/2401.12345"));
+    // 失败：行内错误可见，输入保留可修改
+    fireEvent.change(input, { target: { value: "not-a-link" } });
+    fireEvent.click(screen.getByRole("button", { name: "快速建档" }));
+    await waitFor(() => expect(screen.getByText("不认识")).toBeInTheDocument());
+  });
+
+  it("搜索过滤下的空列表不显示引导，仍是「没有符合条件的论文」", () => {
+    useField.setState({ mode: "field", paper: null, search: "不存在的词", selectedDomainId: "d1" });
+    renderStage();
+    expect(screen.queryByText("从第一篇论文开始")).toBeNull();
+    expect(screen.getByText("没有符合条件的论文")).toBeInTheDocument();
   });
 });

@@ -55,7 +55,7 @@ import {
 } from "../lib/types";
 import { hasUsableProvider } from "../lib/settings";
 import { arxivAbsUrl, arxivPdfUrl, doiUrl, openExternal, safeHttpUrl } from "../lib/urls";
-import { formatDate, modLabel, pad2 } from "../lib/util";
+import { formatDate, isTauri, modLabel, pad2 } from "../lib/util";
 import { useField } from "../store";
 import { Button, Dialog, Empty, ExternalResource, Icon, SourceBadge, type IconName } from "./ui";
 
@@ -701,7 +701,10 @@ function ContextPanel({
       : { label: "补著录信息", run: () => openDialog("edit-paper", paper.id) };
     nextHint = `著录还缺 ${metaFlags.length - metaDone} 项（摘要 / 年份 / 出处 / 标识符 / 作者）。`;
   } else if (nextEmptyKind) {
-    nextAction = { label: `写${NOTE_LABELS[nextEmptyKind].zh}`, run: () => onJump(`note-${nextEmptyKind}`) };
+    // 「去补…」与笔记块自身的「写…」按钮区分开。按钮可访问名按「包含」语义匹配：
+    // 「去写总结」仍包含「写总结」，会让按名定位的旅程/读屏命中两处（一个就地开
+    // 编辑器、一个只跳锚点，行为并不等价）；「补」字避开全部块按钮名的子串。
+    nextAction = { label: `去补${NOTE_LABELS[nextEmptyKind].zh}`, run: () => onJump(`note-${nextEmptyKind}`) };
     nextHint = `笔记已写 ${notesWritten} / ${NOTE_DISPLAY_ORDER.length} 块。`;
   } else if (paper.readingStatus !== "read") {
     nextAction = { label: "标记已读", run: () => void markRead(paper.id) };
@@ -1189,6 +1192,11 @@ export function ReadingStage({
   const intake = useField((s) => s.intake);
   const [menuOpen, setMenuOpen] = useState(false);
   const [activeSection, setActiveSection] = useState("abstract");
+  // 空领域第一步引导：粘贴 arXiv / DOI 快速建档的输入与状态。
+  const createQuickEntry = useField((s) => s.createQuickEntry);
+  const [quickRaw, setQuickRaw] = useState("");
+  const [quickBusy, setQuickBusy] = useState(false);
+  const [quickError, setQuickError] = useState<string | null>(null);
   // 解析全文里最近一次选中：供「摘到笔记」浮条与笔记编辑器的「引用解析全文」共享。
   const [fulltextPick, setFulltextPick] = useState<FulltextSelection | null>(null);
   // 五块笔记的显示布局（顺序 + 折叠）：本机偏好，改动即存。
@@ -1203,6 +1211,59 @@ export function ReadingStage({
   );
   const scrollRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+  // 拖入本机 PDF 关联当前论文：桌面端走 Tauri 的拖放事件（dragDropEnabled 默认开启，
+  // HTML5 drop 不触发）；拖拽悬停时舞台显示落点提示。
+  const [pdfDragOver, setPdfDragOver] = useState(false);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    let cancelled = false;
+    let offs: Array<() => void> = [];
+    void import("@tauri-apps/api/webview")
+      .then(async ({ getCurrentWebview }) => {
+        const webview = getCurrentWebview();
+        return Promise.all([
+          webview.listen<{ paths: string[] }>("tauri://drag-drop", (event: { payload: { paths: string[] } }) => {
+            setPdfDragOver(false);
+            const paths = event.payload?.paths ?? [];
+            const pdf = paths.find((path: string) => /\.pdf$/i.test(path));
+            if (!pdf) {
+              if (paths.length) setFlash({ tone: "warn", text: "只支持 PDF 文件：拖入的内容里没有 .pdf 文件。" });
+              return;
+            }
+            const current = useField.getState().paper;
+            if (!current) {
+              setFlash({ tone: "warn", text: "先选择一篇论文，再把 PDF 拖进来关联。" });
+              return;
+            }
+            void useField.getState().attachPaperPdf(current.id, pdf);
+          }),
+          webview.listen("tauri://drag-enter", () => setPdfDragOver(true)),
+          webview.listen("tauri://drag-leave", () => setPdfDragOver(false)),
+        ]);
+      })
+      .then((fns: Array<() => void>) => {
+        if (cancelled) fns.forEach((off) => off());
+        else offs = fns;
+      })
+      .catch(() => {
+        // 拖放事件不可用（旧桌面端等）：不影响阅读，其余关联入口照常。
+      });
+    return () => {
+      cancelled = true;
+      offs.forEach((off) => off());
+    };
+  }, [setFlash]);
+
+  // 浏览器预览：HTML5 drop 拿得到 File 对象但没有本机路径，诚实降级提示（并阻止浏览器直接打开 PDF）。
+  function onStageDrop(event: React.DragEvent) {
+    event.preventDefault();
+    if (!event.dataTransfer?.files?.length) return;
+    setFlash({
+      tone: "warn",
+      text: "浏览器预览拿不到本机文件路径；请在桌面应用中拖入 PDF，或在论文信息里填写公开 PDF 链接。",
+    });
+  }
 
   useEffect(() => {
     saveNoteLayout(noteLayout);
@@ -1454,6 +1515,21 @@ export function ReadingStage({
     }
   }
 
+  /** 空领域引导的快速建档入口：arXiv / DOI / 标题三种输入都从这里进。 */
+  async function submitQuickEntry() {
+    if (quickBusy || !quickRaw.trim()) return;
+    setQuickError(null);
+    setQuickBusy(true);
+    try {
+      await createQuickEntry(quickRaw);
+      setQuickRaw("");
+    } catch (err) {
+      setQuickError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setQuickBusy(false);
+    }
+  }
+
   if (!paper) {
     const searching = mode === "field" && search.trim().length > 0;
     const emptyDomain = mode === "field" && !searching;
@@ -1473,16 +1549,71 @@ export function ReadingStage({
         </div>
         <div className="ef-read-scroll">
           <div className="ef-reading-grid">
-            <Empty
-              title={searching ? "没有符合条件的论文" : emptyDomain ? "此领域还没有论文" : "选择一篇论文"}
-              body={
-                searching
-                  ? "可以调整搜索词，或清空搜索后继续阅读。"
-                  : emptyDomain
-                    ? "使用论文列表底部的「添加论文」导入第一篇论文。"
+            {emptyDomain ? (
+              <div className="ef-first-steps pf-enter" aria-label="空领域第一步引导">
+                <h2 id="read-empty">从第一篇论文开始</h2>
+                <ol className="ef-first-steps-list">
+                  <li>
+                    <Icon name="file" />
+                    <div>
+                      <strong>导入 PDF</strong>
+                      <span>论文文件入库，文件名先当作标题</span>
+                    </div>
+                  </li>
+                  <li>
+                    <Icon name="spark" />
+                    <div>
+                      <strong>等解析与补全</strong>
+                      <span>MinerU 解析全文，文献库补著录信息</span>
+                    </div>
+                  </li>
+                  <li>
+                    <Icon name="edit" />
+                    <div>
+                      <strong>写五块笔记</strong>
+                      <span>总结 → 亮点 → 不足 → 启示 → 备注</span>
+                    </div>
+                  </li>
+                </ol>
+                <div className="ef-first-steps-actions">
+                  <Button variant="primary" type="button" onClick={() => openDialog("paper")}>
+                    <Icon name="plus" />
+                    导入 PDF…
+                  </Button>
+                </div>
+                <div className="ef-first-steps-paste">
+                  <input
+                    value={quickRaw}
+                    onChange={(e) => {
+                      setQuickRaw(e.target.value);
+                      setQuickError(null);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && quickRaw.trim()) {
+                        e.preventDefault();
+                        void submitQuickEntry();
+                      }
+                    }}
+                    placeholder="或粘贴 arXiv 链接 / DOI，回车快速建档"
+                    aria-label="粘贴 arXiv 链接或 DOI 快速建档"
+                  />
+                  <Button type="button" disabled={!quickRaw.trim() || quickBusy} onClick={() => void submitQuickEntry()}>
+                    {quickBusy ? "建档中…" : "快速建档"}
+                  </Button>
+                </div>
+                {quickError ? <p className="ef-error">{quickError}</p> : null}
+                <p className="ef-first-steps-hint">没有 PDF 也能先建档；拿到文件后在「编辑论文信息」里关联，或直接拖进正文舞台。</p>
+              </div>
+            ) : (
+              <Empty
+                title={searching ? "没有符合条件的论文" : "选择一篇论文"}
+                body={
+                  searching
+                    ? "可以调整搜索词，或清空搜索后继续阅读。"
                     : "从左侧列表选择一篇论文，阅读摘要、撰写阅读笔记，或直接打开 PDF。"
-              }
-            />
+                }
+              />
+            )}
           </div>
         </div>
       </section>
@@ -1543,7 +1674,19 @@ export function ReadingStage({
       id="stage"
       aria-labelledby="paper-title"
       style={appearanceStyle}
+      onDragOver={(event) => {
+        // 浏览器态需要 preventDefault 才能收到 drop；桌面端此事件不触发（Tauri 接管拖放）。
+        if (!isTauri()) event.preventDefault();
+      }}
+      onDrop={onStageDrop}
     >
+      {/* 拖入 PDF 的落点提示（桌面端 Tauri 拖放悬停时显示）。 */}
+      {pdfDragOver ? (
+        <div className="ef-pdf-dropzone" role="status">
+          <Icon name="file" />
+          <span>松开把 PDF 关联到这篇论文</span>
+        </div>
+      ) : null}
       {/* 无障碍：切换论文的读屏播报（第几篇 / 共几篇 / 标题）。 */}
       <p className="sr-only" role="status">
         {paperAnnounce}
@@ -1586,7 +1729,17 @@ export function ReadingStage({
           <span className="ef-toolbar-crumb">
             <Icon name="file" />
             论文详情<span className="ef-toolbar-sep">/</span>
-            {paper.domain.name}
+            {/* 面包屑上的领域名即「移动到其他领域」的直达入口（高频动作不再藏进 ⋯ 菜单）。 */}
+            <button
+              type="button"
+              className="ef-crumb-domain"
+              title={`移动到其他领域（当前：${paper.domain.name}）`}
+              aria-label={`移动到其他领域：${paper.domain.name}`}
+              onClick={() => openDialog("move-paper", paper.id)}
+            >
+              {paper.domain.name}
+              <Icon name="right" />
+            </button>
           </span>
           <span className="ef-toolbar-title" aria-hidden="true">
             {title}

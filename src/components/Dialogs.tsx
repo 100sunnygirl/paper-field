@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { splitAuthorList } from "../lib/authorList";
 import { pickPdfFiles, pickPdfFolder } from "../lib/mineru";
 import { repo } from "../lib/repo";
 import type { Author, PaperDetail } from "../lib/types";
@@ -375,7 +376,7 @@ export function DomainDialog() {
       }
     >
       {confirmDelete ? (
-        <p>将删除「{current?.name}」及其中全部论文与笔记。此操作不可撤销。</p>
+        <p>将删除「{current?.name}」及其中全部论文与笔记。删除后 10 秒内可「撤销删除」，超时后不可恢复。</p>
       ) : (
         <>
           <Field label="名称 / 中文（必填）">
@@ -448,6 +449,26 @@ function useCloseWhenMissing(open: boolean, missing: boolean) {
   }, [open, missing, closeDialog, setFlash]);
 }
 
+/** 移动后去向的本机偏好（跟随到目标领域 / 留在原领域）；存不进时按会话内选择走。 */
+const MOVE_FOLLOW_KEY = "paper-field.move-follow";
+
+function loadMoveFollow(): boolean {
+  try {
+    return (typeof localStorage !== "undefined" ? localStorage.getItem(MOVE_FOLLOW_KEY) : null) !== "stay";
+  } catch {
+    return true;
+  }
+}
+
+function saveMoveFollow(follow: boolean): void {
+  try {
+    if (typeof localStorage === "undefined") return;
+    localStorage.setItem(MOVE_FOLLOW_KEY, follow ? "follow" : "stay");
+  } catch {
+    // 偏好存不进不影响本次移动：对话框内仍按当前选择执行。
+  }
+}
+
 export function DomainPickerDialog() {
   const dialog = useField((s) => s.dialog);
   const closeDialog = useField((s) => s.closeDialog);
@@ -459,6 +480,17 @@ export function DomainPickerDialog() {
   const dialogPaperId = useField((s) => s.dialogPaperId);
   const moving = dialog === "move-paper";
   const open = dialog === "pick-domain" || moving;
+  // 去向选择：移动后「跟随到目标领域」（默认）或「留在当前领域」，本机记住偏好。
+  const [follow, setFollow] = useState(() => loadMoveFollow());
+
+  useEffect(() => {
+    if (open) setFollow(loadMoveFollow());
+  }, [open]);
+
+  function chooseFollow(next: boolean) {
+    setFollow(next);
+    saveMoveFollow(next);
+  }
 
   return (
     <Dialog
@@ -484,13 +516,40 @@ export function DomainPickerDialog() {
       }
     >
       <p>{moving ? "选择这篇论文要进入的领域。" : "选择要查看的研究领域。"}</p>
+      {moving ? (
+        <div className="ef-move-follow" role="group" aria-label="移动后的去向">
+          <span className="ef-move-follow-label">移动后</span>
+          <Button
+            type="button"
+            size="sm"
+            variant="text"
+            className={follow ? "is-active" : ""}
+            aria-pressed={follow}
+            title="移动完成后直接进入目标领域，打开这篇论文"
+            onClick={() => chooseFollow(true)}
+          >
+            跟随到目标领域
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="text"
+            className={!follow ? "is-active" : ""}
+            aria-pressed={!follow}
+            title="移动完成后留在当前领域继续阅读原列表"
+            onClick={() => chooseFollow(false)}
+          >
+            留在当前领域
+          </Button>
+        </div>
+      ) : null}
       {domains.map((domain) => (
         <button
           key={domain.id}
           type="button"
           className={`ef-domain-option ${domain.id === selectedDomainId ? "is-current" : ""}`}
           onClick={() => {
-            if (moving) void movePaper(domain.id, dialogPaperId ?? undefined);
+            if (moving) void movePaper(domain.id, dialogPaperId ?? undefined, { follow });
             else void selectDomain(domain.id);
           }}
         >
@@ -550,7 +609,7 @@ export function DeletePaperDialog() {
       <p>
         <strong>{paper?.titleZh || paper?.title}</strong>
       </p>
-      <p>将删除这篇论文及其全部笔记。此操作不可撤销。</p>
+      <p>将删除这篇论文及其全部笔记。删除后 10 秒内可「撤销删除」，超时后不可恢复。</p>
     </Dialog>
   );
 }
@@ -592,7 +651,7 @@ export function DeleteCheckedPapersDialog() {
       }
     >
       <p>
-        将删除选中的 <strong>{checkedPaperIds.length}</strong> 篇论文及其全部笔记。此操作不可撤销。
+        将删除选中的 <strong>{checkedPaperIds.length}</strong> 篇论文及其全部笔记。删除后 10 秒内可「撤销删除」，超时后不可恢复。
       </p>
     </Dialog>
   );
@@ -679,12 +738,17 @@ export function EditPaperDialog() {
   const closeDialog = useField((s) => s.closeDialog);
   const savePaperPatch = useField((s) => s.savePaperPatch);
   const saveAuthors = useField((s) => s.saveAuthors);
+  const attachPaperPdf = useField((s) => s.attachPaperPdf);
   const setFlash = useField((s) => s.setFlash);
   // 打开时锁定的那篇：之后搜索或后台刷新改了选中，也只会保存到这篇。
   const { paper, missing } = useDialogPaper();
   const open = dialog === "edit-paper" && Boolean(paper);
   const [metaDirty, setMetaDirty] = useState(false);
   const [crewDirty, setCrewDirty] = useState(false);
+  // 「保存全部并关闭」调用子编辑器保存函数的句柄（子组件挂载时注册）。
+  const metaSaveRef = useRef<(() => Promise<boolean>) | null>(null);
+  const crewSaveRef = useRef<(() => Promise<boolean>) | null>(null);
+  const [savingAll, setSavingAll] = useState(false);
   useCloseWhenMissing(dialog === "edit-paper", missing);
 
   useEffect(() => {
@@ -703,6 +767,25 @@ export function EditPaperDialog() {
     return false;
   }
 
+  /**
+   * 「保存全部并关闭」：一次提交著录与作者两处修改，全部成功才关闭。
+   * 著录先存——年份等校验失败时定位到未通过的字段（不保存、不关闭、作者也不动）；
+   * 任一处保存失败（store 已提示）都留在对话框里，已成功的部分不再重复提交。
+   */
+  async function saveAllAndClose() {
+    if (savingAll) return;
+    setSavingAll(true);
+    try {
+      const metaOk = (await metaSaveRef.current?.()) ?? true;
+      if (!metaOk) return;
+      const crewOk = (await crewSaveRef.current?.()) ?? true;
+      if (!crewOk) return;
+      closeDialog();
+    } finally {
+      setSavingAll(false);
+    }
+  }
+
   return (
     <Dialog
       open={open}
@@ -711,10 +794,15 @@ export function EditPaperDialog() {
       vetoClose={vetoClose}
       className="is-wide"
       footer={
-        // 「完成」与 Esc 走同一道未保存检查，不再静默丢弃修改。
-        <Button type="button" onClick={() => (vetoClose() ? undefined : closeDialog())}>
-          完成
-        </Button>
+        <>
+          {/* 「完成」与 Esc 走同一道未保存检查，不再静默丢弃修改。 */}
+          <Button type="button" onClick={() => (vetoClose() ? undefined : closeDialog())}>
+            完成
+          </Button>
+          <Button variant="primary" type="button" disabled={savingAll} onClick={() => void saveAllAndClose()}>
+            {savingAll ? "保存中…" : "保存全部并关闭"}
+          </Button>
+        </>
       }
     >
       {paper ? (
@@ -723,6 +811,8 @@ export function EditPaperDialog() {
             key={paper.id}
             paper={paper}
             onDirtyChange={setMetaDirty}
+            saveRef={metaSaveRef}
+            onAttachPdf={(path) => attachPaperPdf(paper.id, path)}
             onSave={(patch) => savePaperPatch(paper.id, patch)}
           />
           <h3 className="ef-dialog-section">作者</h3>
@@ -730,6 +820,7 @@ export function EditPaperDialog() {
             key={`crew-${paper.id}`}
             authors={paper.authors}
             onDirtyChange={setCrewDirty}
+            saveRef={crewSaveRef}
             onSave={(next) => saveAuthors(paper.id, next)}
           />
         </>
@@ -761,9 +852,15 @@ function MetaEditor({
   paper,
   onSave,
   onDirtyChange,
+  saveRef,
+  onAttachPdf,
 }: {
   paper: PaperDetail;
   onDirtyChange?: (dirty: boolean) => void;
+  /** 父级「保存全部并关闭」的句柄：挂载期间始终指向最新的 save 实现。 */
+  saveRef?: React.MutableRefObject<(() => Promise<boolean>) | null>;
+  /** 关联 / 替换本机 PDF 的落库动作（桌面端）；缺省（浏览器）时字段保持只读展示。 */
+  onAttachPdf?: (path: string) => Promise<void>;
   onSave: (patch: {
     title?: string;
     titleZh?: string | null;
@@ -782,6 +879,25 @@ function MetaEditor({
   const [saving, setSaving] = useState(false);
   const dirtyRef = useRef(new Set<MetaDraftKey>());
   const [dirty, setDirty] = useState(false);
+  const yearInputRef = useRef<HTMLInputElement>(null);
+  // 关联 / 替换本机 PDF 的就地状态（桌面端按钮路径）。
+  const [attaching, setAttaching] = useState(false);
+  const [attachError, setAttachError] = useState<string | null>(null);
+
+  async function pickAndAttachPdf() {
+    if (!onAttachPdf || attaching) return;
+    setAttachError(null);
+    setAttaching(true);
+    try {
+      const selected = await pickPdfFiles(false);
+      if (!selected?.[0]) return;
+      await onAttachPdf(selected[0]);
+    } catch (err) {
+      setAttachError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAttaching(false);
+    }
+  }
 
   useEffect(() => {
     const incoming = metaDraftOf(paper);
@@ -796,6 +912,11 @@ function MetaEditor({
     onDirtyChange?.(dirty);
   }, [dirty, onDirtyChange]);
 
+  // 每次渲染都刷新句柄：「保存全部并关闭」拿到的总是最新草稿的保存实现。
+  useEffect(() => {
+    if (saveRef) saveRef.current = save;
+  });
+
   function edit(key: MetaDraftKey, value: string) {
     dirtyRef.current.add(key);
     setDirty(true);
@@ -806,6 +927,49 @@ function MetaEditor({
   const yearText = draft.year.trim();
   const parsedYear = yearText ? Number.parseInt(yearText, 10) : null;
   const yearInvalid = Boolean(yearText) && (parsedYear === null || !Number.isFinite(parsedYear));
+
+  /** 保存著录修改：true = 已保存（或本就无修改）；false = 校验失败 / 落库失败（store 已提示）。 */
+  async function save(): Promise<boolean> {
+    if (dirtyRef.current.size === 0) return true;
+    if (yearInvalid) {
+      // 定位到未通过的字段：焦点移到年份输入，行内错误已在下方展示。
+      yearInputRef.current?.focus();
+      return false;
+    }
+    const dirtyFields = dirtyRef.current;
+    const patch: Parameters<typeof onSave>[0] = {};
+    if (dirtyFields.has("title")) patch.title = draft.title;
+    if (dirtyFields.has("titleZh")) patch.titleZh = draft.titleZh || null;
+    if (dirtyFields.has("abstract")) patch.abstract = draft.abstract;
+    if (dirtyFields.has("year")) {
+      patch.year = yearText && parsedYear !== null && Number.isFinite(parsedYear) ? parsedYear : null;
+    }
+    if (dirtyFields.has("venue")) patch.venue = draft.venue || null;
+    if (dirtyFields.has("doi")) patch.doi = draft.doi || null;
+    if (dirtyFields.has("arxivId")) patch.arxivId = draft.arxivId || null;
+    if (dirtyFields.has("pdfUrl")) patch.pdfUrl = draft.pdfUrl || null;
+    if (dirtyFields.has("codeUrl")) patch.codeUrl = draft.codeUrl || null;
+    if (dirtyFields.has("projectPage")) patch.projectPage = draft.projectPage || null;
+    if (dirtyFields.has("tags")) {
+      patch.tags = draft.tags
+        .split(",")
+        .map((t) => t.trim())
+        .filter(Boolean);
+    }
+    setSaving(true);
+    try {
+      await onSave(patch);
+      // 保存成功才清掉 dirty：之后 Esc / 完成不再误报「尚未保存」。
+      dirtyRef.current.clear();
+      setDirty(false);
+      return true;
+    } catch {
+      // 失败时保留输入与 dirty，store 已经给出错误通知。
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  }
 
   return (
     <div>
@@ -820,6 +984,7 @@ function MetaEditor({
       </Field>
       <Field label="年份">
         <input
+          ref={yearInputRef}
           value={draft.year}
           onChange={(e) => edit("year", e.target.value)}
           inputMode="numeric"
@@ -841,8 +1006,23 @@ function MetaEditor({
         <input value={draft.arxivId} onChange={(e) => edit("arxivId", e.target.value)} />
       </Field>
       <Field label="本地 PDF">
-        <input value={paper.pdfPath ?? "尚未关联本地 PDF"} readOnly />
+        <input value={paper.pdfPath ?? "尚未关联本地 PDF"} readOnly title={paper.pdfPath ?? undefined} />
       </Field>
+      {isTauri() && onAttachPdf ? (
+        <div className="ef-pdf-attach">
+          <Button type="button" size="sm" disabled={attaching} onClick={() => void pickAndAttachPdf()}>
+            <Icon name="file" />
+            {attaching ? "处理中…" : paper.pdfPath ? "替换 PDF 文件…" : "关联 PDF 文件…"}
+          </Button>
+          {/* 文件找不到了？同一个按钮就是重新定位入口：换一份文件重新关联。 */}
+          {paper.pdfPath ? (
+            <span className="ef-crew-paste-hint">文件缺失时可点「替换 PDF 文件…」重新定位。</span>
+          ) : null}
+        </div>
+      ) : (
+        <p className="ef-crew-paste-hint">浏览器预览不能读取本机 PDF；可在桌面应用中关联，或把文件拖进正文舞台。</p>
+      )}
+      {attachError ? <p className="ef-error ef-field-error">{attachError}</p> : null}
       <Field label="公开 PDF 链接">
         <input value={draft.pdfUrl} onChange={(e) => edit("pdfUrl", e.target.value)} />
       </Field>
@@ -859,40 +1039,7 @@ function MetaEditor({
         variant="primary"
         type="button"
         disabled={yearInvalid || saving}
-        onClick={async () => {
-          if (dirtyRef.current.size === 0) return;
-          const dirtyFields = dirtyRef.current;
-          const patch: Parameters<typeof onSave>[0] = {};
-          if (dirtyFields.has("title")) patch.title = draft.title;
-          if (dirtyFields.has("titleZh")) patch.titleZh = draft.titleZh || null;
-          if (dirtyFields.has("abstract")) patch.abstract = draft.abstract;
-          if (dirtyFields.has("year")) {
-            patch.year = yearText && parsedYear !== null && Number.isFinite(parsedYear) ? parsedYear : null;
-          }
-          if (dirtyFields.has("venue")) patch.venue = draft.venue || null;
-          if (dirtyFields.has("doi")) patch.doi = draft.doi || null;
-          if (dirtyFields.has("arxivId")) patch.arxivId = draft.arxivId || null;
-          if (dirtyFields.has("pdfUrl")) patch.pdfUrl = draft.pdfUrl || null;
-          if (dirtyFields.has("codeUrl")) patch.codeUrl = draft.codeUrl || null;
-          if (dirtyFields.has("projectPage")) patch.projectPage = draft.projectPage || null;
-          if (dirtyFields.has("tags")) {
-            patch.tags = draft.tags
-              .split(",")
-              .map((t) => t.trim())
-              .filter(Boolean);
-          }
-          setSaving(true);
-          try {
-            await onSave(patch);
-            // 保存成功才清掉 dirty：之后 Esc / 完成不再误报「尚未保存」。
-            dirtyRef.current.clear();
-            setDirty(false);
-          } catch {
-            // 失败时保留输入与 dirty，store 已经给出错误通知。
-          } finally {
-            setSaving(false);
-          }
-        }}
+        onClick={() => void save()}
       >
         保存论文信息
       </Button>
@@ -904,9 +1051,12 @@ function CrewEditor({
   authors,
   onSave,
   onDirtyChange,
+  saveRef,
 }: {
   authors: Author[];
   onDirtyChange?: (dirty: boolean) => void;
+  /** 父级「保存全部并关闭」的句柄：挂载期间始终指向最新的 save 实现。 */
+  saveRef?: React.MutableRefObject<(() => Promise<boolean>) | null>;
   onSave: (authors: Author[]) => Promise<void> | void;
 }) {
   const [draft, setDraft] = useState(authors);
@@ -924,10 +1074,71 @@ function CrewEditor({
     onDirtyChange?.(authorsDirty);
   }, [authorsDirty, onDirtyChange]);
 
+  useEffect(() => {
+    if (saveRef) saveRef.current = save;
+  });
+
   function editAuthors(next: Author[]) {
     authorsDirtyRef.current = true;
     setAuthorsDirty(true);
     setDraft(next);
+  }
+
+  // ---- 粘贴整段名单自动拆分（来自 PDF 的作者串）----
+  const [pasteOpen, setPasteOpen] = useState(false);
+  const [pasteText, setPasteText] = useState("");
+  const [pasteError, setPasteError] = useState<string | null>(null);
+
+  /** 拆分并替换整个作者列表（原文顺序即作者顺序），交由下方逐行控件校对。 */
+  function applyPaste() {
+    const names = splitAuthorList(pasteText);
+    if (!names.length) {
+      setPasteError("没有识别到作者姓名：支持换行、逗号、顿号或分号分隔，可带编号与（机构）括注。");
+      return;
+    }
+    setPasteError(null);
+    setPasteOpen(false);
+    setPasteText("");
+    editAuthors(
+      names.map((name, order) => ({
+        id: crypto.randomUUID(),
+        name,
+        nameZh: null,
+        affiliation: "",
+        lab: "",
+        homepage: null,
+        orcid: null,
+        order,
+        isCorresponding: false,
+      })),
+    );
+  }
+
+  /** 逐行校对控件：上移 / 下移 / 删除（拆分出的一长串名单靠它们整理）。 */
+  function moveAuthor(index: number, delta: -1 | 1) {
+    const target = index + delta;
+    if (target < 0 || target >= draft.length) return;
+    const next = [...draft];
+    [next[index], next[target]] = [next[target], next[index]];
+    editAuthors(next);
+  }
+
+  function removeAuthor(index: number) {
+    editAuthors(draft.filter((_, i) => i !== index));
+  }
+
+  /** 保存作者修改：true = 已保存（或本就无修改）；false = 落库失败（store 已提示）。 */
+  async function save(): Promise<boolean> {
+    if (!authorsDirtyRef.current) return true;
+    try {
+      await onSave(draft.filter((a) => a.name.trim()));
+      authorsDirtyRef.current = false;
+      setAuthorsDirty(false);
+      return true;
+    } catch {
+      // 失败时保留编辑中的作者。
+      return false;
+    }
   }
 
   if (!editing) {
@@ -952,6 +1163,54 @@ function CrewEditor({
 
   return (
     <div>
+      <div className="ef-crew-paste">
+        {pasteOpen ? (
+          <div className="ef-crew-paste-area">
+            <textarea
+              aria-label="粘贴作者名单"
+              rows={4}
+              value={pasteText}
+              onChange={(e) => {
+                setPasteText(e.target.value);
+                setPasteError(null);
+              }}
+              placeholder={"支持换行、逗号、顿号、分号分隔，可含编号与（机构）括注\n例如：1. Alice Smith (MIT)、Bob Lee；Carol Wu"}
+            />
+            <div className="job-row">
+              <Button type="button" size="sm" onClick={applyPaste}>
+                拆分为作者行
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="text"
+                onClick={() => {
+                  setPasteOpen(false);
+                  setPasteError(null);
+                }}
+              >
+                取消
+              </Button>
+            </div>
+            {pasteError ? <p className="ef-error">{pasteError}</p> : null}
+            <p className="ef-crew-paste-hint">拆分会替换下方作者列表；含逗号的姓名（如 Smith, J.）拆分后请逐项校对。</p>
+          </div>
+        ) : (
+          <Button
+            type="button"
+            size="sm"
+            variant="text"
+            aria-expanded={pasteOpen}
+            onClick={() => {
+              setPasteOpen(true);
+              setPasteError(null);
+            }}
+          >
+            <Icon name="copy" />
+            粘贴整段名单…
+          </Button>
+        )}
+      </div>
       {draft.map((author, index) => (
         <div key={author.id} className="ef-crew-edit">
           <Field label={`作者 ${index + 1}`}>
@@ -996,6 +1255,43 @@ function CrewEditor({
             />{" "}
             通讯作者
           </label>
+          <span className="ef-crew-row-tools">
+            <Button
+              type="button"
+              size="sm"
+              variant="text"
+              className="ef-icon-btn"
+              aria-label={`上移作者 ${index + 1}`}
+              title={`上移作者 ${index + 1}`}
+              disabled={index === 0}
+              onClick={() => moveAuthor(index, -1)}
+            >
+              <Icon name="up" />
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="text"
+              className="ef-icon-btn"
+              aria-label={`下移作者 ${index + 1}`}
+              title={`下移作者 ${index + 1}`}
+              disabled={index === draft.length - 1}
+              onClick={() => moveAuthor(index, 1)}
+            >
+              <Icon name="down" />
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="text"
+              className="ef-icon-btn"
+              aria-label={`删除作者 ${index + 1}`}
+              title={`删除作者 ${index + 1}`}
+              onClick={() => removeAuthor(index)}
+            >
+              <Icon name="trash" />
+            </Button>
+          </span>
         </div>
       ))}
       <div className="job-row">
@@ -1023,16 +1319,7 @@ function CrewEditor({
         <Button
           variant="primary"
           type="button"
-          onClick={async () => {
-            if (!authorsDirtyRef.current) return;
-            try {
-              await onSave(draft.filter((a) => a.name.trim()));
-              authorsDirtyRef.current = false;
-              setAuthorsDirty(false);
-            } catch {
-              // 失败时保留编辑中的作者。
-            }
-          }}
+          onClick={() => void save()}
         >
           保存作者
         </Button>

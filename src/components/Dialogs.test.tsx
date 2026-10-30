@@ -457,3 +457,50 @@ describe("DomainDialog · 删除确认", () => {
     expect(updateDomain).not.toHaveBeenCalled();
   });
 });
+
+describe("DomainPickerDialog · 移动的去向选择", () => {
+  async function renderMoving() {
+    const movePaper = vi.fn(async () => undefined);
+    useField.setState({
+      dialog: "move-paper",
+      dialogPaperId: "p1",
+      domains: [
+        { id: "d-1", name: "领域甲", code: "A-01", summary: null, sortOrder: 0, createdAt: "2024-01-01T00:00:00.000Z" },
+        { id: "d-2", name: "领域乙", code: "B-01", summary: null, sortOrder: 1, createdAt: "2024-01-01T00:00:00.000Z" },
+      ],
+      selectedDomainId: "d-1",
+      movePaper,
+    });
+    const { DomainPickerDialog } = await import("./Dialogs");
+    render(<DomainPickerDialog />);
+    return movePaper;
+  }
+
+  it("移动对话框提供「跟随到目标领域 / 留在当前领域」选择并传给 movePaper", async () => {
+    localStorage.removeItem("paper-field.move-follow");
+    const movePaper = await renderMoving();
+    // 默认跟随
+    fireEvent.click(screen.getByText("领域乙"));
+    expect(movePaper).toHaveBeenCalledWith("d-2", "p1", { follow: true });
+    // 切到留在当前领域：选择随本机记忆
+    fireEvent.click(screen.getByRole("button", { name: "留在当前领域" }));
+    fireEvent.click(screen.getByText("领域乙"));
+    expect(movePaper).toHaveBeenLastCalledWith("d-2", "p1", { follow: false });
+    expect(localStorage.getItem("paper-field.move-follow")).toBe("stay");
+    localStorage.removeItem("paper-field.move-follow");
+  });
+
+  it("普通「切换研究领域」模式不显示去向选择", async () => {
+    localStorage.removeItem("paper-field.move-follow");
+    useField.setState({
+      dialog: "pick-domain",
+      domains: [
+        { id: "d-1", name: "领域甲", code: "A-01", summary: null, sortOrder: 0, createdAt: "2024-01-01T00:00:00.000Z" },
+      ],
+      selectedDomainId: "d-1",
+    });
+    const { DomainPickerDialog } = await import("./Dialogs");
+    render(<DomainPickerDialog />);
+    expect(screen.queryByRole("group", { name: "移动后的去向" })).toBeNull();
+  });
+});

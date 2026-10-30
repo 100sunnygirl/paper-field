@@ -1,3 +1,4 @@
+import { captureDomainDelete, capturePaperDelete, restoreDeleteUndo, type DeleteUndoEntry } from "./deleteUndo";
 import { ConflictError, getEngine, type BatchStep } from "./engine";
 import { planPreparedMeta } from "./mergeMeta";
 import { seedIfEmpty } from "./seed";
@@ -807,6 +808,40 @@ export const repo = {
     // 同 deleteDomain：单语句删除，级联清理由 pf_paper_cascade 触发器完成。
     const engine = await getEngine();
     await engine.execute("DELETE FROM papers WHERE id = ?", [id]);
+  },
+
+  // ---- 删除的限时撤销：应用层快照入口（快照/恢复的实现见 lib/deleteUndo.ts） ----
+
+  async snapshotPapersForUndo(paperIds: string[], label: string): Promise<DeleteUndoEntry> {
+    return capturePaperDelete(paperIds, label);
+  },
+
+  async snapshotDomainForUndo(domainId: string, label: string): Promise<DeleteUndoEntry> {
+    return captureDomainDelete(domainId, label);
+  },
+
+  async restoreDeleted(entry: DeleteUndoEntry): Promise<void> {
+    await restoreDeleteUndo(entry);
+  },
+
+  /**
+   * 为已有论文关联 / 替换本机 PDF（编辑对话框「关联/替换文件」与拖入正文舞台共用）。
+   * 文件先经 adoptManualPdf 复制进文库；这里只写路径。从未解析过的论文补 pending，
+   * 让批量解析入口能看到它。
+   */
+  async attachPdf(paperId: string, pdf: { libraryPath: string; originalPath: string }): Promise<void> {
+    const engine = await getEngine();
+    await engine.batch([
+      {
+        sql: `UPDATE papers
+               SET pdf_path = ?, pdf_original_path = ?,
+                   mineru_status = COALESCE(mineru_status, 'pending'),
+                   updated_at = ?
+             WHERE id = ?`,
+        params: [pdf.libraryPath, pdf.originalPath, nowIso(), paperId],
+        expect: "one",
+      },
+    ]);
   },
 
   async deletePapers(ids: string[]): Promise<void> {
