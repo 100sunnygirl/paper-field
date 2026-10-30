@@ -1814,6 +1814,9 @@ function mineruHost() {
     showFailures: () => {
       void useField.getState().setMode("intake");
     },
+    openSettings: () => {
+      useField.getState().openSystemCard("mineru");
+    },
   };
 }
 

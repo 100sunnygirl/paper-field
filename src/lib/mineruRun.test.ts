@@ -167,6 +167,7 @@ function makeHost(
     prepare?: (paperId: string, overwrite: boolean, quiet: boolean) => Promise<void>;
     reveal?: (what: "fulltext" | "fields", paperId: string) => void;
     showFailures?: () => void;
+    openSettings?: () => void;
   } = {},
 ) {
   return {
@@ -177,6 +178,7 @@ function makeHost(
     prepare: vi.fn(options.prepare ?? (async (paperId: string) => markPrepared(paperId))),
     reveal: options.reveal,
     showFailures: options.showFailures,
+    openSettings: options.openSettings,
   };
 }
 
@@ -370,7 +372,10 @@ describe("提交与轮询", () => {
 
     await runMineruBatch(host, [id], false);
 
-    expect(host.flash).toHaveBeenCalledWith("error", "MinerU 解析失败 1 篇，可在资料栏重试。");
+    expect(host.flash).toHaveBeenCalledWith(
+      "error",
+      expect.stringMatching(/MinerU 解析失败 1 篇，可在资料栏重试；反复失败可.+。/),
+    );
     expect(mineruMarkdown).not.toHaveBeenCalled();
     expect(await paperOf(id)).toMatchObject({ mineruStatus: "error", mineruError: "页数超限", parsedMarkdown: "" });
     const [job] = await jobsOf(id);
@@ -1034,6 +1039,50 @@ describe("移出队列与停止批次", () => {
   });
 });
 
+describe("熔断 / 失败后的降档建议", () => {
+  it("连续失败熔断：通知给出按当前设置定制的降档建议与设置直达", async () => {
+    const ids = [await makePaper(), await makePaper(), await makePaper(), await makePaper()];
+    const host = makeHost({ hasKey: false, openSettings: () => {} });
+    vi.mocked(mineruSubmit).mockRejectedValue(new Error("本地 doclib 未启动"));
+
+    await runMineruBatch(host, ids, false);
+
+    const call = host.flash.mock.calls.find(([tone]) => tone === "error");
+    expect(call).toBeTruthy();
+    const text = call![1] as string;
+    // 设置里档位 standard（非 flash）：建议降档；页码 all：建议缩页。
+    expect(text).toContain("把解析档位降到 flash 再试");
+    expect(text).toContain("缩小页码范围");
+  });
+
+  it("已经是最低档 + 缩页：建议换成查看 Token / 分批", async () => {
+    // 修改模块内 settings 的快照：tier=flash、pageRange=1-20、只开官方 API。
+    const apiOnly = { ...settings, tier: "flash" as const, pageRange: "1-20", local: { ...settings.local, enabled: false }, ssh: { ...settings.ssh, enabled: false }, api: { ...settings.api, hasToken: true } };
+    const ids = [await makePaper(), await makePaper(), await makePaper(), await makePaper()];
+    const host = makeHost({ hasKey: false });
+    host.mineru = () => ({ ...apiOnly, configured: true });
+    vi.mocked(mineruSubmit).mockRejectedValue(new Error("quota"));
+
+    await runMineruBatch(host, ids, false);
+
+    const call = host.flash.mock.calls.find(([tone]) => tone === "error");
+    const text = call![1] as string;
+    expect(text).not.toContain("降到 flash");
+    expect(text).toContain("分批解析");
+  });
+
+  it("普通批次失败小结也带下一步建议", async () => {
+    const ids = [await makePaper()];
+    const host = makeHost({ hasKey: false });
+    vi.mocked(mineruSubmit).mockRejectedValue(new Error("boom"));
+
+    await runMineruBatch(host, ids, false);
+
+    const call = host.flash.mock.calls.find(([tone]) => tone === "error");
+    expect(call![1] as string).toContain("反复失败可");
+  });
+});
+
 describe("排队调度：置顶 / 上移 / 下移 / 清空其余", () => {
   it("处理循环按批次当前顺序取下一篇：中途置顶后，被置顶的论文先解析", async () => {
     const ids = [await makePaper(), await makePaper(), await makePaper()];
@@ -1193,7 +1242,7 @@ describe("批次收尾反馈与通知偏好", () => {
 
     const last = vi.mocked(host.flash).mock.calls.at(-1)!;
     expect(last[0]).toBe("error");
-    expect(last[1]).toMatch(/解析失败 1 篇（成功 2 · 用时 .+），可在资料栏重试。/);
+    expect(last[1]).toMatch(/解析失败 1 篇（成功 2 · 用时 .+）。可先.+再在资料栏逐篇重试。/);
     expect(last[2]).toMatchObject({ label: "去看失败的那几篇" });
     last[2]!.run();
     expect(host.showFailures).toHaveBeenCalled();

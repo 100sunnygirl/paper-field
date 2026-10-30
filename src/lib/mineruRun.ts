@@ -38,6 +38,8 @@ interface Host {
   reveal?: (what: "fulltext" | "fields", paperId: string) => void;
   /** 「去看失败的那几篇」：跳到能看到解析失败论文的页面（入库页）。 */
   showFailures?: () => void;
+  /** 熔断建议卡的直达：打开设置页 MinerU 卡（降档 / 换源在这里改）。 */
+  openSettings?: () => void;
 }
 
 /**
@@ -458,6 +460,23 @@ async function processOne(
 /** 连续失败达到该值即熔断剩余批次：解析源大概率繁忙或不可用，继续只会逐篇耗时超时。 */
 const CONSECUTIVE_FAIL_LIMIT = 3;
 
+/**
+ * 失败 / 熔断后的下一步策略建议：按当前设置给一条具体可动的降档路径。
+ * 只提设置里真实存在的选项（档位只对 doclib 有意义、模型版本只对官方 API 有意义）。
+ */
+export function minuDowngradeAdvice(settings: MineruSettingsV2): string {
+  const hasDoclib = settings.local.enabled || settings.ssh.enabled;
+  const hasApi = settings.api.hasToken;
+  const parts: string[] = [];
+  if (hasDoclib && settings.tier !== "flash") parts.push("把解析档位降到 flash 再试");
+  if (hasApi && settings.api.modelVersion !== "pipeline") parts.push("官方 API 换回 pipeline 模型版本");
+  if (settings.pageRange !== "all") parts.push("或把页码范围再缩小（如先解析前 20 页）分批解析");
+  else parts.push("或缩小页码范围（如 1-20）分批解析");
+  if (hasApi && (hasDoclib || !parts.length)) parts.push("确认官方 API Token 仍有效");
+  if (!hasDoclib && !hasApi) parts.push("先在设置页启用一个解析源");
+  return parts.slice(0, 2).join("，");
+}
+
 export const PAUSED_ERROR = "连续失败已暂停，可在 INTAKE 页重试";
 /** 用户「当前篇完成后暂停」写进论文的暂停原因（「继续本批」恢复）。 */
 export const USER_PAUSED_ERROR = "已按要求暂停，可在作业面板继续本批";
@@ -593,7 +612,8 @@ export async function runMineruBatch(
       log.warn("mineru", `连续失败 ${consecutiveFails} 篇，熔断暂停剩余 ${pausedCount} 篇`);
       host.flash(
         "error",
-        `MinerU 解析连续失败 ${consecutiveFails} 篇，已暂停剩余 ${pausedCount} 篇。解析源可能繁忙或不可用，可在设置页测试连接，稍后在 INTAKE 页重试。`,
+        `MinerU 解析连续失败 ${consecutiveFails} 篇，已暂停剩余 ${pausedCount} 篇。下一步建议：${minuDowngradeAdvice(host.mineru())}。可在设置页测试连接，稍后在 INTAKE 页重试。`,
+        ...(host.openSettings ? [{ label: "去设置调整解析源", run: () => host.openSettings!() }] : []),
       );
       notifyAway(prefs, "MinerU 解析已暂停", `连续失败 ${consecutiveFails} 篇，剩余 ${pausedCount} 篇未处理`, true);
       return;
@@ -612,8 +632,8 @@ export async function runMineruBatch(
       host.flash(
         "error",
         big
-          ? `MinerU 解析失败 ${fail} 篇（成功 ${ok} · 用时 ${elapsedText}），可在资料栏重试。`
-          : `MinerU 解析失败 ${fail} 篇，可在资料栏重试。`,
+          ? `MinerU 解析失败 ${fail} 篇（成功 ${ok} · 用时 ${elapsedText}）。可先${minuDowngradeAdvice(host.mineru())}，再在资料栏逐篇重试。`
+          : `MinerU 解析失败 ${fail} 篇，可在资料栏重试；反复失败可${minuDowngradeAdvice(host.mineru())}。`,
         ...(action ? [action] : []),
       );
     } else if (ok && !host.hasKey()) {
