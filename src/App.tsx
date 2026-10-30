@@ -10,7 +10,7 @@ import {
   EditPaperDialog,
   PaperDialog,
 } from "./components/Dialogs";
-import { AiDiffDialog, MetaPreviewDialog } from "./components/AiAudit";
+import { AiDiffDialog, MetaPreviewDialog, NotePreviewDialog } from "./components/AiAudit";
 import { ReadingStage } from "./components/Dossier";
 import { PaperNav } from "./components/FieldView";
 import { JobsPanel } from "./components/JobsPanel";
@@ -267,6 +267,7 @@ export default function App() {
       <ConfirmMetaDialog />
       <AiDiffDialog />
       <MetaPreviewDialog />
+      <NotePreviewDialog />
       {/* 通知弹窗：右上角堆叠、各自自动消失（错误类停留更久）、可手动关闭；
           挂在各 Dialog 之后，层叠由 z-index 变量控制（toast 120 > dialog 30）。 */}
       <Toasts />

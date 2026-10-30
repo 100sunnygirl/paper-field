@@ -1,9 +1,9 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { recordAiWrite, snapshotMeta, snapshotNotes } from "../lib/aiAudit";
-import { NOTE_DISPLAY_ORDER, type PaperDetail } from "../lib/types";
+import { NOTE_DISPLAY_ORDER, type NoteKind, type PaperDetail } from "../lib/types";
 import { useField } from "../store";
-import { AiDiffDialog, MetaPreviewDialog } from "./AiAudit";
+import { AiDiffDialog, MetaPreviewDialog, NotePreviewDialog } from "./AiAudit";
 
 function detail(): PaperDetail {
   return {
@@ -179,5 +179,50 @@ describe("MetaPreviewDialog · 干跑预览确认", () => {
     render(<MetaPreviewDialog />);
     expect(screen.getByText(/没有需要写入的字段/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "写入 0 项" })).toBeDisabled();
+  });
+});
+
+describe("NotePreviewDialog · 草稿逐块采纳", () => {
+  function previewFixture() {
+    return {
+      paperId: "p1",
+      paperTitle: "Real Title",
+      at: Date.now(),
+      revs: {},
+      kinds: ["summary", "highlights", "weaknesses", "implications", "remarks"] as NoteKind[],
+      drafted: {
+        remarks: "",
+        summary: "AI 总结",
+        highlights: "AI 亮点",
+        weaknesses: "",
+        implications: "",
+      },
+      before: snapshotNotes(detail()),
+      changes: [
+        { kind: "summary" as NoteKind, from: "", to: "AI 总结" },
+        { kind: "highlights" as NoteKind, from: "", to: "AI 亮点" },
+      ],
+    };
+  }
+
+  it("逐块列出草稿 diff；默认只勾空块；采纳传勾选名单", async () => {
+    const applyNotePreview = vi.fn(async (_kinds: NoteKind[]) => undefined);
+    useField.setState({ dialog: "ai-note-preview", dialogPaperId: "p1", notePreview: previewFixture(), applyNotePreview });
+    render(<NotePreviewDialog />);
+    expect(screen.getByText(/逐块勾选要采纳的草稿/)).toBeInTheDocument();
+    // 空块默认勾选（总结/亮点是空块且草稿非空）；弱检查：采纳 2 块。
+    const button = screen.getByRole("button", { name: "采纳 2 块" });
+    fireEvent.click(button);
+    await waitFor(() => expect(applyNotePreview).toHaveBeenCalledTimes(1));
+    const kinds = vi.mocked(applyNotePreview).mock.calls[0]![0];
+    expect([...kinds].sort()).toEqual(["highlights", "summary"]);
+  });
+
+  it("全部放弃走 dismissNotePreview", () => {
+    const dismissNotePreview = vi.fn();
+    useField.setState({ dialog: "ai-note-preview", dialogPaperId: "p1", notePreview: previewFixture(), dismissNotePreview });
+    render(<NotePreviewDialog />);
+    fireEvent.click(screen.getByRole("button", { name: "全部放弃" }));
+    expect(dismissNotePreview).toHaveBeenCalledTimes(1);
   });
 });

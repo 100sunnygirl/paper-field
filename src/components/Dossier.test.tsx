@@ -756,3 +756,74 @@ describe("ReadingStage · 查询落空的内联「补充标识符再查」", () 
     expect(runRefreshLinks).not.toHaveBeenCalled();
   });
 });
+
+describe("ReadingStage · 起草笔记的块级控制", () => {
+  function usableSettings() {
+    return {
+      version: 2 as const,
+      usage: {},
+      providers: [
+        { id: "a", presetId: "deepseek", label: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-chat", enabled: true, hasKey: true, requiresKey: true },
+      ],
+    };
+  }
+
+  it("展开后默认全选；「只补空白块」只起草空块；取消勾选后按选中块起草", () => {
+    const runDraftNotes = vi.fn(async () => undefined);
+    useField.setState({
+      mode: "field",
+      paper: paper({ summary: "已有总结" }),
+      selectedPaperId: "p1",
+      settings: usableSettings(),
+      runDraftNotes,
+    });
+    renderStage();
+    fireEvent.click(screen.getByRole("button", { name: "起草阅读笔记…" }));
+    expect(screen.getByText(/选择要起草的笔记块/)).toBeInTheDocument();
+    // 只补空白块：跳过已有内容的总结。
+    fireEvent.click(screen.getByRole("button", { name: "只补空白块" }));
+    expect(runDraftNotes).toHaveBeenLastCalledWith("p1", false, {
+      kinds: ["highlights", "weaknesses", "implications", "remarks"],
+    });
+    // 再展开（勾选状态保留：仍是全 5 块），取消「亮点」，起草选中的 4 块。
+    fireEvent.click(screen.getByRole("button", { name: "起草阅读笔记…" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "起草亮点" }));
+    fireEvent.click(screen.getByRole("button", { name: "起草选中 4 块" }));
+    expect(runDraftNotes).toHaveBeenLastCalledWith("p1", false, {
+      kinds: ["summary", "weaknesses", "implications", "remarks"],
+    });
+  });
+
+  it("「先预览再写入」开启时起草带 dryRun（逐块 diff 采纳）", () => {
+    const runDraftNotes = vi.fn(async () => undefined);
+    localStorage.setItem("paper-field.ai-preview-first", "1");
+    useField.setState({
+      mode: "field",
+      paper: paper({}),
+      selectedPaperId: "p1",
+      settings: usableSettings(),
+      runDraftNotes,
+    });
+    renderStage();
+    fireEvent.click(screen.getByRole("button", { name: "起草阅读笔记…" }));
+    fireEvent.click(screen.getByRole("button", { name: "起草选中 5 块" }));
+    expect(runDraftNotes).toHaveBeenLastCalledWith("p1", false, { kinds: expect.anything(), dryRun: true });
+  });
+
+  it("全部取消勾选时「起草选中」禁用", () => {
+    const runDraftNotes = vi.fn(async () => undefined);
+    useField.setState({
+      mode: "field",
+      paper: paper({}),
+      selectedPaperId: "p1",
+      settings: usableSettings(),
+      runDraftNotes,
+    });
+    renderStage();
+    fireEvent.click(screen.getByRole("button", { name: "起草阅读笔记…" }));
+    for (const kind of ["总结", "亮点", "不足", "启示", "备注"]) {
+      fireEvent.click(screen.getByRole("checkbox", { name: `起草${kind}` }));
+    }
+    expect(screen.getByRole("button", { name: "起草选中 0 块" })).toBeDisabled();
+  });
+});

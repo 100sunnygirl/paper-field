@@ -139,6 +139,7 @@ interface FieldState {
     | "confirm-meta"
     | "ai-diff"
     | "ai-preview"
+    | "ai-note-preview"
     | "edit-domain"
     | "move-paper"
     | "delete-paper"
@@ -153,6 +154,8 @@ interface FieldState {
   pendingDraftJob: string | null;
   /** 干跑（先预览不写入）得到的补全预览：确认后才按同一载荷写库。 */
   metaPreview: MetaPreview | null;
+  /** 干跑得到的笔记起草预览：逐块勾选采纳后才写库。 */
+  notePreview: import("./lib/aiAudit").NotePreview | null;
   /** 正在编辑、尚未保存的笔记草稿，按论文分开存：切换论文不丢，切回来还在。 */
   drafts: Record<string, Partial<Record<NoteKind, string>>>;
   loadError: string | null;
@@ -279,7 +282,7 @@ interface FieldState {
     options?: { llm?: boolean; allowFields?: MetaField[]; dryRun?: boolean },
   ) => Promise<void>;
   runRefreshLinks: (paperId?: string) => Promise<void>;
-  runDraftNotes: (paperId?: string, overwrite?: boolean, options?: { kinds?: NoteKind[] }) => Promise<void>;
+  runDraftNotes: (paperId?: string, overwrite?: boolean, options?: { kinds?: NoteKind[]; dryRun?: boolean }) => Promise<void>;
   cancelJob: (jobId: string, options?: { silent?: boolean }) => Promise<void>;
   /**
    * 撤销一次 AI 写入（快照还原）：AI 写入之后用户又改过的字段 / 笔记块保留不动，
@@ -292,6 +295,10 @@ interface FieldState {
   applyMetaPreview: () => Promise<void>;
   /** 放弃干跑预览（不写库）。 */
   dismissMetaPreview: () => void;
+  /** 逐块采纳笔记草稿预览：只写勾选的块（rev 条件更新，期间的手改仍受保护）。 */
+  applyNotePreview: (kinds: NoteKind[]) => Promise<void>;
+  /** 放弃笔记草稿预览（不写库）。 */
+  dismissNotePreview: () => void;
   /**
    * deferBackfill：测试连接 / 拉模型等“只查不启动”的保存暂不排自动补全，
    * 由用户在测试通过后点「启用自动补全」显式启动（startMetaBackfill）。
@@ -415,6 +422,7 @@ export const useField = create<FieldState>((set, get) => ({
   dialogPaperIds: [],
   pendingDraftJob: null,
   metaPreview: null,
+  notePreview: null,
   drafts: loadDrafts(),
   loadError: null,
   jobsOpen: false,
@@ -613,7 +621,8 @@ export const useField = create<FieldState>((set, get) => ({
       dialog === "confirm-meta" ||
       dialog === "confirm-notes" ||
       dialog === "ai-diff" ||
-      dialog === "ai-preview";
+      dialog === "ai-preview" ||
+      dialog === "ai-note-preview";
     set({
       dialog,
       dialogPaperId: paperScoped ? (typeof target === "string" ? target : state.paper?.id ?? state.selectedPaperId) : null,
@@ -628,6 +637,7 @@ export const useField = create<FieldState>((set, get) => ({
       pendingDraftJob: null,
       // 预览对话框被关闭（Esc / 右上角）= 放弃这次干跑：不写库。
       ...(get().dialog === "ai-preview" ? { metaPreview: null } : {}),
+      ...(get().dialog === "ai-note-preview" ? { notePreview: null } : {}),
     }),
 
   init: async () => {
@@ -1516,6 +1526,9 @@ export const useField = create<FieldState>((set, get) => ({
     }
     // 确认框逐项勾选的起草范围：未勾选的块这次完全不写。
     const draftKinds = options?.kinds;
+    // 干跑：只起草不写库，产出逐块 diff 预览。
+    const dry = options?.dryRun === true;
+    const requestedKinds: NoteKind[] = draftKinds ?? [...NOTE_KINDS];
     // 先占在途锁再读库：双击时第二次调用在这里就返回。
     draftInflight.add(id);
     const paper = await repo.getPaper(id);
@@ -1539,6 +1552,35 @@ export const useField = create<FieldState>((set, get) => ({
           await ctx.checkpoint();
           ctx.stage("apply");
           const notes = normalizeNotes(extractJson(raw));
+          if (dry) {
+            // 干跑：载荷与块 diff 留在预览里，用户逐块勾选采纳后才写库。
+            const beforeNotesDry = beforeNotes;
+            const afterNotes = { ...beforeNotesDry };
+            for (const kind of requestedKinds) {
+              afterNotes[kind] = { ...afterNotes[kind], content: notes[kind] ?? "", source: "llm", userEdited: false };
+            }
+            set({
+              notePreview: {
+                paperId: id,
+                paperTitle: paper.titleZh || paper.title,
+                at: Date.now(),
+                revs,
+                kinds: requestedKinds,
+                drafted: notes,
+                before: beforeNotesDry,
+                changes: diffNotes(beforeNotesDry, afterNotes),
+              },
+            });
+            get().openDialog("ai-note-preview", id);
+            const changedCount = diffNotes(beforeNotesDry, afterNotes).length;
+            get().setFlash({
+              tone: "ok",
+              text: changedCount
+                ? `已生成 ${changedCount} 块草稿预览，逐块确认后才写入。`
+                : "草稿预览完成：各块内容没有变化。",
+            });
+            return (await repo.finishJob(ctx.jobId, "done", { resultJson: JSON.stringify({ dryRun: true }) })) ? "done" : "cancelled";
+          }
           const kept = await repo.applyDraftedNotes(id, notes, overwrite, revs, jobDoneStep(ctx.jobId, raw), draftKinds);
           if (kept === null) return "cancelled";
           const editedDuring = kept.filter((kind) => overwrite || !paper.notes?.[kind]?.userEdited);
@@ -1727,6 +1769,57 @@ export const useField = create<FieldState>((set, get) => ({
   dismissMetaPreview: () => {
     set({ metaPreview: null, dialog: null, dialogPaperId: null });
     get().setFlash({ tone: "ok", text: "已放弃这次预览，没有写入任何内容。" });
+  },
+
+  applyNotePreview: async (kinds) => {
+    const preview = get().notePreview;
+    if (!preview) return;
+    try {
+      // 只写勾选的块；rev 条件更新保护起草期间被改过的块，返回被保留的块。
+      const kept = await repo.applyDraftedNotes(
+        preview.paperId,
+        preview.drafted,
+        true,
+        preview.revs,
+        undefined,
+        [...kinds],
+      );
+      if (kept === null) throw new Error("写入被取消");
+      const afterPaper = await repo.getPaper(preview.paperId);
+      let viewChanges: { label: string; run: () => void } | undefined;
+      if (afterPaper) {
+        const afterNotes = snapshotNotes(afterPaper);
+        const changes = diffNotes(preview.before, afterNotes);
+        for (const change of changes) pushNoteVersion(preview.paperId, change.kind, "ai", change.to);
+        if (changes.length) {
+          recordAiWrite({
+            paperId: preview.paperId,
+            paperTitle: preview.paperTitle,
+            kind: "notes",
+            notes: { before: preview.before, after: afterNotes, changes },
+          });
+          viewChanges = { label: "查看变更", run: () => get().openDialog("ai-diff", preview.paperId) };
+        }
+      }
+      set({ notePreview: null, dialog: null, dialogPaperId: null });
+      await get().refresh();
+      const written = kinds.filter((kind) => !kept.includes(kind));
+      get().setFlash({
+        tone: "ok",
+        text: written.length
+          ? `已采纳 ${written.length} 块草稿（${written.map((kind) => NOTE_LABELS[kind].zh).join("、")}）。`
+          : "没有采纳任何块。",
+        ...(viewChanges ? { action: viewChanges } : {}),
+      });
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `采纳草稿失败：${errText(err)}，数据未改动。` });
+      throw err;
+    }
+  },
+
+  dismissNotePreview: () => {
+    set({ notePreview: null, dialog: null, dialogPaperId: null });
+    get().setFlash({ tone: "ok", text: "已放弃这次草稿预览，没有写入任何内容。" });
   },
 
   cancelJob: async (jobId, options) => {

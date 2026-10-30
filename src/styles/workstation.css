@@ -3721,6 +3721,33 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   color: var(--pf-secondary);
 }
 /* AI 助手块的「先预览再写入」干跑开关：安静的小标签，不与主按钮争夺注意力。 */
+/* 起草笔记的块级控制：选块 + 只补空白块 / 起草选中块。 */
+.ef-draft-controls {
+  border: 1px dashed var(--pf-divider);
+  padding: 8px 10px;
+  margin-top: 4px;
+}
+.ef-draft-controls p { margin: 0 0 6px; font-size: var(--pf-fs-caption); color: var(--pf-secondary); }
+.ef-draft-kinds { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.ef-draft-kinds label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--pf-fs-caption);
+  cursor: pointer;
+}
+.ef-draft-kinds em {
+  font-style: normal;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+}
+.ef-draft-actions { display: flex; gap: 8px; margin-top: 8px; }
+.ef-draft-note { margin: 8px 0 0; font-size: var(--pf-fs-caption); color: var(--pf-secondary); }
+/* 逐块采纳预览的 diff 行。 */
+.ef-draft-diff { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+.ef-draft-diff del { color: var(--pf-secondary); }
+.ef-draft-diff ins { text-decoration: none; color: var(--pf-ink); }
+.ef-draft-same { color: var(--pf-secondary); }
 /* 查询落空的内联补救表单：补充 / 更正 arXiv 或 DOI 后跳过缓存重查。 */
 .ef-lookup-retry {
   border: 1px dashed var(--pf-divider);

@@ -361,3 +361,74 @@ describe("查询落空的内联补救数据源（lookupOutcome）", () => {
     expect(useField.getState().lookupOutcome).toMatchObject({ paperId: paper.id, found: true });
   });
 });
+
+describe("笔记起草的块级控制与逐块采纳（干跑）", () => {
+  function notesJson(patch: Partial<Record<string, string>> = {}): string {
+    return JSON.stringify({
+      remarks: patch.remarks ?? "",
+      summary: patch.summary ?? "AI 总结草稿",
+      highlights: patch.highlights ?? "",
+      weaknesses: patch.weaknesses ?? "",
+      implications: patch.implications ?? "",
+    });
+  }
+
+  it("dryRun 起草只产预览不写库；kinds 限定只起草选中块", async () => {
+    const domain = await repo.createDomain({ name: "多模态", code: "MM-09" });
+    const paper = await repo.createPaper({ domainId: domain.id, title: "Paper" });
+    vi.mocked(completeChat).mockResolvedValue(notesJson({ summary: "只要总结", highlights: "不要亮点" }));
+
+    // 只起草总结一块：预览里也只有总结。
+    await useField.getState().runDraftNotes(paper.id, false, { kinds: ["summary"], dryRun: true });
+
+    const mid = (await repo.getPaper(paper.id))!;
+    expect(mid.notes.summary.content).toBe(""); // 未写库
+    const preview = useField.getState().notePreview!;
+    expect(preview.paperId).toBe(paper.id);
+    expect(useField.getState().dialog).toBe("ai-note-preview");
+    expect(preview.kinds).toEqual(["summary"]);
+    expect(preview.drafted.summary).toBe("只要总结");
+    expect(preview.changes.map((change) => change.kind)).toEqual(["summary"]);
+
+    // 逐块采纳：只写预览里勾选的块。
+    await useField.getState().applyNotePreview(["summary"]);
+    const after = (await repo.getPaper(paper.id))!;
+    expect(after.notes.summary.content).toBe("只要总结");
+    expect(after.notes.highlights.content).toBe(""); // 未起草的块保持空白
+    expect(useField.getState().notePreview).toBeNull();
+  });
+
+  it("默认勾选空块：逐块采纳时空块被填、已有内容的块不覆盖", async () => {
+    const domain = await repo.createDomain({ name: "多模态", code: "MM-10" });
+    const paper = await repo.createPaper({ domainId: domain.id, title: "Paper" });
+    await repo.updateNote(paper.id, "summary", "我自己的总结", "manual", true);
+    vi.mocked(completeChat).mockResolvedValue(notesJson({ summary: "AI 总结", highlights: "AI 亮点" }));
+
+    // 已有手改笔记（userNotesTouched）：干跑 + 逐块采纳替代整篇二选一确认，用 overwrite 语义进入。
+    await useField.getState().runDraftNotes(paper.id, true, { dryRun: true });
+
+    const preview = useField.getState().notePreview!;
+    // 起草范围是全部五块，但预览的 changes 只列内容有差异的块（总结、亮点）。
+    expect(preview.changes.map((change) => change.kind).sort()).toEqual(["highlights", "summary"]);
+    // 放弃预览：不写库。
+    useField.getState().dismissNotePreview();
+    const after = (await repo.getPaper(paper.id))!;
+    expect(after.notes.summary.content).toBe("我自己的总结");
+    expect(after.notes.highlights.content).toBe("");
+  });
+
+  it("采纳时起草期间被手改的块保留（rev 条件更新保护）", async () => {
+    const domain = await repo.createDomain({ name: "多模态", code: "MM-11" });
+    const paper = await repo.createPaper({ domainId: domain.id, title: "Paper" });
+    vi.mocked(completeChat).mockResolvedValue(notesJson({ summary: "AI 总结", highlights: "AI 亮点" }));
+
+    await useField.getState().runDraftNotes(paper.id, false, { dryRun: true });
+    // 预览期间用户改了总结（rev 变化）。
+    await repo.updateNote(paper.id, "summary", "预览期间我改的", "manual", true);
+
+    await useField.getState().applyNotePreview(["summary", "highlights"]);
+    const after = (await repo.getPaper(paper.id))!;
+    expect(after.notes.summary.content).toBe("预览期间我改的");
+    expect(after.notes.highlights.content).toBe("AI 亮点");
+  });
+});

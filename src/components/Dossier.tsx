@@ -668,6 +668,84 @@ function LookupRetryForm({ paper }: { paper: PaperDetail }) {
   );
 }
 
+/**
+ * 起草阅读笔记的块级控制：展开后可只起草选中的笔记块（如只要总结），
+ * 配合「先预览再写入」逐块 diff 采纳；不展开则按旧语义起草全部五块。
+ */
+function DraftNotesControls({ paper, disabled, previewFirst }: { paper: PaperDetail; disabled: boolean; previewFirst: boolean }) {
+  const runDraftNotes = useField((s) => s.runDraftNotes);
+  const configured = hasUsableProvider(useField((s) => s.settings));
+  const [open, setOpen] = useState(false);
+  // 勾选要起草的块：默认全部（与旧语义一致）；空块快捷入口只勾空块。
+  const [kinds, setKinds] = useState<Set<NoteKind>>(() => new Set(NOTE_DISPLAY_ORDER));
+  function toggle(kind: NoteKind, on: boolean) {
+    setKinds((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(kind);
+      else next.delete(kind);
+      return next;
+    });
+  }
+  function start(onlyEmpty: boolean) {
+    const target = onlyEmpty
+      ? NOTE_DISPLAY_ORDER.filter((kind) => !(paper.notes[kind]?.content ?? "").trim())
+      : [...kinds];
+    if (!target.length) return;
+    setOpen(false);
+    // 干跑开关开启时逐块预览采纳；否则走确认对话框保护语义。
+    void runDraftNotes(paper.id, false, {
+      kinds: target,
+      ...(previewFirst ? { dryRun: true } : {}),
+    });
+  }
+  return (
+    <>
+      <Button type="button" disabled={!configured || disabled} onClick={() => setOpen((value) => !value)}>
+        <Icon name="edit" />
+        起草阅读笔记…
+      </Button>
+      {open ? (
+        <div className="ef-draft-controls">
+          <p>选择要起草的笔记块（可只起草总结一块）：</p>
+          <div className="ef-draft-kinds">
+            {NOTE_DISPLAY_ORDER.map((kind) => (
+              <label key={kind}>
+                <input
+                  type="checkbox"
+                  checked={kinds.has(kind)}
+                  onChange={(e) => toggle(kind, e.target.checked)}
+                  aria-label={`起草${NOTE_LABELS[kind].zh}`}
+                />
+                {NOTE_LABELS[kind].zh}
+                {(paper.notes[kind]?.content ?? "").trim() ? <em>已有内容</em> : null}
+              </label>
+            ))}
+          </div>
+          <div className="ef-draft-actions">
+            <Button
+              type="button"
+              size="sm"
+              disabled={!NOTE_DISPLAY_ORDER.some((kind) => !(paper.notes[kind]?.content ?? "").trim())}
+              title="只起草当前为空的块（空块被填不覆盖任何手写内容）"
+              onClick={() => start(true)}
+            >
+              只补空白块
+            </Button>
+            <Button type="button" size="sm" variant="primary" disabled={!kinds.size} onClick={() => start(false)}>
+              起草选中 {kinds.size} 块
+            </Button>
+          </div>
+          <p className="ef-draft-note">
+            {previewFirst
+              ? "起草后先出逐块 diff 预览，勾选采纳才写入。"
+              : "起草期间你改过的块与「你改过」标记的块不会被覆盖；配合上方「先预览再写入」可逐块采纳。"}
+          </p>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 function ContextPanel({
   paper,
   activeSection,
@@ -697,7 +775,6 @@ function ContextPanel({
   const setReadingStatus = useField((s) => s.setReadingStatus);
   const runPrepareMeta = useField((s) => s.runPrepareMeta);
   const runRefreshLinks = useField((s) => s.runRefreshLinks);
-  const runDraftNotes = useField((s) => s.runDraftNotes);
   const retryMineru = useField((s) => s.retryMineru);
   const mineru = useField((s) => s.mineru);
   const cancelJob = useField((s) => s.cancelJob);
@@ -1219,14 +1296,7 @@ function ContextPanel({
             </div>
           ) : null}
           {lookupOutcome?.paperId === paper.id && !lookupOutcome.found ? <LookupRetryForm paper={paper} /> : null}
-          <Button
-            type="button"
-            disabled={!hasUsableProvider(settings) || Boolean(active.length)}
-            onClick={() => void runDraftNotes(paper.id)}
-          >
-            <Icon name="edit" />
-            起草阅读笔记
-          </Button>
+          <DraftNotesControls paper={paper} disabled={Boolean(active.length)} previewFirst={previewFirst} />
         </div>
         {active.map((job) => (
           <div key={job.id} className="ef-job-row">

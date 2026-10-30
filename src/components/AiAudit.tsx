@@ -242,3 +242,123 @@ export function MetaPreviewDialog() {
     </Dialog>
   );
 }
+
+/** 草稿 diff 正文的一行预览上限。 */
+const DRAFT_DIFF_CHARS = 140;
+
+function clampDraft(text: string): string {
+  const chars = [...text.replace(/\s+/g, " ").trim()];
+  return chars.length > DRAFT_DIFF_CHARS ? `${chars.slice(0, DRAFT_DIFF_CHARS).join("")}…` : chars.join("");
+}
+
+/**
+ * 笔记起草的逐块采纳（dialog="ai-note-preview"）：干跑起草后按块列出
+ * 「现有内容 → AI 草稿」diff，默认只勾选空块；逐块接受或全部放弃。
+ */
+export function NotePreviewDialog() {
+  const dialog = useField((s) => s.dialog);
+  const notePreview = useField((s) => s.notePreview);
+  const drafts = useField((s) => s.drafts);
+  const dismissNotePreview = useField((s) => s.dismissNotePreview);
+  const applyNotePreview = useField((s) => s.applyNotePreview);
+  const open = dialog === "ai-note-preview" && Boolean(notePreview);
+  const paperId = notePreview?.paperId ?? null;
+  const [checked, setChecked] = useState<Set<NoteKind>>(new Set());
+  const [busy, setBusy] = useState(false);
+
+  // 打开 / 换预览时重置勾选：默认只采纳「现在是空块（也无草稿）」的块——空块被填不覆盖任何手写。
+  useEffect(() => {
+    if (!open || !notePreview) return;
+    setBusy(false);
+    setChecked(
+      new Set(
+        notePreview.kinds.filter((kind) => {
+          const blockEmpty = !(notePreview.before[kind]?.content ?? "").trim();
+          const draftEmpty = !(drafts[notePreview.paperId]?.[kind] ?? "").trim();
+          return blockEmpty && draftEmpty && (notePreview.drafted[kind] ?? "").trim();
+        }),
+      ),
+    );
+  }, [open, notePreview, drafts]);
+
+  if (!notePreview || !paperId) return null;
+  const hasDraftDiff = notePreview.changes.length > 0;
+
+  return (
+    <Dialog
+      open={open}
+      title="草稿预览（逐块采纳）"
+      onClose={dismissNotePreview}
+      className="is-wide"
+      footer={
+        <>
+          <Button type="button" onClick={dismissNotePreview}>
+            全部放弃
+          </Button>
+          <Button
+            type="button"
+            variant="primary"
+            disabled={busy || !checked.size}
+            onClick={() => {
+              setBusy(true);
+              void applyNotePreview([...checked]).finally(() => setBusy(false));
+            }}
+          >
+            {busy ? "写入中…" : `采纳 ${checked.size} 块`}
+          </Button>
+        </>
+      }
+    >
+      <p>
+        《{notePreview.paperTitle}》· AI 已起草，还没有写库。逐块勾选要采纳的草稿；
+        未勾选与起草期间你再改过的块都不会被写入。默认只勾选空块。
+      </p>
+      {hasDraftDiff ? (
+        <ul className="ef-confirm-list ef-draft-list">
+          {notePreview.kinds.map((kind) => {
+            const change = notePreview.changes.find((item) => item.kind === kind);
+            const current = drafts[paperId]?.[kind] ?? notePreview.before[kind]?.content ?? "";
+            const drafted = notePreview.drafted[kind] ?? "";
+            const changed = Boolean(change) && drafted.trim() && drafted !== current.trim();
+            return (
+              <li key={kind} className={current.trim() ? "is-manual" : ""}>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={checked.has(kind)}
+                    disabled={!changed}
+                    onChange={(e) =>
+                      setChecked((prev) => {
+                        const next = new Set(prev);
+                        if (e.target.checked) next.add(kind);
+                        else next.delete(kind);
+                        return next;
+                      })
+                    }
+                  />
+                  <span className="ef-confirm-name">
+                    {NOTE_LABELS[kind].zh}
+                    <em className="ef-confirm-flag">{current.trim() ? "已有内容" : "空块"}</em>
+                  </span>
+                  <span className="ef-confirm-value ef-draft-diff">
+                    {changed ? (
+                      <>
+                        <del>{clampDraft(current) || "（空白）"}</del>
+                        <Icon name="right" />
+                        <ins>{clampDraft(drafted)}</ins>
+                      </>
+                    ) : (
+                      <span className="ef-draft-same">{drafted.trim() ? "草稿与当前内容相同" : "草稿为空"}</span>
+                    )}
+                  </span>
+                </label>
+              </li>
+            );
+          })}
+        </ul>
+      ) : (
+        <p>这次起草没有产生变化，无需采纳。</p>
+      )}
+    </Dialog>
+  );
+}
