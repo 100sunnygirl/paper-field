@@ -891,6 +891,8 @@ export const useField = create<FieldState>((set, get) => ({
   importPdfs: async (paths, onProgress, targetDomainId) => {
     const domainId = targetDomainId ?? get().selectedDomainId;
     if (!domainId) throw new Error("请先选择一个领域，再导入 PDF。");
+    // 从入库页发起的导入留在入库页（不自动切回领域视图丢失处理语境）。
+    const fromIntake = get().mode === "intake";
     const unique = [...new Set(paths.map((path) => path.trim()).filter(Boolean))];
     if (!unique.length) throw new Error("请选择至少一个 PDF");
     try {
@@ -916,16 +918,28 @@ export const useField = create<FieldState>((set, get) => ({
       if (created[0]) selectionEpoch += 1;
       set({
         selectedPaperId: created[0] ?? get().selectedPaperId,
-        mode: "field",
+        // 入库发起：留在入库页并选中新批次第一篇（列表里即定位）；现场发起：维持原跳转。
+        ...(fromIntake ? {} : { mode: "field" as const }),
       });
       await get().refresh();
       const skippedText = skippedCount ? `，跳过 ${skippedCount} 篇已在库中` : "";
       for (const f of failed) log.warn("store", `PDF 导入失败：${f.name}`, f.message);
+      // 入库语境下的可选动作：直接开始读第一篇（进入所属领域的阅读页）。
+      const readFirstAction = fromIntake && created[0]
+        ? {
+            label: "开始阅读第一篇",
+            run: () => {
+              void get()
+                .openPaperFulltext(created[0]!)
+                .catch((err) => get().setFlash({ tone: "error", text: `打开论文失败：${errText(err)}` }));
+            },
+          }
+        : undefined;
       if (failed.length) {
         get().setFlash({
           tone: "error",
           text: `已导入 ${created.length} 篇${skippedText}，${failed.length} 篇失败：${importFailureList(failed)}。${failed.length > 1 ? "完整失败列表见日志。" : ""}`,
-          action: {
+          action: readFirstAction ?? {
             label: failed.length > 1 ? `重试这 ${failed.length} 篇` : "重试",
             // Only the failed paths go back in; already-imported ones are not re-sent.
             run: () => {
@@ -950,14 +964,17 @@ export const useField = create<FieldState>((set, get) => ({
         get().setFlash({
           tone: "warn",
           text: `已导入 ${created.length} 篇${skippedText}。当前没有可用的 MinerU 解析源，论文已入库但未解析，可到设置页启用解析源。`,
-          action: { label: "去设置", run: () => get().openSystemCard("mineru") },
+          action: readFirstAction ?? { label: "去设置", run: () => get().openSystemCard("mineru") },
         });
         return;
       }
       if (!failed.length) {
         get().setFlash({
           tone: "ok",
-          text: `已导入 ${created.length} 篇${skippedText}，正在用${providerLabel(effective)}解析。`,
+          text: fromIntake
+            ? `已导入 ${created.length} 篇${skippedText}，已定位到本批第一篇，正在用${providerLabel(effective)}解析。`
+            : `已导入 ${created.length} 篇${skippedText}，正在用${providerLabel(effective)}解析。`,
+          action: readFirstAction,
         });
       }
       enqueueMineruBatch(mineruHost(), created, false);
