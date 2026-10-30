@@ -848,3 +848,43 @@ describe("ReadingStage · AI 判断附原文段落锚点", () => {
     expect(document.querySelector(".ef-note-text")!.textContent).toContain("（原文 §1.1）");
   });
 });
+
+describe("ReadingStage · AI 的事前展示（提供商/模型/回退）", () => {
+  function settingsWith(n: number) {
+    const labels = ["DeepSeek", "Kimi", "智谱 GLM", "OpenAI"];
+    return {
+      version: 2 as const,
+      usage: {},
+      providers: labels.slice(0, n).map((label, index) => ({
+        id: `p${index}`,
+        presetId: null,
+        label,
+        baseUrl: `https://api.example.com/v${index}`,
+        model: `model-${index}`,
+        enabled: true,
+        hasKey: true,
+        requiresKey: true,
+      })),
+    };
+  }
+
+  it("已配置时按钮上方显示「将用 + 首选（模型）+ 回退顺序」", () => {
+    useField.setState({ mode: "field", paper: paper({}), selectedPaperId: "p1", settings: settingsWith(3) });
+    renderStage();
+    const line = screen.getByText(/将用/);
+    expect(line.textContent).toContain("DeepSeek");
+    expect(line.textContent).toContain("model-0");
+    expect(line.textContent).toContain("失败时按设置顺序回退 Kimi、智谱 GLM");
+  });
+
+  it("只配一个提供商时不显示回退说明；未配置时不显示这一行", () => {
+    useField.setState({ mode: "field", paper: paper({}), selectedPaperId: "p1", settings: settingsWith(1) });
+    const { unmount } = renderStage();
+    expect(screen.getByText(/将用/).textContent).not.toContain("回退");
+    unmount();
+
+    useField.setState({ settings: { version: 2, usage: {}, providers: [] } });
+    renderStage();
+    expect(screen.queryByText(/将用/)).toBeNull();
+  });
+});

@@ -656,10 +656,12 @@ function JobCard({
   }, [highlighted]);
   const isMineru = job.type === "mineruParse";
   // AI 作业的去向：可用提供商的首选（失败时按设置页顺序回退）。
+  // 「计划使用」与 MinerU 的实际解析源区分：桌面端实际命中的提供商由 Rust 侧执行，
+  // 回退过程暂不回报前端（需后续 Rust 支持），故明标「计划」不冒充实况。
   const via = isMineru
     ? job.provider
     : llmChain.length
-      ? `${llmChain[0].label}${llmChain[0].model ? `（${llmChain[0].model}）` : ""}${
+      ? `计划使用 ${llmChain[0].label}${llmChain[0].model ? `（${llmChain[0].model}）` : ""}${
           llmChain.length > 1 ? ` · 失败时回退其余 ${llmChain.length - 1} 个` : ""
         }`
       : null;

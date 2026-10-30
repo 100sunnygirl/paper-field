@@ -56,6 +56,7 @@ import {
   type ReadingStatus,
 } from "../lib/types";
 import { hasUsableProvider } from "../lib/settings";
+import type { LlmSettings } from "../lib/types";
 import { arxivAbsUrl, arxivPdfUrl, doiUrl, normalizeArxivId, normalizeDoi, openExternal, safeHttpUrl } from "../lib/urls";
 import { formatDate, modLabel, pad2 } from "../lib/util";
 import { useField } from "../store";
@@ -676,6 +677,25 @@ function LookupRetryForm({ paper }: { paper: PaperDetail }) {
 }
 
 /**
+ * AI 动作的事前展示：发请求前就能看到将用哪个提供商/模型、失败时按什么顺序回退
+ * （与设置页「回退顺序」同源）。实际命中的提供商由桌面端执行，暂不回报前端。
+ */
+function AiChainPlan({ settings }: { settings: LlmSettings }) {
+  const chain = settings.providers.filter(
+    (provider) => provider.enabled && (!provider.requiresKey || provider.hasKey),
+  );
+  if (!chain.length) return null;
+  const primary = chain[0];
+  return (
+    <p className="ef-ai-chain">
+      将用 <b>{primary.label}</b>
+      {primary.model ? <span className="mono">（{primary.model}）</span> : null}
+      {chain.length > 1 ? `；失败时按设置顺序回退 ${chain.slice(1, 3).map((provider) => provider.label).join("、")}${chain.length > 3 ? ` 等 ${chain.length - 1} 个` : ""}` : ""}
+    </p>
+  );
+}
+
+/**
  * 起草阅读笔记的块级控制：展开后可只起草选中的笔记块（如只要总结），
  * 配合「先预览再写入」逐块 diff 采纳；不展开则按旧语义起草全部五块。
  */
@@ -1257,6 +1277,7 @@ function ContextPanel({
         ) : (
           <p>尚未配置 AI 服务，可到设置页配置。手动阅读与笔记不受影响。</p>
         )}
+        <AiChainPlan settings={settings} />
         <div className="ef-ai-buttons">
           <Button
             type="button"
