@@ -104,6 +104,17 @@ export const DEFAULT_ARCHIVE_VIEW: ArchiveView = {
 export type IntakeStage = "error" | "parsing" | "queued" | "pending" | "ready";
 export type IntakeStageFilter = IntakeStage | "all";
 
+/** 入库页的客户端组合筛选：领域 + 入库日期 + 解析源（批次 id 未落库，诚实不做）。 */
+export interface IntakeView {
+  /** null = 全部领域。 */
+  domainId: string | null;
+  period: "all" | "today" | "week" | "month";
+  /** "" = 全部解析源；值为 mineruProvider 原值（local/ssh/api）。 */
+  provider: string;
+}
+
+export const DEFAULT_INTAKE_VIEW: IntakeView = { domainId: null, period: "all", provider: "" };
+
 /** 归档视图偏好（记住上次筛选）的本机存储：开源档 + 客户端视图一起记，坏数据整包丢弃。 */
 const ARCHIVE_PREFS_KEY = "paper-field.archive-view";
 const ARCHIVE_SORT_VALUES: ReadonlySet<string> = new Set([
@@ -197,6 +208,9 @@ interface FieldState {
   /** 入库页的解析进度筛选（chips；失败默认置顶展示）。 */
   intakeStage: IntakeStageFilter;
   setIntakeStage: (value: IntakeStageFilter) => void;
+  /** 入库页的组合筛选（领域/日期/解析源）。 */
+  intakeView: IntakeView;
+  setIntakeView: (patch: Partial<IntakeView>) => void;
   /** 启动时恢复本机记住的上次归档筛选（init 内调用；domains 可选用于剔除已删除的领域）。 */
   applySavedArchiveView: (domains?: Domain[]) => void;
   settings: LlmSettings;
@@ -453,6 +467,7 @@ export const useField = create<FieldState>((set, get) => ({
   archiveFilter: "all",
   archiveView: DEFAULT_ARCHIVE_VIEW,
   intakeStage: "all",
+  intakeView: DEFAULT_INTAKE_VIEW,
   settings: { version: 2, providers: [], usage: {} },
   mineru: DEFAULT_MINERU,
   biblio: DEFAULT_BIBLIO,
@@ -839,6 +854,8 @@ export const useField = create<FieldState>((set, get) => ({
   },
 
   setIntakeStage: (value) => set({ intakeStage: value }),
+
+  setIntakeView: (patch) => set({ intakeView: { ...get().intakeView, ...patch } }),
 
   applySavedArchiveView: (domains) => {
     const prefs = loadArchivePrefs();

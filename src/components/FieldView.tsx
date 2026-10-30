@@ -17,7 +17,15 @@ import { classifyParseError, parseErrorSummary } from "../lib/parseErrors";
 import { deferredPaperIds, deferPaper, undeferPaper } from "../lib/deferredPapers";
 import { readNextAdd, readNextList, readNextMove, readNextRemove } from "../lib/readNext";
 import { pad2, shortcut } from "../lib/util";
-import { useField, type ArchiveSort, type ArchiveView, type IntakeStage, type IntakeStageFilter } from "../store";
+import {
+  DEFAULT_INTAKE_VIEW,
+  useField,
+  type ArchiveSort,
+  type ArchiveView,
+  type IntakeStage,
+  type IntakeStageFilter,
+  type IntakeView,
+} from "../store";
 import { useReadPulse } from "./useReadPulse";
 import { CheckSquare, PaperMatrix, PaperRow } from "./PaperMatrix";
 import { PaperSearch } from "./PaperSearch";
@@ -91,6 +99,44 @@ export function countTodayImported(items: PaperListItem[], now: Date = new Date(
       at.getDate() === now.getDate()
     );
   }).length;
+}
+
+const INTAKE_PERIODS: Array<{ value: IntakeView["period"]; label: string }> = [
+  { value: "all", label: "全部时间" },
+  { value: "today", label: "今天" },
+  { value: "week", label: "本周" },
+  { value: "month", label: "本月" },
+];
+
+const PROVIDER_LABELS: Record<string, string> = {
+  local: "本地 CLI",
+  ssh: "SSH 远程",
+  api: "官方 API",
+};
+
+/** 入库的组合筛选：领域 + 入库日期（本地自然日口径）+ 解析源（__none__ = 未记录来源）。 */
+export function filterIntakeItems(items: PaperListItem[], view: IntakeView, now: Date = new Date()): PaperListItem[] {
+  const day = (date: Date) => new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  const today = day(now);
+  const weekStart = today - ((new Date(now).getDay() + 6) % 7) * 86_400_000;
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+  return items.filter((paper) => {
+    if (view.domainId && paper.domainId !== view.domainId) return false;
+    if (view.provider === "__none__") {
+      if (paper.mineruProvider) return false;
+    } else if (view.provider && (paper.mineruProvider ?? "") !== view.provider) {
+      return false;
+    }
+    if (view.period !== "all") {
+      const at = new Date(paper.createdAt);
+      if (Number.isNaN(at.getTime())) return false;
+      const created = day(at);
+      if (view.period === "today" && created !== today) return false;
+      if (view.period === "week" && created < weekStart) return false;
+      if (view.period === "month" && created < monthStart) return false;
+    }
+    return true;
+  });
 }
 
 /**
@@ -262,6 +308,8 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
   const setArchiveView = useField((s) => s.setArchiveView);
   const intakeStage = useField((s) => s.intakeStage);
   const setIntakeStage = useField((s) => s.setIntakeStage);
+  const intakeView = useField((s) => s.intakeView);
+  const setIntakeView = useField((s) => s.setIntakeView);
   const cancelJob = useField((s) => s.cancelJob);
   const retryMineruPapers = useField((s) => s.retryMineruPapers);
   const retryMineru = useField((s) => s.retryMineru);
@@ -338,8 +386,11 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
   const intakeItems =
     mode === "intake"
       ? sortIntakeByStage(
-          intake.filter(
-            (p) => !deferredIds.includes(p.id) && (intakeStage === "all" || intakeStageOf(p) === intakeStage),
+          filterIntakeItems(
+            intake.filter(
+              (p) => !deferredIds.includes(p.id) && (intakeStage === "all" || intakeStageOf(p) === intakeStage),
+            ),
+            intakeView,
           ),
         )
       : [];
@@ -823,6 +874,65 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
               {item.value === "all" ? `全部 ${intake.length}` : `${item.label} ${intakeStageCounts.get(item.value) ?? 0}`}
             </Button>
           ))}
+        </div>
+      ) : null}
+
+      {mode === "intake" && intake.length ? (
+        <div className="ef-archive-tools" role="group" aria-label="入库组合筛选">
+          <label className="ef-tool-select">
+            <span>领域</span>
+            <select
+              aria-label="按领域筛选入库"
+              value={intakeView.domainId ?? ""}
+              onChange={(e) => setIntakeView({ domainId: e.target.value || null })}
+            >
+              <option value="">全部领域</option>
+              {domains.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="ef-tool-select">
+            <span>入库日期</span>
+            <select
+              aria-label="按入库日期筛选"
+              value={intakeView.period}
+              onChange={(e) => setIntakeView({ period: e.target.value as IntakeView["period"] })}
+            >
+              {INTAKE_PERIODS.map((item) => (
+                <option key={item.value} value={item.value}>
+                  {item.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="ef-tool-select">
+            <span>解析源</span>
+            <select
+              aria-label="按解析源筛选"
+              value={intakeView.provider}
+              onChange={(e) => setIntakeView({ provider: e.target.value })}
+            >
+              <option value="">全部解析源</option>
+              {[...new Set(intake.map((p) => p.mineruProvider ?? "").filter(Boolean))].map((provider) => (
+                <option key={provider} value={provider}>
+                  {PROVIDER_LABELS[provider] ?? provider}
+                </option>
+              ))}
+              {intake.some((p) => !p.mineruProvider) ? <option value="__none__">未记录来源</option> : null}
+            </select>
+          </label>
+          <Button
+            type="button"
+            size="sm"
+            variant="text"
+            title="清空领域 / 日期 / 解析源条件（保留解析状态分组）"
+            onClick={() => setIntakeView(DEFAULT_INTAKE_VIEW)}
+          >
+            清空条件
+          </Button>
         </div>
       ) : null}
 

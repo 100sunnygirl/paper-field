@@ -776,6 +776,66 @@ describe("PaperNav · 失败论文暂缓处理", () => {
   });
 });
 
+describe("PaperNav · 入库组合筛选（领域/日期/解析源）", () => {
+  function createdItem(id: string, createdAt: string, provider: string | null): PaperListItem {
+    return { ...intakeItem(id, "done"), createdAt, mineruProvider: provider };
+  }
+
+  const domains = [
+    { id: "d-1", name: "多模态", code: "MM-01", summary: null, sortOrder: 1, createdAt: "2024-01-01T00:00:00.000Z" },
+    { id: "d-2", name: "指令对齐", code: "IA-02", summary: null, sortOrder: 2, createdAt: "2024-01-01T00:00:00.000Z" },
+  ];
+
+  it("领域 / 日期 / 解析源组合筛选与一键清空", () => {
+    const now = new Date();
+    const p = (n: number) => String(n).padStart(2, "0");
+    const today = `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}T09:00:00.000`;
+    const lastWeek = `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate() - 10)}T09:00:00.000`;
+    useField.setState({
+      mode: "intake",
+      domains,
+      intake: [
+        { ...createdItem("a", today, "local"), domainId: "d-1" },
+        { ...createdItem("b", today, "api"), domainId: "d-2" },
+        createdItem("c", lastWeek, null),
+      ],
+    });
+    const { rerender } = render(<PaperNav />);
+    expect(document.querySelectorAll(".ef-row")).toHaveLength(3);
+
+    // d-1 有 a（今天）与 c（十天前）两篇。
+    fireEvent.change(screen.getByLabelText("按领域筛选入库"), { target: { value: "d-1" } });
+    rerender(<PaperNav />);
+    expect(document.querySelectorAll(".ef-row")).toHaveLength(2);
+
+    fireEvent.change(screen.getByLabelText("按入库日期筛选"), { target: { value: "today" } });
+    fireEvent.change(screen.getByLabelText("按领域筛选入库"), { target: { value: "" } });
+    fireEvent.change(screen.getByLabelText("按解析源筛选"), { target: { value: "local" } });
+    rerender(<PaperNav />);
+    // 今天 + 本地 CLI → 只剩 a（c 十天前导入且无来源记录）。
+    expect(document.querySelectorAll(".ef-row")).toHaveLength(1);
+
+    // 清空条件回到全量（解析状态分组保留）。
+    fireEvent.click(screen.getByRole("button", { name: "清空条件" }));
+    rerender(<PaperNav />);
+    expect(useField.getState().intakeView).toEqual({ domainId: null, period: "all", provider: "" });
+    expect(document.querySelectorAll(".ef-row")).toHaveLength(3);
+  });
+
+  it("解析源下拉含「未记录来源」并可筛选", () => {
+    useField.setState({
+      mode: "intake",
+      domains,
+      intake: [createdItem("a", "2026-01-01T00:00:00.000Z", "local"), createdItem("b", "2026-01-02T00:00:00.000Z", null)],
+    });
+    const { rerender } = render(<PaperNav />);
+    fireEvent.change(screen.getByLabelText("按解析源筛选"), { target: { value: "__none__" } });
+    rerender(<PaperNav />);
+    const titles = [...document.querySelectorAll(".ef-row h3")].map((n) => n.textContent);
+    expect(titles).toEqual(["论文 b"]);
+  });
+});
+
 describe("PaperNav · 领域计数不随搜索改写", () => {
   it("搜索过滤列表，阅读进度和本领域论文仍按未过滤领域计算", () => {
     const read = { ...intakeItem("a", null), readingStatus: "read" as const };
