@@ -5605,3 +5605,27 @@ mark.ef-ft-hit.is-current { background: var(--pf-signal); }
   color: var(--pf-ink);
   font-weight: 600;
 }
+
+/* 解析质量提示（解析全文顶部）：黄底弱化为纸面 + 左缘墨线，逐条一行。 */
+.ef-quality-note {
+  position: relative;
+  margin: 6px 0 12px;
+  padding: 10px 34px 10px 12px;
+  border: 1px solid var(--pf-divider);
+  border-left: var(--pf-marker) solid var(--pf-ink);
+  background: var(--pf-panel);
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-body);
+}
+.ef-quality-note p { margin: 0 0 4px; }
+.ef-quality-note p:last-child { margin-bottom: 0; }
+.ef-quality-note > button {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 2px;
+  border: 0;
+  background: none;
+  color: var(--pf-muted);
+  cursor: pointer;
+}

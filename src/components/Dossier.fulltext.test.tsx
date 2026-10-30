@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { repo } from "../lib/repo";
 import {
@@ -141,6 +141,29 @@ describe("ReadingStage · 重新解析的两版对照", () => {
     renderStage();
     expect(screen.queryByRole("note", { name: "新旧版本对照" })).toBeNull();
     expect(screen.queryByText(/正在重新解析/)).toBeNull();
+  });
+});
+
+describe("ReadingStage · 解析完成的质量提示", () => {
+  it("全文只有标题没有正文：给出疑似空页 / 正文过少提示，可关闭且本版不再出现", () => {
+    const sparse = "# 引言\n\n## 方法\n\n## 实验\n\n## 结论\n\n## 讨论\n\n## 局限\n\n## 展望\n\n一句正文。";
+    const p2 = { ...paper(), parsedMarkdown: sparse } as PaperDetail;
+    useField.setState({ mode: "field", paper: p2, selectedPaperId: "p1" });
+    renderStage();
+    const note = screen.getByRole("note", { name: "解析质量提示" });
+    expect(within(note).getByText(/没有正文，可能是空页/)).toBeInTheDocument();
+    expect(within(note).getByText(/只解析出部分页面/)).toBeInTheDocument();
+    fireEvent.click(within(note).getByRole("button", { name: "收起质量提示" }));
+    expect(screen.queryByRole("note", { name: "解析质量提示" })).toBeNull();
+    expect(localStorage.getItem(`paper-field.parse-quality-dismissed:p1:${sparse.length}`)).toBe("1");
+  });
+
+  it("正文充分且带表格公式的全文：不显示质量提示", () => {
+    const rich = "# 引言\n\n## 方法\n\n" + "一段足够长的正文内容。\n\n".repeat(15) + "| a | b |\n|---|---|\n| 1 | 2 |\n其中 $x^2$ 为公式。";
+    const p2 = { ...paper(), parsedMarkdown: rich } as PaperDetail;
+    useField.setState({ mode: "field", paper: p2, selectedPaperId: "p1" });
+    renderStage();
+    expect(screen.queryByRole("note", { name: "解析质量提示" })).toBeNull();
   });
 });
 

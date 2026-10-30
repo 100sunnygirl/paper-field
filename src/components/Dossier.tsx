@@ -36,6 +36,7 @@ import {
 } from "../lib/fulltext";
 import { onMarkdownClick, renderMarkdown } from "../lib/markdown";
 import { providerLabel } from "../lib/mineruPlan";
+import { checkParseQuality } from "../lib/parseQuality";
 import { clearReparseSnapshot, fulltextStats, getReparseRecord } from "../lib/reparse";
 import { repo } from "../lib/repo";
 import { isNoteHintDismissed, NOTE_HINT_QUESTIONS, setNoteHintDismissed } from "../lib/noteHints";
@@ -475,6 +476,35 @@ function FulltextDoc({
   onPick: (pick: FulltextSelection) => void;
 }) {
   const setNoteDraft = useField((s) => s.setNoteDraft);
+  const mineru = useField((s) => s.mineru);
+  // 解析完成的静态质量提示：空页 / 表格公式疑似丢失 / 以标题为主。只在首次看到这版全文时出现（可关闭，本机记忆该版本）。
+  const qualityKey = `paper-field.parse-quality-dismissed:${paper.id}:${[...paper.parsedMarkdown].length}`;
+  const [qualityDismissed, setQualityDismissed] = useState(() => {
+    try {
+      return localStorage.getItem(qualityKey) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const qualityWarnings = useMemo(
+    () =>
+      checkParseQuality(paper.parsedMarkdown, {
+        pageRange: mineru.pageRange,
+        enableFormula: mineru.api.enableFormula,
+        enableTable: mineru.api.enableTable,
+      }),
+    [paper.parsedMarkdown, mineru.pageRange, mineru.api.enableFormula, mineru.api.enableTable],
+  );
+  const shownWarnings = qualityDismissed ? [] : qualityWarnings;
+
+  function dismissQuality() {
+    setQualityDismissed(true);
+    try {
+      localStorage.setItem(qualityKey, "1");
+    } catch {
+      // 存不住就本次会话内不再出现。
+    }
+  }
   const setFlash = useField((s) => s.setFlash);
   const rootRef = useRef<HTMLDivElement>(null);
   const headings = useMemo(() => extractFulltextHeadings(paper.parsedMarkdown), [paper.parsedMarkdown]);
@@ -568,6 +598,21 @@ function FulltextDoc({
   return (
     <>
       <ReparseCompareNote paper={paper} />
+      {shownWarnings.length ? (
+        <div className="ef-quality-note" role="note" aria-label="解析质量提示">
+          {shownWarnings.map((warning) => (
+            <p key={warning.kind}>{warning.message}</p>
+          ))}
+          <button
+            type="button"
+            aria-label="收起质量提示"
+            title="收起（这版全文不再提示）"
+            onClick={dismissQuality}
+          >
+            <Icon name="close" />
+          </button>
+        </div>
+      ) : null}
       <div className="ef-ft-search" role="search">
         <Icon name="search" />
         <input
