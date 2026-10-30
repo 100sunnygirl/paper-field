@@ -1626,6 +1626,45 @@ export const repo = {
     await engine.execute("DELETE FROM app_meta WHERE key = ?", [`domain-trash:${id}`]);
   },
 
+  /** 合并预览：两个领域的论文数与同名论文（标题完全一致视为同一工作）。 */
+  async mergePreview(fromDomainId: string, intoDomainId: string): Promise<{
+    fromName: string;
+    intoName: string;
+    fromCount: number;
+    intoCount: number;
+    duplicates: Array<{ title: string }>;
+  } | null> {
+    const engine = await getEngine();
+    const domains = await engine.select<DomainRow>(
+      "SELECT * FROM domains WHERE id IN (?, ?)",
+      [fromDomainId, intoDomainId],
+    );
+    const from = domains.find((row) => row.id === fromDomainId);
+    const into = domains.find((row) => row.id === intoDomainId);
+    if (!from || !into) return null;
+    const fromTitles = await engine.select<{ title: string }>("SELECT title FROM papers WHERE domain_id = ?", [fromDomainId]);
+    const intoTitles = await engine.select<{ title: string }>("SELECT title FROM papers WHERE domain_id = ?", [intoDomainId]);
+    const intoSet = new Set(intoTitles.map((row) => row.title));
+    const duplicates = fromTitles.filter((row) => intoSet.has(row.title)).map((row) => ({ title: row.title }));
+    return {
+      fromName: from.name,
+      intoName: into.name,
+      fromCount: fromTitles.length,
+      intoCount: intoTitles.length,
+      duplicates,
+    };
+  },
+
+  /**
+   * 合并执行：A 域全部论文（含笔记、解析、作者关联）迁入 B 域后删除 A。
+   * 与 migrateDomainPapers 的差别：迁移前把在途作业清理由调用方负责，本方法只搬数据。
+   */
+  async mergeDomains(fromDomainId: string, intoDomainId: string): Promise<number> {
+    const moved = await this.migrateDomainPapers(fromDomainId, intoDomainId);
+    await this.deleteDomain(fromDomainId);
+    return moved;
+  },
+
   /** 迁移后删除：把整域论文改挂到目标领域（迁移前先取消在途作业由 store 层处理）。 */
   async migrateDomainPapers(fromDomainId: string, toDomainId: string): Promise<number> {
     const engine = await getEngine();

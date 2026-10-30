@@ -742,6 +742,11 @@ export function DomainPickerDialog() {
           </Button>
         ) : (
           <>
+            {!ordering ? (
+              <Button type="button" onClick={() => openDialog("merge-domain")}>
+                合并领域…
+              </Button>
+            ) : null}
             <Button
               type="button"
               aria-pressed={ordering}

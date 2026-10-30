@@ -5926,3 +5926,15 @@ mark.ef-ft-hit.is-current { background: var(--pf-signal); }
 .ef-trash-meta { flex: 1; font-size: var(--pf-fs-caption); color: var(--pf-secondary); }
 .ef-trash-actions { display: inline-flex; align-items: center; gap: 8px; }
 .ef-trash-warn { font-size: var(--pf-fs-caption); color: var(--pf-danger); }
+/* 合并领域对话框：来源/目标两列选择 + 预览。 */
+.ef-merge-selects { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.ef-merge-preview {
+  margin-top: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--pf-divider);
+  border-radius: var(--pf-radius);
+  background: var(--pf-surface);
+}
+.ef-merge-preview p { margin: 0 0 6px; }
+.ef-merge-dup-head { font-size: var(--pf-fs-caption); color: var(--pf-secondary); }
+.ef-merge-dups { margin: 4px 0 0; padding-left: 18px; font-size: var(--pf-fs-caption); color: var(--pf-secondary); }

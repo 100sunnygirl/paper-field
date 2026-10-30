@@ -128,6 +128,7 @@ interface FieldState {
     | "delete-checked"
     | "move-checked"
     | "tag-checked"
+    | "merge-domain"
     | "pick-domain"
     | "edit-paper"
     | null;
@@ -201,6 +202,16 @@ interface FieldState {
   deleteDomain: () => Promise<void>;
   /** 迁移后删除：把该领域全部论文移入目标领域，再删除空的旧领域。 */
   migrateDomainThenDelete: (toDomainId: string) => Promise<void>;
+  /** 领域合并预览：两边论文数与同名条目。 */
+  previewDomainMerge: (fromDomainId: string, intoDomainId: string) => Promise<{
+    fromName: string;
+    intoName: string;
+    fromCount: number;
+    intoCount: number;
+    duplicates: Array<{ title: string }>;
+  } | null>;
+  /** 合并执行：from 全部论文（含笔记/解析/作者）迁入 into，然后删除 from。 */
+  mergeDomains: (fromDomainId: string, intoDomainId: string) => Promise<void>;
   /** 领域回收站：30 天内删除的领域快照列表（设置页展示与恢复）。 */
   listTrashedDomains: () => Promise<Array<{ id: string; name: string; code: string; deletedAt: string; papers: number; daysLeft: number }>>;
   /** 领域回收站恢复：整域论文/笔记/作者/解析全文一并找回。 */
@@ -854,6 +865,39 @@ export const useField = create<FieldState>((set, get) => ({
       }
     } catch (err) {
       get().setFlash({ tone: "error", text: `删除领域失败：${errText(err)}，数据未改动。` });
+      throw err;
+    }
+  },
+
+  previewDomainMerge: async (fromDomainId, intoDomainId) => {
+    if (!fromDomainId || fromDomainId === intoDomainId) return null;
+    return repo.mergePreview(fromDomainId, intoDomainId);
+  },
+
+  mergeDomains: async (fromDomainId, intoDomainId) => {
+    if (!fromDomainId || fromDomainId === intoDomainId) return;
+    try {
+      // 与删除域同一口径：先取消在途作业，再整体迁移并删除来源域。
+      await forgetPapers(await repo.paperIdsInDomain(fromDomainId));
+      const moved = await repo.mergeDomains(fromDomainId, intoDomainId);
+      const domains = await repo.listDomains();
+      const target = domains.find((domain) => domain.id === intoDomainId);
+      selectionEpoch += 1;
+      const wasSelected = get().selectedDomainId === fromDomainId;
+      set({
+        domains,
+        dialog: null,
+        ...(wasSelected ? { selectedDomainId: intoDomainId, selectedPaperId: null, paper: null } : {}),
+      });
+      await get().refresh();
+      get().setFlash({
+        tone: "ok",
+        text: target
+          ? `已把 ${moved} 篇论文并入「${target.name}」，来源领域已删除。`
+          : `已并入 ${moved} 篇论文，来源领域已删除。`,
+      });
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `合并领域失败：${errText(err)}，数据未改动。` });
       throw err;
     }
   },

@@ -1119,3 +1119,31 @@ describe("领域回收站（app_meta 快照）", () => {
     await expect(repo.restoreTrashedDomain("d-none")).rejects.toThrow("回收站里没有这个领域");
   });
 });
+
+describe("领域合并（mergePreview / mergeDomains）", () => {
+  it("mergePreview 列出两边论文数与同名论文；mergeDomains 迁移并删除来源域", async () => {
+    const d1 = await makeDomain("MM-01");
+    const d2 = await makeDomain("AL-02");
+    await repo.createPaper({ domainId: d1, title: "Same" });
+    await repo.createPaper({ domainId: d1, title: "Only A" });
+    await repo.createPaper({ domainId: d2, title: "Same" });
+    await repo.createPaper({ domainId: d2, title: "Only B" });
+
+    const preview = await repo.mergePreview(d1, d2);
+    expect(preview?.fromCount).toBe(2);
+    expect(preview?.intoCount).toBe(2);
+    expect(preview?.duplicates).toEqual([{ title: "Same" }]);
+
+    const moved = await repo.mergeDomains(d1, d2);
+    expect(moved).toBe(2);
+    expect(await repo.getDomain(d1)).toBeNull();
+    // 同名论文合并后共存（预览里已提示，由用户自行处理）。
+    const papers = await repo.listPapers(d2);
+    expect(papers.map((p) => p.title).sort()).toEqual(["Only A", "Only B", "Same", "Same"]);
+  });
+
+  it("mergePreview 领域不存在时返回 null", async () => {
+    const d1 = await makeDomain();
+    expect(await repo.mergePreview(d1, "d-none")).toBeNull();
+  });
+});

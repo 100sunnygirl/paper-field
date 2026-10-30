@@ -11,6 +11,7 @@ import {
   PaperDialog,
   TagCheckedPapersDialog,
 } from "./components/Dialogs";
+import { MergeDomainDialog } from "./components/MergeDomainDialog";
 import { ReadingStage } from "./components/Dossier";
 import { PaperNav } from "./components/FieldView";
 import { JobsPanel } from "./components/JobsPanel";
@@ -288,6 +289,7 @@ export default function App() {
       <DeletePaperDialog />
       <DeleteCheckedPapersDialog />
       <TagCheckedPapersDialog />
+      <MergeDomainDialog />
       <EditPaperDialog />
       <ConfirmNotesDialog />
       <ConfirmMetaDialog />
