@@ -5,7 +5,7 @@ import { pickPdfFiles, pickPdfFolder } from "../lib/mineru";
 import { repo } from "../lib/repo";
 import { useField } from "../store";
 import { DeleteCheckedPapersDialog, DomainDialog, DomainPickerDialog, PaperDialog, TagCheckedPapersDialog } from "./Dialogs";
-import type { Domain, Paper } from "../lib/types";
+import type { Domain, DomainCensus, Paper } from "../lib/types";
 
 vi.mock("../lib/mineru", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/mineru")>();
@@ -24,6 +24,7 @@ vi.mock("../lib/repo", () => ({
     listIntake: vi.fn(async () => []),
     getPaper: vi.fn(async () => null),
     tagsOfPapers: vi.fn(async () => [] as Array<{ tag: string; count: number }>),
+    domainCensus: vi.fn(async () => [] as DomainCensus[]),
   },
 }));
 
@@ -841,5 +842,34 @@ describe("DomainDialog · 领域强调色", () => {
     fireEvent.click(within(group).getByRole("radio", { name: "默认" }));
     fireEvent.click(screen.getByRole("button", { name: "保存修改" }));
     expect(updateDomain).toHaveBeenCalledWith(expect.objectContaining({ accent: null }));
+  });
+});
+
+describe("DomainPickerDialog · 领域行显示论文数、已读进度与最近阅读", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    vi.mocked(repo.domainCensus).mockReset();
+  });
+
+  it("每行右侧显示总数、已读、在读与上次阅读日期", async () => {
+    vi.mocked(repo.domainCensus).mockResolvedValue([
+      { domainId: "d-1", total: 12, unread: 8, reading: 2, read: 2, lastReadAt: "2024-10-05T00:00:00.000Z", lastActivityAt: null, weekCount: 0 },
+      { domainId: "d-2", total: 5, unread: 5, reading: 0, read: 0, lastReadAt: null, lastActivityAt: null, weekCount: 0 },
+    ]);
+    useField.setState({ dialog: "pick-domain", domains: PICKER_DOMAINS, selectedDomainId: "d-1" });
+    render(<DomainPickerDialog />);
+    const row1 = document.querySelector('.ef-domain-option[data-index="0"]')!;
+    expect(await within(row1 as HTMLElement).findByText(/12 篇 · 已读 2 · 在读 2 · 上次阅读 2024\.10\.05/)).toBeInTheDocument();
+    const row2 = document.querySelector('.ef-domain-option[data-index="1"]')!;
+    expect(await within(row2 as HTMLElement).findByText(/5 篇 · 已读 0/)).toBeInTheDocument();
+  });
+
+  it("聚合读取失败时行内降级：只显示短码不显示统计", async () => {
+    vi.mocked(repo.domainCensus).mockRejectedValue(new Error("no engine"));
+    useField.setState({ dialog: "pick-domain", domains: PICKER_DOMAINS, selectedDomainId: "d-1" });
+    render(<DomainPickerDialog />);
+    await waitFor(() => expect(repo.domainCensus).toHaveBeenCalled());
+    expect(document.querySelector(".ef-domain-option-stats")).toBeNull();
+    expect(screen.getAllByText(/MM-01/).length).toBeGreaterThan(0);
   });
 });

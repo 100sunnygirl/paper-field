@@ -3,8 +3,8 @@ import { DOMAIN_ACCENTS } from "../lib/domainExtras";
 import { loadRecentDomains, orderDomainsByRecent } from "../lib/domainRecent";
 import { pickPdfFiles, pickPdfFolder } from "../lib/mineru";
 import { repo } from "../lib/repo";
-import type { Author, PaperDetail } from "../lib/types";
-import { isTauri } from "../lib/util";
+import type { Author, DomainCensus, PaperDetail } from "../lib/types";
+import { formatDate, isTauri } from "../lib/util";
 import { useField } from "../store";
 import { Button, Dialog, Field, Icon } from "./ui";
 
@@ -524,6 +524,24 @@ export function DomainPickerDialog() {
   const applyDomainOrder = useField((s) => s.applyDomainOrder);
   const [ordering, setOrdering] = useState(false);
   const [order, setOrder] = useState<string[]>([]);
+  // 每行右侧的论文数 / 已读进度 / 最近阅读：一次聚合查询，读不到时行内降级隐藏。
+  const [census, setCensus] = useState<Record<string, DomainCensus> | null>(null);
+
+  useEffect(() => {
+    if (!open || ordering) return;
+    let alive = true;
+    repo
+      .domainCensus()
+      .then((rows) => {
+        if (alive) setCensus(Object.fromEntries(rows.map((row) => [row.domainId, row])));
+      })
+      .catch(() => {
+        if (alive) setCensus(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [open, ordering]);
 
   useEffect(() => {
     if (!open) {
@@ -751,8 +769,19 @@ export function DomainPickerDialog() {
                 <small className="ef-domain-option-sum">{domain.summary}</small>
               ) : null}
             </span>
-            <span className="mono">
-              {domain.code} <Icon name="right" />
+            <span className="ef-domain-option-side">
+              {census?.[domain.id] ? (
+                <span className="ef-domain-option-stats mono">
+                  {census[domain.id].total} 篇 · 已读 {census[domain.id].read}
+                  {census[domain.id].reading ? ` · 在读 ${census[domain.id].reading}` : ""}
+                  {formatDate(census[domain.id].lastReadAt) !== "—"
+                    ? ` · 上次阅读 ${formatDate(census[domain.id].lastReadAt)}`
+                    : ""}
+                </span>
+              ) : null}
+              <span className="mono">
+                {domain.code} <Icon name="right" />
+              </span>
             </span>
           </button>
         ))}

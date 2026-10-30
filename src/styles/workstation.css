@@ -3906,6 +3906,18 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   color: var(--pf-muted);
   line-height: 1.6;
 }
+.ef-domain-option-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  flex: none;
+}
+.ef-domain-option-stats {
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-muted);
+  text-align: right;
+}
 .ef-domain-option .mono {
   display: inline-flex;
   align-items: center;
