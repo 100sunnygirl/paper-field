@@ -5629,3 +5629,21 @@ mark.ef-ft-hit.is-current { background: var(--pf-signal); }
   color: var(--pf-muted);
   cursor: pointer;
 }
+
+/* 重新解析对话框的单篇参数面板：与导入预检同底色的一个分组。 */
+.ef-reparse-params {
+  margin: 10px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--pf-divider);
+  background: var(--pf-panel);
+  display: grid;
+  gap: 10px;
+}
+.ef-reparse-params label {
+  display: grid;
+  gap: 4px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-body);
+}
+.ef-reparse-params label > span { color: var(--pf-ink); font-weight: 600; }
+.ef-reparse-params .ef-advanced-hint { margin: 0; }

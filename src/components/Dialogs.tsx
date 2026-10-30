@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { buildMergedMarkdownExport, browserMultiExportFilename, writeExportFiles } from "../lib/export";
-import { pickPdfFiles, pickPdfFolder, type MineruSettingsV2 } from "../lib/mineru";
+import { pickPdfFiles, pickPdfFolder, type MineruProviderKind, type MineruSettingsV2 } from "../lib/mineru";
 import { mineruPreflight } from "../lib/mineruPreflight";
 import { providerLabel } from "../lib/mineruPlan";
 import { fulltextStats } from "../lib/reparse";
@@ -674,7 +674,7 @@ export function ConfirmNotesDialog() {
 export function ConfirmReparseDialog() {
   const dialog = useField((s) => s.dialog);
   const closeDialog = useField((s) => s.closeDialog);
-  const confirmReparse = useField((s) => s.confirmReparse);
+  const submitMineruRetry = useField((s) => s.submitMineruRetry);
   const effectiveProvider = useField((s) => s.effectiveProvider);
   const mineru = useField((s) => s.mineru);
   const setFlash = useField((s) => s.setFlash);
@@ -682,6 +682,15 @@ export function ConfirmReparseDialog() {
   const open = dialog === "confirm-reparse" && Boolean(paper);
   const [busy, setBusy] = useState(false);
   const [exporting, setExporting] = useState(false);
+  // 单篇参数覆盖（只作用本轮，不改全局默认）：
+  const [providerChoice, setProviderChoice] = useState<"auto" | MineruProviderKind>("auto");
+  const [pageRangeChoice, setPageRangeChoice] = useState<string>("");
+  useEffect(() => {
+    if (open) {
+      setProviderChoice("auto");
+      setPageRangeChoice("");
+    }
+  }, [open]);
   useCloseWhenMissing(dialog === "confirm-reparse", missing);
 
   const stats = paper?.parsedMarkdown ? fulltextStats(paper.parsedMarkdown) : null;
@@ -709,7 +718,11 @@ export function ConfirmReparseDialog() {
     if (!paper || busy) return;
     setBusy(true);
     try {
-      await confirmReparse();
+      await submitMineruRetry(paper.id, {
+        provider: providerChoice === "auto" ? undefined : providerChoice,
+        // 页码范围留空 = 沿用全局设置；填了就只作用本轮。
+        ...(pageRangeChoice.trim() ? { pageRange: pageRangeChoice.trim() } : {}),
+      });
     } finally {
       setBusy(false);
     }
@@ -738,10 +751,48 @@ export function ConfirmReparseDialog() {
         <strong>{paper?.titleZh || paper?.title}</strong>
       </p>
       <p>
-        重新解析是<b>重新提交</b>，不是续跑旧任务：本轮解析进度会作废，按回退顺序重新选源提交
-        （当前将用：<b>{effectiveProvider ? providerLabel(effectiveProvider) : "自动选择（按回退顺序探测）"}</b>
-        {mineru.order.length > 1 && !effectiveProvider ? "，全部不可用时提示失败" : ""}）。
+        重新解析是<b>重新提交</b>，不是续跑旧任务：本轮解析进度会作废，
+        {providerChoice === "auto" ? (
+          <>
+            按回退顺序重新选源提交（当前将用：
+            <b>{effectiveProvider ? providerLabel(effectiveProvider) : "自动选择（按回退顺序探测）"}</b>
+            {mineru.order.length > 1 && !effectiveProvider ? "，全部不可用时提示失败" : ""}）。
+          </>
+        ) : (
+          <>
+            本轮指定用 <b>{providerLabel(providerChoice)}</b> 提交（一次性覆盖，不改全局默认；失败不自动回退）。
+          </>
+        )}
       </p>
+      {/* 单篇参数面板：临时换源 / 缩页码范围，长论文可先解析前 20 页试效果。 */}
+      <div className="ef-reparse-params" role="group" aria-label="单篇解析参数（只作用本轮）">
+        <label>
+          <span>解析源</span>
+          <select
+            aria-label="单篇解析源"
+            value={providerChoice}
+            onChange={(e) => setProviderChoice(e.target.value as "auto" | MineruProviderKind)}
+          >
+            <option value="auto">自动选择（按回退顺序）</option>
+            {mineru.local.enabled ? <option value="local">本地 CLI</option> : null}
+            {mineru.ssh.enabled ? <option value="ssh">SSH 远程</option> : null}
+            {mineru.api.hasToken ? <option value="api">官方 API</option> : null}
+          </select>
+        </label>
+        <label>
+          <span>页码范围（留空用全局「{mineru.pageRange || "all"}」）</span>
+          <input
+            aria-label="单篇页码范围"
+            value={pageRangeChoice}
+            placeholder={mineru.pageRange || "all"}
+            onChange={(e) => setPageRangeChoice(e.target.value)}
+          />
+        </label>
+        <p className="ef-advanced-hint">
+          模型版本 / 语言 / 公式表格开关是官方 API 的全局设置，本轮沿用；页码范围写法如 1-3,5 或 all。
+          页码范围覆盖暂只在官方 API 提交时生效（本地 / SSH 的范围由取回端按全局设置截取）。
+        </p>
+      </div>
       {stats ? (
         <p>
           当前已有全文：约 {stats.chars.toLocaleString("zh-Hans-CN")} 字 · {stats.sections} 个小节

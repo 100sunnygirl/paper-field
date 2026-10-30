@@ -513,15 +513,15 @@ describe("ConfirmReparseDialog · 重新解析已有全文的确认", () => {
     } as unknown as PaperDetail;
   }
 
-  it("说明重新提交语义、将用哪个源与旧版概览；确认走 confirmReparse，取消关闭", async () => {
-    const confirmReparse = vi.fn(async () => undefined);
+  it("说明重新提交语义、将用哪个源与旧版概览；确认走 submitMineruRetry，取消关闭", async () => {
+    const submitMineruRetry = vi.fn(async () => undefined);
     const closeDialog = vi.fn();
     useField.setState({
       dialog: "confirm-reparse",
       dialogPaperId: "p1",
       paper: parsedDetail(),
       effectiveProvider: "local",
-      confirmReparse,
+      submitMineruRetry,
       closeDialog,
     });
     render(<ConfirmReparseDialog />);
@@ -535,9 +535,34 @@ describe("ConfirmReparseDialog · 重新解析已有全文的确认", () => {
     expect(screen.getByRole("button", { name: "先导出全文" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "确认重新解析" }));
-    await waitFor(() => expect(confirmReparse).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(submitMineruRetry).toHaveBeenCalledWith("p1", { provider: undefined }));
     fireEvent.click(screen.getByRole("button", { name: "取消" }));
     expect(closeDialog).toHaveBeenCalled();
+  });
+
+  it("单篇参数面板：指定源与页码范围随确认提交（一次性覆盖）", async () => {
+    const submitMineruRetry = vi.fn(async () => undefined);
+    useField.setState({
+      dialog: "confirm-reparse",
+      dialogPaperId: "p1",
+      paper: parsedDetail(),
+      effectiveProvider: "local",
+      submitMineruRetry,
+      mineru: {
+        ...useField.getState().mineru,
+        local: { enabled: true, socketPath: "~/.mineru/doclib.sock" },
+        ssh: { ...useField.getState().mineru.ssh, enabled: true },
+        api: { ...useField.getState().mineru.api, hasToken: true },
+        configured: true,
+      },
+    });
+    render(<ConfirmReparseDialog />);
+    fireEvent.change(screen.getByLabelText("单篇解析源"), { target: { value: "api" } });
+    fireEvent.change(screen.getByLabelText("单篇页码范围"), { target: { value: "1-20" } });
+    fireEvent.click(screen.getByRole("button", { name: "确认重新解析" }));
+    await waitFor(() => expect(submitMineruRetry).toHaveBeenCalledWith("p1", { provider: "api", pageRange: "1-20" }));
+    // 语义段落随选择切换为「本轮指定用」
+    expect(screen.getByText(/重新解析是/).textContent).toContain("本轮指定用 官方 API");
   });
 
   it("没有生效源时说明将按回退顺序自动选择", () => {

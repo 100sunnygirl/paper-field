@@ -40,6 +40,13 @@ interface Host {
   showFailures?: () => void;
   /** 熔断建议卡的直达：打开设置页 MinerU 卡（降档 / 换源在这里改）。 */
   openSettings?: () => void;
+  /**
+   * 单篇覆盖的指定源（重新解析参数面板）：设置后提交不按回退顺序自动选源，
+   * 而是把这个源传给提交端（本轮一次性，不改全局默认）。
+   */
+  submitProvider?: MineruProviderKind;
+  /** 单篇覆盖的页码范围：本轮提交 / 取回全文按这个范围（留空沿用全局 pageRange）。 */
+  submitPageRange?: string;
 }
 
 /**
@@ -322,6 +329,8 @@ async function processOne(
   paperId: string,
   force: boolean,
   batchId?: number,
+  /** 批次级 settings 视图（含单篇页码覆盖）；缺省读 host.mineru()。 */
+  batchSettings?: MineruSettingsV2,
 ): Promise<BatchItemResult> {
   const paper = await repo.getPaper(paperId);
   if (!paper?.pdfPath) return "skip";
@@ -330,7 +339,7 @@ async function processOne(
     enqueueMeta(async () => void (await autoPrepare(host, paperId)));
     return "ok";
   }
-  const settings = host.mineru();
+  const settings = batchSettings ?? host.mineru();
   if (!settings.configured) return "skip";
   // 强制重解析且已有全文：先把旧版快照存到本机，新结果完成后界面给两版对照
   //（失败 / 取消则作废快照——旧版仍是当前全文，无需对照）。
@@ -379,7 +388,7 @@ async function processOne(
       await host.refresh();
       if (!canResume) {
         await checkpoint(ctx, batchId);
-        const submitted = await mineruSubmit(paperId, paper.pdfPath!, force);
+        const submitted = await mineruSubmit(paperId, paper.pdfPath!, force, host.submitProvider);
         await checkpoint(ctx, batchId);
         docRef = submitted.shortId;
         parseIds = submitted.parseIds;
@@ -537,10 +546,13 @@ export async function runMineruBatch(
   batchId?: number,
 ): Promise<void> {
   // 守卫语义：order 中无任何启用源 → 静默返回（入口 importPdfs/retryMineru 已给出指引）。
-  if (!host.mineru().configured) {
+  const baseSettings = host.mineru();
+  if (!baseSettings.configured) {
     if (batchId !== undefined) discardBatch(batchId);
     return;
   }
+  // 单篇页码范围覆盖：只作用这一轮提交（本轮 processOne 读到的 settings 用覆盖后的值）。
+  const settings = host.submitPageRange ? { ...baseSettings, pageRange: host.submitPageRange } : baseSettings;
   const id = batchId ?? queueBatch("mineru", paperIds);
   startBatch(id);
   // 本机批次记录：清单、逐篇结果与起止时间（localStorage，重启可回看；见 jobJournal.ts 的口径说明）。
@@ -587,7 +599,7 @@ export async function runMineruBatch(
         continue;
       }
       beginBatchItem(id, paperId);
-      const result = await processOne(host, paperId, force, id);
+      const result = await processOne(host, paperId, force, id, settings);
       endBatchItem(id, paperId, result);
       journalItem(journalId, paperId, result);
       if (result === "ok") {

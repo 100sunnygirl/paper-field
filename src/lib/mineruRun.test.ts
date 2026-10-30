@@ -450,7 +450,7 @@ describe("恢复仅同源（I4d）", () => {
     await runMineruBatch(host, [id], true);
 
     expect(mineruSubmit).toHaveBeenCalledTimes(1);
-    expect(mineruSubmit).toHaveBeenCalledWith(id, expect.stringContaining(".pdf"), true);
+    expect(mineruSubmit).toHaveBeenCalledWith(id, expect.stringContaining(".pdf"), true, undefined);
     expect(mineruParseStatuses).toHaveBeenCalledTimes(1);
     expect(mineruParseStatuses).toHaveBeenCalledWith("api", "batch-2", [], id, FP);
     expect(await paperOf(id)).toMatchObject({
@@ -574,7 +574,7 @@ describe("凭据指纹续跑（M6）", () => {
 
     // queued 没有提交记录，只能重新提交（不带 force）；在途的两篇同源续轮询。
     expect(mineruSubmit).toHaveBeenCalledTimes(1);
-    expect(mineruSubmit).toHaveBeenCalledWith(queued, expect.any(String), false);
+    expect(mineruSubmit).toHaveBeenCalledWith(queued, expect.any(String), false, undefined);
     expect(mineruParseStatuses).toHaveBeenCalledWith("ssh", "doc-s", ["1"], submitted, FP);
     expect(mineruParseStatuses).toHaveBeenCalledWith("api", "doc-p", [], parsing, FP);
     expect(await paperOf(queued)).toMatchObject({ mineruStatus: "done", parsedMarkdown: "# doc-q" });

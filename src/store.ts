@@ -207,7 +207,7 @@ interface FieldState {
   /** 「确认重新解析」放行：直接走取消旧轮 → 重置 → 强制重提（不再二次确认）。 */
   confirmReparse: () => Promise<void>;
   /** retryMineru 的实际提交段：探测可用源后取消旧轮、重置状态、按回退顺序重提。 */
-  submitMineruRetry: (paperId: string) => Promise<void>;
+  submitMineruRetry: (paperId: string, overrides?: { provider?: "local" | "ssh" | "api"; pageRange?: string }) => Promise<void>;
   /** INTAKE 页批量重试：把全部解析失败（error）论文重新提交给 MinerU。 */
   retryFailedMineru: () => Promise<void>;
   /** 作业面板批量重试：把指定论文重新提交给 MinerU（一次事务重置、一个批次入链）。 */
@@ -936,31 +936,45 @@ export const useField = create<FieldState>((set, get) => ({
     await get().submitMineruRetry(paperId);
   },
 
-  submitMineruRetry: async (paperId) => {
-    if (!get().mineru.configured) {
-      get().setFlash({
-        tone: "warn",
-        text: "尚未启用任何 MinerU 解析源。可到设置页配置本地 / SSH / 官方 API。",
-        action: { label: "去设置", run: () => get().openSystemCard("mineru") },
-      });
-      return;
-    }
-    // 探测结果可能过期：无生效源时先重探一次再下结论。
-    if (!get().effectiveProvider) await get().probeMineru();
-    if (!get().effectiveProvider) {
-      const detail = summarizeHealths(get().mineru.order, get().mineruHealth);
-      get().setFlash({
-        tone: "warn",
-        text: detail
-          ? `当前没有可用的 MinerU 解析源（${detail}）。可到设置页查看失败原因。`
-          : "当前没有可用的 MinerU 解析源（本地 / SSH / 官方 API 均未通过探测），可到设置页配置或查看失败原因。",
-        action: { label: "去设置", run: () => get().openSystemCard("mineru") },
-      });
-      return;
+  submitMineruRetry: async (paperId, overrides) => {
+    // 单篇覆盖：临时指定源（本轮一次性，不改全局默认）。指定源时跳过回退探测，
+    // 但该源必须已启用；页码范围覆盖同样只作用本轮（沿用全局档位：桌面端按设置取值）。
+    let providerOverride: "local" | "ssh" | "api" | undefined;
+    if (overrides?.provider) {
+      const mineru = get().mineru;
+      const enabled =
+        overrides.provider === "local"
+          ? mineru.local.enabled
+          : overrides.provider === "ssh"
+            ? mineru.ssh.enabled
+            : mineru.api.hasToken;
+      if (!enabled) {
+        get().setFlash({
+          tone: "warn",
+          text: `所选解析源（${providerLabel(overrides.provider)}）未启用：可先到设置页启用，或改用「自动选择」。`,
+          action: { label: "去设置", run: () => get().openSystemCard("mineru") },
+        });
+        return;
+      }
+      providerOverride = overrides.provider;
+    } else {
+      // 探测结果可能过期：无生效源时先重探一次再下结论。
+      if (!get().effectiveProvider) await get().probeMineru();
+      if (!get().effectiveProvider) {
+        const detail = summarizeHealths(get().mineru.order, get().mineruHealth);
+        get().setFlash({
+          tone: "warn",
+          text: detail
+            ? `当前没有可用的 MinerU 解析源（${detail}）。可到设置页查看失败原因。`
+            : "当前没有可用的 MinerU 解析源（本地 / SSH / 官方 API 均未通过探测），可到设置页配置或查看失败原因。",
+          action: { label: "去设置", run: () => get().openSystemCard("mineru") },
+        });
+        return;
+      }
     }
     try {
       // 跨源切换唯一入口：先取消旧的一轮，再重置 docRef/parseIds/provider 并收回所有权，
-      // 以 force 重新提交，由后端按回退顺序重选源。旧的一轮之后写什么都不生效。
+      // 以 force 重新提交（覆盖源时直接指定 provider，单篇一次性）。旧的一轮之后写什么都不生效。
       // 重置会清掉 mineru_provider：有旧全文时先把「旧版 + 上次用的源」快照存到本机，
       // 新结果完成后界面给两版对照（mineruRun 完成时补新版权重，失败时作废快照）。
       const before = await repo.getPaper(paperId);
@@ -971,13 +985,24 @@ export const useField = create<FieldState>((set, get) => ({
       await cancelParses([paperId]);
       await repo.resetMineru([paperId]);
       await get().refresh();
+      const via = providerOverride ? `（指定${providerLabel(providerOverride)}）` : "";
       get().setFlash({
         tone: "ok",
         text: hadFulltext
-          ? "已重新提交解析。完成后解析全文顶部可对照新旧两版。"
-          : "已将这篇论文发送到 MinerU 解析。",
+          ? `已重新提交解析${via}。完成后解析全文顶部可对照新旧两版。`
+          : `已将这篇论文发送到 MinerU 解析${via}。`,
       });
-      enqueueMineruBatch(mineruHost(), [paperId], true);
+      enqueueMineruBatch(
+        providerOverride || overrides?.pageRange
+          ? {
+              ...mineruHost(),
+              ...(providerOverride ? { submitProvider: providerOverride } : {}),
+              ...(overrides?.pageRange ? { submitPageRange: overrides.pageRange } : {}),
+            }
+          : mineruHost(),
+        [paperId],
+        true,
+      );
     } catch (err) {
       get().setFlash({ tone: "error", text: `重新解析失败：${errText(err)}，数据未改动。` });
       throw err;
