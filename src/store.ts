@@ -276,6 +276,8 @@ interface FieldState {
   saveMineruSettings: (input: MineruSaveInput, options?: { deferJobs?: boolean }) => Promise<void>;
   saveBiblioSettings: (input: BiblioSaveInput) => Promise<void>;
   probeMineru: () => Promise<ProviderHealth[]>;
+  /** 设置页测试成功后的「用一篇 PDF 试解析」：取最早一篇待解析论文单独提交。 */
+  tryParseOnePaper: () => Promise<void>;
   /** 显式启动被暂存的自动补全；返回待补全篇数（读不到为 null）。 */
   startMetaBackfill: () => Promise<number | null>;
   /** 显式续跑被暂存的解析；返回待解析篇数（读不到为 null）。 */
@@ -1553,6 +1555,21 @@ export const useField = create<FieldState>((set, get) => ({
     } finally {
       set({ mineruProbing: false });
     }
+  },
+
+  tryParseOnePaper: async () => {
+    let ids: string[] = [];
+    try {
+      ids = await repo.listPendingMineru();
+    } catch {
+      ids = [];
+    }
+    if (!ids.length) {
+      get().setFlash({ tone: "warn", text: "没有待解析的论文。可先导入一篇 PDF（⌘N），再回来试解析。" });
+      return;
+    }
+    // 只提交最早的一篇：试解析的目的是验证链路，不给整批压力。
+    await get().retryMineruPapers([ids[0]]);
   },
 
   startMetaBackfill: async () => {

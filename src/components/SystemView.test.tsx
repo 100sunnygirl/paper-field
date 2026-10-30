@@ -11,6 +11,7 @@ vi.mock("../lib/repo", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/repo")>();
   return { repo: { ...actual.repo, pdfCount: vi.fn(async () => { throw new Error("no engine in jsdom"); }) } };
 });
+import { repo } from "../lib/repo";
 import { SystemView } from "./SystemView";
 import * as mineruModule from "../lib/mineru";
 import * as updater from "../lib/updater";
@@ -173,6 +174,70 @@ describe("SystemView · MinerU 三源卡片", () => {
     });
     render(<SystemView />);
     expect(screen.getByText(/doclib 可达/)).toHaveTextContent("15ms");
+  });
+});
+
+describe("SystemView · MinerU 一键自检与试解析引导", () => {
+  beforeEach(() => {
+    useField.setState(useField.getInitialState(), true);
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("一键自检逐个测试已启用的源并汇总跳过数", async () => {
+    useField.setState({ mineru: mineruState(), effectiveProvider: "local" });
+    const spy = vi.spyOn(mineruModule, "testMineru").mockResolvedValue("连接正常");
+    render(<SystemView />);
+    fireEvent.click(screen.getByRole("button", { name: "一键自检" }));
+    await waitFor(() => expect(spy).toHaveBeenCalledTimes(3));
+    for (const provider of ["local", "ssh", "api"]) {
+      expect(spy).toHaveBeenCalledWith(provider);
+    }
+    expect(await screen.findByText(/三个源都已逐个测试/)).toBeInTheDocument();
+    spy.mockRestore();
+  });
+
+  it("未启用任何源：自检给配置指引而不是空转", async () => {
+    useField.setState({ mineru: mineruState({ configured: false, local: { enabled: false, socketPath: "~/.mineru/doclib.sock" }, ssh: { ...DEFAULT_MINERU.ssh }, api: { ...DEFAULT_MINERU.api } }) });
+    render(<SystemView />);
+    fireEvent.click(screen.getByRole("button", { name: "一键自检" }));
+    expect(await screen.findByText(/尚未启用任何解析源：先在下方勾选/)).toBeInTheDocument();
+  });
+
+  it("测试失败时在卡片上给出修复建议", async () => {
+    useField.setState({ mineru: mineruState(), effectiveProvider: "local" });
+    const spy = vi.spyOn(mineruModule, "testMineru").mockRejectedValue(new Error("Token 无效或已过期"));
+    render(<SystemView />);
+    const apiCard = screen.getByRole("region", { name: "官方 API" });
+    fireEvent.click(within(apiCard).getByRole("button", { name: "测试连接" }));
+    expect(await within(apiCard).findByText(/建议：到 mineru\.net 重新获取 Token/)).toBeInTheDocument();
+    spy.mockRestore();
+  });
+
+  it("测试成功后提供「用一篇 PDF 试解析」，点击提交最早一篇", async () => {
+    const saveMineruSettings = vi.fn(async (_input: MineruSaveInput, _options?: { deferJobs?: boolean }) => undefined);
+    useField.setState({
+      mineru: mineruState(),
+      effectiveProvider: "local",
+      saveMineruSettings,
+      tryParseOnePaper: vi.fn(async () => undefined),
+    });
+    const listPendingMineru = vi.spyOn(repo, "listPendingMineru").mockResolvedValue(["p-earliest", "p-later"]);
+    vi.spyOn(mineruModule, "testMineru").mockResolvedValue("连接正常");
+    render(<SystemView />);
+    // 与既有 deferJobs 流程一致：先改脏一个字段（测试连接会先落盘），成功后给试解析引导。
+    const ssh = screen.getByRole("region", { name: "SSH 远程" });
+    fireEvent.click(within(ssh).getByRole("button", { name: "高级" }));
+    fireEvent.change(within(ssh).getByLabelText("主机"), { target: { value: "new-imac" } });
+    fireEvent.click(within(ssh).getByRole("button", { name: "测试连接" }));
+    const block = screen.getByRole("heading", { level: 3, name: "MinerU 解析源" }).closest("article") as HTMLElement;
+    expect(await within(block).findByText(/未自动续跑解析/)).toBeInTheDocument();
+    fireEvent.click(within(block).getByRole("button", { name: "用一篇 PDF 试解析" }));
+    await waitFor(() => expect(listPendingMineru).toHaveBeenCalled());
+    expect(useField.getState().tryParseOnePaper).toHaveBeenCalledTimes(1);
   });
 });
 

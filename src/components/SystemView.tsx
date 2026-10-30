@@ -9,7 +9,7 @@ import {
   type MineruTier,
   type ProviderHealth,
 } from "../lib/mineru";
-import { providerLabel, summarizeHealths } from "../lib/mineruPlan";
+import { providerLabel, mineruFixHint, summarizeHealths } from "../lib/mineruPlan";
 import {
   hasUsableProvider,
   LLM_PRESETS,
@@ -1832,6 +1832,12 @@ function MineruSettings({ focused }: { focused: boolean }) {
   // 「测试连接」保存了配置但不静默续跑解析；测试通过后提供显式续跑入口。
   const [deferredResume, setDeferredResume] = useState(false);
   const [pendingParseCount, setPendingParseCount] = useState<number | null>(null);
+  // 「一键自检」：逐个测试已启用的源（复用单源测试连接，含脏表单先落盘的语义）。
+  const [selfTesting, setSelfTesting] = useState(false);
+  const [selfTestNote, setSelfTestNote] = useState<string | null>(null);
+  // 测试成功后的「用一篇 PDF 试解析」引导：待解析篇数（读不到为 null）。
+  const tryParseOnePaper = useField((s) => s.tryParseOnePaper);
+  const [tryParseCount, setTryParseCount] = useState<number | null | undefined>(undefined);
 
   function resetFromSaved(): void {
     writeSettingsDraft(MINERU_DRAFT_KEY, null);
@@ -2006,7 +2012,12 @@ function MineruSettings({ focused }: { focused: boolean }) {
           .catch(() => setPendingParseCount(null));
       }
     } catch (err) {
-      setTestResults((prev) => ({ ...prev, [provider]: { tone: "error", text: errText(err) } }));
+      const text = errText(err);
+      const hint = mineruFixHint(text);
+      setTestResults((prev) => ({
+        ...prev,
+        [provider]: { tone: "error", text: hint ? `${text}。建议：${hint}` : text },
+      }));
     } finally {
       setTesting(null);
     }
@@ -2018,6 +2029,31 @@ function MineruSettings({ focused }: { focused: boolean }) {
       setDeferredResume(false);
     } catch (err) {
       setMessage({ tone: "error", text: `续跑解析失败：${errText(err)}。` });
+    }
+  }
+
+  /** 一键自检：逐个测试已启用的源（未启用的跳过并说明），结果与修复建议就地展示。 */
+  async function selfCheck() {
+    if (selfTesting) return;
+    setSelfTesting(true);
+    setSelfTestNote(null);
+    setMessage(null);
+    try {
+      const targets: MineruProviderKind[] = [];
+      if (localEnabled) targets.push("local");
+      if (sshEnabled) targets.push("ssh");
+      if (saved.api.hasToken || apiToken.trim()) targets.push("api");
+      if (!targets.length) {
+        setSelfTestNote("尚未启用任何解析源：先在下方勾选本地 CLI / 配置 SSH / 填入官方 API Token。");
+        return;
+      }
+      for (const provider of targets) await testProvider(provider);
+      const skipped = 3 - targets.length;
+      setSelfTestNote(
+        skipped ? `已测试 ${targets.length} 个启用的源；未启用的 ${skipped} 个跳过。` : "三个源都已逐个测试。",
+      );
+    } finally {
+      setSelfTesting(false);
     }
   }
 
@@ -2133,7 +2169,39 @@ function MineruSettings({ focused }: { focused: boolean }) {
         <Button type="button" size="sm" disabled={probingAny} onClick={() => void reprobe()}>
           {probingAny ? "探测中…" : "重新探测全部"}
         </Button>
+        {/* 一键自检：逐个测试启用的源并给修复建议——新人不用猜先测哪个。 */}
+        <Button type="button" size="sm" disabled={selfTesting || probingAny} onClick={() => void selfCheck()}>
+          {selfTesting ? "自检中…" : "一键自检"}
+        </Button>
       </div>
+      {selfTestNote ? <p className="ef-probe-line">{selfTestNote}</p> : null}
+      {/* 测试通过后的下一步引导：用一篇 PDF 试解析，验证完整链路。 */}
+      {deferredResume ? (
+        <p className="ef-probe-line">
+          测试通过，配置已保存。未自动续跑解析{pendingParseCount === null ? "" : `（待解析 ${pendingParseCount} 篇）`}。
+          <Button type="button" size="sm" onClick={() => void enableParses()}>
+            继续未完成的解析
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="text"
+            onClick={() => {
+              // 现读待解析篇数给引导文案；没有可试的论文也会给出导入指引。
+              void repo
+                .listPendingMineru()
+                .then((ids) => {
+                  setTryParseCount(ids.length);
+                  void tryParseOnePaper();
+                })
+                .catch(() => void tryParseOnePaper());
+            }}
+          >
+            用一篇 PDF 试解析
+          </Button>
+          {tryParseCount === 0 ? <span className="ef-probe-ms">没有待解析的论文，先导入一篇（⌘N）。</span> : null}
+        </p>
+      ) : null}
       {failureSummary ? (
         <p className="ef-probe-line is-error ef-probe-summary">
           {failureSummary}。可修正配置后点击「测试连接」，或到 mineru.net 申请官方 API Token 作为兜底。
@@ -2408,14 +2476,6 @@ function MineruSettings({ focused }: { focused: boolean }) {
       <p className="ef-save-rules">
         生效规则：字段修改需点「保存设置」；回退顺序调整、测试连接与清除 Token 立即生效并落盘。
       </p>
-      {deferredResume ? (
-        <p className="ef-probe-line">
-          测试通过，配置已保存。未自动续跑解析{pendingParseCount === null ? "" : `（待解析 ${pendingParseCount} 篇）`}。
-          <Button type="button" size="sm" onClick={() => void enableParses()}>
-            继续未完成的解析
-          </Button>
-        </p>
-      ) : null}
 
       <footer className="ef-block-foot">
         <Button
