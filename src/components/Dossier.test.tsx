@@ -922,3 +922,49 @@ describe("ReadingStage · AI 的事前展示（提供商/模型/回退）", () =
     expect(screen.queryByText(/将用/)).toBeNull();
   });
 });
+
+describe("ReadingStage · 溯源徽章点开字段详情", () => {
+  function sourcedPaper(): PaperDetail {
+    const base = paper({});
+    return {
+      ...base,
+      abstract: "一段摘要。",
+      fieldSources: { abstract: "api", venue: "llm", doi: "user" },
+      fieldProviders: { abstract: "crossref" },
+      metaConfidence: 0.87,
+      llmPreparedAt: "2024-06-01T08:00:00.000Z",
+    } as PaperDetail;
+  }
+
+  it("点击徽章浮层显示来源库、置信度、补全时间与字段名；再点收起", () => {
+    useField.setState({ mode: "field", paper: sourcedPaper(), selectedPaperId: "p1" });
+    renderStage();
+    const badge = screen.getByRole("button", { name: "数据库 · Crossref" });
+    fireEvent.click(badge);
+    const pop = screen.getByRole("dialog", { name: "摘要来源详情" });
+    expect(pop.textContent).toContain("来源：数据库 · Crossref");
+    expect(pop.textContent).toContain("0.87");
+    expect(pop.textContent).toContain("2024.06.01");
+    expect(pop.textContent).toContain("暂未保存历史记录");
+    // 再点收起。
+    fireEvent.click(badge);
+    expect(screen.queryByRole("dialog", { name: "摘要来源详情" })).toBeNull();
+  });
+
+  it("模型来源徽章显示「模型」；无置信度/时间时诚实标注未记录", () => {
+    useField.setState({ mode: "field", paper: sourcedPaper(), selectedPaperId: "p1" });
+    renderStage();
+    fireEvent.click(screen.getByRole("button", { name: "模型" }));
+    const pop = screen.getByRole("dialog", { name: "来源来源详情" });
+    expect(pop.textContent).toContain("来源：模型");
+    expect(pop.textContent).toContain("0.87");
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "来源来源详情" })).toBeNull();
+
+    // 无置信度/补全时间的论文：标注「未记录」。
+    const bare = { ...paper({}), fieldSources: { venue: "llm" } } as PaperDetail;
+    useField.setState({ paper: bare });
+    fireEvent.click(screen.getByRole("button", { name: "模型" }));
+    expect(screen.getByRole("dialog", { name: "来源来源详情" }).textContent).toContain("未记录");
+  });
+});

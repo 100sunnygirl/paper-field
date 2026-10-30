@@ -795,6 +795,11 @@ function DraftNotesControls({ paper, disabled, previewFirst }: { paper: PaperDet
   );
 }
 
+/** 溯源徽章的点开详情（字段名 + 全局补全时间/置信度；单字段小史暂未记录）。 */
+function badgeDetail(paper: PaperDetail, fieldLabel: string) {
+  return { fieldLabel, preparedAt: paper.llmPreparedAt, confidence: paper.metaConfidence };
+}
+
 function ContextPanel({
   paper,
   activeSection,
@@ -1018,7 +1023,7 @@ function ContextPanel({
         {paper.codeUrl && safeHttpUrl(paper.codeUrl) ? (
           <ExternalResource href={paper.codeUrl} icon="code">
             代码仓库
-            <SourceBadge source={paper.fieldSources?.codeUrl} provider={paper.fieldProviders?.codeUrl} />
+            <SourceBadge source={paper.fieldSources?.codeUrl} provider={paper.fieldProviders?.codeUrl} detail={badgeDetail(paper, "代码仓库")} />
           </ExternalResource>
         ) : (
           <p className="ef-missing">未提供代码仓库</p>
@@ -1026,14 +1031,14 @@ function ContextPanel({
         {paper.projectPage && safeHttpUrl(paper.projectPage) ? (
           <ExternalResource href={paper.projectPage} icon="link">
             项目主页
-            <SourceBadge source={paper.fieldSources?.projectPage} provider={paper.fieldProviders?.projectPage} />
+            <SourceBadge source={paper.fieldSources?.projectPage} provider={paper.fieldProviders?.projectPage} detail={badgeDetail(paper, "项目主页")} />
           </ExternalResource>
         ) : (
           <p className="ef-missing">未提供项目主页</p>
         )}
         <div className="ef-identifier">
           arXiv
-          <SourceBadge source={paper.fieldSources?.arxivId} provider={paper.fieldProviders?.arxivId} />
+          <SourceBadge source={paper.fieldSources?.arxivId} provider={paper.fieldProviders?.arxivId} detail={badgeDetail(paper, "arXiv")} />
           <span className="ef-identifier-value">
             {arxivAbsUrl(paper.arxivId) ? (
               <button type="button" className="mono ef-id-link" onClick={() => void openExternal(arxivAbsUrl(paper.arxivId))}>
@@ -1058,7 +1063,7 @@ function ContextPanel({
         <div className="ef-identifier">
           <span>
             来源
-            <SourceBadge source={paper.fieldSources?.venue} provider={paper.fieldProviders?.venue} />
+            <SourceBadge source={paper.fieldSources?.venue} provider={paper.fieldProviders?.venue} detail={badgeDetail(paper, "来源")} />
           </span>
           <span className="mono">{[paper.venue, paper.year].filter(Boolean).join(" ") || "未提供"}</span>
         </div>
@@ -1107,10 +1112,10 @@ function ContextPanel({
             ) : (
               <p>作者信息待补充</p>
             )}
-            <SourceBadge source={paper.fieldSources?.authors} provider={paper.fieldProviders?.authors} />
+            <SourceBadge source={paper.fieldSources?.authors} provider={paper.fieldProviders?.authors} detail={badgeDetail(paper, "作者")} />
             <p>
               DOI
-              <SourceBadge source={paper.fieldSources?.doi} provider={paper.fieldProviders?.doi} />
+              <SourceBadge source={paper.fieldSources?.doi} provider={paper.fieldProviders?.doi} detail={badgeDetail(paper, "DOI")} />
               <br />
               <span className="ef-identifier-value">
                 {doiUrl(paper.doi) ? (
@@ -2018,7 +2023,7 @@ export function ReadingStage({
               <h2 className="ef-section-label">
                 <span>
                   摘要
-                  <SourceBadge source={paper.fieldSources?.abstract} provider={paper.fieldProviders?.abstract} />
+                  <SourceBadge source={paper.fieldSources?.abstract} provider={paper.fieldProviders?.abstract} detail={badgeDetail(paper, "摘要")} />
                 </span>
                 <i className="ef-section-rule" aria-hidden="true" />
               </h2>

@@ -5728,3 +5728,36 @@ mark.ef-ft-hit.is-current { background: var(--pf-signal); }
   font-size: var(--pf-fs-caption);
   cursor: pointer;
 }
+/* 可点击的溯源徽章与点开详情浮层。 */
+.ef-source-wrap { position: relative; display: inline-flex; }
+.ef-source-badge-btn {
+  appearance: none;
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+}
+.ef-source-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 220px;
+  background: var(--pf-panel);
+  border: 1px solid var(--pf-divider);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  padding: 10px 12px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-ink);
+  white-space: nowrap;
+}
+.ef-source-pop em {
+  font-style: normal;
+  color: var(--pf-secondary);
+  white-space: normal;
+  max-width: 260px;
+}
