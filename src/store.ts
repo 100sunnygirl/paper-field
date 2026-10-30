@@ -43,6 +43,7 @@ import { DRAFT_NOTES_SYSTEM, PREPARE_META_SYSTEM, draftNotesUserPrompt, normaliz
 import { redactSecrets } from "./lib/redact";
 import { noteReadingStatus } from "./lib/readingSince";
 import { recordDomainVisit } from "./lib/domainRecent";
+import { domainSpotOf, saveDomainSpot } from "./lib/domainSpot";
 import { repo } from "./lib/repo";
 import { cancelChat, completeChat, hasUsableProvider, loadSettings, readLlmSettings, saveSettings, type LlmSaveInput } from "./lib/settings";
 import { log } from "./lib/logger";
@@ -150,6 +151,12 @@ interface FieldState {
    * 领域进度条与状态条已读计数据此做一次轻量 +1 动画（prefers-reduced-motion 下静态）。
    */
   readPulse: number;
+  /** 刚恢复了哪个领域上次的搜索词（列表栏据此显示「已恢复…清空」提示行）。 */
+  restoredSearchFor: string | null;
+  clearRestoredSearchHint: () => void;
+  /** 待恢复的列表滚动位置（FieldView 应用后清空）。 */
+  restoreListTop: { domainId: string; top: number } | null;
+  clearRestoreListTop: () => void;
   /** 打开作业面板并高亮指定作业卡（入库页作业行入口）。 */
   highlightJob: (jobId: string) => void;
   /**
@@ -390,6 +397,8 @@ export const useField = create<FieldState>((set, get) => ({
   jobsPinned: false,
   highlightJobId: null,
   readPulse: 0,
+  restoredSearchFor: null,
+  restoreListTop: null,
   systemFocus: null,
   settingsLeaveGuard: null,
   pendingMode: null,
@@ -420,6 +429,10 @@ export const useField = create<FieldState>((set, get) => ({
   highlightJob: (jobId) => {
     set({ jobsOpen: true, highlightJobId: jobId });
   },
+
+  clearRestoredSearchHint: () => set({ restoredSearchFor: null }),
+
+  clearRestoreListTop: () => set({ restoreListTop: null }),
 
   openSystemCard: (anchor) => {
     const state = get();
@@ -692,12 +705,39 @@ export const useField = create<FieldState>((set, get) => ({
   },
 
   selectDomain: async (id) => {
+    // 每个领域独立记住搜索、选中论文与列表位置：离开时保存，进入时恢复（现场感不被打断）。
+    const prev = get();
+    if (prev.mode === "field" && prev.selectedDomainId) {
+      saveDomainSpot(prev.selectedDomainId, {
+        search: prev.search,
+        paperId: prev.selectedPaperId,
+        listTop: typeof document === "undefined" ? 0 : document.querySelector(".ef-paper-list")?.scrollTop ?? 0,
+        at: Date.now(),
+      });
+    }
+    const spot = id ? domainSpotOf(id) : undefined;
     try {
       selectionEpoch += 1;
-      set({ selectedDomainId: id, selectedPaperId: null, paper: null, mode: "field", dialog: null, dialogPaperId: null, dialogPaperIds: [] });
+      set({
+        selectedDomainId: id,
+        selectedPaperId: null,
+        paper: null,
+        mode: "field",
+        dialog: null,
+        dialogPaperId: null,
+        dialogPaperIds: [],
+        // 目标领域自己的搜索词（没有则清空，不沿用离开领域的条件）。
+        search: spot?.search ?? "",
+        restoredSearchFor: spot?.search ? id : null,
+        restoreListTop: spot && spot.listTop > 0 ? { domainId: id!, top: spot.listTop } : null,
+      });
       // 最近使用置顶（领域切换对话框）：切换成功路径才记，失败不污染记录。
       if (id) recordDomainVisit(id);
       await get().refresh();
+      // 恢复上次选中的论文：仍在本领域列表中时才生效，被删/被移走则回落第一篇。
+      if (spot?.paperId && get().papers.some((paper) => paper.id === spot.paperId)) {
+        await get().selectPaper(spot.paperId);
+      }
     } catch (err) {
       get().setFlash({ tone: "error", text: `切换领域失败：${errText(err)}，数据未改动。` });
       throw err;
@@ -713,6 +753,7 @@ export const useField = create<FieldState>((set, get) => ({
     set({ selectedPaperId: id, paper });
     if (paper && get().mode === "field") {
       set({ selectedDomainId: paper.domainId });
+      rememberDomainSpotPartial(get(), { paperId: paper.id });
     }
   },
 
@@ -720,6 +761,7 @@ export const useField = create<FieldState>((set, get) => ({
     // The input shows `value` at once; the query runs SEARCH_DEBOUNCE_MS after
     // the last keystroke. Every caller's promise settles when that refresh does.
     set({ search: value });
+    rememberDomainSpotPartial(get(), { search: value });
     if (searchTimer) clearTimeout(searchTimer);
     // Clearing the box restores the full list at once; there is nothing to debounce.
     const delay = value.trim() === "" ? 0 : SEARCH_DEBOUNCE_MS;
@@ -1812,6 +1854,21 @@ async function persistPaperDrafts(paperId: string): Promise<{ saved: number; fai
     }
   }
   return { saved, failed };
+}
+
+/** 就地更新当前领域现场的一部分（保留其他字段）；只在阅读页且已选领域时记。 */
+function rememberDomainSpotPartial(
+  state: Pick<FieldState, "mode" | "selectedDomainId" | "search" | "selectedPaperId">,
+  patch: { search?: string; paperId?: string | null },
+): void {
+  if (state.mode !== "field" || !state.selectedDomainId) return;
+  const current = domainSpotOf(state.selectedDomainId);
+  saveDomainSpot(state.selectedDomainId, {
+    search: patch.search !== undefined ? patch.search : current?.search ?? "",
+    paperId: patch.paperId !== undefined ? patch.paperId : current?.paperId ?? null,
+    listTop: current?.listTop ?? 0,
+    at: Date.now(),
+  });
 }
 
 function mineruHost() {

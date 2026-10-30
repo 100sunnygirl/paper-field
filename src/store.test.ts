@@ -640,3 +640,58 @@ describe("批量操作（移动 / 标状态 / 标签）", () => {
     expect(repo.applyTagsToPapers).toHaveBeenCalledWith(["a", "b"], ["综述"], "remove");
   });
 });
+
+describe("每领域记住搜索、选中与列表位置（domainSpot）", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  function domainsFixture() {
+    return [
+      { id: "d-1", name: "多模态", code: "MM-01", summary: null, sortOrder: 1, createdAt: "2024-01-01T00:00:00.000Z" },
+      { id: "d-2", name: "指令对齐", code: "AL-02", summary: null, sortOrder: 2, createdAt: "2024-01-02T00:00:00.000Z" },
+    ];
+  }
+
+  it("离开领域时保存现场；切回时恢复搜索词与选中（论文仍在列表里才恢复）", async () => {
+    const paperA = { ...listItem("a"), domainId: "d-1" };
+    const paperB = { ...listItem("b"), domainId: "d-2" };
+    vi.mocked(repo.listDomains).mockResolvedValue(domainsFixture());
+    vi.mocked(repo.listPapers).mockImplementation(async (domainId: string) =>
+      domainId === "d-1" ? [paperA] : [paperB],
+    );
+    useField.setState({ mode: "field", selectedDomainId: "d-1", domains: domainsFixture(), search: "clip", selectedPaperId: "a" });
+    await useField.getState().selectDomain("d-2");
+    // 切走后现场已存：d-1 的搜索词与选中论文
+    const spot = JSON.parse(localStorage.getItem("paper-field.domain-spot")!) as Record<string, { search: string; paperId: string | null }>;
+    expect(spot["d-1"].search).toBe("clip");
+    expect(spot["d-1"].paperId).toBe("a");
+    // 进入 d-2：不沿用 d-1 的搜索条件
+    expect(useField.getState().search).toBe("");
+    expect(useField.getState().restoredSearchFor).toBeNull();
+
+    // d-2 自己留过现场：搜索与选中恢复
+    await useField.getState().setSearch("rlhf");
+    await useField.getState().selectPaper("b");
+    await useField.getState().selectDomain("d-1");
+    expect(useField.getState().search).toBe("clip");
+    expect(useField.getState().restoredSearchFor).toBe("d-1");
+    await useField.getState().selectDomain("d-2");
+    expect(useField.getState().search).toBe("rlhf");
+    expect(useField.getState().selectedPaperId).toBe("b");
+  });
+
+  it("切回时现场里的论文已不在列表（被删/被移走）：选中回落，搜索仍恢复", async () => {
+    const paperA = { ...listItem("a"), domainId: "d-1" };
+    vi.mocked(repo.listDomains).mockResolvedValue(domainsFixture());
+    vi.mocked(repo.listPapers).mockResolvedValue([paperA]);
+    localStorage.setItem(
+      "paper-field.domain-spot",
+      JSON.stringify({ "d-1": { search: "clip", paperId: "ghost", listTop: 40, at: 1 } }),
+    );
+    useField.setState({ mode: "field", selectedDomainId: "d-2", domains: domainsFixture() });
+    await useField.getState().selectDomain("d-1");
+    expect(useField.getState().search).toBe("clip");
+    expect(useField.getState().selectedPaperId).toBe("a"); // refresh reselect 回落第一篇
+  });
+});

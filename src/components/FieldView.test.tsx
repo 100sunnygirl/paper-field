@@ -509,3 +509,27 @@ describe("PaperNav · 领域强调色归组", () => {
     expect(document.querySelector(".ef-nav-head")?.getAttribute("style") ?? "").not.toContain("--pf-domain-accent");
   });
 });
+
+describe("PaperNav · 恢复领域现场提示", () => {
+  it("恢复了该领域上次的搜索词时显示提示行，点「清空条件」清掉搜索并撤销提示", async () => {
+    const setSearch = vi.fn(async () => undefined);
+    useField.setState({
+      mode: "field",
+      selectedDomainId: "d-1",
+      search: "clip",
+      restoredSearchFor: "d-1",
+      setSearch,
+    });
+    render(<PaperNav />);
+    expect(screen.getByText(/已恢复这个领域上次的搜索/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "清空条件" }));
+    expect(setSearch).toHaveBeenCalledWith("");
+    expect(useField.getState().restoredSearchFor).toBeNull();
+  });
+
+  it("提示只对当前领域显示；其他领域不显示", () => {
+    useField.setState({ mode: "field", selectedDomainId: "d-2", search: "clip", restoredSearchFor: "d-1" });
+    render(<PaperNav />);
+    expect(screen.queryByText(/已恢复这个领域上次的搜索/)).toBeNull();
+  });
+});

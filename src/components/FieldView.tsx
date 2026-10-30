@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { useSyncExternalStore } from "react";
 import {
   JOB_STATUS_LABELS,
@@ -58,7 +58,26 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
   const setCheckedReadingStatus = useField((s) => s.setCheckedReadingStatus);
   const retryMineruPapers = useField((s) => s.retryMineruPapers);
   const retryFailedMetaJobs = useField((s) => s.retryFailedMetaJobs);
+  const restoredSearchFor = useField((s) => s.restoredSearchFor);
+  const clearRestoredSearchHint = useField((s) => s.clearRestoredSearchHint);
+  const restoreListTop = useField((s) => s.restoreListTop);
+  const clearRestoreListTop = useField((s) => s.clearRestoreListTop);
+  const setSearch = useField((s) => s.setSearch);
   const [censusEpoch, setCensusEpoch] = useState(0);
+  // 列表挂载后应用一次「回到上次位置」：ref 兜住滚动容器，双 rAF 等列表行渲染完成。
+  const listWrapRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!restoreListTop) return;
+    const target = restoreListTop;
+    clearRestoreListTop();
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        const el = listWrapRef.current?.querySelector(".ef-paper-list") as HTMLElement | null;
+        if (el) el.scrollTop = target.top;
+      }),
+    );
+  }, [restoreListTop, clearRestoreListTop]);
 
   if (mode === "field" && selectedDomainId && !search.trim()) {
     domainCensus = { domainId: selectedDomainId, items: papers };
@@ -250,6 +269,20 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
       ) : null}
 
       <div className="ef-nav-search">
+        {restoredSearchFor && restoredSearchFor === selectedDomainId ? (
+          <p className="ef-restored-search" aria-live="polite">
+            已恢复这个领域上次的搜索「{search}」
+            <button
+              type="button"
+              onClick={() => {
+                clearRestoredSearchHint();
+                void setSearch("");
+              }}
+            >
+              清空条件
+            </button>
+          </p>
+        ) : null}
         <PaperSearch />
       </div>
 
@@ -371,6 +404,7 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
         )}
       </div>
 
+      <div ref={listWrapRef} className="ef-list-wrap">
       {list.length === 0 ? (
         <p className="no-results">
           {search.trim()
@@ -394,6 +428,7 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
           onToggleCheck={(id) => toggleCheckedPaper(id)}
         />
       )}
+      </div>
 
       {/* 添加论文落进当前领域：只在看得见目标领域的阅读页和收新论文的入库页提供；
           归档页只列已读论文，新论文不会出现在那里。领域切换走顶部领域名。 */}
