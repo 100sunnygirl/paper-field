@@ -6,6 +6,7 @@ import {
   resetReparseSnapshots,
   saveReparseSnapshot,
 } from "../lib/reparse";
+import { resetCorrections, saveCorrection } from "../lib/parseCorrections";
 import { NOTE_DISPLAY_ORDER, type NoteKind, type PaperDetail } from "../lib/types";
 import { useField } from "../store";
 import { ReadingStage } from "./Dossier";
@@ -99,6 +100,7 @@ beforeAll(() => {
 beforeEach(() => {
   useField.setState(useField.getInitialState(), true);
   resetReparseSnapshots();
+  resetCorrections();
 });
 
 describe("ReadingStage · 重新解析的两版对照", () => {
@@ -164,6 +166,44 @@ describe("ReadingStage · 解析完成的质量提示", () => {
     useField.setState({ mode: "field", paper: p2, selectedPaperId: "p1" });
     renderStage();
     expect(screen.queryByRole("note", { name: "解析质量提示" })).toBeNull();
+  });
+});
+
+describe("ReadingStage · 解析结果的人工校正层", () => {
+  it("选中段落 → 「标记解析有误…」→ 填写并保存：展示层替换该小节，提示保留原文", () => {
+    useField.setState({ mode: "field", paper: paper(), selectedPaperId: "p1" });
+    renderStage();
+    const stub = stubSelectionInsideStage("方法正文第一段。");
+    fireSelectionChange();
+    fireEvent.click(screen.getByRole("button", { name: "标记解析有误…" }));
+    const editor = screen.getByRole("form", { name: "编辑本地校正" });
+    fireEvent.change(within(editor).getByLabelText("校正说明"), { target: { value: "公式编号错位" } });
+    fireEvent.change(within(editor).getByLabelText("校正后的内容"), { target: { value: "方法正文第一段（已校正）。" } });
+    fireEvent.click(within(editor).getByRole("button", { name: "保存校正" }));
+    expect(useField.getState().flash?.text).toContain("仅本机展示层生效");
+    // 展示层已替换
+    expect(document.querySelector(".ef-fulltext .ef-md")?.textContent).toContain("方法正文第一段（已校正）。");
+    expect(screen.getByRole("note", { name: "本地校正层" }).textContent).toContain("本机校正 1 处");
+    expect(screen.getByRole("note", { name: "本地校正层" }).textContent).toContain("原始结果保留");
+    stub.restore();
+  });
+
+  it("「放弃全部校正」恢复原始解析结果", () => {
+    saveCorrection({
+      paperId: "p1",
+      markdown: PARSED,
+      sectionId: "ft-sec-2",
+      sectionLabel: "§1.1 方法",
+      note: "n",
+      fixed: "校正后的方法段。",
+    });
+    useField.setState({ mode: "field", paper: paper(), selectedPaperId: "p1" });
+    renderStage();
+    expect(document.querySelector(".ef-fulltext .ef-md")?.textContent).toContain("校正后的方法段。");
+    fireEvent.click(screen.getByRole("button", { name: /放弃全部校正/ }));
+    expect(document.querySelector(".ef-fulltext .ef-md")?.textContent).toContain("方法正文第一段。");
+    expect(screen.queryByRole("note", { name: "本地校正层" })).toBeNull();
+    expect(useField.getState().flash?.text).toContain("恢复原始解析结果");
   });
 });
 

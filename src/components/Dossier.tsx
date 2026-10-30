@@ -37,6 +37,13 @@ import {
 import { onMarkdownClick, renderMarkdown } from "../lib/markdown";
 import { providerLabel } from "../lib/mineruPlan";
 import { checkParseQuality } from "../lib/parseQuality";
+import {
+  applyCorrections,
+  clearCorrections,
+  getCorrections,
+  removeCorrection,
+  saveCorrection,
+} from "../lib/parseCorrections";
 import { clearReparseSnapshot, fulltextStats, getReparseRecord } from "../lib/reparse";
 import { repo } from "../lib/repo";
 import { isNoteHintDismissed, NOTE_HINT_QUESTIONS, setNoteHintDismissed } from "../lib/noteHints";
@@ -506,6 +513,55 @@ function FulltextDoc({
     }
   }
   const setFlash = useField((s) => s.setFlash);
+  // 人工校正层（本机 localStorage，不进数据库、不随备份走）：原始结果不动，只改本机展示。
+  const [correctionRecord, setCorrectionRecord] = useState(() => getCorrections(paper.id, paper.parsedMarkdown));
+  useEffect(() => {
+    setCorrectionRecord(getCorrections(paper.id, paper.parsedMarkdown));
+  }, [paper.id, paper.parsedMarkdown]);
+  // 校正过的文本版本号：保存 / 删除校正后刷新渲染。
+  const [correctionsVersion, setCorrectionsVersion] = useState(0);
+  const shownMarkdown = useMemo(
+    () => applyCorrections(paper.parsedMarkdown, correctionRecord),
+    // correctionsVersion 参与依赖：校正变化即重新应用。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [paper.parsedMarkdown, correctionRecord, correctionsVersion],
+  );
+  // 编辑中的校正（小节锚点 + 草稿）。
+  const [editingCorrection, setEditingCorrection] = useState<{ sectionId: string; note: string; fixed: string } | null>(null);
+
+  function startCorrection(heading: (typeof headings)[number]) {
+    const existing = correctionRecord?.corrections.find((item) => item.sectionId === heading.id);
+    setEditingCorrection({
+      sectionId: heading.id,
+      note: existing?.note ?? "",
+      fixed: existing?.fixed ?? "",
+    });
+  }
+
+  function saveCorrectionDraft() {
+    if (!editingCorrection) return;
+    const heading = headings.find((item) => item.id === editingCorrection.sectionId);
+    saveCorrection({
+      paperId: paper.id,
+      markdown: paper.parsedMarkdown,
+      sectionId: editingCorrection.sectionId,
+      sectionLabel: heading ? `§${heading.number} ${heading.text}` : editingCorrection.sectionId,
+      note: editingCorrection.note,
+      fixed: editingCorrection.fixed,
+    });
+    setCorrectionRecord(getCorrections(paper.id, paper.parsedMarkdown));
+    setCorrectionsVersion((v) => v + 1);
+    setEditingCorrection(null);
+    setFlash({ tone: "ok", text: "已保存本地校正：仅本机展示层生效，原始解析结果保留；重新解析后自动作废。" });
+  }
+
+  function deleteCorrection(sectionId: string) {
+    removeCorrection(paper.id, sectionId);
+    setCorrectionRecord(getCorrections(paper.id, paper.parsedMarkdown));
+    setCorrectionsVersion((v) => v + 1);
+    setEditingCorrection(null);
+    setFlash({ tone: "ok", text: "已删除这条校正，恢复显示原始解析结果。" });
+  }
   const rootRef = useRef<HTMLDivElement>(null);
   const headings = useMemo(() => extractFulltextHeadings(paper.parsedMarkdown), [paper.parsedMarkdown]);
   const [bar, setBar] = useState<{ pick: FulltextSelection; top: number; left: number } | null>(null);
@@ -657,12 +713,68 @@ function FulltextDoc({
           </>
         ) : null}
       </div>
+      {/* 校正层生效时展示校正后文本；原文随时可对照（applyCorrections 只替换小节正文）。 */}
       <div
         ref={rootRef}
-        className="ef-note-text ef-md"
+        className={`ef-note-text ef-md${correctionRecord?.corrections.length ? " is-corrected" : ""}`}
         onClick={onMarkdownClick}
-        dangerouslySetInnerHTML={{ __html: renderMarkdown(paper.parsedMarkdown) }}
+        dangerouslySetInnerHTML={{ __html: renderMarkdown(shownMarkdown) }}
       />
+      {/* 校正层状态条：有几条校正、如何回到原文。 */}
+      {correctionRecord?.corrections.length ? (
+        <p className="ef-corrections-bar" role="note" aria-label="本地校正层">
+          本机校正 {correctionRecord.corrections.length} 处（
+          {correctionRecord.corrections.map((item) => item.sectionLabel).join("、")}）· 只影响本机显示，原始结果保留
+          <Button
+            type="button"
+            size="sm"
+            variant="text"
+            onClick={() => {
+              clearCorrections(paper.id);
+              setCorrectionRecord(null);
+              setCorrectionsVersion((v) => v + 1);
+              setFlash({ tone: "ok", text: "已放弃全部本地校正，恢复原始解析结果。" });
+            }}
+          >
+            放弃全部校正
+          </Button>
+        </p>
+      ) : null}
+      {/* 校正编辑器：从下方小节菜单进入，针对一个小节记录「哪里错 + 正确内容」。 */}
+      {editingCorrection ? (
+        <div className="ef-correction-editor" role="form" aria-label="编辑本地校正">
+          {(() => {
+            const heading = headings.find((item) => item.id === editingCorrection.sectionId);
+            return <b>{heading ? `校正 §${heading.number} ${heading.text}` : "校正该小节"}</b>;
+          })()}
+          <input
+            value={editingCorrection.note}
+            placeholder="哪里解析有误（如：表 2 数字错位）"
+            aria-label="校正说明"
+            onChange={(e) => setEditingCorrection({ ...editingCorrection, note: e.target.value })}
+          />
+          <textarea
+            value={editingCorrection.fixed}
+            placeholder="该小节的正确内容（留空 = 仅标记有误，不改正文）"
+            aria-label="校正后的内容"
+            rows={4}
+            onChange={(e) => setEditingCorrection({ ...editingCorrection, fixed: e.target.value })}
+          />
+          <div className="ef-correction-actions">
+            <Button type="button" size="sm" onClick={() => setEditingCorrection(null)}>
+              取消
+            </Button>
+            {correctionRecord?.corrections.some((item) => item.sectionId === editingCorrection.sectionId) ? (
+              <Button type="button" size="sm" variant="danger" onClick={() => deleteCorrection(editingCorrection.sectionId)}>
+                删除这条校正
+              </Button>
+            ) : null}
+            <Button type="button" size="sm" variant="primary" onClick={saveCorrectionDraft}>
+              保存校正
+            </Button>
+          </div>
+        </div>
+      ) : null}
       {bar ? (
         <div
           className="ef-excerpt-bar"
@@ -678,6 +790,11 @@ function FulltextDoc({
           <button type="button" className="ef-excerpt-copy" onClick={() => void copyCitation()}>
             复制引用
           </button>
+          {bar.pick.heading ? (
+            <button type="button" onClick={() => startCorrection(bar.pick.heading!)}>
+              标记解析有误…
+            </button>
+          ) : null}
         </div>
       ) : null}
     </>
