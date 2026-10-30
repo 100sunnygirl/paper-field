@@ -1571,6 +1571,50 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   font-size: var(--pf-fs-tag);
   color: var(--pf-muted);
 }
+/* 「暂缓处理」折叠区：失败论文放一放的次要区。 */
+.ef-deferred {
+  margin: 10px 16px 0;
+  border: 1px dashed var(--pf-divider);
+  background: transparent;
+  font-size: var(--pf-fs-caption);
+}
+.ef-deferred summary {
+  padding: 8px 10px;
+  color: var(--pf-muted);
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ef-deferred summary::before {
+  content: "▸";
+  transition: transform var(--pf-direct);
+}
+.ef-deferred[open] summary::before { transform: rotate(90deg); }
+.ef-deferred summary:hover { color: var(--pf-ink); }
+.ef-deferred ul {
+  margin: 0;
+  padding: 0 10px 10px;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ef-deferred li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.ef-deferred-title {
+  color: var(--pf-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1;
+}
 .ef-job-list { padding: 14px 16px 0; display: flex; flex-direction: column; gap: 8px; }
 .ef-job-list .ef-nav-sum { margin: 0; }
 .ef-job-row {

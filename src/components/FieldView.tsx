@@ -14,6 +14,7 @@ import { jobStageLine } from "../lib/jobsView";
 import { repo } from "../lib/repo";
 import { isArchiveStatsDismissed, readingStatsFrom, setArchiveStatsDismissed } from "../lib/readingStats";
 import { classifyParseError, parseErrorSummary } from "../lib/parseErrors";
+import { deferredPaperIds, deferPaper, undeferPaper } from "../lib/deferredPapers";
 import { readNextAdd, readNextList, readNextMove, readNextRemove } from "../lib/readNext";
 import { pad2, shortcut } from "../lib/util";
 import { useField, type ArchiveSort, type ArchiveView, type IntakeStage, type IntakeStageFilter } from "../store";
@@ -291,6 +292,11 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
   void readNextVersion;
   const readNextIds = mode === "intake" ? readNextList() : [];
   const bumpReadNext = () => setReadNextVersion((v) => v + 1);
+  // 「暂缓处理」的失败论文（本机记录；折叠到次要区）。
+  const [deferredVersion, setDeferredVersion] = useState(0);
+  void deferredVersion;
+  const deferredIds = mode === "intake" ? deferredPaperIds() : [];
+  const deferredById = new Map(intake.filter((p) => deferredIds.includes(p.id)).map((p) => [p.id, p]));
   // 下一篇建议：已解析完成里最早导入的一篇（先导入先读）；已在队列里的不再重复推荐。
   const readNextSuggestion =
     [...intake]
@@ -331,7 +337,11 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
   }
   const intakeItems =
     mode === "intake"
-      ? sortIntakeByStage(intake.filter((p) => intakeStage === "all" || intakeStageOf(p) === intakeStage))
+      ? sortIntakeByStage(
+          intake.filter(
+            (p) => !deferredIds.includes(p.id) && (intakeStage === "all" || intakeStageOf(p) === intakeStage),
+          ),
+        )
       : [];
   const todayImportedCount = mode === "intake" ? countTodayImported(intake) : 0;
   const visible = mode === "archive" ? archiveItems : mode === "intake" ? intakeItems : list;
@@ -460,6 +470,17 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
             onClick={() => void retryMineru(paper.id)}
           >
             重试
+          </button>
+          <button
+            type="button"
+            className="ef-row-domain-open"
+            title="先放一放：折叠到「暂缓处理」区，不占主视野"
+            onClick={() => {
+              deferPaper(paper.id);
+              setDeferredVersion((v) => v + 1);
+            }}
+          >
+            暂缓处理
           </button>
           <button
             type="button"
@@ -1034,6 +1055,33 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
           rowExtra={mode === "archive" ? archiveRowExtra : mode === "intake" ? intakeRowExtra : undefined}
         />
       )}
+
+      {/* 「暂缓处理」：被放一放的失败论文折叠在此，不占主视野；可恢复。 */}
+      {mode === "intake" && deferredIds.length ? (
+        <details className="ef-deferred">
+          <summary aria-label={`展开暂缓处理区（${deferredIds.length} 篇）`}>
+            暂缓处理 · {deferredIds.length} 篇
+          </summary>
+          <ul>
+            {[...deferredById.values()].map((paper) => (
+              <li key={paper.id}>
+                <span className="ef-deferred-title">{paper.titleZh || paper.title}</span>
+                <span className="ef-failure-reason">{parseErrorSummary(paper.mineruError, 24)}</span>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => {
+                    undeferPaper(paper.id);
+                    setDeferredVersion((v) => v + 1);
+                  }}
+                >
+                  恢复处理
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
 
       {/* 「接下来读」：个人阅读安排（与技术解析队列分开展示）。建议 = 已解析完成里
           最早导入的一篇；队列本机记录、可手动排序；点标题直接进入阅读页。 */}

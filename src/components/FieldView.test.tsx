@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PaperListItem } from "../lib/types";
 import { resetActivity, trackJob } from "../lib/activity";
 import { repo } from "../lib/repo";
+import { deferredPaperIds } from "../lib/deferredPapers";
 import { readNextList } from "../lib/readNext";
 import { useField } from "../store";
 import { PaperNav } from "./FieldView";
@@ -738,6 +739,40 @@ describe("PaperNav · 接下来读（建议与个人短队列）", () => {
       expect(openPaperFulltext).toHaveBeenCalledWith("a");
     });
     localStorage.removeItem("paper-field.read-next");
+  });
+});
+
+describe("PaperNav · 失败论文暂缓处理", () => {
+  beforeEach(() => {
+    localStorage.removeItem("paper-field.intake-deferred");
+  });
+
+  it("失败行「暂缓处理」后移出主列表、折叠到次要区，可恢复", () => {
+    useField.setState({
+      mode: "intake",
+      intake: [intakeItem("a", "error"), intakeItem("b", "done")],
+    });
+    const { rerender } = render(<PaperNav />);
+    fireEvent.click(screen.getByRole("button", { name: "暂缓处理" }));
+    expect(deferredPaperIds()).toEqual(["a"]);
+
+    rerender(<PaperNav />);
+    // 主列表只剩 done；折叠区显示暂缓篇目与恢复按钮。
+    const titles = [...document.querySelectorAll(".ef-row h3")].map((n) => n.textContent);
+    expect(titles).toEqual(["论文 b"]);
+    expect(screen.getByText("暂缓处理 · 1 篇")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "恢复处理" }));
+    expect(deferredPaperIds()).toEqual([]);
+    rerender(<PaperNav />);
+    expect([...document.querySelectorAll(".ef-row h3")].map((n) => n.textContent)).toEqual(["论文 a", "论文 b"]);
+    localStorage.removeItem("paper-field.intake-deferred");
+  });
+
+  it("没有暂缓篇目时不渲染折叠区", () => {
+    useField.setState({ mode: "intake", intake: [intakeItem("a", "error")] });
+    render(<PaperNav />);
+    expect(screen.queryByText(/暂缓处理 · /)).toBeNull();
   });
 });
 
