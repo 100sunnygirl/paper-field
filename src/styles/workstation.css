@@ -5969,3 +5969,19 @@ mark.ef-ft-hit.is-current { background: var(--pf-signal); }
 .ef-merge-preview p { margin: 0 0 6px; }
 .ef-merge-dup-head { font-size: var(--pf-fs-caption); color: var(--pf-secondary); }
 .ef-merge-dups { margin: 4px 0 0; padding-left: 18px; font-size: var(--pf-fs-caption); color: var(--pf-secondary); }
+
+/* 新建领域示例模板：一键套用名称与简介。 */
+.ef-domain-templates { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: -6px 0 4px; }
+.ef-domain-templates-label { font-size: var(--pf-fs-caption); color: var(--pf-muted); }
+.ef-domain-templates button {
+  padding: 3px 10px;
+  border: 1px dashed var(--pf-control-border);
+  border-radius: 999px;
+  background: transparent;
+  font: inherit;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+  cursor: pointer;
+  transition: border-color var(--pf-motion), color var(--pf-motion), background-color var(--pf-motion);
+}
+.ef-domain-templates button:hover { border-color: var(--pf-ink); color: var(--pf-ink); background: var(--pf-hover-flat); }

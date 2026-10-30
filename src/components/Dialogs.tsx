@@ -8,6 +8,13 @@ import { formatDate, isTauri } from "../lib/util";
 import { useField } from "../store";
 import { Button, Dialog, Field, Icon } from "./ui";
 
+/** 新建领域的示例模板：一键套用名称与简介，新人不用对着空白表单发呆。 */
+const DOMAIN_TEMPLATES: Array<{ id: string; name: string; summary: string }> = [
+  { id: "research", name: "研究方向", summary: "围绕一个长期研究方向收集论文（如：多模态对齐）。" },
+  { id: "project", name: "在研项目", summary: "一个具体项目/系统用到的论文与参考资料。" },
+  { id: "course", name: "课程 / 综述", summary: "课程阅读清单或某篇综述的延伸论文。" },
+];
+
 export function PaperDialog() {
   const dialog = useField((s) => s.dialog);
   const closeDialog = useField((s) => s.closeDialog);
@@ -474,6 +481,24 @@ export function DomainDialog() {
               autoFocus
             />
           </Field>
+          {!editing ? (
+            <div className="ef-domain-templates" role="group" aria-label="示例模板">
+              <span className="ef-domain-templates-label">示例模板，一键套用：</span>
+              {DOMAIN_TEMPLATES.map((template) => (
+                <button
+                  key={template.id}
+                  type="button"
+                  title={template.summary}
+                  onClick={() => {
+                    setName(template.name);
+                    setSummary(template.summary);
+                  }}
+                >
+                  {template.name}
+                </button>
+              ))}
+            </div>
+          ) : null}
           <Field label="短码（可选）">
             <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="留空自动生成，如 MM-03" />
           </Field>

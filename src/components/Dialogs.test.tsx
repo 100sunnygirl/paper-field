@@ -933,3 +933,36 @@ describe("DomainDialog · 删除确认升级（数量清单 / 先导出 / 迁移
     expect(screen.getByRole("button", { name: "迁移并删除领域" })).toBeDisabled();
   });
 });
+
+describe("DomainDialog · 新建领域示例模板", () => {
+  it("新建模式显示三个模板，点击套用名称与简介；编辑模式不显示", () => {
+    useField.setState({ dialog: "domain", createDomain: vi.fn(async () => undefined) });
+    const { unmount } = render(<DomainDialog />);
+    expect(screen.getByRole("group", { name: "示例模板" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "在研项目" }));
+    expect(screen.getByLabelText(/名称 \/ 中文（必填）/)).toHaveValue("在研项目");
+    expect(screen.getByLabelText("简介（可选）")).toHaveValue("一个具体项目/系统用到的论文与参考资料。");
+    unmount();
+
+    useField.setState({
+      dialog: "edit-domain",
+      selectedDomainId: "d-1",
+      domains: [
+        { id: "d-1", name: "多模态", code: "MM-01", summary: null, sortOrder: 1, createdAt: "2024-01-01T00:00:00.000Z" },
+      ],
+    });
+    render(<DomainDialog />);
+    expect(screen.queryByRole("group", { name: "示例模板" })).toBeNull();
+  });
+
+  it("套用模板后仍可继续修改名称，创建时提交修改后的值", () => {
+    useField.setState({ dialog: "domain", createDomain: vi.fn(async () => undefined) });
+    render(<DomainDialog />);
+    fireEvent.click(screen.getByRole("button", { name: "研究方向" }));
+    fireEvent.change(screen.getByLabelText(/名称 \/ 中文（必填）/), { target: { value: "世界模型" } });
+    fireEvent.click(screen.getByRole("button", { name: "创建领域" }));
+    expect(useField.getState().createDomain).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "世界模型", summary: "围绕一个长期研究方向收集论文（如：多模态对齐）。" }),
+    );
+  });
+});
