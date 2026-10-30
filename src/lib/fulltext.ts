@@ -230,3 +230,20 @@ export function highlightFulltextMatches(
   }
   return hits.length;
 }
+
+/**
+ * 把笔记里的「原文 §3.2」样式小节引用变成可点击的并排对照锚点：
+ * 引用指向解析全文对应小节（有同名小节才链接，引用了不存在的小节保持纯文本）。
+ * AI 起草的关键判断据此可一键跳回原文核对（点击行为复用 onMarkdownClick 的
+ * #ft-sec-* 分支：折叠的全文先展开再滚动）。
+ */
+export function linkSectionRefs(markdown: string, headings: FulltextHeading[]): string {
+  if (!markdown || !headings.length) return markdown;
+  const byNumber = new Map(headings.map((heading) => [heading.number, heading]));
+  return markdown.replace(/（原文\s*§([\d.]+)\s*([^）]*)）/g, (raw, number: string, title: string) => {
+    const heading = byNumber.get(number);
+    if (!heading) return raw;
+    const label = title.trim() || heading.text;
+    return `（原文 [§${number} ${label}](#${heading.id})）`;
+  });
+}

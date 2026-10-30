@@ -827,3 +827,24 @@ describe("ReadingStage · 起草笔记的块级控制", () => {
     expect(screen.getByRole("button", { name: "起草选中 0 块" })).toBeDisabled();
   });
 });
+
+describe("ReadingStage · AI 判断附原文段落锚点", () => {
+  it("笔记里的（原文 §N.M）引用渲染为可点击锚点，跳回解析全文对应小节", () => {
+    const parsed = "# 引言\n\n正文。\n\n## 方法\n\n内容。";
+    const base = paper({ summary: "方法很稳（原文 §1.1）。" });
+    useField.setState({ mode: "field", paper: { ...base, parsedMarkdown: parsed } as PaperDetail, selectedPaperId: "p1" });
+    renderStage();
+    // 引用被转成链接（无全文时保持纯文本）。
+    const link = document.querySelector('.ef-note-text a[href="#ft-sec-1"]');
+    expect(link).not.toBeNull();
+    expect(link!.textContent).toContain("§1.1");
+  });
+
+  it("没有解析全文时引用保持纯文本", () => {
+    const base = paper({ summary: "方法很稳（原文 §1.1）。" });
+    useField.setState({ mode: "field", paper: base, selectedPaperId: "p1" });
+    renderStage();
+    expect(document.querySelector('.ef-note-text a[href="#ft-sec-1"]')).toBeNull();
+    expect(document.querySelector(".ef-note-text")!.textContent).toContain("（原文 §1.1）");
+  });
+});

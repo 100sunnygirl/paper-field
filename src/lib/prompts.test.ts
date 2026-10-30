@@ -154,3 +154,29 @@ describe("用户 prompt 组装", () => {
     expect(prompt).toContain("Abstract:\nA");
   });
 });
+
+describe("draftNotesUserPrompt · 小节锚点注入", () => {
+  function paperOf(parsedMarkdown: string): PaperDetail {
+    return {
+      title: "T",
+      titleZh: null,
+      year: 2023,
+      venue: null,
+      abstract: "A",
+      parsedMarkdown,
+      tags: [],
+      authors: [],
+    } as unknown as PaperDetail;
+  }
+
+  it("有解析全文时附小节表（供模型按 §编号锚定判断）", () => {
+    const prompt = draftNotesUserPrompt(paperOf("# 引言\n\n正文。\n\n## 方法\n\n内容。"));
+    expect(prompt).toContain("Section map");
+    expect(prompt).toContain("§1 引言");
+    expect(prompt).toContain("§1.1 方法");
+  });
+
+  it("没有解析全文时不附小节表", () => {
+    expect(draftNotesUserPrompt(paperOf(""))).not.toContain("Section map");
+  });
+});

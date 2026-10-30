@@ -1,3 +1,4 @@
+import { extractFulltextHeadings } from "./fulltext";
 import type { DraftedNotes, PaperDetail, PreparedMeta } from "./types";
 import { safeHttpUrl } from "./urls";
 
@@ -43,6 +44,10 @@ Write in Chinese if the user's other fields are Chinese, otherwise match the pap
 - highlights / weaknesses: markdown bullet lists.
 - remarks: practical lab notes (repro, code, what to check).
 - implications: what this paper changes for the current research domain.
+- When the paper provides MinerU markdown with numbered sections, anchor each key judgment in
+  highlights / weaknesses to the source passage: end the bullet with a plain section reference
+  like （原文 §3.2）using the section number from the markdown. Only cite sections that exist;
+  without parsed fulltext, omit references. Never invent section numbers.
 Be specific. No reading-status language. No fake citations.`;
 
 function excerpt(value: string | null | undefined, max = 12000): string | null {
@@ -80,6 +85,7 @@ export function prepareMetaUserPrompt(input: {
 
 export function draftNotesUserPrompt(paper: PaperDetail): string {
   const authors = paper.authors.map((a) => `${a.name}${a.affiliation ? ` (${a.affiliation})` : ""}`).join("; ");
+  const headings = extractFulltextHeadings(paper.parsedMarkdown);
   return [
     `Title: ${paper.title}`,
     paper.titleZh ? `Chinese title: ${paper.titleZh}` : null,
@@ -90,6 +96,12 @@ export function draftNotesUserPrompt(paper: PaperDetail): string {
     "",
     "Abstract:",
     paper.abstract || "(none)",
+    headings.length
+      ? `\nSection map (use these numbers when anchoring judgments as 原文 §number):\n${headings
+          .slice(0, 40)
+          .map((heading) => `§${heading.number} ${heading.text}`)
+          .join("\n")}`
+      : null,
     excerpt(paper.parsedMarkdown) ? `\nMinerU markdown:\n${excerpt(paper.parsedMarkdown)}` : null,
   ]
     .filter((line) => line !== null)

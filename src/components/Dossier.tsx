@@ -27,6 +27,7 @@ import {
   buildExcerptMarkdown,
   buildSectionCitation,
   extractFulltextHeadings,
+  linkSectionRefs,
   headingForSelection,
   highlightFulltextMatches,
   insertQuoteAtCursor,
@@ -130,6 +131,8 @@ function NoteEditor({
   const editing = hasDraft && !dismissed;
   const block = paper.notes[kind];
   const value = editing ? draft : block.content;
+  // 小节锚点表：把「原文 §N」引用变成可点击的并排对照链接（无解析全文时为空表）。
+  const noteHeadings = useMemo(() => extractFulltextHeadings(paper.parsedMarkdown), [paper.parsedMarkdown]);
   const [saving, setSaving] = useState(false);
   const [failed, setFailed] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -349,7 +352,11 @@ function NoteEditor({
           {value.trim() ? `${[...value.trim()].length} 字 · 已折叠` : "未写 · 已折叠"}
         </p>
       ) : value.trim() ? (
-        <div className="ef-note-text ef-md" onClick={onMarkdownClick} dangerouslySetInnerHTML={{ __html: renderMarkdown(value) }} />
+        <div
+          className="ef-note-text ef-md"
+          onClick={onMarkdownClick}
+          dangerouslySetInnerHTML={{ __html: renderMarkdown(linkSectionRefs(value, noteHeadings)) }}
+        />
       ) : (
         // 空块本身就是入口：点这里就地开写，不必去工具条或右上角找按钮。
         // 上方一行可关闭的研究问题，给「不知从哪下笔」一个切入点。
