@@ -249,12 +249,16 @@ async function pollStatuses(
  * 关键语义：overwrite=false —— 自动补全永不覆盖用户手改过的字段；quiet=true 避免 flash 刷屏。
  */
 async function autoPrepare(host: Host, paperId: string): Promise<BatchItemResult> {
-  if (!host.hasKey()) return "skip";
   const paper = await repo.getPaper(paperId);
   if (!paper || paper.llmPreparedAt || !paper.parsedMarkdown.trim()) return "skip";
+  // 未配置 Key 也查一次文献库：著录查询不经模型（host.prepare → runPrepareMeta 的
+  // lookup-only 路径，模型补空等配置 Key 后由回填继续）。文献库已写过且仍无 Key 时不重复跑。
+  const hasApiSource = paper.fieldSources ? Object.values(paper.fieldSources).includes("api") : false;
+  if (!host.hasKey() && hasApiSource) return "skip";
   await host.prepare(paperId, false, true);
   const after = await repo.getPaper(paperId);
-  return after?.llmPreparedAt ? "ok" : "fail";
+  const appliedApi = Boolean(after?.fieldSources && Object.values(after.fieldSources).includes("api"));
+  return after?.llmPreparedAt || appliedApi ? "ok" : "fail";
 }
 
 /**
@@ -566,7 +570,7 @@ export async function runMineruBatch(
         ...(action ? [action] : []),
       );
     } else if (ok && !host.hasKey()) {
-      host.flash("warn", "解析完成。尚未配置 AI，书目仍使用文件名，可稍后补全。");
+      host.flash("warn", "解析完成。已查询文献库补著录；尚未配置 AI，模型补空可稍后在设置页配置后进行。");
     } else if (ok && !(prefs.enabled && prefs.mode === "failures")) {
       if (big) {
         const action =

@@ -122,9 +122,13 @@ afterEach(async () => {
 type MineruPatch = Parameters<typeof repo.setMineruState>[1];
 
 /** 建一篇带 PDF 的论文（初始 pending），可选地摆好解析状态与已有全文。 */
-async function makePaper(state?: MineruPatch, markdown?: string): Promise<string> {
+async function makePaper(state?: MineruPatch, markdown?: string, identifiers?: { arxivId?: string }): Promise<string> {
   pdfSeq += 1;
-  const paper = await repo.createPaper({ domainId, pdfPath: `/papers/p${pdfSeq}.pdf` });
+  const paper = await repo.createPaper({
+    domainId,
+    pdfPath: `/papers/p${pdfSeq}.pdf`,
+    arxivId: identifiers?.arxivId,
+  });
   if (state) await repo.setMineruState(paper.id, state);
   if (markdown !== undefined) await repo.saveParsedMarkdown(paper.id, markdown);
   return paper.id;
@@ -154,6 +158,14 @@ async function jobsOf(paperId: string) {
 /** 模拟 runPrepareMeta 的落库效果：llm_prepared_at 写入。 */
 async function markPrepared(paperId: string): Promise<void> {
   await holder.engine!.execute("UPDATE papers SET llm_prepared_at = ? WHERE id = ?", [new Date().toISOString(), paperId]);
+}
+
+/** 模拟文献库已写过：field_sources 记一个 api 来源。 */
+async function markApiSourced(paperId: string): Promise<void> {
+  await holder.engine!.execute(
+    "UPDATE papers SET field_sources = json_set(COALESCE(field_sources, '{}'), '$.arxivId', 'api') WHERE id = ?",
+    [paperId],
+  );
 }
 
 function makeHost(
@@ -240,15 +252,31 @@ describe("autoPrepare（防覆盖语义）", () => {
     expect(host.prepare).not.toHaveBeenCalled();
   });
 
-  it("未配置 LLM key 时提示补全缺失而不是静默成功", async () => {
+  it("未配置 LLM key 时也执行文献库著录查询（不经模型），并提示模型补空可稍后进行", async () => {
     const id = await makePaper({ status: "done" }, "# md");
     const host = makeHost({ hasKey: false });
 
     await runMineruBatch(host, [id], false);
     await settle();
 
+    // 著录查询不依赖 Key：解析成功后仍调用 prepare（lookup-only 路径）。
+    expect(host.prepare).toHaveBeenCalledTimes(1);
+    expect(host.prepare).toHaveBeenCalledWith(id, false, true);
+    expect(host.flash).toHaveBeenCalledWith(
+      "warn",
+      "解析完成。已查询文献库补著录；尚未配置 AI，模型补空可稍后在设置页配置后进行。",
+    );
+  });
+
+  it("无 Key 且文献库已写过（api 来源）时不重复查询", async () => {
+    const id = await makePaper({ status: "done" }, "# md", { arxivId: "2401.00001" });
+    await markApiSourced(id);
+    const host = makeHost({ hasKey: false });
+
+    await runMineruBatch(host, [id], false);
+    await settle();
+
     expect(host.prepare).not.toHaveBeenCalled();
-    expect(host.flash).toHaveBeenCalledWith("warn", "解析完成。尚未配置 AI，书目仍使用文件名，可稍后补全。");
   });
 
   it("自动补全排在 AI 队列上：补全还没结束，后面的解析照常进行", async () => {
