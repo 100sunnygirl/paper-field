@@ -281,6 +281,9 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
   const [statsDismissed, setStatsDismissed] = useState(() => isArchiveStatsDismissed());
   // 失败原因聚类展开（入库页）：默认收起，展开后按根因分组显示。
   const [failuresOpen, setFailuresOpen] = useState(false);
+  // 入库作业行就地展开：超过 6 条先截断，展开后全部就地显示。
+  const [jobsExpanded, setJobsExpanded] = useState(false);
+  const activeJobs = jobs.filter((job) => job.status === "queued" || job.status === "running");
 
   if (mode === "field" && selectedDomainId && !search.trim()) {
     domainCensus = { domainId: selectedDomainId, items: papers };
@@ -776,10 +779,10 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
         <div className="ef-job-list">
           {/* 只显示进行中的作业：完成/失败的历史堆在这里会刷屏（曾经的「MinerU 解析 · 完成」墙），
               结果通知走右上角弹窗，失败可重试的入口在下方「解析失败 · N 篇」。
-              行内文案与作业面板同一口径：标题 + 阶段一句话，点击在面板里高亮对应作业卡。 */}
-          {jobs
-            .filter((job) => job.status === "queued" || job.status === "running")
-            .slice(0, 6)
+              行内文案与作业面板同一口径：标题 + 阶段一句话，点击在面板里高亮对应作业卡。
+              超过 6 条时先截断，可「就地展开」看全，不必跳去作业面板。 */}
+          {activeJobs
+            .slice(0, jobsExpanded ? undefined : 6)
             .map((job) => (
               <div key={job.id} className="ef-job-row">
                 <button
@@ -802,13 +805,21 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
                 </Button>
               </div>
             ))}
-          {jobs.filter((job) => job.status === "queued" || job.status === "running").length > 6 ? (
-            <p className="ef-nav-sum">
-              另有 {jobs.filter((job) => job.status === "queued" || job.status === "running").length - 6} 条进行中作业，
-              可在作业面板查看全部。
-            </p>
+          {activeJobs.length > 6 ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="text"
+              className="ef-jobs-expand"
+              aria-expanded={jobsExpanded}
+              onClick={() => setJobsExpanded((open) => !open)}
+            >
+              {jobsExpanded
+                ? "收起进行中作业"
+                : `另有 ${activeJobs.length - 6} 条进行中作业 · 就地展开`}
+            </Button>
           ) : null}
-          {jobs.filter((job) => job.status === "queued" || job.status === "running").length === 0 ? (
+          {activeJobs.length === 0 ? (
             <p className="ef-nav-sum">当前没有进行中的 AI 作业。</p>
           ) : null}
           <Button type="button" variant="link" className="ef-jobs-link" onClick={() => setJobsOpen(true)}>

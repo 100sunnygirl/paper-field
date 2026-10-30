@@ -203,7 +203,7 @@ describe("PaperNav · INTAKE 任务列表只显示进行中的作业", () => {
     expect(highlightJob).toHaveBeenCalledWith("j1");
   });
 
-  it("进行中作业超过 6 条时提示其余在作业面板查看", () => {
+  it("进行中作业超过 6 条时可就地展开，不必跳作业面板", () => {
     useField.setState({
       mode: "intake",
       intake: [],
@@ -211,7 +211,14 @@ describe("PaperNav · INTAKE 任务列表只显示进行中的作业", () => {
     });
 
     render(<PaperNav />);
-    expect(screen.getByText(/另有 2 条进行中作业/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "另有 2 条进行中作业 · 就地展开" })).toBeInTheDocument();
+    expect(document.querySelectorAll(".ef-job-row-main")).toHaveLength(6);
+
+    fireEvent.click(screen.getByRole("button", { name: "另有 2 条进行中作业 · 就地展开" }));
+    expect(document.querySelectorAll(".ef-job-row-main")).toHaveLength(8);
+    expect(screen.getByRole("button", { name: "收起进行中作业" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "收起进行中作业" }));
     expect(document.querySelectorAll(".ef-job-row-main")).toHaveLength(6);
   });
 });

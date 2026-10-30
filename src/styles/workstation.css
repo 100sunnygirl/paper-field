@@ -1492,6 +1492,9 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 .ef-failure-cluster li { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
 .ef-failure-cluster li > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ef-failure-reason { margin-left: auto; color: var(--pf-muted); flex: none; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 入库作业行「就地展开」开关：弱化文本按钮，与面板入口同区。 */
+.ef-jobs-expand { align-self: flex-start; min-height: 24px; padding: 0 4px; color: var(--pf-muted); }
+.ef-jobs-expand:hover:not(:disabled) { color: var(--pf-ink); }
 .ef-job-list { padding: 14px 16px 0; display: flex; flex-direction: column; gap: 8px; }
 .ef-job-list .ef-nav-sum { margin: 0; }
 .ef-job-row {
