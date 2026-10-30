@@ -912,10 +912,13 @@ function DraftNotesControls({ paper, disabled, previewFirst }: { paper: PaperDet
   }
   return (
     <>
-      <AiGateButton gated={gated} reason={gateReason} showConfigure={!configured} action={() => setOpen((value) => !value)}>
-        <Icon name="edit" />
-        起草阅读笔记…
-      </AiGateButton>
+      <div className="ef-ai-action">
+        <AiGateButton gated={gated} reason={gateReason} showConfigure={!configured} action={() => setOpen((value) => !value)}>
+          <Icon name="edit" />
+          起草阅读笔记…
+        </AiGateButton>
+        <small>按所选块起草草稿 · 用 Key · 大致十几秒到两分钟（视全文长度）</small>
+      </div>
       {open ? (
         <div className="ef-draft-controls">
           <p>
@@ -1487,16 +1490,19 @@ function ContextPanel({
         )}
         <AiChainPlan settings={settings} />
         <div className="ef-ai-buttons">
-          <Button
-            type="button"
-            variant="secondary"
-            disabled={Boolean(active.length)}
-            title="只查文献库补著录（arXiv/DOI/年份/出处/摘要），不需要配置 AI Key；你手动改过的字段不会被覆盖"
-            onClick={() => void runRefreshLinks(paper.id)}
-          >
-            <Icon name="link" />
-            查询文献库
-          </Button>
+          <div className="ef-ai-action">
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={Boolean(active.length)}
+              title="只查文献库补著录（arXiv/DOI/年份/出处/摘要），不需要配置 AI Key；你手动改过的字段不会被覆盖"
+              onClick={() => void runRefreshLinks(paper.id)}
+            >
+              <Icon name="link" />
+              查询文献库
+            </Button>
+            <small>补标题、作者、标识符等著录 · 不用 Key · 大致几秒</small>
+          </div>
           <AiGateButton
             gated={!hasUsableProvider(settings) || Boolean(active.length)}
             reason={
@@ -1518,6 +1524,7 @@ function ContextPanel({
             <Icon name="file" />
             补全论文信息
           </AiGateButton>
+          <small className="ef-ai-action-note">文献库优先、模型只补空 · 用 Key · 大致几秒到一分钟</small>
           <label
             className={`ef-ai-preview-toggle${previewFirst ? " is-on" : ""}`}
             title="开启后先查询与生成并展示将写入的字段，确认后才写库（不会多花一次模型请求）"

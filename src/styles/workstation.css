@@ -5798,3 +5798,11 @@ mark.ef-ft-hit.is-current { background: var(--pf-signal); }
   font-size: var(--pf-fs-caption);
   color: var(--pf-secondary);
 }
+/* AI 助手菜单：动作 + 一行影响/耗时标注。 */
+.ef-ai-action { display: flex; flex-direction: column; gap: 2px; align-items: flex-start; }
+.ef-ai-action small,
+.ef-ai-action-note {
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+}
+.ef-ai-buttons { gap: 10px; }

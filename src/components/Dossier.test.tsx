@@ -1116,3 +1116,21 @@ describe("ReadingStage · 未配置 AI 的「粘贴 Key 即测」引导卡", () 
     expect(screen.queryByText(/粘贴 Key 即测/)).toBeNull();
   });
 });
+
+describe("ReadingStage · AI 助手菜单标注影响与耗时", () => {
+  it("三个动作各带一行说明：改什么 + 是否用 Key + 大致耗时", () => {
+    const settings = {
+      version: 2 as const,
+      usage: {},
+      providers: [
+        { id: "a", presetId: "deepseek", label: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-chat", enabled: true, hasKey: true, requiresKey: true },
+      ],
+    };
+    useField.setState({ mode: "field", paper: paper({}), selectedPaperId: "p1", settings });
+    renderStage();
+    const zone = document.querySelector(".ef-ai-buttons")!;
+    expect(zone.textContent).toContain("补标题、作者、标识符等著录 · 不用 Key · 大致几秒");
+    expect(zone.textContent).toContain("文献库优先、模型只补空 · 用 Key · 大致几秒到一分钟");
+    expect(zone.textContent).toContain("按所选块起草草稿 · 用 Key · 大致十几秒到两分钟（视全文长度）");
+  });
+});
