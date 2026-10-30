@@ -28,6 +28,7 @@ vi.mock("../lib/repo", () => ({
     listArchive: vi.fn(async () => []),
     listIntake: vi.fn(async () => []),
     searchAll: vi.fn(async () => []),
+    domainCensus: vi.fn(async () => [] as import(\"../lib/types\").DomainCensus[],)
   },
 }));
 
