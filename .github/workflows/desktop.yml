@@ -48,7 +48,7 @@ jobs:
       # 发布（tag）构建不读缓存：缓存可被其他分支的构建写入，不能进入带签名密钥的产物。
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 20
+          node-version: 24
           cache: ${{ github.ref_type != 'tag' && 'npm' || '' }}
           # 不让 package.json 的 packageManager 字段触发自动缓存，缓存只由上一行决定。
           package-manager-cache: false
