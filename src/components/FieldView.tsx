@@ -52,6 +52,7 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
   const setBatchMode = useField((s) => s.setBatchMode);
   const toggleCheckedPaper = useField((s) => s.toggleCheckedPaper);
   const setCheckedPaperIds = useField((s) => s.setCheckedPaperIds);
+  const retryFailedMetaJobs = useField((s) => s.retryFailedMetaJobs);
   const [censusEpoch, setCensusEpoch] = useState(0);
 
   if (mode === "field" && selectedDomainId && !search.trim()) {
@@ -246,6 +247,16 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
               已选 {checkedPaperIds.length} / {list.length}
             </span>
             <span className="ef-batch-actions">
+              <Button
+                type="button"
+                size="sm"
+                disabled={!checkedPaperIds.length}
+                title="为勾选的论文排队补全空白信息：只补空白字段，不覆盖你手动改过的内容；逐篇执行，进度见作业面板"
+                onClick={() => void retryFailedMetaJobs(checkedPaperIds)}
+              >
+                <Icon name="spark" />
+                补全空白信息
+              </Button>
               <Button
                 type="button"
                 size="sm"
