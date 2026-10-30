@@ -220,3 +220,26 @@ describe("draftNotesUserPrompt · 参考范围开关", () => {
     expect(prompt).toContain("MinerU markdown");
   });
 });
+
+describe("draftNotesUserPrompt · 风格与领域上下文注入", () => {
+  function paperOf(): PaperDetail {
+    return {
+      title: "T", titleZh: null, year: null, venue: null, abstract: "A",
+      parsedMarkdown: "", tags: [], authors: [],
+    } as unknown as PaperDetail;
+  }
+
+  it("styleNote / contextNote 注入 prompt；缺省不注入", () => {
+    expect(draftNotesUserPrompt(paperOf(), { styleNote: "Reader style: 简洁" })).toContain("Reader style: 简洁");
+    expect(draftNotesUserPrompt(paperOf(), { contextNote: "关注多模态对齐" })).toContain("Research context");
+    expect(draftNotesUserPrompt(paperOf(), { contextNote: "关注多模态对齐" })).toContain("关注多模态对齐");
+    expect(draftNotesUserPrompt(paperOf())).not.toContain("Reader style");
+    expect(draftNotesUserPrompt(paperOf())).not.toContain("Research context");
+  });
+
+  it("空白风格/上下文不注入空行", () => {
+    const prompt = draftNotesUserPrompt(paperOf(), { styleNote: "  ", contextNote: "" });
+    expect(prompt).not.toContain("Reader style");
+    expect(prompt).not.toContain("Research context");
+  });
+});

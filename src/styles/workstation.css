@@ -5806,3 +5806,21 @@ mark.ef-ft-hit.is-current { background: var(--pf-signal); }
   color: var(--pf-secondary);
 }
 .ef-ai-buttons { gap: 10px; }
+/* 起草风格与领域上下文。 */
+.ef-draft-style { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.ef-draft-style label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+}
+.ef-draft-style select,
+.ef-draft-style textarea {
+  border: 1px solid var(--pf-divider);
+  background: var(--pf-canvas);
+  color: var(--pf-ink);
+  padding: 4px 8px;
+  font-size: var(--pf-fs-caption);
+  font-family: inherit;
+}

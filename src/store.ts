@@ -286,7 +286,7 @@ interface FieldState {
   runDraftNotes: (
     paperId?: string,
     overwrite?: boolean,
-    options?: { kinds?: NoteKind[]; dryRun?: boolean; includeFulltext?: boolean },
+    options?: { kinds?: NoteKind[]; dryRun?: boolean; includeFulltext?: boolean; styleNote?: string; contextNote?: string },
   ) => Promise<void>;
   cancelJob: (jobId: string, options?: { silent?: boolean }) => Promise<void>;
   /**
@@ -1558,7 +1558,11 @@ export const useField = create<FieldState>((set, get) => ({
       return;
     }
     if (get().dialog === "confirm-notes") set({ dialog: null, dialogPaperId: null, pendingDraftJob: null });
-    const prompt = draftNotesUserPrompt(paper, { includeFulltext });
+    const prompt = draftNotesUserPrompt(paper, {
+      includeFulltext,
+      styleNote: options?.styleNote,
+      contextNote: options?.contextNote,
+    });
     // 记下此刻每块笔记的版本号：请求期间被改过的块回写时整块跳过。
     const revs = Object.fromEntries(NOTE_KINDS.map((kind) => [kind, paper.notes?.[kind]?.rev ?? 0])) as Record<NoteKind, number>;
     // 覆盖前快照：完成后逐块 diff、快照还原（撤销）与版本记录都以它为旧值。

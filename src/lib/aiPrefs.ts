@@ -22,3 +22,37 @@ export function savePreviewFirst(on: boolean): void {
     // 隐私模式等存不下：本次会话仍按内存状态生效。
   }
 }
+
+/** 笔记起草风格（注入提示词；本机偏好，不改写库语义）。 */
+export type NoteStyle = "concise" | "critical" | "experimental";
+
+const NOTE_STYLE_KEY = "paper-field.note-style";
+
+export const NOTE_STYLE_LABELS: Record<NoteStyle, string> = {
+  concise: "简洁",
+  critical: "批判",
+  experimental: "重实验",
+};
+
+export function loadNoteStyle(): NoteStyle {
+  try {
+    const raw = localStorage.getItem(NOTE_STYLE_KEY);
+    return raw === "critical" || raw === "experimental" ? raw : "concise";
+  } catch {
+    return "concise";
+  }
+}
+
+export function saveNoteStyle(style: NoteStyle): void {
+  try {
+    localStorage.setItem(NOTE_STYLE_KEY, style);
+  } catch {
+    // 存不下只影响下次默认，本次仍按所选风格生效。
+  }
+}
+
+export function noteStylePrompt(style: NoteStyle): string {
+  if (style === "critical") return "Reader style: 批判性视角——重点评估证据强度、方法漏洞与结论边界，敢于指出弱点。";
+  if (style === "experimental") return "Reader style: 实验视角——关注可复现性、数据集/指标、训练与推理成本、可落地的实验改动。";
+  return "Reader style: 简洁——每块尽量短，只保留关键信息。";
+}

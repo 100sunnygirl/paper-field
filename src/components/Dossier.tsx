@@ -35,7 +35,7 @@ import {
   type FulltextSelection,
 } from "../lib/fulltext";
 import { onMarkdownClick, renderMarkdown } from "../lib/markdown";
-import { loadPreviewFirst, savePreviewFirst } from "../lib/aiPrefs";
+import { loadNoteStyle, loadPreviewFirst, noteStylePrompt, saveNoteStyle, savePreviewFirst, type NoteStyle, NOTE_STYLE_LABELS } from "../lib/aiPrefs";
 import { draftInputScope } from "../lib/prompts";
 import { isNoteHintDismissed, NOTE_HINT_QUESTIONS, setNoteHintDismissed } from "../lib/noteHints";
 import { loadNoteLayout, moveNoteKind as moveNoteKindInOrder, saveNoteLayout, type NoteLayout } from "../lib/noteLayout";
@@ -888,7 +888,12 @@ function DraftNotesControls({ paper, disabled, previewFirst }: { paper: PaperDet
   const [kinds, setKinds] = useState<Set<NoteKind>>(() => new Set(NOTE_DISPLAY_ORDER));
   // 参考范围：默认摘要 + 解析全文；关掉后草稿只依据摘要与题录。
   const [includeFulltext, setIncludeFulltext] = useState(true);
+  // 起草风格（本机偏好）与领域上下文（展开时预填领域简介，发送前可删改）。
+  const [style, setStyle] = useState<NoteStyle>(() => loadNoteStyle());
+  const [context, setContext] = useState("");
+  const [contextTouched, setContextTouched] = useState(false);
   const scope = useMemo(() => draftInputScope(paper), [paper]);
+  const domainSummary = useField((s) => s.domains.find((domain) => domain.id === paper.domainId)?.summary ?? "");
   function toggle(kind: NoteKind, on: boolean) {
     setKinds((prev) => {
       const next = new Set(prev);
@@ -903,10 +908,15 @@ function DraftNotesControls({ paper, disabled, previewFirst }: { paper: PaperDet
       : [...kinds];
     if (!target.length) return;
     setOpen(false);
+    // 领域上下文：预填领域简介（未手改时），发送前可删改——已删空就不注入。
+    const contextNote = contextTouched ? context.trim() : domainSummary.trim();
+    saveNoteStyle(style);
     // 干跑开关开启时逐块预览采纳；否则走确认对话框保护语义。
     void runDraftNotes(paper.id, false, {
       kinds: target,
       includeFulltext,
+      styleNote: noteStylePrompt(style),
+      ...(contextNote ? { contextNote } : {}),
       ...(previewFirst ? { dryRun: true } : {}),
     });
   }
@@ -941,6 +951,39 @@ function DraftNotesControls({ paper, disabled, previewFirst }: { paper: PaperDet
                 {(paper.notes[kind]?.content ?? "").trim() ? <em>已有内容</em> : null}
               </label>
             ))}
+          </div>
+          <div className="ef-draft-style">
+            <label>
+              风格
+              <select
+                aria-label="起草风格"
+                value={style}
+                onChange={(e) => {
+                  const next = e.target.value as NoteStyle;
+                  setStyle(next);
+                  saveNoteStyle(next);
+                }}
+              >
+                {(Object.keys(NOTE_STYLE_LABELS) as NoteStyle[]).map((value) => (
+                  <option key={value} value={value}>
+                    {NOTE_STYLE_LABELS[value]}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              领域上下文（可删改）
+              <textarea
+                aria-label="领域上下文"
+                value={contextTouched ? context : domainSummary}
+                placeholder="留空则不注入；可写研究问题或关注点"
+                rows={2}
+                onChange={(e) => {
+                  setContext(e.target.value);
+                  setContextTouched(true);
+                }}
+              />
+            </label>
           </div>
           {paper.parsedMarkdown.trim() ? (
             <label className="ef-draft-fulltext" title="关闭后草稿只依据摘要与题录，不读解析全文">

@@ -83,7 +83,10 @@ export function prepareMetaUserPrompt(input: {
     .join("\n");
 }
 
-export function draftNotesUserPrompt(paper: PaperDetail, options: { includeFulltext?: boolean } = {}): string {
+export function draftNotesUserPrompt(
+  paper: PaperDetail,
+  options: { includeFulltext?: boolean; styleNote?: string; contextNote?: string } = {},
+): string {
   const includeFulltext = options.includeFulltext !== false;
   const authors = paper.authors.map((a) => `${a.name}${a.affiliation ? ` (${a.affiliation})` : ""}`).join("; ");
   const headings = extractFulltextHeadings(paper.parsedMarkdown);
@@ -104,6 +107,8 @@ export function draftNotesUserPrompt(paper: PaperDetail, options: { includeFullt
           .join("\n")}`
       : null,
     includeFulltext && excerpt(paper.parsedMarkdown) ? `\nMinerU markdown:\n${excerpt(paper.parsedMarkdown)}` : null,
+    options.styleNote?.trim() ? `\n${options.styleNote.trim()}` : null,
+    options.contextNote?.trim() ? `\nResearch context (may inform implications; ignore if irrelevant):\n${options.contextNote.trim()}` : null,
   ]
     .filter((line) => line !== null)
     .join("\n");

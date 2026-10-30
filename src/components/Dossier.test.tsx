@@ -790,10 +790,9 @@ describe("ReadingStage · 起草笔记的块级控制", () => {
     // 关掉「参考解析全文」：起草调用带 includeFulltext=false。
     fireEvent.click(screen.getByRole("checkbox", { name: "参考解析全文" }));
     fireEvent.click(screen.getByRole("button", { name: "起草选中 5 块" }));
-    expect(runDraftNotes).toHaveBeenLastCalledWith("p1", false, {
-      kinds: expect.anything(),
+    expect(runDraftNotes).toHaveBeenLastCalledWith("p1", false, expect.objectContaining({
       includeFulltext: false,
-    });
+    }));
   });
 
   it("展开后默认全选；「只补空白块」只起草空块；取消勾选后按选中块起草", () => {
@@ -810,18 +809,18 @@ describe("ReadingStage · 起草笔记的块级控制", () => {
     expect(screen.getByText(/选择要起草的笔记块/)).toBeInTheDocument();
     // 只补空白块：跳过已有内容的总结。
     fireEvent.click(screen.getByRole("button", { name: "只补空白块" }));
-    expect(runDraftNotes).toHaveBeenLastCalledWith("p1", false, {
+    expect(runDraftNotes).toHaveBeenLastCalledWith("p1", false, expect.objectContaining({
       kinds: ["highlights", "weaknesses", "implications", "remarks"],
       includeFulltext: true,
-    });
+    }));
     // 再展开（勾选状态保留：仍是全 5 块），取消「亮点」，起草选中的 4 块。
     fireEvent.click(screen.getByRole("button", { name: "起草阅读笔记…" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "起草亮点" }));
     fireEvent.click(screen.getByRole("button", { name: "起草选中 4 块" }));
-    expect(runDraftNotes).toHaveBeenLastCalledWith("p1", false, {
+    expect(runDraftNotes).toHaveBeenLastCalledWith("p1", false, expect.objectContaining({
       kinds: ["summary", "weaknesses", "implications", "remarks"],
       includeFulltext: true,
-    });
+    }));
   });
 
   it("「先预览再写入」开启时起草带 dryRun（逐块 diff 采纳）", () => {
@@ -837,11 +836,10 @@ describe("ReadingStage · 起草笔记的块级控制", () => {
     renderStage();
     fireEvent.click(screen.getByRole("button", { name: "起草阅读笔记…" }));
     fireEvent.click(screen.getByRole("button", { name: "起草选中 5 块" }));
-    expect(runDraftNotes).toHaveBeenLastCalledWith("p1", false, {
-      kinds: expect.anything(),
+    expect(runDraftNotes).toHaveBeenLastCalledWith("p1", false, expect.objectContaining({
       includeFulltext: true,
       dryRun: true,
-    });
+    }));
   });
 
   it("全部取消勾选时「起草选中」禁用", () => {
@@ -1132,5 +1130,63 @@ describe("ReadingStage · AI 助手菜单标注影响与耗时", () => {
     expect(zone.textContent).toContain("补标题、作者、标识符等著录 · 不用 Key · 大致几秒");
     expect(zone.textContent).toContain("文献库优先、模型只补空 · 用 Key · 大致几秒到一分钟");
     expect(zone.textContent).toContain("按所选块起草草稿 · 用 Key · 大致十几秒到两分钟（视全文长度）");
+  });
+});
+
+describe("ReadingStage · 起草风格偏好与领域上下文", () => {
+  function usableSettings() {
+    return {
+      version: 2 as const,
+      usage: {},
+      providers: [
+        { id: "a", presetId: "deepseek", label: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-chat", enabled: true, hasKey: true, requiresKey: true },
+      ],
+    };
+  }
+
+  beforeEach(() => {
+    localStorage.removeItem("paper-field.note-style");
+  });
+
+  it("选择风格（本机记住）与预填领域简介（可删改）注入起草调用", () => {
+    const runDraftNotes = vi.fn(async () => undefined);
+    const domain = { id: "d1", name: "多模态", code: "MM-01", summary: "关注视觉指令对齐与幻觉抑制", sortOrder: 0, createdAt: "2024-01-01T00:00:00.000Z" };
+    useField.setState({
+      mode: "field",
+      paper: paper({}),
+      selectedPaperId: "p1",
+      domains: [domain],
+      settings: usableSettings(),
+      runDraftNotes,
+    });
+    renderStage();
+    fireEvent.click(screen.getByRole("button", { name: "起草阅读笔记…" }));
+    // 领域上下文预填领域简介。
+    expect(screen.getByLabelText("领域上下文")).toHaveValue("关注视觉指令对齐与幻觉抑制");
+    fireEvent.change(screen.getByLabelText("起草风格"), { target: { value: "critical" } });
+    expect(localStorage.getItem("paper-field.note-style")).toBe("critical");
+    fireEvent.click(screen.getByRole("button", { name: "起草选中 5 块" }));
+    expect(runDraftNotes).toHaveBeenLastCalledWith("p1", false, expect.objectContaining({
+      styleNote: expect.stringContaining("批判性视角"),
+      contextNote: "关注视觉指令对齐与幻觉抑制",
+    }));
+  });
+
+  it("删空领域上下文后不注入；重开面板恢复预填", () => {
+    const runDraftNotes = vi.fn(async () => undefined);
+    const domain = { id: "d1", name: "多模态", code: "MM-01", summary: "关注视觉指令对齐", sortOrder: 0, createdAt: "2024-01-01T00:00:00.000Z" };
+    useField.setState({
+      mode: "field",
+      paper: paper({}),
+      selectedPaperId: "p1",
+      domains: [domain],
+      settings: usableSettings(),
+      runDraftNotes,
+    });
+    renderStage();
+    fireEvent.click(screen.getByRole("button", { name: "起草阅读笔记…" }));
+    fireEvent.change(screen.getByLabelText("领域上下文"), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "起草选中 5 块" }));
+    expect(runDraftNotes).toHaveBeenLastCalledWith("p1", false, expect.not.objectContaining({ contextNote: expect.anything() }));
   });
 });
