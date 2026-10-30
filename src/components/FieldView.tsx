@@ -47,6 +47,8 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
   const importFailures = useField((s) => s.importFailures);
   const removeImportFailure = useField((s) => s.removeImportFailure);
   const retryImportFailures = useField((s) => s.retryImportFailures);
+  const importSummary = useField((s) => s.importSummary);
+  const dismissImportSummary = useField((s) => s.dismissImportSummary);
   const setJobsOpen = useField((s) => s.setJobsOpen);
   const highlightJob = useField((s) => s.highlightJob);
   // 阶段一句话与作业面板同一口径：入库页行内直接看到「已解析 n/N 页」等实况。
@@ -240,6 +242,49 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
                 <p className="ef-nav-sum">其余 {titlePending.length - 4} 篇在上方列表里逐篇处理。</p>
               ) : null}
             </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {/* 批量导入小结卡：导入落地页（现场/入库）都可见，常驻到用户关闭——
+          成功 / 跳过（重复）/ 失败清单与原因，失败可整批「仅重试失败篇」。 */}
+      {(mode === "field" || mode === "intake") && importSummary ? (
+        <div className="ef-import-summary" aria-label="导入小结">
+          <div className="ef-import-summary-head">
+            <strong>
+              导入小结 · 成功 {importSummary.created} 篇
+              {importSummary.skipped ? ` · 跳过 ${importSummary.skipped} 篇（已在库中）` : ""}
+              {importSummary.failed.length ? ` · 失败 ${importSummary.failed.length} 篇` : ""}
+            </strong>
+            <Button
+              type="button"
+              size="sm"
+              variant="text"
+              aria-label="关闭导入小结"
+              onClick={dismissImportSummary}
+            >
+              关闭
+            </Button>
+          </div>
+          {importSummary.failed.length ? (
+            <>
+              <ul className="ef-import-retry-list">
+                {importSummary.failed.slice(0, 6).map((entry) => (
+                  <li key={entry.path} title={entry.message}>
+                    <span className="ef-import-retry-name">{entry.name}</span>
+                    <em>{entry.message}</em>
+                  </li>
+                ))}
+              </ul>
+              {importSummary.failed.length > 6 ? (
+                <p className="ef-nav-sum">其余 {importSummary.failed.length - 6} 个失败文件见入库页「导入待重试」清单。</p>
+              ) : null}
+              <div className="ef-import-summary-actions">
+                <Button type="button" size="sm" onClick={() => void retryImportFailures()}>
+                  仅重试失败篇
+                </Button>
+              </div>
+            </>
           ) : null}
         </div>
       ) : null}

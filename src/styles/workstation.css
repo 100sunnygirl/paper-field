@@ -3855,6 +3855,22 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   text-align: left;
 }
 .ef-import-retry-link:hover { text-decoration: underline; }
+/* 批量导入小结卡：常驻列表栏头部（现场/入库页），失败清单可整批重试。 */
+.ef-import-summary {
+  margin: 8px 0 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--pf-divider);
+  border-left: var(--pf-marker) solid var(--pf-ink);
+  background: var(--pf-surface);
+  font-size: var(--pf-fs-caption);
+}
+.ef-import-summary-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.ef-import-summary-actions { margin-top: 6px; }
 /* 导入模式选择（只入库 / 入库并解析 / 解析后补全）+ 本批解析源说明。 */
 .ef-import-mode {
   display: flex;

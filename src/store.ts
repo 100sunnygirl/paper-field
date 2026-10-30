@@ -114,6 +114,12 @@ interface FieldState {
    * 入口随通知消失，这份清单让失败文件长期留在 INTAKE 页可逐条重试或放弃。
    */
   importFailures: ImportFailureEntry[];
+  /**
+   * 最近一次批量导入的小结卡（多文件或含失败时记录；单篇成功不打扰）：
+   * 成功 / 跳过（重复）/ 失败清单与原因，常驻到用户关闭——大批量导入后不必翻日志。
+   */
+  importSummary: (ImportOutcome & { at: number }) | null;
+  dismissImportSummary: () => void;
   /** 逐条移除一个失败文件（用户明确放弃；不再走导入）。 */
   removeImportFailure: (path: string) => void;
   /** INTAKE「仅重试失败文件」：按原目标领域分组重跑（全部或指定路径）。 */
@@ -408,6 +414,7 @@ export const useField = create<FieldState>((set, get) => ({
   intake: [],
   importTargetDomainId: null,
   importFailures: listImportFailures(),
+  importSummary: null,
   jobs: [],
   stats: { read: 0, total: 0, openSource: 0, queued: 0, running: 0 },
   search: "",
@@ -731,6 +738,8 @@ export const useField = create<FieldState>((set, get) => ({
 
   setImportTargetDomainId: (id) => set({ importTargetDomainId: id }),
 
+  dismissImportSummary: () => set({ importSummary: null }),
+
   removeImportFailure: (path) => {
     dropImportFailure(path);
     set({ importFailures: listImportFailures() });
@@ -918,6 +927,11 @@ export const useField = create<FieldState>((set, get) => ({
       }
       if (settled.length) resolveImportFailures(settled);
       set({ importFailures: listImportFailures() });
+      // 批量小结卡：多文件或含失败时记录（单篇成功不打扰，仍走既有 toast）；
+      // 常驻到用户关闭——大批量导入后不必翻日志才知道谁失败了。
+      if (queue.length > 1 || failed.length) {
+        set({ importSummary: { created: created.length, skipped: skippedCount, failed, at: Date.now() } });
+      }
       // 只关导入对话框本身：长时间导入期间用户打开的其他对话框不被顺手关掉。
       if (get().dialog === "paper") set({ dialog: null });
       if (created[0]) selectionEpoch += 1;

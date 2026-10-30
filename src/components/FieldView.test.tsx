@@ -441,3 +441,49 @@ describe("PaperNav · INTAKE 标题待确认集中校对", () => {
     expect(screen.queryByText(/标题待确认/)).toBeNull();
   });
 });
+
+describe("PaperNav · 批量导入小结卡", () => {
+  const summary = {
+    created: 2,
+    skipped: 1,
+    failed: [
+      { name: "bad.pdf", path: "/x/bad.pdf", domainId: "d-1", message: "磁盘已满" },
+    ],
+    at: 1_700_000_000_000,
+  };
+
+  it("现场页与入库页显示小结：成功/跳过/失败与原因，可整批重试、可关闭", async () => {
+    const retryImportFailures = vi.fn(async () => undefined);
+    useField.setState({
+      mode: "field",
+      importSummary: summary,
+      retryImportFailures,
+    });
+    const { unmount } = render(<PaperNav />);
+    const card = document.querySelector(".ef-import-summary")!;
+    expect(card.textContent).toContain("导入小结 · 成功 2 篇");
+    expect(card.textContent).toContain("跳过 1 篇（已在库中）");
+    expect(card.textContent).toContain("失败 1 篇");
+
+    expect(screen.getByText("bad.pdf")).toBeInTheDocument();
+    expect(screen.getByText("磁盘已满")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "仅重试失败篇" }));
+    expect(retryImportFailures).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "关闭导入小结" }));
+    expect(useField.getState().importSummary).toBeNull();
+    unmount();
+  });
+
+  it("无小结时不显示区块；归档页不显示", () => {
+    useField.setState({ mode: "intake", importSummary: null });
+    const { unmount } = render(<PaperNav />);
+    expect(screen.queryByText(/导入小结/)).toBeNull();
+    unmount();
+
+    useField.setState({ mode: "archive", importSummary: summary });
+    render(<PaperNav />);
+    expect(screen.queryByText(/导入小结/)).toBeNull();
+  });
+});
