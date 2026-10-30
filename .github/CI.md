@@ -19,7 +19,7 @@ rebuild the UI. Ubuntu runs only frontend checks, so it needs no Linux Tauri
 native libraries. Each Rust job verifies the compiler host before running the
 native tests; cross-compilation alone is not execution coverage.
 
-Node 20 and stable Rust follow the existing Desktop workflow/toolchain. The
+Node 24 and stable Rust follow the existing Desktop workflow/toolchain. The
 existing clippy scope is retained: `--all-targets -- -A clippy::all -D
 clippy::string_slice`, not a new all-warnings policy. Cargo uses `--locked`.
 Frontend caching is keyed by setup-node's OS/architecture and package lock;
