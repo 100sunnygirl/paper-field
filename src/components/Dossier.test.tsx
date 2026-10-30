@@ -1029,3 +1029,36 @@ describe("ReadingStage · 「重新查询文献库」更名与影响说明", () 
     expect(button.getAttribute("title")).toContain("不调用模型");
   });
 });
+
+describe("ReadingStage · 著录缓存可见与强制重查", () => {
+  it("显示缓存说明、本会话查询时间与「跳过缓存，立即重查」；点击走 runRefreshLinks", async () => {
+    const runRefreshLinks = vi.fn(async () => undefined);
+    useField.setState({
+      mode: "field",
+      paper: paper({}),
+      selectedPaperId: "p1",
+      lookupOutcome: { paperId: "p1", at: 1700000000000, found: true },
+      runRefreshLinks,
+    });
+    renderStage();
+    const row = screen.getByText(/文献库结果本地缓存约一天/);
+    expect(row.textContent).toContain("本会话上次查询");
+    fireEvent.click(screen.getByRole("button", { name: "跳过缓存，立即重查" }));
+    await waitFor(() => expect(runRefreshLinks).toHaveBeenCalledWith("p1"));
+  });
+
+  it("本会话没查过时标注「还没有查询过」；落空原因来自查询通知", () => {
+    const runRefreshLinks = vi.fn(async () => undefined);
+    useField.setState({
+      mode: "field",
+      paper: paper({}),
+      selectedPaperId: "p1",
+      runRefreshLinks,
+      lookupHint: { paperId: "p1", notices: [{ source: "arxiv", code: "no_match", message: "arXiv 没有匹配的条目" }] },
+    });
+    renderStage();
+    expect(screen.getByText(/本会话还没有查询过/)).toBeInTheDocument();
+    // 落空原因同时出现在 AI 助手区的查询提示与缓存行（同一数据源，两处引用）。
+    expect(screen.getAllByText("arXiv 没有匹配的条目").length).toBeGreaterThanOrEqual(1);
+  });
+});

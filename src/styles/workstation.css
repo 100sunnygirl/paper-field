@@ -5765,3 +5765,15 @@ mark.ef-ft-hit.is-current { background: var(--pf-signal); }
 .ef-ai-gate { position: relative; display: inline-flex; }
 .ef-btn.is-gated { opacity: 0.55; cursor: not-allowed; }
 .ef-ai-gate-pop { left: 0; top: calc(100% + 6px); white-space: normal; max-width: 280px; }
+/* 著录缓存状态行：缓存说明 + 本会话查询时间 + 跳过缓存重查。 */
+.ef-biblio-cache {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--pf-divider);
+}
+.ef-biblio-cache p {
+  margin: 0 0 6px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+}
+.ef-biblio-cache-why { color: var(--pf-ink); }

@@ -607,6 +607,34 @@ function ContextBlock({
 }
 
 /**
+ * 著录缓存状态行：本地缓存约一天的事前说明 + 本会话上次查询时间 + 「跳过缓存，
+ * 立即重查」直达（等价于「重新查询文献库」的 force 语义）。缓存的写入时间是
+ * 桌面端（Rust）持有并暂不回报前端，这里只报本会话的查询记录，不冒充缓存时间。
+ */
+function BiblioCacheRow({ paper }: { paper: PaperDetail }) {
+  const lookupOutcome = useField((s) => s.lookupOutcome);
+  const lookupHint = useField((s) => s.lookupHint);
+  const runRefreshLinks = useField((s) => s.runRefreshLinks);
+  const mine = lookupOutcome?.paperId === paper.id;
+  return (
+    <div className="ef-biblio-cache">
+      <p>
+        文献库结果本地缓存约一天
+        {mine ? ` · 本会话上次查询：${new Date(lookupOutcome!.at).toLocaleTimeString()}` : " · 本会话还没有查询过"}
+      </p>
+      {lookupHint?.paperId === paper.id && lookupHint.notices.length ? (
+        <p className="ef-biblio-cache-why">
+          {lookupHint.notices.map((notice) => notice.message).join(" ")}
+        </p>
+      ) : null}
+      <Button type="button" size="sm" onClick={() => void runRefreshLinks(paper.id)}>
+        跳过缓存，立即重查
+      </Button>
+    </div>
+  );
+}
+
+/**
  * 查询落空时的内联补救：补充或更正 arXiv / DOI 后立即跳过缓存重查一次。
  * 输入预填现有标识符（更正错误 id 与补新 id 是同一条恢复路径）。
  */
@@ -1214,6 +1242,7 @@ function ContextPanel({
           </p>
         ) : null}
         {paper.mineruError ? <p className="ef-missing is-error">{paper.mineruError}</p> : null}
+        <BiblioCacheRow paper={paper} />
         {paper.pdfPath && !mineru.configured ? (
           <Button type="button" variant="link" onClick={() => void setMode("system")}>
             配置 MinerU 解析源
