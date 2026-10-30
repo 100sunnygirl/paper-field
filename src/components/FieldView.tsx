@@ -4,6 +4,7 @@ import {
   JOB_STATUS_LABELS,
   JOB_TYPE_LABELS,
   NOTE_LABELS,
+  type LlmJob,
   type NoteKind,
   type OpenSource,
   type PaperListItem,
@@ -87,6 +88,34 @@ export function countTodayImported(items: PaperListItem[], now: Date = new Date(
       at.getDate() === now.getDate()
     );
   }).length;
+}
+
+/**
+ * 待处理行的组合状态标签：同时透出 MinerU 解析与著录补全两条流水线的进度
+ * （如「解析完成 · 信息补全中」「解析失败 · 信息待补全」「无 PDF · 信息已补全」）。
+ * 补全中的判定来自进行中的 prepareMeta 作业；已补全看 llmPreparedAt。
+ */
+export function intakeComboLabel(paper: PaperListItem, jobs: LlmJob[]): string {
+  const parsePart = !paper.pdfPath
+    ? "无 PDF"
+    : paper.mineruStatus === "done"
+      ? "解析完成"
+      : paper.mineruStatus === "error"
+        ? "解析失败"
+        : paper.mineruStatus === "parsing" || paper.mineruStatus === "submitted"
+          ? "解析中"
+          : paper.mineruStatus === "queued"
+            ? "排队中"
+            : paper.mineruStatus === "pending"
+              ? "待解析"
+              : paper.mineruStatus === "cancelled"
+                ? "已取消解析"
+                : "未解析";
+  const metaBusy = jobs.some(
+    (job) => job.paperId === paper.id && job.type === "prepareMeta" && (job.status === "queued" || job.status === "running"),
+  );
+  const metaPart = metaBusy ? "信息补全中" : paper.llmPreparedAt ? "信息已补全" : "信息待补全";
+  return `${parsePart} · ${metaPart}`;
 }
 
 function timeOf(value: string | null | undefined): number {
@@ -392,6 +421,12 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
       >
         重新在读
       </button>
+    </div>
+  );
+  /** 入库行的组合状态标签：解析 + 补全两条流水线一眼可见。 */
+  const intakeRowExtra = (paper: PaperListItem) => (
+    <div className="ef-row-extra">
+      <span className="ef-row-combo">{intakeComboLabel(paper, jobs)}</span>
     </div>
   );
   const domainPapers =
@@ -840,7 +875,7 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
           batch={batchMode}
           checkedIds={checkedPaperIds}
           onToggleCheck={(id) => toggleCheckedPaper(id)}
-          rowExtra={mode === "archive" ? archiveRowExtra : undefined}
+          rowExtra={mode === "archive" ? archiveRowExtra : mode === "intake" ? intakeRowExtra : undefined}
         />
       )}
 

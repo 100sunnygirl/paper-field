@@ -556,6 +556,51 @@ describe("PaperNav · 入库按解析状态分组（失败置顶）", () => {
   });
 });
 
+describe("PaperNav · 入库行组合状态标签", () => {
+  function job(id: string, paperId: string, type: "prepareMeta", status: "running" | "queued" | "done") {
+    return {
+      id,
+      paperId,
+      type,
+      status,
+      prompt: null,
+      resultJson: null,
+      error: null,
+      createdAt: "2024-01-01T00:00:00.000Z",
+      startedAt: null,
+      finishedAt: null,
+    };
+  }
+
+  it("组合标签同时透出解析与补全两条流水线", () => {
+    useField.setState({
+      mode: "intake",
+      intake: [
+        { ...intakeItem("done-meta", "done"), llmPreparedAt: "2026-01-02T00:00:00.000Z" },
+        intakeItem("done-wait", "done"),
+        intakeItem("err", "error"),
+        { ...intakeItem("noped", null), pdfPath: null },
+      ],
+      jobs: [job("j1", "done-wait", "prepareMeta", "running")],
+    });
+    render(<PaperNav />);
+    expect(screen.getByText("解析完成 · 信息已补全")).toBeInTheDocument();
+    expect(screen.getByText("解析完成 · 信息补全中")).toBeInTheDocument();
+    expect(screen.getByText("解析失败 · 信息待补全")).toBeInTheDocument();
+    expect(screen.getByText("无 PDF · 信息待补全")).toBeInTheDocument();
+  });
+
+  it("排队中的补全作业同样显示「信息补全中」", () => {
+    useField.setState({
+      mode: "intake",
+      intake: [intakeItem("q", "done")],
+      jobs: [job("j2", "q", "prepareMeta", "queued")],
+    });
+    render(<PaperNav />);
+    expect(screen.getByText("解析完成 · 信息补全中")).toBeInTheDocument();
+  });
+});
+
 describe("PaperNav · 领域计数不随搜索改写", () => {
   it("搜索过滤列表，阅读进度和本领域论文仍按未过滤领域计算", () => {
     const read = { ...intakeItem("a", null), readingStatus: "read" as const };

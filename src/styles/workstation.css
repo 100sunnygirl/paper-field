@@ -1410,6 +1410,12 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 .ef-intake-funnel .ef-funnel-error { color: var(--pf-danger); }
 .ef-intake-funnel .ef-funnel-error b { color: var(--pf-danger); }
 .ef-funnel-scope { margin-left: auto; color: var(--pf-muted); font-size: var(--pf-fs-tag); }
+/* 入库行组合状态标签：「解析流水线 · 补全流水线」一段弱化文本（PaperRow 附加操作区）。 */
+.ef-row-combo {
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-muted);
+  letter-spacing: 0.02em;
+}
 .ef-job-list { padding: 14px 16px 0; display: flex; flex-direction: column; gap: 8px; }
 .ef-job-list .ef-nav-sum { margin: 0; }
 .ef-job-row {
