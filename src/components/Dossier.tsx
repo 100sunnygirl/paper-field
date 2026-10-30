@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
+import { getActivity, subscribeActivity, type JobStage } from "../lib/activity";
 import { bindingLabel, currentKeymap, eventMatchesBinding } from "../lib/keymap";
 import {
   FONT_STEPS,
@@ -63,6 +64,16 @@ import { Button, Dialog, Empty, ExternalResource, Icon, SourceBadge, type IconNa
 
 /** 本页目录里解析全文章节二级项的显示上限：更长的全文只列前若干节并注明其余节数。 */
 const TOC_SECTION_LIMIT = 30;
+
+/** 解析作业的阶段一句话（与作业面板 stageHint 同口径的简化版）。 */
+const PARSE_STAGE_LABELS: Record<JobStage, string> = {
+  queue: "排队等待解析…",
+  submit: "正在上传 PDF 并提交解析…",
+  parse: "正在解析…",
+  fetch: "解析完成，正在取回全文…",
+  request: "请求模型…",
+  apply: "写入结果…",
+};
 
 /** 把区段锚点 id 转成浮标 / 提示里可读的中文标签。 */
 function spotSectionLabel(section: string, headings: ReturnType<typeof extractFulltextHeadings>): string {
@@ -714,6 +725,13 @@ function ContextPanel({
   const active = jobs.filter(
     (job) => job.paperId === paper.id && (job.status === "running" || job.status === "queued"),
   );
+  // 解析进行中的实况（阶段 / 解析源 / 页进度）：正文侧原位同步作业面板的信息。
+  const activity = useSyncExternalStore(subscribeActivity, getActivity);
+  const liveParse = useMemo(() => {
+    const parseJob = active.find((job) => job.type === "mineruParse");
+    if (!parseJob) return null;
+    return activity.jobs[parseJob.id] ?? null;
+  }, [active, activity]);
   // 解析全文的小节标题 → 本页目录的二级导航；过长时截断显示并注明其余节数。
   const fulltextHeadings = useMemo(() => extractFulltextHeadings(paper.parsedMarkdown), [paper.parsedMarkdown]);
   const visibleHeadings = fulltextHeadings.slice(0, TOC_SECTION_LIMIT);
@@ -1020,6 +1038,16 @@ function ContextPanel({
               ) : null}
             </p>
             {paper.mineruError ? <p className="ef-parse-reason">{paper.mineruError}</p> : null}
+            {parseRunning && liveParse ? (
+              <p className="ef-parse-live" aria-live="polite">
+                {PARSE_STAGE_LABELS[liveParse.stage]}
+                {liveParse.pages ? ` · 第 ${liveParse.pages.done} / ${liveParse.pages.total} 页` : ""}
+                {liveParse.provider ? ` · ${providerLabel(liveParse.provider)}` : ""}
+                <Button type="button" size="sm" variant="text" onClick={() => setJobsOpen(true)}>
+                  查看作业面板
+                </Button>
+              </p>
+            ) : null}
             {parseFailed ? (
               <p className="ef-parse-next">
                 下次将用：

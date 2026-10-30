@@ -5595,3 +5595,13 @@ mark.ef-ft-hit.is-current { background: var(--pf-signal); }
 .ef-combobox-list li { padding: 4px 8px; cursor: pointer; color: var(--pf-ink); }
 .ef-combobox-list li[data-active], .ef-combobox-list li:hover { background: var(--pf-hover-flat); }
 .ef-combobox-list li[aria-selected="true"] { font-weight: 600; }
+
+/* 解析进行中的原位进度行（资料栏小卡内）：阶段 + 页数 + 解析源，与作业面板同源。 */
+.ef-parse-live {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  color: var(--pf-ink);
+  font-weight: 600;
+}
