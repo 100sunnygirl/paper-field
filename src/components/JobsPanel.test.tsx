@@ -156,7 +156,7 @@ describe("JobsPanel", () => {
     render(<JobsPanel />);
     const card = screen.getByRole("article", { name: "补全论文信息：Title p2" });
     expect(within(card).getByText("解析后自动")).toBeInTheDocument();
-    expect(within(card).getByText("多模态 · DeepSeek（deepseek-chat） · 失败时回退其余 1 个")).toBeInTheDocument();
+    expect(within(card).getByText("多模态 · 计划使用 DeepSeek（deepseek-chat） · 失败时回退其余 1 个")).toBeInTheDocument();
     expect(within(card).getByText("请求模型").closest("li")).toHaveAttribute("aria-current", "step");
   });
 
