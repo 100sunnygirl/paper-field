@@ -414,7 +414,7 @@ describe("ReadingStage · 资料栏「本篇状态卡」", () => {
     renderStage();
     expect(within(card()).getByText("已完成")).toBeInTheDocument();
     expect(within(card()).getByText("5 / 5")).toBeInTheDocument(); // 著录齐全（笔记行是 1 / 5）
-    fireEvent.click(within(card()).getByRole("button", { name: "去写亮点" }));
+    fireEvent.click(within(card()).getByRole("button", { name: "去补亮点" }));
     expect(document.querySelector('.ef-toc a[href="#note-highlights"]')).toHaveClass("is-active");
   });
 
