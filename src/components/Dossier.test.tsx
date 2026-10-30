@@ -1019,14 +1019,15 @@ describe("ReadingStage · AI 按钮置灰时浮层说明原因", () => {
 });
 
 describe("ReadingStage · 「重新查询文献库」更名与影响说明", () => {
-  it("按钮名为「重新查询文献库」，悬停说明会刷新哪些字段、保留哪些人工修改", () => {
+  it("资料栏缓存行的「跳过缓存，立即重查」沿用 force 语义；AI 区按钮已并入免 Key 的「查询文献库」", () => {
     useField.setState({ mode: "field", paper: paper({}), selectedPaperId: "p1" });
     renderStage();
-    const button = screen.getByRole("button", { name: "重新查询文献库" });
+    // 更名后不再有「刷新链接」字样的按钮。
     expect(screen.queryByRole("button", { name: "刷新链接" })).toBeNull();
-    expect(button.getAttribute("title")).toContain("跳过本地缓存重新查询文献库");
-    expect(button.getAttribute("title")).toContain("你手动改过的字段与手填链接不会被覆盖");
-    expect(button.getAttribute("title")).toContain("不调用模型");
+    // 免 Key 的「查询文献库」按钮带影响范围说明（更新哪些字段、保留哪些人工修改）。
+    const button = screen.getByRole("button", { name: "查询文献库" });
+    expect(button.getAttribute("title")).toContain("不需要配置 AI Key");
+    expect(button.getAttribute("title")).toContain("你手动改过的字段不会被覆盖");
   });
 });
 
@@ -1060,5 +1061,21 @@ describe("ReadingStage · 著录缓存可见与强制重查", () => {
     expect(screen.getByText(/本会话还没有查询过/)).toBeInTheDocument();
     // 落空原因同时出现在 AI 助手区的查询提示与缓存行（同一数据源，两处引用）。
     expect(screen.getAllByText("arXiv 没有匹配的条目").length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("ReadingStage · 不依赖 AI Key 的「查询文献库」按钮", () => {
+  it("未配置 AI 时按钮可用、排在动作区首位并说明不需要 Key", async () => {
+    const runRefreshLinks = vi.fn(async () => undefined);
+    useField.setState({ mode: "field", paper: paper({}), selectedPaperId: "p1", runRefreshLinks });
+    renderStage();
+    const lookup = screen.getByRole("button", { name: "查询文献库" });
+    expect(lookup).toBeEnabled();
+    expect(lookup.getAttribute("title")).toContain("不需要配置 AI Key");
+    // 它是 AI 动作区的第一个按钮（排在需要 Key 的「补全论文信息」之前）。
+    const zone = document.querySelector(".ef-ai-buttons")!;
+    expect(zone.querySelector("button")!.textContent).toContain("查询文献库");
+    fireEvent.click(lookup);
+    await waitFor(() => expect(runRefreshLinks).toHaveBeenCalledWith("p1"));
   });
 });

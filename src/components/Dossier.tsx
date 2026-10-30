@@ -1394,10 +1394,20 @@ function ContextPanel({
         {hasUsableProvider(settings) ? (
           <p>用于补全论文信息或起草阅读笔记。AI 不会自动把论文标成已读。</p>
         ) : (
-          <p>尚未配置 AI 服务，可到设置页配置。手动阅读与笔记不受影响。</p>
+          <p>尚未配置 AI 服务：「查询文献库」不需要 Key，可直接补标题、作者与标识符；模型补全与起草可稍后到设置页配置。</p>
         )}
         <AiChainPlan settings={settings} />
         <div className="ef-ai-buttons">
+          <Button
+            type="button"
+            variant="secondary"
+            disabled={Boolean(active.length)}
+            title="只查文献库补著录（arXiv/DOI/年份/出处/摘要），不需要配置 AI Key；你手动改过的字段不会被覆盖"
+            onClick={() => void runRefreshLinks(paper.id)}
+          >
+            <Icon name="link" />
+            查询文献库
+          </Button>
           <AiGateButton
             gated={!hasUsableProvider(settings) || Boolean(active.length)}
             reason={
@@ -1433,15 +1443,6 @@ function ContextPanel({
             />
             先预览再写入
           </label>
-          <Button
-            type="button"
-            disabled={Boolean(active.length)}
-            title="跳过本地缓存重新查询文献库：会更新 arXiv/DOI/年份/出处/摘要等著录字段（文献库之间可互相更新）；你手动改过的字段与手填链接不会被覆盖，也不调用模型"
-            onClick={() => void runRefreshLinks(paper.id)}
-          >
-            <Icon name="link" />
-            重新查询文献库
-          </Button>
           {lookupHint?.paperId === paper.id && lookupHint.notices.length ? (
             <div className="ef-lookup-hint">
               {lookupHint.notices.map((notice) => (
