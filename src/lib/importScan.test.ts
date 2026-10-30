@@ -2,11 +2,31 @@ import { describe, expect, it } from "vitest";
 import {
   cleanPdfTitle,
   extractArxivFromFilename,
+  looksLikeNonPaper,
   normalizeTitleForMatch,
   scanImportItem,
   titleSimilarity,
   type PaperRef,
 } from "./importScan";
+
+describe("looksLikeNonPaper · 非论文预判", () => {
+  it("课件 / 习题答案 / 试卷 / 表单等强信号词命中", () => {
+    expect(looksLikeNonPaper("week3-lecture-slides.pdf")).toBe(true);
+    expect(looksLikeNonPaper("第3讲 课件.pdf")).toBe(true);
+    expect(looksLikeNonPaper("2017期末试卷A.pdf")).toBe(true);
+    expect(looksLikeNonPaper("习题答案 chapter5.pdf")).toBe(true);
+    expect(looksLikeNonPaper("报销发票-2024.pdf")).toBe(true);
+    expect(looksLikeNonPaper("报名表-v2.pdf")).toBe(true);
+    expect(looksLikeNonPaper("problem-set1.pdf")).toBe(true);
+  });
+
+  it("两可词不误伤正常论文", () => {
+    expect(looksLikeNonPaper("Attention Is All You Need.pdf")).toBe(false);
+    expect(looksLikeNonPaper("notes on diffusion models.pdf")).toBe(false);
+    expect(looksLikeNonPaper("1706.03762 attention.pdf")).toBe(false);
+    expect(looksLikeNonPaper("A Survey of Retrieval-Augmented Generation.pdf")).toBe(false);
+  });
+});
 
 function ref(overrides: Partial<PaperRef> = {}): PaperRef {
   return {

@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState, type CSSProperties } from "react";
-import { scanImportItem, type ImportItemScan, type PaperRef } from "../lib/importScan";
+import { looksLikeNonPaper, scanImportItem, type ImportItemScan, type PaperRef } from "../lib/importScan";
 import { lookupPaper } from "../lib/lookup";
 import { pickPdfFiles, pickPdfFolder } from "../lib/mineru";
 import { providerLabel } from "../lib/mineruPlan";
@@ -138,9 +138,10 @@ export function PaperDialog() {
       const next = new Map(current.map((item) => [item.path, item]));
       for (const path of paths) {
         const name = path.split(/[/\\]/).pop() ?? path;
-        // 重新扫描同一目录时保留用户已排除的选择与单独指定过的目标领域，不悄悄改回。
+        // 重新扫描同一目录时保留用户已排除的选择与单独指定过的目标领域，不悄悄改回；
+        // 新文件按文件名预判非论文 PDF（课件/习题/表单等强信号词）默认不勾选，允许改选。
         const prev = current.find((item) => item.path === path);
-        const excluded = prev?.excluded ?? false;
+        const excluded = prev?.excluded ?? looksLikeNonPaper(name);
         const domainId = prev?.domainId ?? fallbackDomain;
         const domainTouched = prev?.domainTouched ?? false;
         const ref = byPath.get(path) ?? null;

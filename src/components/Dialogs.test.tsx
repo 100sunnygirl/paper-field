@@ -363,6 +363,25 @@ describe("PaperDialog · 扫描结果挑选排除", () => {
     expect(screen.getByRole("button", { name: "导入 2" })).toBeEnabled();
   });
 
+  it("文件名预判为非论文 PDF 的默认不勾选，可手动改选", async () => {
+    vi.mocked(pickPdfFolder).mockResolvedValue([
+      "/papers/folder/week3-lecture-slides.pdf",
+      "/papers/folder/paper-a.pdf",
+    ]);
+    render(<PaperDialog />);
+    fireEvent.click(screen.getByRole("button", { name: /选择文件夹/ }));
+    await waitFor(() => expect(screen.getByText("paper-a.pdf")).toBeInTheDocument());
+
+    expect(screen.getByLabelText("week3-lecture-slides.pdf")).not.toBeChecked();
+    expect(screen.getByText(/已勾选 1 个/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "导入 1" })).toBeInTheDocument();
+
+    // 改选回课件文件后照常计入导入
+    fireEvent.click(screen.getByLabelText("week3-lecture-slides.pdf"));
+    expect(screen.getByLabelText("week3-lecture-slides.pdf")).toBeChecked();
+    expect(screen.getByRole("button", { name: "导入 2" })).toBeEnabled();
+  });
+
   it("重新扫描同一目录保留已排除的选择", async () => {
     setupScan(["/papers/folder/a.pdf", "/papers/folder/b.pdf"]);
     render(<PaperDialog />);

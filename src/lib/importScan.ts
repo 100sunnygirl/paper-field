@@ -43,6 +43,19 @@ export function extractArxivFromFilename(filename: string): string | null {
 }
 
 /**
+ * 强信号非论文关键词：课件 / 讲义 / 习题答案 / 试卷 / 表单这类文件名，
+ * 命中即默认不勾选（可改选）。只收高置信词——「notes」「report」「manual」这类
+ * 两可词不进清单，宁可多勾不错杀；首页文本预判需读 PDF 字节（桌面 Rust），不在前端做。
+ */
+const NON_PAPER_PATTERN =
+  /(?:sl?ide|课件|幻灯|讲义|教案|lecture|syllabus|课程简介|教学大纲|习题答案|参考答案|_?answer|试卷|试题|期末考|期中考|quiz|exam|homework|_?hw_?|问题集|习题集|problem[-_ ]?set|发票|收据|回执|合同|协议书|申请表|报名表|登记表|简历|证书|invoice|receipt|certificate|questionnaire|调查问卷)/i;
+
+/** 文件名预判：是否不像论文 PDF（默认不勾选的依据）。 */
+export function looksLikeNonPaper(filename: string): boolean {
+  return NON_PAPER_PATTERN.test(filename.replace(/\.pdf$/i, ""));
+}
+
+/**
  * 文件名清洗成标题候选：去扩展名、去开头的 arXiv 编号（`1706.03762 Attention…`
  * `arXiv_2301.00001_…` `[2310.06692] …`）、下划线折成空格。认不出的部分原样保留。
  */
