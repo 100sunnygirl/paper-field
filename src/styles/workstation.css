@@ -1615,6 +1615,31 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   min-width: 0;
   flex: 1;
 }
+/* 首次导入引导卡与「队列已清空」完结时刻。 */
+.ef-intake-guide {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--pf-divider);
+  background: var(--pf-surface);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ef-intake-guide p {
+  margin: 0;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+  line-height: 1.7;
+}
+.ef-intake-cleared .no-results { padding-bottom: 4px; }
+.ef-intake-cleared::before {
+  content: "";
+  display: block;
+  width: 56px;
+  height: 6px;
+  margin: 8px 0 4px;
+  background: var(--pf-hazard);
+}
 .ef-job-list { padding: 14px 16px 0; display: flex; flex-direction: column; gap: 8px; }
 .ef-job-list .ef-nav-sum { margin: 0; }
 .ef-job-row {

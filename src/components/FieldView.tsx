@@ -204,6 +204,23 @@ export function sortArchiveItems(items: PaperListItem[], sort: ArchiveSort): Pap
   return sorted;
 }
 
+/** 入库队列清空的完结时刻：一句祝贺 + 「去看已读归档」出口。 */
+export function IntakeClearedGuide() {
+  const setMode = useField((s) => s.setMode);
+  return (
+    <div className="ef-empty-guide ef-intake-cleared">
+      <p className="no-results" role="status">
+        队列已清空——没有待处理的论文，也没有进行中的作业。处理完的论文在归档里。
+      </p>
+      <div className="ef-guide-actions">
+        <Button type="button" size="sm" variant="primary" onClick={() => void setMode("archive")}>
+          去看已读归档
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 /** 归档空态：不止陈述事实，给出「怎么标已读」三步与两个下一步入口。 */
 export function ArchiveEmptyGuide() {
   const intake = useField((s) => s.intake);
@@ -332,6 +349,10 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
   const [statsDismissed, setStatsDismissed] = useState(() => isArchiveStatsDismissed());
   // 失败原因聚类展开（入库页）：默认收起，展开后按根因分组显示。
   const [failuresOpen, setFailuresOpen] = useState(false);
+  // 首次导入引导卡：导入过一次且未收起时出现（收起后不再显示）。
+  const [intakeGuideDismissed, setIntakeGuideDismissed] = useState(
+    () => localStorage.getItem("paper-field.intake-guide-dismissed") === "1",
+  );
   // 入库作业行就地展开：超过 6 条先截断，展开后全部就地显示。
   const [jobsExpanded, setJobsExpanded] = useState(false);
   const activeJobs = jobs.filter((job) => job.status === "queued" || job.status === "running");
@@ -662,6 +683,48 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
             <h2>入库</h2>
           </div>
           <p className="ef-nav-sum">未手动标为已读的论文，以及 MinerU 解析和 AI 补全作业。</p>
+          {/* 首次导入引导卡：只出现一次（可收起），给出两条下一步。 */}
+          {mode === "intake" &&
+          !intakeGuideDismissed &&
+          localStorage.getItem("paper-field.has-imported") === "1" &&
+          intake.length ? (
+            <div className="ef-intake-guide" aria-label="首次导入引导">
+              <p>第一次导入完成。论文正在排队解析；解析完成后就可以开始读。</p>
+              <div className="ef-guide-actions">
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => {
+                    const first =
+                      intake.find((p) => p.mineruStatus === "done") ??
+                      intake.find((p) => p.pdfPath) ??
+                      intake[0];
+                    if (first) void openPaperFulltext(first.id);
+                  }}
+                >
+                  开始读第一篇
+                </Button>
+                <Button type="button" size="sm" onClick={() => openSystemCard("mineru")}>
+                  检查解析源
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="text"
+                  onClick={() => {
+                    try {
+                      localStorage.setItem("paper-field.intake-guide-dismissed", "1");
+                    } catch {
+                      // 存不下：本次会话内仍然收起。
+                    }
+                    setIntakeGuideDismissed(true);
+                  }}
+                >
+                  不再显示
+                </Button>
+              </div>
+            </div>
+          ) : null}
           {/* 入库漏斗：今日导入 / 解析中 / 排队 / 待读 / 失败，计数可点即筛选；
               全库待处理 vs 当前命中并排可见（搜索与分组筛选都会改写「当前命中」）。 */}
           <div className="ef-intake-funnel" aria-label="入库漏斗统计">
@@ -1092,6 +1155,8 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
       {visible.length === 0 ? (
         mode === "archive" && !search.trim() && archive.length === 0 ? (
           <ArchiveEmptyGuide />
+        ) : mode === "intake" && !search.trim() && intake.length === 0 && activeJobs.length === 0 ? (
+          <IntakeClearedGuide />
         ) : (
           <p className="no-results">
             {search.trim()
@@ -1100,11 +1165,11 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
                 ? archive.length
                   ? "没有符合条件的已读论文。可以调整上方的领域 / 年份筛选或开源状态。"
                   : "还没有手动标记已读的论文。"
-              : mode === "intake"
-                ? intake.length
-                  ? "当前筛选下没有论文。可以切换上方的解析状态分组或调整搜索词。"
-                  : "没有待处理论文。"
-                : "此领域还没有论文。"}
+                : mode === "intake"
+                  ? intake.length
+                    ? "当前筛选下没有论文。可以切换上方的解析状态分组或调整搜索词。"
+                    : "没有待处理论文。"
+                  : "此领域还没有论文。"}
           </p>
         )
       ) : mode === "archive" && archiveView.groupByDomain ? (

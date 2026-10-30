@@ -836,6 +836,73 @@ describe("PaperNav · 入库组合筛选（领域/日期/解析源）", () => {
   });
 });
 
+describe("PaperNav · INTAKE 完成时刻与首次导入引导", () => {
+  beforeEach(() => {
+    localStorage.removeItem("paper-field.intake-guide-dismissed");
+    localStorage.removeItem("paper-field.has-imported");
+  });
+
+  it("首次导入后显示引导卡：开始读第一篇 / 检查解析源 / 不再显示", () => {
+    const openPaperFulltext = vi.fn(async () => undefined);
+    const openSystemCard = vi.fn();
+    useField.setState({
+      mode: "intake",
+      intake: [intakeItem("a", "done")],
+      openPaperFulltext,
+      openSystemCard,
+    });
+    const { rerender } = render(<PaperNav />);
+    // 尚未导入过：不显示。
+    expect(screen.queryByText(/第一次导入完成/)).toBeNull();
+
+    localStorage.setItem("paper-field.has-imported", "1");
+    rerender(<PaperNav />);
+    expect(screen.getByText(/第一次导入完成/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "开始读第一篇" }));
+    expect(openPaperFulltext).toHaveBeenCalledWith("a");
+    fireEvent.click(screen.getByRole("button", { name: "检查解析源" }));
+    expect(openSystemCard).toHaveBeenCalledWith("mineru");
+
+    fireEvent.click(screen.getByRole("button", { name: "不再显示" }));
+    rerender(<PaperNav />);
+    expect(screen.queryByText(/第一次导入完成/)).toBeNull();
+    expect(localStorage.getItem("paper-field.intake-guide-dismissed")).toBe("1");
+  });
+
+  it("全部清空时显示「队列已清空」与「去看已读归档」出口", async () => {
+    const setMode = vi.fn(async () => undefined);
+    useField.setState({ mode: "intake", intake: [], jobs: [], setMode });
+    render(<PaperNav />);
+    expect(screen.getByText(/队列已清空/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "去看已读归档" }));
+    expect(setMode).toHaveBeenCalledWith("archive");
+  });
+
+  it("有作业进行中时不显示清空空态", () => {
+    useField.setState({
+      mode: "intake",
+      intake: [],
+      jobs: [
+        {
+          id: "j1",
+          paperId: "p1",
+          type: "mineruParse" as const,
+          status: "running" as const,
+          prompt: null,
+          resultJson: null,
+          error: null,
+          createdAt: "2024-01-01T00:00:00.000Z",
+          startedAt: null,
+          finishedAt: null,
+        },
+      ],
+    });
+    render(<PaperNav />);
+    expect(screen.queryByText(/队列已清空/)).toBeNull();
+  });
+});
+
 describe("PaperNav · 领域计数不随搜索改写", () => {
   it("搜索过滤列表，阅读进度和本领域论文仍按未过滤领域计算", () => {
     const read = { ...intakeItem("a", null), readingStatus: "read" as const };

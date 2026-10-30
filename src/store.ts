@@ -932,6 +932,14 @@ export const useField = create<FieldState>((set, get) => ({
       }
       // 只关导入对话框本身：长时间导入期间用户打开的其他对话框不被顺手关掉。
       if (get().dialog === "paper") set({ dialog: null });
+      // 首次导入完成标记（本机）：入库页的下一步引导卡据此出现一次。
+      if (created.length && typeof localStorage !== "undefined") {
+        try {
+          localStorage.setItem("paper-field.has-imported", "1");
+        } catch {
+          // 存不下就不显示引导卡，不影响导入。
+        }
+      }
       if (created[0]) selectionEpoch += 1;
       set({
         selectedPaperId: created[0] ?? get().selectedPaperId,
