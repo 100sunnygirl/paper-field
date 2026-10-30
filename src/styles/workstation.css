@@ -5777,3 +5777,24 @@ mark.ef-ft-hit.is-current { background: var(--pf-signal); }
   color: var(--pf-secondary);
 }
 .ef-biblio-cache-why { color: var(--pf-ink); }
+/* 未配置 AI 的一步式引导卡。 */
+.ef-ai-onboard {
+  border: 1px solid var(--pf-divider);
+  padding: 10px 12px;
+  margin: 8px 0;
+}
+.ef-ai-onboard p { margin: 0 0 8px; font-size: var(--pf-fs-caption); }
+.ef-ai-onboard-row { display: flex; flex-direction: column; gap: 6px; }
+.ef-ai-onboard-row select,
+.ef-ai-onboard-row input {
+  border: 1px solid var(--pf-divider);
+  background: var(--pf-canvas);
+  color: var(--pf-ink);
+  padding: 6px 8px;
+  font-size: var(--pf-fs-caption);
+}
+.ef-ai-onboard-note {
+  margin: 8px 0 0;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+}

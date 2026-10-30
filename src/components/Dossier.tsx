@@ -56,7 +56,7 @@ import {
   type PaperDetail,
   type ReadingStatus,
 } from "../lib/types";
-import { hasUsableProvider } from "../lib/settings";
+import { hasUsableProvider, LLM_PRESETS } from "../lib/settings";
 import type { LlmSettings } from "../lib/types";
 import { arxivAbsUrl, arxivPdfUrl, doiUrl, normalizeArxivId, normalizeDoi, openExternal, safeHttpUrl } from "../lib/urls";
 import { formatDate, modLabel, pad2 } from "../lib/util";
@@ -765,6 +765,95 @@ function AiGateButton({
 }
 
 /**
+ * 未配置 AI 时的一步式引导卡：选服务 → 粘贴 Key → 保存即测。
+ * 保存走 saveLlmSettings（桌面端 Key 进系统钥匙串），保存成功即「已配置」，
+ * 后续补全/起草入口自然解锁；不冒充「测试连接」，结果以保存后的状态提示为准。
+ */
+function AiOnboardingCard() {
+  const saveLlmSettings = useField((s) => s.saveLlmSettings);
+  const providers = useField((s) => s.settings.providers);
+  const [presetId, setPresetId] = useState(LLM_PRESETS[0]?.id ?? "openai");
+  const [apiKey, setApiKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const preset = LLM_PRESETS.find((item) => item.id === presetId) ?? LLM_PRESETS[0];
+  const keyable = LLM_PRESETS.filter((item) => item.requiresKey);
+
+  async function saveAndTest() {
+    if (busy || !apiKey.trim() || !preset) return;
+    setBusy(true);
+    try {
+      // 复用已有提供商（保留用户改过的地址/模型），否则按预设新建一个。
+      const existing = providers.find((provider) => provider.presetId === preset.id);
+      await saveLlmSettings({
+        providers: [
+          {
+            id: existing?.id ?? `${preset.id}-default`,
+            presetId: preset.id,
+            label: preset.label,
+            baseUrl: existing?.baseUrl || preset.baseUrl,
+            model: existing?.model || preset.models[0] || "",
+            enabled: true,
+            requiresKey: preset.requiresKey,
+            apiKey: apiKey,
+          },
+          ...providers
+            .filter((provider) => provider.presetId !== preset.id)
+            .map((provider) => ({
+              id: provider.id,
+              presetId: provider.presetId,
+              label: provider.label,
+              baseUrl: provider.baseUrl,
+              model: provider.model,
+              enabled: false,
+              requiresKey: provider.requiresKey,
+              apiKey: null,
+            })),
+        ],
+      });
+      setApiKey("");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="ef-ai-onboard">
+      <p>
+        <b>粘贴 Key 即测</b>
+        ：选一个服务，把 API Key 粘进下面，点「保存并测试」。Key 存进系统钥匙串，不会回显。
+      </p>
+      <div className="ef-ai-onboard-row">
+        <select
+          aria-label="选择 AI 服务"
+          value={presetId}
+          onChange={(e) => setPresetId(e.target.value)}
+          disabled={busy}
+        >
+          {keyable.map((item) => (
+            <option key={item.id} value={item.id}>
+              {item.label}
+            </option>
+          ))}
+        </select>
+        <input
+          type="password"
+          value={apiKey}
+          placeholder="sk-…"
+          aria-label="API Key"
+          autoComplete="off"
+          disabled={busy}
+          onChange={(e) => setApiKey(e.target.value)}
+        />
+        <Button type="button" size="sm" variant="primary" disabled={busy || !apiKey.trim()} onClick={() => void saveAndTest()}>
+          {busy ? "保存中…" : "保存并测试"}
+        </Button>
+      </div>
+      <p className="ef-ai-onboard-note">保存后可用「先预览再写入」+「逐块采纳」控制 AI 写入；也可先只用量询文献库（不需要 Key）。</p>
+    </div>
+  );
+}
+
+/**
  * AI 动作的事前展示：发请求前就能看到将用哪个提供商/模型、失败时按什么顺序回退
  * （与设置页「回退顺序」同源）。实际命中的提供商由桌面端执行，暂不回报前端。
  */
@@ -1468,10 +1557,13 @@ function ContextPanel({
           </div>
         ))}
         {hasUsableProvider(settings) ? null : (
-          <Button type="button" variant="link" onClick={() => void setMode("system")}>
-            配置 AI 服务
-            <Icon name="right" />
-          </Button>
+          <>
+            <AiOnboardingCard />
+            <Button type="button" variant="link" onClick={() => void setMode("system")}>
+              更多服务与高级配置（Base URL / 模型 / 免 Key 本地服务）
+              <Icon name="right" />
+            </Button>
+          </>
         )}
       </ContextBlock>
     </aside>

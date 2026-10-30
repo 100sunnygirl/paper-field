@@ -1079,3 +1079,40 @@ describe("ReadingStage · 不依赖 AI Key 的「查询文献库」按钮", () =
     await waitFor(() => expect(runRefreshLinks).toHaveBeenCalledWith("p1"));
   });
 });
+
+describe("ReadingStage · 未配置 AI 的「粘贴 Key 即测」引导卡", () => {
+  it("显示服务选择与 Key 输入；保存调用 saveLlmSettings 且提供商启用、Key 传入", async () => {
+    const saveLlmSettings = vi.fn(async () => undefined);
+    useField.setState({ mode: "field", paper: paper({}), selectedPaperId: "p1", saveLlmSettings });
+    renderStage();
+    expect(screen.getByText(/粘贴 Key 即测/)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("选择 AI 服务"), { target: { value: "deepseek" } });
+    fireEvent.change(screen.getByLabelText("API Key"), { target: { value: "sk-test-123" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存并测试" }));
+    await waitFor(() => expect(saveLlmSettings).toHaveBeenCalledTimes(1));
+    const input = vi.mocked(saveLlmSettings).mock.calls[0][0];
+    const primary = input.providers[0];
+    expect(primary.presetId).toBe("deepseek");
+    expect(primary.enabled).toBe(true);
+    expect(primary.apiKey).toBe("sk-test-123");
+    expect(primary.model).toBeTruthy();
+  });
+
+  it("Key 为空时按钮禁用；已配置 AI 时不渲染引导卡", () => {
+    const saveLlmSettings = vi.fn(async () => undefined);
+    useField.setState({ mode: "field", paper: paper({}), selectedPaperId: "p1", saveLlmSettings });
+    renderStage();
+    expect(screen.getByRole("button", { name: "保存并测试" })).toBeDisabled();
+
+    const configured = {
+      version: 2 as const,
+      usage: {},
+      providers: [
+        { id: "a", presetId: "deepseek", label: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-chat", enabled: true, hasKey: true, requiresKey: true },
+      ],
+    };
+    useField.setState({ settings: configured });
+    renderStage();
+    expect(screen.queryByText(/粘贴 Key 即测/)).toBeNull();
+  });
+});
