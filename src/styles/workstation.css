@@ -1640,6 +1640,45 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   margin: 8px 0 4px;
   background: var(--pf-hazard);
 }
+/* 入库空闲区的能力配置状态：解析 / 文献库 / 模型各自一行，未配置直链设置卡。 */
+.ef-idle-capabilities {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px dashed var(--pf-divider);
+}
+.ef-idle-capability {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+}
+.ef-idle-capability b { font-weight: 600; color: var(--pf-ink); }
+.ef-idle-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  border: 1px solid var(--pf-control-border);
+  background: transparent;
+  flex: none;
+}
+.ef-idle-dot.is-ok { background: var(--pf-success); border-color: var(--pf-success); }
+.ef-idle-detail { color: var(--pf-muted); flex: 1 1 auto; min-width: 0; }
+.ef-idle-capability button {
+  border: none;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-muted);
+  text-decoration: underline;
+  cursor: pointer;
+  flex: none;
+}
+.ef-idle-capability button:hover { color: var(--pf-ink); }
 .ef-job-list { padding: 14px 16px 0; display: flex; flex-direction: column; gap: 8px; }
 .ef-job-list .ef-nav-sum { margin: 0; }
 .ef-job-row {

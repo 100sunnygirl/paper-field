@@ -903,6 +903,54 @@ describe("PaperNav · INTAKE 完成时刻与首次导入引导", () => {
   });
 });
 
+describe("PaperNav · 空闲区三类能力配置状态", () => {
+  it("无进行中作业时逐行说明解析 / 文献库 / 模型的配置状态并链接设置卡", () => {
+    const openSystemCard = vi.fn();
+    useField.setState({
+      mode: "intake",
+      intake: [],
+      jobs: [],
+      mineru: { ...useField.getState().mineru, configured: true },
+      biblio: { ...useField.getState().biblio, email: "" },
+      settings: { version: 2, providers: [], usage: {} },
+      openSystemCard,
+    });
+    render(<PaperNav />);
+    const panel = document.querySelector(".ef-idle-capabilities")!;
+    expect(panel.textContent).toContain("PDF 解析（MinerU）");
+    expect(panel.textContent).toContain("已配置，首选 本地 CLI");
+    expect(panel.textContent).toContain("未配置邮箱——不影响查询");
+    expect(panel.textContent).toContain("未配置——著录与笔记仍可全手动录入");
+
+    const buttons = [...panel.querySelectorAll("button")];
+    fireEvent.click(buttons[1]!);
+    expect(openSystemCard).toHaveBeenLastCalledWith("biblio");
+  });
+
+  it("有进行中作业时不渲染能力状态区", () => {
+    useField.setState({
+      mode: "intake",
+      intake: [],
+      jobs: [
+        {
+          id: "j1",
+          paperId: "p1",
+          type: "mineruParse" as const,
+          status: "running" as const,
+          prompt: null,
+          resultJson: null,
+          error: null,
+          createdAt: "2024-01-01T00:00:00.000Z",
+          startedAt: null,
+          finishedAt: null,
+        },
+      ],
+    });
+    render(<PaperNav />);
+    expect(document.querySelector(".ef-idle-capabilities")).toBeNull();
+  });
+});
+
 describe("PaperNav · 领域计数不随搜索改写", () => {
   it("搜索过滤列表，阅读进度和本领域论文仍按未过滤领域计算", () => {
     const read = { ...intakeItem("a", null), readingStatus: "read" as const };

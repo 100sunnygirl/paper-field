@@ -11,9 +11,12 @@ import {
 } from "../lib/types";
 import { getActivity, subscribeActivity } from "../lib/activity";
 import { jobStageLine } from "../lib/jobsView";
+import { providerLabel } from "../lib/mineruPlan";
 import { repo } from "../lib/repo";
 import { isArchiveStatsDismissed, readingStatsFrom, setArchiveStatsDismissed } from "../lib/readingStats";
 import { classifyParseError, parseErrorSummary } from "../lib/parseErrors";
+import { hasUsableProvider } from "../lib/settings";
+import { biblioEmailConfigured } from "../lib/biblio";
 import { deferredPaperIds, deferPaper, undeferPaper } from "../lib/deferredPapers";
 import { readNextAdd, readNextList, readNextMove, readNextRemove } from "../lib/readNext";
 import { pad2, shortcut } from "../lib/util";
@@ -204,8 +207,59 @@ export function sortArchiveItems(items: PaperListItem[], sort: ArchiveSort): Pap
   return sorted;
 }
 
-/** 入库队列清空的完结时刻：一句祝贺 + 「去看已读归档」出口。 */
-export function IntakeClearedGuide() {
+/**
+ * 入库空闲区的三类能力配置状态：PDF 解析 / 文献库查询 / 模型补全各自一行，
+ * 未配置的项直接链接到对应设置卡片——新手不必把 MinerU 误当 AI 的一部分。
+ */
+export function IntakeIdleCapabilities() {
+  const mineru = useField((s) => s.mineru);
+  const biblio = useField((s) => s.biblio);
+  const settings = useField((s) => s.settings);
+  const openSystemCard = useField((s) => s.openSystemCard);
+  const capabilities = [
+    {
+      key: "mineru",
+      name: "PDF 解析（MinerU）",
+      ok: mineru.configured,
+      detail: mineru.configured
+        ? `已配置，首选 ${providerLabel(mineru.order[0])}`
+        : "未配置——没有可用解析源时论文只入库不解析",
+      anchor: "mineru",
+    },
+    {
+      key: "biblio",
+      name: "文献库查询",
+      ok: biblioEmailConfigured(biblio.email),
+      detail: biblioEmailConfigured(biblio.email)
+        ? "已填联系邮箱（走礼貌池）；不配置也能查，只是走公共池"
+        : "未配置邮箱——不影响查询，只是走公共额度池",
+      anchor: "biblio",
+    },
+    {
+      key: "llm",
+      name: "模型补全（AI）",
+      ok: hasUsableProvider(settings),
+      detail: hasUsableProvider(settings) ? "已配置可用的 AI 服务" : "未配置——著录与笔记仍可全手动录入",
+      anchor: "llm",
+    },
+  ];
+  return (
+    <div className="ef-idle-capabilities" aria-label="能力配置状态">
+      {capabilities.map((item) => (
+        <div key={item.key} className="ef-idle-capability">
+          <span className={`ef-idle-dot ${item.ok ? "is-ok" : ""}`} aria-hidden="true" />
+          <b>{item.name}</b>
+          <span className="ef-idle-detail">{item.detail}</span>
+          <button type="button" onClick={() => openSystemCard(item.anchor)}>
+            {item.ok ? "去设置查看" : "去设置"}
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** 入库队列清空的完结时刻：一句祝贺 + 「去看已读归档」出口。 */export function IntakeClearedGuide() {
   const setMode = useField((s) => s.setMode);
   return (
     <div className="ef-empty-guide ef-intake-cleared">
@@ -1044,7 +1098,10 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
             </Button>
           ) : null}
           {activeJobs.length === 0 ? (
-            <p className="ef-nav-sum">当前没有进行中的 AI 作业。</p>
+            <>
+              <p className="ef-nav-sum">当前没有进行中的 AI 作业。</p>
+              <IntakeIdleCapabilities />
+            </>
           ) : null}
           <Button type="button" variant="link" className="ef-jobs-link" onClick={() => setJobsOpen(true)}>
             在作业面板查看阶段与进度
