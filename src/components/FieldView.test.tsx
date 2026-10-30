@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PaperListItem } from "../lib/types";
 import { resetActivity, trackJob } from "../lib/activity";
 import { repo } from "../lib/repo";
+import { readNextList } from "../lib/readNext";
 import { useField } from "../store";
 import { PaperNav } from "./FieldView";
 
@@ -679,6 +680,64 @@ describe("PaperNav · 失败原因可见与聚类", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "收起失败原因" }));
     expect(screen.queryByText(/Token 问题 · 2 篇/)).toBeNull();
+  });
+});
+
+describe("PaperNav · 接下来读（建议与个人短队列）", () => {
+  beforeEach(() => {
+    localStorage.removeItem("paper-field.read-next");
+  });
+
+  function doneItem(id: string, createdAt: string): PaperListItem {
+    return { ...intakeItem(id, "done"), createdAt };
+  }
+
+  it("下一篇建议 = 已解析完成里最早导入的一篇，可直接开始阅读", async () => {
+    const openPaperFulltext = vi.fn(async () => undefined);
+    useField.setState({
+      mode: "intake",
+      intake: [
+        intakeItem("pending1", "pending"),
+        doneItem("new", "2026-03-01T00:00:00.000Z"),
+        doneItem("old", "2026-01-01T00:00:00.000Z"),
+      ],
+      openPaperFulltext,
+    });
+    render(<PaperNav />);
+    expect(screen.getByText("下一篇建议")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "开始阅读" }));
+    await waitFor(() => {
+      expect(openPaperFulltext).toHaveBeenCalledWith("old");
+    });
+  });
+
+  it("行内「+ 接下来读」入队，队列可置顶 / 移出，点标题开始阅读", async () => {
+    const openPaperFulltext = vi.fn(async () => undefined);
+    useField.setState({
+      mode: "intake",
+      intake: [doneItem("a", "2026-01-01T00:00:00.000Z"), doneItem("b", "2026-02-01T00:00:00.000Z"), doneItem("c", "2026-03-01T00:00:00.000Z")],
+      openPaperFulltext,
+    });
+    render(<PaperNav />);
+    // 建议卡一开始就有（论文都已解析），个人队列还没有。
+    expect(screen.getByText("下一篇建议")).toBeInTheDocument();
+    expect(screen.queryByText(/接下来读 · \d/)).toBeNull();
+
+    fireEvent.click(screen.getAllByRole("button", { name: "+ 接下来读" })[0]);
+    expect(localStorage.getItem("paper-field.read-next")).toContain('"a"');
+    // a 入队后行内按钮变为「已在接下来读」，剩余 + 按钮的首个是 b。
+    fireEvent.click(screen.getAllByRole("button", { name: "+ 接下来读" })[0]);
+    // 队列 a, b；置顶 b 后 b, a。
+    fireEvent.click(screen.getByRole("button", { name: "置顶 论文 b" }));
+    expect(readNextList()).toEqual(["b", "a"]);
+    fireEvent.click(screen.getByRole("button", { name: "移出 论文 b" }));
+    expect(readNextList()).toEqual(["a"]);
+
+    fireEvent.click(screen.getByRole("button", { name: "论文 a" }));
+    await waitFor(() => {
+      expect(openPaperFulltext).toHaveBeenCalledWith("a");
+    });
+    localStorage.removeItem("paper-field.read-next");
   });
 });
 

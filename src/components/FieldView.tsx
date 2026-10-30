@@ -14,6 +14,7 @@ import { jobStageLine } from "../lib/jobsView";
 import { repo } from "../lib/repo";
 import { isArchiveStatsDismissed, readingStatsFrom, setArchiveStatsDismissed } from "../lib/readingStats";
 import { classifyParseError, parseErrorSummary } from "../lib/parseErrors";
+import { readNextAdd, readNextList, readNextMove, readNextRemove } from "../lib/readNext";
 import { pad2, shortcut } from "../lib/util";
 import { useField, type ArchiveSort, type ArchiveView, type IntakeStage, type IntakeStageFilter } from "../store";
 import { useReadPulse } from "./useReadPulse";
@@ -253,6 +254,7 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
   const selectedPaperId = useField((s) => s.selectedPaperId);
   const selectPaper = useField((s) => s.selectPaper);
   const openDialog = useField((s) => s.openDialog);
+  const openPaperFulltext = useField((s) => s.openPaperFulltext);
   const archiveFilter = useField((s) => s.archiveFilter);
   const setArchiveFilter = useField((s) => s.setArchiveFilter);
   const archiveView = useField((s) => s.archiveView);
@@ -284,6 +286,17 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
   // 入库作业行就地展开：超过 6 条先截断，展开后全部就地显示。
   const [jobsExpanded, setJobsExpanded] = useState(false);
   const activeJobs = jobs.filter((job) => job.status === "queued" || job.status === "running");
+  // 「接下来读」个人短队列（本机记录；version 触发重读 localStorage）。
+  const [readNextVersion, setReadNextVersion] = useState(0);
+  void readNextVersion;
+  const readNextIds = mode === "intake" ? readNextList() : [];
+  const bumpReadNext = () => setReadNextVersion((v) => v + 1);
+  // 下一篇建议：已解析完成里最早导入的一篇（先导入先读）；已在队列里的不再重复推荐。
+  const readNextSuggestion =
+    [...intake]
+      .filter((p) => p.mineruStatus === "done" && !readNextIds.includes(p.id))
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))[0] ?? null;
+  const readNextById = new Map(intake.map((p) => [p.id, p]));
 
   if (mode === "field" && selectedDomainId && !search.trim()) {
     domainCensus = { domainId: selectedDomainId, items: papers };
@@ -457,6 +470,23 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
             查看解决办法
           </button>
         </>
+      ) : null}
+      {paper.mineruStatus === "done" ? (
+        readNextIds.includes(paper.id) ? (
+          <span className="ef-row-inqueue">已在接下来读</span>
+        ) : (
+          <button
+            type="button"
+            className="ef-row-domain-open"
+            title="加入「接下来读」个人短队列"
+            onClick={() => {
+              readNextAdd(paper.id);
+              bumpReadNext();
+            }}
+          >
+            + 接下来读
+          </button>
+        )
       ) : null}
     </div>
   );
@@ -1004,6 +1034,90 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
           rowExtra={mode === "archive" ? archiveRowExtra : mode === "intake" ? intakeRowExtra : undefined}
         />
       )}
+
+      {/* 「接下来读」：个人阅读安排（与技术解析队列分开展示）。建议 = 已解析完成里
+          最早导入的一篇；队列本机记录、可手动排序；点标题直接进入阅读页。 */}
+      {mode === "intake" && (readNextSuggestion || readNextIds.length) ? (
+        <div className="ef-readnext" aria-label="接下来读">
+          {readNextSuggestion ? (
+            <div className="ef-readnext-suggest">
+              <span className="ef-readnext-label">下一篇建议</span>
+              <button
+                type="button"
+                className="ef-readnext-title"
+                title="开始阅读这篇（进入解析全文阅读页）"
+                onClick={() => void openPaperFulltext(readNextSuggestion.id)}
+              >
+                {readNextSuggestion.titleZh || readNextSuggestion.title}
+              </button>
+              <Button type="button" size="sm" onClick={() => void openPaperFulltext(readNextSuggestion.id)}>
+                开始阅读
+              </Button>
+            </div>
+          ) : null}
+          {readNextIds.length ? (
+            <div className="ef-readnext-queue">
+              <span className="ef-readnext-label">接下来读 · {readNextIds.length}</span>
+              <ol>
+                {readNextIds.map((id, index) => {
+                  const paper = readNextById.get(id);
+                  if (!paper) return null;
+                  return (
+                    <li key={id}>
+                      <span className="mono ef-readnext-index">{index + 1}</span>
+                      <button
+                        type="button"
+                        className="ef-readnext-title"
+                        title="开始阅读这篇"
+                        onClick={() => void openPaperFulltext(id)}
+                      >
+                        {paper.titleZh || paper.title}
+                      </button>
+                      <span className="ef-readnext-actions">
+                        <button
+                          type="button"
+                          aria-label={`置顶 ${paper.titleZh || paper.title}`}
+                          title="置顶"
+                          disabled={index === 0}
+                          onClick={() => {
+                            readNextMove(id, "top");
+                            bumpReadNext();
+                          }}
+                        >
+                          ⤒
+                        </button>
+                        <button
+                          type="button"
+                          aria-label={`上移 ${paper.titleZh || paper.title}`}
+                          title="上移"
+                          disabled={index === 0}
+                          onClick={() => {
+                            readNextMove(id, "up");
+                            bumpReadNext();
+                          }}
+                        >
+                          ↑
+                        </button>
+                        <button
+                          type="button"
+                          aria-label={`移出 ${paper.titleZh || paper.title}`}
+                          title="移出队列"
+                          onClick={() => {
+                            readNextRemove(id);
+                            bumpReadNext();
+                          }}
+                        >
+                          <Icon name="close" />
+                        </button>
+                      </span>
+                    </li>
+                  );
+                })}
+              </ol>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       {/* 添加论文落进当前领域：只在看得见目标领域的阅读页和收新论文的入库页提供；
           归档页只列已读论文，新论文不会出现在那里。领域切换走顶部领域名。 */}

@@ -1495,6 +1495,82 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 /* 入库作业行「就地展开」开关：弱化文本按钮，与面板入口同区。 */
 .ef-jobs-expand { align-self: flex-start; min-height: 24px; padding: 0 4px; color: var(--pf-muted); }
 .ef-jobs-expand:hover:not(:disabled) { color: var(--pf-ink); }
+/* 「接下来读」：下一篇建议 + 个人短队列（与技术解析队列分开展示）。 */
+.ef-readnext {
+  padding: 12px 16px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ef-readnext-label {
+  font-size: var(--pf-fs-tag);
+  font-weight: 600;
+  letter-spacing: var(--pf-tracking-tag);
+  color: var(--pf-muted);
+}
+.ef-readnext-suggest {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--pf-divider);
+  border-left: var(--pf-marker) solid var(--pf-ink);
+  background: var(--pf-surface);
+}
+.ef-readnext-suggest .ef-readnext-title { flex: 1 1 auto; min-width: 0; }
+.ef-readnext-queue ol {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ef-readnext-queue li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-ink);
+  padding: 2px 0;
+}
+.ef-readnext-index { color: var(--pf-muted); flex: none; }
+.ef-readnext-title {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  font-weight: 600;
+  color: var(--pf-ink);
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ef-readnext-title:hover { text-decoration: underline; }
+.ef-readnext-actions { display: inline-flex; gap: 2px; flex: none; }
+.ef-readnext-actions button {
+  border: none;
+  background: transparent;
+  padding: 2px 4px;
+  font: inherit;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+}
+.ef-readnext-actions button:hover:not(:disabled) { color: var(--pf-ink); }
+.ef-readnext-actions button:disabled { opacity: 0.4; cursor: default; }
+.ef-readnext-actions .ef-ico { width: 11px; height: 11px; }
+.ef-row-inqueue {
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-muted);
+}
 .ef-job-list { padding: 14px 16px 0; display: flex; flex-direction: column; gap: 8px; }
 .ef-job-list .ef-nav-sum { margin: 0; }
 .ef-job-row {
