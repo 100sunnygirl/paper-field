@@ -1082,7 +1082,7 @@ describe("ReadingStage · 不依赖 AI Key 的「查询文献库」按钮", () =
 
 describe("ReadingStage · 未配置 AI 的「粘贴 Key 即测」引导卡", () => {
   it("显示服务选择与 Key 输入；保存调用 saveLlmSettings 且提供商启用、Key 传入", async () => {
-    const saveLlmSettings = vi.fn(async () => undefined);
+    const saveLlmSettings = vi.fn(async (_input: import("../lib/settings").LlmSaveInput) => undefined);
     useField.setState({ mode: "field", paper: paper({}), selectedPaperId: "p1", saveLlmSettings });
     renderStage();
     expect(screen.getByText(/粘贴 Key 即测/)).toBeInTheDocument();
@@ -1090,8 +1090,8 @@ describe("ReadingStage · 未配置 AI 的「粘贴 Key 即测」引导卡", () 
     fireEvent.change(screen.getByLabelText("API Key"), { target: { value: "sk-test-123" } });
     fireEvent.click(screen.getByRole("button", { name: "保存并测试" }));
     await waitFor(() => expect(saveLlmSettings).toHaveBeenCalledTimes(1));
-    const input = vi.mocked(saveLlmSettings).mock.calls[0][0];
-    const primary = input.providers[0];
+    const input = vi.mocked(saveLlmSettings).mock.calls[0]![0];
+    const primary = input.providers[0]!;
     expect(primary.presetId).toBe("deepseek");
     expect(primary.enabled).toBe(true);
     expect(primary.apiKey).toBe("sk-test-123");
