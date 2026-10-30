@@ -1404,9 +1404,14 @@ function ContextPanel({
             />
             先预览再写入
           </label>
-          <Button type="button" disabled={Boolean(active.length)} onClick={() => void runRefreshLinks(paper.id)}>
+          <Button
+            type="button"
+            disabled={Boolean(active.length)}
+            title="跳过本地缓存重新查询文献库：会更新 arXiv/DOI/年份/出处/摘要等著录字段（文献库之间可互相更新）；你手动改过的字段与手填链接不会被覆盖，也不调用模型"
+            onClick={() => void runRefreshLinks(paper.id)}
+          >
             <Icon name="link" />
-            刷新链接
+            重新查询文献库
           </Button>
           {lookupHint?.paperId === paper.id && lookupHint.notices.length ? (
             <div className="ef-lookup-hint">

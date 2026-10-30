@@ -1017,3 +1017,15 @@ describe("ReadingStage · AI 按钮置灰时浮层说明原因", () => {
     expect(screen.getByRole("tooltip").textContent).toContain("AI 作业正在进行");
   });
 });
+
+describe("ReadingStage · 「重新查询文献库」更名与影响说明", () => {
+  it("按钮名为「重新查询文献库」，悬停说明会刷新哪些字段、保留哪些人工修改", () => {
+    useField.setState({ mode: "field", paper: paper({}), selectedPaperId: "p1" });
+    renderStage();
+    const button = screen.getByRole("button", { name: "重新查询文献库" });
+    expect(screen.queryByRole("button", { name: "刷新链接" })).toBeNull();
+    expect(button.getAttribute("title")).toContain("跳过本地缓存重新查询文献库");
+    expect(button.getAttribute("title")).toContain("你手动改过的字段与手填链接不会被覆盖");
+    expect(button.getAttribute("title")).toContain("不调用模型");
+  });
+});

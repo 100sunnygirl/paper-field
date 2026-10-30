@@ -1019,7 +1019,7 @@ const HISTORY_FILTERS: Array<{ value: HistoryFilter; label: string }> = [
 const AI_RETRY_LABELS: Record<NonNullable<HistoryItemView["aiRetry"]>, string> = {
   prepareMeta: "重新补全",
   draftNotes: "重新起草",
-  refreshLinks: "重新刷新链接",
+  refreshLinks: "重新查询文献库",
 };
 
 /** 完成作业的结果直达入口：解析 → 自动展开全文；补全 → 字段编辑；起草 → 阅读页笔记区。 */

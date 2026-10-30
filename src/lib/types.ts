@@ -307,7 +307,7 @@ export const OPEN_SOURCE_LABELS: Record<OpenSource, string> = {
 export const JOB_TYPE_LABELS: Record<JobType, string> = {
   prepareMeta: "补全论文信息",
   draftNotes: "起草阅读笔记",
-  refreshLinks: "刷新链接",
+  refreshLinks: "重新查询文献库",
   mineruParse: "MinerU 解析",
 };
 
