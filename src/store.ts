@@ -283,7 +283,11 @@ interface FieldState {
     options?: { llm?: boolean; allowFields?: MetaField[]; dryRun?: boolean },
   ) => Promise<void>;
   runRefreshLinks: (paperId?: string) => Promise<void>;
-  runDraftNotes: (paperId?: string, overwrite?: boolean, options?: { kinds?: NoteKind[]; dryRun?: boolean }) => Promise<void>;
+  runDraftNotes: (
+    paperId?: string,
+    overwrite?: boolean,
+    options?: { kinds?: NoteKind[]; dryRun?: boolean; includeFulltext?: boolean },
+  ) => Promise<void>;
   cancelJob: (jobId: string, options?: { silent?: boolean }) => Promise<void>;
   /**
    * 撤销一次 AI 写入（快照还原）：AI 写入之后用户又改过的字段 / 笔记块保留不动，
@@ -1542,6 +1546,8 @@ export const useField = create<FieldState>((set, get) => ({
     const draftKinds = options?.kinds;
     // 干跑：只起草不写库，产出逐块 diff 预览。
     const dry = options?.dryRun === true;
+    // 参考范围：默认摘要 + 解析全文；「只看摘要」时不注入 markdown（草稿只依据摘要与题录）。
+    const includeFulltext = options?.includeFulltext !== false;
     const requestedKinds: NoteKind[] = draftKinds ?? [...NOTE_KINDS];
     // 先占在途锁再读库：双击时第二次调用在这里就返回。
     draftInflight.add(id);
@@ -1552,7 +1558,7 @@ export const useField = create<FieldState>((set, get) => ({
       return;
     }
     if (get().dialog === "confirm-notes") set({ dialog: null, dialogPaperId: null, pendingDraftJob: null });
-    const prompt = draftNotesUserPrompt(paper);
+    const prompt = draftNotesUserPrompt(paper, { includeFulltext });
     // 记下此刻每块笔记的版本号：请求期间被改过的块回写时整块跳过。
     const revs = Object.fromEntries(NOTE_KINDS.map((kind) => [kind, paper.notes?.[kind]?.rev ?? 0])) as Record<NoteKind, number>;
     // 覆盖前快照：完成后逐块 diff、快照还原（撤销）与版本记录都以它为旧值。

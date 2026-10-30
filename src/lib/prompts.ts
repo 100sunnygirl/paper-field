@@ -83,7 +83,8 @@ export function prepareMetaUserPrompt(input: {
     .join("\n");
 }
 
-export function draftNotesUserPrompt(paper: PaperDetail): string {
+export function draftNotesUserPrompt(paper: PaperDetail, options: { includeFulltext?: boolean } = {}): string {
+  const includeFulltext = options.includeFulltext !== false;
   const authors = paper.authors.map((a) => `${a.name}${a.affiliation ? ` (${a.affiliation})` : ""}`).join("; ");
   const headings = extractFulltextHeadings(paper.parsedMarkdown);
   return [
@@ -96,16 +97,32 @@ export function draftNotesUserPrompt(paper: PaperDetail): string {
     "",
     "Abstract:",
     paper.abstract || "(none)",
-    headings.length
+    includeFulltext && headings.length
       ? `\nSection map (use these numbers when anchoring judgments as 原文 §number):\n${headings
           .slice(0, 40)
           .map((heading) => `§${heading.number} ${heading.text}`)
           .join("\n")}`
       : null,
-    excerpt(paper.parsedMarkdown) ? `\nMinerU markdown:\n${excerpt(paper.parsedMarkdown)}` : null,
+    includeFulltext && excerpt(paper.parsedMarkdown) ? `\nMinerU markdown:\n${excerpt(paper.parsedMarkdown)}` : null,
   ]
     .filter((line) => line !== null)
     .join("\n");
+}
+
+/** 起草输入范围（事前展示）：摘要与解析全文字数、全文是否超限截断。 */
+export const DRAFT_EXCERPT_LIMIT = 12000;
+
+export function draftInputScope(paper: Pick<PaperDetail, "abstract" | "parsedMarkdown">): {
+  abstractChars: number;
+  fulltextChars: number;
+  truncated: boolean;
+} {
+  const count = (text: string): number => [...text.trim()].length;
+  return {
+    abstractChars: count(paper.abstract),
+    fulltextChars: count(paper.parsedMarkdown),
+    truncated: count(paper.parsedMarkdown) > DRAFT_EXCERPT_LIMIT,
+  };
 }
 
 /** 模型输出类型不可信：字符串字段只收字符串（数字转成文本），其他类型一律当空。 */

@@ -36,6 +36,7 @@ import {
 } from "../lib/fulltext";
 import { onMarkdownClick, renderMarkdown } from "../lib/markdown";
 import { loadPreviewFirst, savePreviewFirst } from "../lib/aiPrefs";
+import { draftInputScope } from "../lib/prompts";
 import { isNoteHintDismissed, NOTE_HINT_QUESTIONS, setNoteHintDismissed } from "../lib/noteHints";
 import { loadNoteLayout, moveNoteKind as moveNoteKindInOrder, saveNoteLayout, type NoteLayout } from "../lib/noteLayout";
 import { loadReadingSpots, saveReadingSpot } from "../lib/readingSpot";
@@ -705,6 +706,9 @@ function DraftNotesControls({ paper, disabled, previewFirst }: { paper: PaperDet
   const [open, setOpen] = useState(false);
   // 勾选要起草的块：默认全部（与旧语义一致）；空块快捷入口只勾空块。
   const [kinds, setKinds] = useState<Set<NoteKind>>(() => new Set(NOTE_DISPLAY_ORDER));
+  // 参考范围：默认摘要 + 解析全文；关掉后草稿只依据摘要与题录。
+  const [includeFulltext, setIncludeFulltext] = useState(true);
+  const scope = useMemo(() => draftInputScope(paper), [paper]);
   function toggle(kind: NoteKind, on: boolean) {
     setKinds((prev) => {
       const next = new Set(prev);
@@ -722,6 +726,7 @@ function DraftNotesControls({ paper, disabled, previewFirst }: { paper: PaperDet
     // 干跑开关开启时逐块预览采纳；否则走确认对话框保护语义。
     void runDraftNotes(paper.id, false, {
       kinds: target,
+      includeFulltext,
       ...(previewFirst ? { dryRun: true } : {}),
     });
   }
@@ -733,6 +738,12 @@ function DraftNotesControls({ paper, disabled, previewFirst }: { paper: PaperDet
       </Button>
       {open ? (
         <div className="ef-draft-controls">
+          <p>
+            本次输入：摘要 {scope.abstractChars} 字
+            {paper.parsedMarkdown.trim()
+              ? ` · 解析全文 ${scope.fulltextChars} 字${scope.truncated ? "（超出上限，只送前 12000 字）" : ""}`
+              : " · 未解析全文"}
+          </p>
           <p>选择要起草的笔记块（可只起草总结一块）：</p>
           <div className="ef-draft-kinds">
             {NOTE_DISPLAY_ORDER.map((kind) => (
@@ -748,6 +759,17 @@ function DraftNotesControls({ paper, disabled, previewFirst }: { paper: PaperDet
               </label>
             ))}
           </div>
+          {paper.parsedMarkdown.trim() ? (
+            <label className="ef-draft-fulltext" title="关闭后草稿只依据摘要与题录，不读解析全文">
+              <input
+                type="checkbox"
+                checked={includeFulltext}
+                onChange={(e) => setIncludeFulltext(e.target.checked)}
+                aria-label="参考解析全文"
+              />
+              参考解析全文
+            </label>
+          ) : null}
           <div className="ef-draft-actions">
             <Button
               type="button"

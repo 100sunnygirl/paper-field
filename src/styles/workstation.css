@@ -5719,3 +5719,12 @@ mark.ef-ft-hit.is-current { background: var(--pf-signal); }
   color: var(--pf-secondary);
 }
 .ef-ai-chain b { color: var(--pf-ink); }
+/* 起草参考范围开关。 */
+.ef-draft-fulltext {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+  font-size: var(--pf-fs-caption);
+  cursor: pointer;
+}

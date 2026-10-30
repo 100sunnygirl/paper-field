@@ -768,6 +768,34 @@ describe("ReadingStage · 起草笔记的块级控制", () => {
     };
   }
 
+  it("展开后显示输入范围（摘要/全文字数与截断提示）与参考范围开关", () => {
+    const runDraftNotes = vi.fn(async () => undefined);
+    const parsed = {
+      ...paper({}),
+      parsedMarkdown: "# 引言\n\n" + "字".repeat(12100),
+    } as PaperDetail;
+    useField.setState({
+      mode: "field",
+      paper: parsed,
+      selectedPaperId: "p1",
+      settings: usableSettings(),
+      runDraftNotes,
+    });
+    renderStage();
+    fireEvent.click(screen.getByRole("button", { name: "起草阅读笔记…" }));
+    const controls = document.querySelector(".ef-draft-controls")!;
+    expect(controls.textContent).toContain("本次输入：摘要 12 字");
+    expect(controls.textContent).toContain("解析全文");
+    expect(controls.textContent).toContain("只送前 12000 字");
+    // 关掉「参考解析全文」：起草调用带 includeFulltext=false。
+    fireEvent.click(screen.getByRole("checkbox", { name: "参考解析全文" }));
+    fireEvent.click(screen.getByRole("button", { name: "起草选中 5 块" }));
+    expect(runDraftNotes).toHaveBeenLastCalledWith("p1", false, {
+      kinds: expect.anything(),
+      includeFulltext: false,
+    });
+  });
+
   it("展开后默认全选；「只补空白块」只起草空块；取消勾选后按选中块起草", () => {
     const runDraftNotes = vi.fn(async () => undefined);
     useField.setState({
@@ -784,6 +812,7 @@ describe("ReadingStage · 起草笔记的块级控制", () => {
     fireEvent.click(screen.getByRole("button", { name: "只补空白块" }));
     expect(runDraftNotes).toHaveBeenLastCalledWith("p1", false, {
       kinds: ["highlights", "weaknesses", "implications", "remarks"],
+      includeFulltext: true,
     });
     // 再展开（勾选状态保留：仍是全 5 块），取消「亮点」，起草选中的 4 块。
     fireEvent.click(screen.getByRole("button", { name: "起草阅读笔记…" }));
@@ -791,6 +820,7 @@ describe("ReadingStage · 起草笔记的块级控制", () => {
     fireEvent.click(screen.getByRole("button", { name: "起草选中 4 块" }));
     expect(runDraftNotes).toHaveBeenLastCalledWith("p1", false, {
       kinds: ["summary", "weaknesses", "implications", "remarks"],
+      includeFulltext: true,
     });
   });
 
@@ -807,7 +837,11 @@ describe("ReadingStage · 起草笔记的块级控制", () => {
     renderStage();
     fireEvent.click(screen.getByRole("button", { name: "起草阅读笔记…" }));
     fireEvent.click(screen.getByRole("button", { name: "起草选中 5 块" }));
-    expect(runDraftNotes).toHaveBeenLastCalledWith("p1", false, { kinds: expect.anything(), dryRun: true });
+    expect(runDraftNotes).toHaveBeenLastCalledWith("p1", false, {
+      kinds: expect.anything(),
+      includeFulltext: true,
+      dryRun: true,
+    });
   });
 
   it("全部取消勾选时「起草选中」禁用", () => {
