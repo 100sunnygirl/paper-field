@@ -13,6 +13,7 @@ import { getActivity, subscribeActivity } from "../lib/activity";
 import { jobStageLine } from "../lib/jobsView";
 import { repo } from "../lib/repo";
 import { isArchiveStatsDismissed, readingStatsFrom, setArchiveStatsDismissed } from "../lib/readingStats";
+import { classifyParseError, parseErrorSummary } from "../lib/parseErrors";
 import { pad2, shortcut } from "../lib/util";
 import { useField, type ArchiveSort, type ArchiveView, type IntakeStage, type IntakeStageFilter } from "../store";
 import { useReadPulse } from "./useReadPulse";
@@ -260,6 +261,8 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
   const setIntakeStage = useField((s) => s.setIntakeStage);
   const cancelJob = useField((s) => s.cancelJob);
   const retryMineruPapers = useField((s) => s.retryMineruPapers);
+  const retryMineru = useField((s) => s.retryMineru);
+  const openSystemCard = useField((s) => s.openSystemCard);
   const setJobsOpen = useField((s) => s.setJobsOpen);
   const highlightJob = useField((s) => s.highlightJob);
   // 阶段一句话与作业面板同一口径：入库页行内直接看到「已解析 n/N 页」等实况。
@@ -276,6 +279,8 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
   const [censusEpoch, setCensusEpoch] = useState(0);
   // 阅读成果统计卡：本机可安静关闭（关闭后不再出现）。
   const [statsDismissed, setStatsDismissed] = useState(() => isArchiveStatsDismissed());
+  // 失败原因聚类展开（入库页）：默认收起，展开后按根因分组显示。
+  const [failuresOpen, setFailuresOpen] = useState(false);
 
   if (mode === "field" && selectedDomainId && !search.trim()) {
     domainCensus = { domainId: selectedDomainId, items: papers };
@@ -427,7 +432,40 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
   const intakeRowExtra = (paper: PaperListItem) => (
     <div className="ef-row-extra">
       <span className="ef-row-combo">{intakeComboLabel(paper, jobs)}</span>
+      {paper.mineruStatus === "error" ? (
+        <>
+          <span className="ef-row-reason" title={paper.mineruError ?? undefined}>
+            原因 · {classifyParseError(paper.mineruError).label}：{parseErrorSummary(paper.mineruError)}
+          </span>
+          <button
+            type="button"
+            className="ef-row-domain-open"
+            title="重新提交这篇论文给 MinerU 解析"
+            onClick={() => void retryMineru(paper.id)}
+          >
+            重试
+          </button>
+          <button
+            type="button"
+            className="ef-row-domain-open"
+            title={classifyParseError(paper.mineruError).advice}
+            onClick={() => openSystemCard(classifyParseError(paper.mineruError).anchor)}
+          >
+            查看解决办法
+          </button>
+        </>
+      ) : null}
     </div>
+  );
+  /** 失败原因按根因聚类（展开面板用）。 */
+  const failureClusters = Object.entries(
+    intake
+      .filter((p) => p.mineruStatus === "error")
+      .reduce<Record<string, PaperListItem[]>>((acc, paper) => {
+        const key = classifyParseError(paper.mineruError).key;
+        acc[key] = [...(acc[key] ?? []), paper];
+        return acc;
+      }, {}),
   );
   const domainPapers =
     mode === "field" && domainCensus?.domainId === selectedDomainId ? domainCensus.items : papers;
@@ -556,6 +594,57 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
               </Button>
             ) : null}
           </div>
+          {failedParseCount ? (
+            <div className="ef-failure-panel">
+              <Button
+                type="button"
+                size="sm"
+                variant="text"
+                aria-expanded={failuresOpen}
+                onClick={() => setFailuresOpen((open) => !open)}
+              >
+                {failuresOpen ? "收起失败原因" : `查看失败原因（${failedParseCount}）`}
+              </Button>
+              {failuresOpen ? (
+                <div className="ef-failure-clusters">
+                  {failureClusters.map(([key, papers]) => {
+                    const category = classifyParseError(papers[0]?.mineruError);
+                    return (
+                      <div key={key} className="ef-failure-cluster">
+                        <div className="ef-failure-cluster-head">
+                          <b>{category.label} · {papers.length} 篇</b>
+                          <Button
+                            type="button"
+                            size="sm"
+                            onClick={() => void retryMineruPapers(papers.map((p) => p.id))}
+                          >
+                            重试此类
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="text"
+                            onClick={() => openSystemCard(category.anchor)}
+                          >
+                            查看解决办法
+                          </Button>
+                        </div>
+                        <p className="ef-failure-advice">{category.advice}</p>
+                        <ul>
+                          {papers.map((paper) => (
+                            <li key={paper.id}>
+                              <span>{paper.titleZh || paper.title}</span>
+                              <span className="ef-failure-reason">{parseErrorSummary(paper.mineruError)}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       ) : null}
 

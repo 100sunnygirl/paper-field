@@ -617,6 +617,64 @@ describe("PaperNav · 入库行组合状态标签", () => {
   });
 });
 
+describe("PaperNav · 失败原因可见与聚类", () => {
+  function failedItem(id: string, error: string): PaperListItem {
+    return { ...intakeItem(id, "error"), mineruError: error };
+  }
+
+  it("失败行显示类别与原因摘要（前 40 字），带单篇重试与查看解决办法", async () => {
+    const retryMineru = vi.fn(async () => undefined);
+    const openSystemCard = vi.fn();
+    useField.setState({
+      mode: "intake",
+      intake: [failedItem("a", "A0202: invalid token"), intakeItem("ok", "done")],
+      retryMineru,
+      openSystemCard,
+    });
+    render(<PaperNav />);
+    const reason = screen.getByText(/原因 · Token 问题：A0202: invalid token/);
+    expect(reason).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    await waitFor(() => {
+      expect(retryMineru).toHaveBeenCalledWith("a");
+    });
+    fireEvent.click(screen.getByRole("button", { name: "查看解决办法" }));
+    expect(openSystemCard).toHaveBeenCalledWith("mineru");
+  });
+
+  it("失败计数可展开：按根因聚类分组，附建议、重试此类与查看解决办法", async () => {
+    const retryMineruPapers = vi.fn(async () => undefined);
+    const openSystemCard = vi.fn();
+    useField.setState({
+      mode: "intake",
+      intake: [
+        failedItem("a", "A0202: invalid token"),
+        failedItem("b", "Token 过期"),
+        failedItem("c", "error -60018 daily quota"),
+      ],
+      retryMineruPapers,
+      openSystemCard,
+    });
+    render(<PaperNav />);
+    expect(screen.queryByText(/Token 问题 · 2 篇/)).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "查看失败原因（3）" }));
+    expect(screen.getByText("Token 问题 · 2 篇")).toBeInTheDocument();
+    expect(screen.getByText("额度用尽 · 1 篇")).toBeInTheDocument();
+    expect(screen.getByText(/Token 无效或已过期/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getAllByRole("button", { name: "重试此类" })[0]);
+    await waitFor(() => {
+      expect(retryMineruPapers).toHaveBeenCalledWith(["a", "b"]);
+    });
+    fireEvent.click(screen.getAllByRole("button", { name: "查看解决办法" })[0]);
+    expect(openSystemCard).toHaveBeenCalledWith("mineru");
+
+    fireEvent.click(screen.getByRole("button", { name: "收起失败原因" }));
+    expect(screen.queryByText(/Token 问题 · 2 篇/)).toBeNull();
+  });
+});
+
 describe("PaperNav · 领域计数不随搜索改写", () => {
   it("搜索过滤列表，阅读进度和本领域论文仍按未过滤领域计算", () => {
     const read = { ...intakeItem("a", null), readingStatus: "read" as const };

@@ -1449,6 +1449,49 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 }
 .ef-retry-list em.is-failed { color: var(--pf-danger); border-color: var(--pf-danger); }
 .ef-retry-list .mono { margin-left: auto; color: var(--pf-muted); flex: none; }
+/* 失败行的行内原因副标题（40 字摘要 + 类别）。 */
+.ef-row-reason {
+  flex: 1 1 100%;
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-danger);
+  line-height: 1.6;
+}
+/* 失败原因聚类面板：漏斗行下方按根因分组展开。 */
+.ef-failure-panel { margin-top: 8px; display: flex; flex-direction: column; gap: 8px; }
+.ef-failure-clusters {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--pf-divider);
+  border-left: var(--pf-marker) solid var(--pf-danger);
+  background: var(--pf-surface);
+  padding: 10px 12px;
+}
+.ef-failure-cluster { display: flex; flex-direction: column; gap: 6px; }
+.ef-failure-cluster + .ef-failure-cluster { padding-top: 8px; border-top: 1px dashed var(--pf-divider); }
+.ef-failure-cluster-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-ink);
+}
+.ef-failure-cluster-head b { font-weight: 600; }
+.ef-failure-advice { margin: 0; font-size: var(--pf-fs-tag); color: var(--pf-muted); line-height: 1.7; }
+.ef-failure-cluster ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-secondary);
+}
+.ef-failure-cluster li { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
+.ef-failure-cluster li > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ef-failure-reason { margin-left: auto; color: var(--pf-muted); flex: none; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ef-job-list { padding: 14px 16px 0; display: flex; flex-direction: column; gap: 8px; }
 .ef-job-list .ef-nav-sum { margin: 0; }
 .ef-job-row {
