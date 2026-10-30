@@ -415,7 +415,8 @@ describe("ReadingStage · 资料栏「本篇状态卡」", () => {
     renderStage();
     expect(within(card()).getByText("已完成")).toBeInTheDocument();
     expect(within(card()).getByText("5 / 5")).toBeInTheDocument(); // 著录齐全（笔记行是 1 / 5）
-    fireEvent.click(within(card()).getByRole("button", { name: "写亮点" }));
+    // 状态卡 CTA 是「去写X」：与正文笔记块自身的「写X」入口区分，避免同名定位歧义。
+    fireEvent.click(within(card()).getByRole("button", { name: "去写亮点" }));
     expect(document.querySelector('.ef-toc a[href="#note-highlights"]')).toHaveClass("is-active");
   });
 

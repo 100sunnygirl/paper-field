@@ -768,7 +768,8 @@ function ContextPanel({
       : { label: "补著录信息", run: () => openDialog("edit-paper", paper.id) };
     nextHint = `著录还缺 ${metaFlags.length - metaDone} 项（摘要 / 年份 / 出处 / 标识符 / 作者）。`;
   } else if (nextEmptyKind) {
-    nextAction = { label: `写${NOTE_LABELS[nextEmptyKind].zh}`, run: () => onJump(`note-${nextEmptyKind}`) };
+    // 「去写X」而非「写X」：正文笔记块自身已有同名「写X」入口，同名会让按名定位（读屏/自动化）产生歧义。
+    nextAction = { label: `去写${NOTE_LABELS[nextEmptyKind].zh}`, run: () => onJump(`note-${nextEmptyKind}`) };
     nextHint = `笔记已写 ${notesWritten} / ${NOTE_DISPLAY_ORDER.length} 块。`;
   } else if (paper.readingStatus !== "read") {
     nextAction = { label: "标记已读", run: () => void markRead(paper.id) };
