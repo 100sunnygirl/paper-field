@@ -39,7 +39,8 @@ describe("MergeDomainDialog · 合并领域", () => {
     expect(previewBlock.textContent).toContain("9 篇");
     expect(screen.getByText(/两边有 2 篇同名论文/)).toBeInTheDocument();
     expect(screen.getByText("Same Paper")).toBeInTheDocument();
-    expect(screen.getByText(/另有 0 篇同名论文未逐条列出/)).toBeNull();
+    // 只有 2 条同名论文：不出现折叠提示
+    expect(screen.queryByText(/篇同名论文未逐条列出/)).toBeNull();
   });
 
   it("确认合并调用 mergeDomains；来源=目标时报错且不可提交", async () => {
