@@ -259,6 +259,18 @@ function mapPaper(row: PaperRow): Paper {
 }
 
 
+/**
+ * 回收站重插 papers 行：直接按「SELECT * 行对象的键」生成列清单（键序即快照时的
+ * 表列序），与当前库的实际列自然一致，不手工维护列清单。
+ */
+function paperInsertStep(row: Record<string, unknown>): BatchStep {
+  const columns = Object.keys(row);
+  return {
+    sql: `INSERT OR IGNORE INTO papers (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
+    params: columns.map((column) => row[column] ?? null),
+  };
+}
+
 /** 把领域附加字段的一个补丁合并进 app_meta 的 JSON 键（读-合-写，单键低频操作）。 */
 async function writeDomainExtra(engine: SqlEngine, id: string, patch: DomainExtraPatch): Promise<void> {
   const extras = await readDomainExtras(engine);
@@ -1467,6 +1479,151 @@ export const repo = {
       notes: Number(row?.notes ?? 0),
       read: Number(row?.read ?? 0),
     };
+  },
+
+  // ---- 领域回收站（app_meta 快照方案，不动 schema 版本）----
+  //
+  // pf_domain_cascade 触发器在 DELETE 单语句内删光论文/笔记，无法在 SQL 层拦截；
+  // 升 schema 版本会破坏桌面端（restore.rs SCHEMA_VERSION=6 与 schema.ts 锁步，
+  // 拒绝恢复更新版本的库）。因此删除前把整域数据序列化为一份 JSON 快照存进
+  // app_meta（与库同文件：进备份、跨设备保留），30 天后过期。恢复时重建领域并
+  // 逐行重插论文/笔记/作者/链接，id 全部沿用，解析全文随论文行一起恢复。
+  /** 快照行类型（与各表列一一对应的小驼峰映射太宽，直接存原始行）。 */
+  async trashDomain(id: string): Promise<{ snapshotId: string; paperCount: number } | null> {
+    const engine = await getEngine();
+    const domains = await engine.select<DomainRow>("SELECT * FROM domains WHERE id = ?", [id]);
+    const domain = domains[0];
+    if (!domain) return null;
+    const papers = await engine.select<Record<string, unknown>>("SELECT * FROM papers WHERE domain_id = ?", [id]);
+    const notes: Record<string, unknown>[] = [];
+    const authors: Record<string, unknown>[] = [];
+    const links: Record<string, unknown>[] = [];
+    const parses: Record<string, unknown>[] = [];
+    const authorIds = new Set<string>();
+    for (const paper of papers) {
+      const paperId = String(paper.id);
+      notes.push(...(await engine.select<Record<string, unknown>>("SELECT * FROM notes WHERE paper_id = ?", [paperId])));
+      parses.push(...(await engine.select<Record<string, unknown>>("SELECT * FROM paper_parse WHERE paper_id = ?", [paperId])));
+      const rows = await engine.select<{ author_id: string }>("SELECT author_id FROM paper_authors WHERE paper_id = ?", [paperId]);
+      for (const row of rows) authorIds.add(row.author_id);
+      links.push(...(await engine.select<Record<string, unknown>>("SELECT * FROM paper_authors WHERE paper_id = ?", [paperId])));
+    }
+    for (const authorId of authorIds) {
+      authors.push(...(await engine.select<Record<string, unknown>>("SELECT * FROM authors WHERE id = ?", [authorId])));
+    }
+    const snapshot = {
+      domain: domain,
+      papers,
+      notes,
+      authors,
+      links,
+      parses,
+      deletedAt: nowIso(),
+    };
+    const snapshotId = `domain-trash:${id}`;
+    await engine.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)", [
+      snapshotId,
+      JSON.stringify(snapshot),
+    ]);
+    return { snapshotId, paperCount: papers.length };
+  },
+
+  /** 回收站里的领域（30 天内）；附带可恢复的论文数与剩余天数。 */
+  async listTrashedDomains(): Promise<Array<{ id: string; name: string; code: string; deletedAt: string; papers: number; daysLeft: number }>> {
+    const engine = await getEngine();
+    const rows = await engine.select<{ key: string; value: string }>(
+      "SELECT key, value FROM app_meta WHERE key LIKE 'domain-trash:%'",
+    );
+    const out: Array<{ id: string; name: string; code: string; deletedAt: string; papers: number; daysLeft: number }> = [];
+    for (const row of rows) {
+      try {
+        const snapshot = JSON.parse(row.value) as {
+          domain?: { id: string; name: string; code: string };
+          deletedAt?: string;
+          papers?: unknown[];
+        };
+        if (!snapshot.domain || !snapshot.deletedAt) continue;
+        const daysLeft = 30 - Math.floor((Date.now() - new Date(snapshot.deletedAt).getTime()) / 86400000);
+        if (daysLeft <= 0) continue; // 过期条目不再展示（下次写入时物理清理）。
+        out.push({
+          id: snapshot.domain.id,
+          name: snapshot.domain.name,
+          code: snapshot.domain.code,
+          deletedAt: snapshot.deletedAt,
+          papers: snapshot.papers?.length ?? 0,
+          daysLeft,
+        });
+      } catch {
+        // 坏快照跳过。
+      }
+    }
+    return out.sort((a, b) => (a.deletedAt < b.deletedAt ? 1 : -1));
+  },
+
+  /** 从快照恢复整域（领域、论文、笔记、作者、关联、解析全文，id 全部沿用）。 */
+  async restoreTrashedDomain(id: string): Promise<number> {
+    const engine = await getEngine();
+    const rows = await engine.select<{ value: string }>("SELECT value FROM app_meta WHERE key = ?", [
+      `domain-trash:${id}`,
+    ]);
+    if (!rows[0]) throw new Error("回收站里没有这个领域");
+    const snapshot = JSON.parse(rows[0].value) as {
+      domain: Record<string, unknown>;
+      papers: Array<Record<string, unknown>>;
+      notes: Array<Record<string, unknown>>;
+      authors: Array<Record<string, unknown>>;
+      links: Array<Record<string, unknown>>;
+      parses: Array<Record<string, unknown>>;
+    };
+    // 领域行沿用原 id 重建（论文行的 domain_id 无需改写）。
+    const steps: BatchStep[] = [];
+    steps.push({
+      sql: "INSERT OR IGNORE INTO domains (id, name, code, summary, sort_order, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+      params: [
+        snapshot.domain.id,
+        snapshot.domain.name,
+        snapshot.domain.code,
+        snapshot.domain.summary ?? null,
+        snapshot.domain.sort_order ?? 999,
+        snapshot.domain.created_at ?? nowIso(),
+      ],
+    });
+    for (const author of snapshot.authors) {
+      steps.push({
+        sql: "INSERT OR IGNORE INTO authors (id, name, name_zh, affiliation, lab, homepage, orcid) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        params: [author.id, author.name, author.name_zh ?? null, author.affiliation ?? null, author.lab ?? null, author.homepage ?? null, author.orcid ?? null],
+      });
+    }
+    for (const paper of snapshot.papers) {
+      steps.push(paperInsertStep(paper));
+    }
+    for (const note of snapshot.notes) {
+      steps.push({
+        sql: "INSERT OR IGNORE INTO notes (id, paper_id, kind, content, source, user_edited, rev, revised_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        params: [note.id, note.paper_id, note.kind, note.content, note.source, note.user_edited ?? 0, note.rev ?? 0, note.revised_at ?? null],
+      });
+    }
+    for (const parse of snapshot.parses) {
+      steps.push({
+        sql: "INSERT OR IGNORE INTO paper_parse (paper_id, markdown, updated_at) VALUES (?, ?, ?)",
+        params: [parse.paper_id, parse.markdown, parse.updated_at],
+      });
+    }
+    for (const link of snapshot.links) {
+      steps.push({
+        sql: "INSERT OR IGNORE INTO paper_authors (paper_id, author_id, sort_order, is_corresponding) VALUES (?, ?, ?, ?)",
+        params: [link.paper_id, link.author_id, link.sort_order, link.is_corresponding ?? 0],
+      });
+    }
+    await engine.batch(steps);
+    await engine.execute("DELETE FROM app_meta WHERE key = ?", [`domain-trash:${id}`]);
+    return snapshot.papers.length;
+  },
+
+  /** 彻底删除回收站里的快照（不可再恢复）。 */
+  async purgeTrashedDomain(id: string): Promise<void> {
+    const engine = await getEngine();
+    await engine.execute("DELETE FROM app_meta WHERE key = ?", [`domain-trash:${id}`]);
   },
 
   /** 迁移后删除：把整域论文改挂到目标领域（迁移前先取消在途作业由 store 层处理）。 */

@@ -5908,3 +5908,21 @@ mark.ef-ft-hit.is-current { background: var(--pf-signal); }
 .ef-domain-delete-review p { margin: 0 0 10px; }
 .ef-domain-delete-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .ef-domain-delete-migrate { margin-top: 4px; }
+
+/* 领域回收站（设置页）：整域快照 30 天内可恢复。 */
+.ef-trash-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.ef-trash-list li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border: 1px solid var(--pf-divider);
+  border-radius: var(--pf-radius);
+  background: var(--pf-surface);
+}
+.ef-trash-main { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.ef-trash-main small { color: var(--pf-muted); }
+.ef-trash-meta { flex: 1; font-size: var(--pf-fs-caption); color: var(--pf-secondary); }
+.ef-trash-actions { display: inline-flex; align-items: center; gap: 8px; }
+.ef-trash-warn { font-size: var(--pf-fs-caption); color: var(--pf-danger); }

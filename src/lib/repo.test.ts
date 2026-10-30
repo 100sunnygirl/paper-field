@@ -1072,3 +1072,50 @@ describe("领域强调色（accent 附加字段）", () => {
     expect(got?.keyQuestion).toBe("Q?");
   });
 });
+
+describe("领域回收站（app_meta 快照）", () => {
+  it("trashDomain 快照整域数据，restoreTrashedDomain 一并找回论文/笔记/作者/解析全文", async () => {
+    const domain = await repo.createDomain({ name: "要删的领域", code: "D-05" });
+    const paper = await repo.createPaper({ domainId: domain.id, title: "Recover Me" });
+    await repo.updateNote(paper.id, "summary", "恢复我的总结", "manual", true);
+    await repo.saveParsedMarkdown(paper.id, "# 全文\n恢复我");
+    await repo.replaceAuthors(paper.id, [{ name: "Someone" }], true);
+
+    const trashed = await repo.trashDomain(domain.id);
+    expect(trashed?.paperCount).toBe(1);
+    await repo.deleteDomain(domain.id);
+    expect(await repo.getPaper(paper.id)).toBeNull();
+
+    // 快照在回收站可见（含剩余天数）
+    const list = await repo.listTrashedDomains();
+    expect(list.map((row) => row.id)).toContain(domain.id);
+    expect(list[0].papers).toBe(1);
+    expect(list[0].daysLeft).toBe(30);
+
+    // 恢复：id 全部沿用，笔记与全文都在
+    const restored = await repo.restoreTrashedDomain(domain.id);
+    expect(restored).toBe(1);
+    const detail = await repo.getPaper(paper.id);
+    expect(detail?.title).toBe("Recover Me");
+    expect(detail?.notes.summary.content).toBe("恢复我的总结");
+    expect(detail?.parsedMarkdown).toContain("恢复我");
+    expect(detail?.authors.map((a) => a.name)).toEqual(["Someone"]);
+    expect(await repo.getDomain(domain.id)).not.toBeNull();
+    // 恢复后快照出列
+    expect((await repo.listTrashedDomains()).map((row) => row.id)).not.toContain(domain.id);
+  });
+
+  it("purgeTrashedDomain 彻底删除快照", async () => {
+    const domain = await repo.createDomain({ name: "X", code: "" });
+    const paper = await repo.createPaper({ domainId: domain.id, title: "T" });
+    await repo.trashDomain(domain.id);
+    await repo.deleteDomain(domain.id);
+    await repo.purgeTrashedDomain(domain.id);
+    expect((await repo.listTrashedDomains()).map((row) => row.id)).not.toContain(domain.id);
+    void paper;
+  });
+
+  it("快照不存在的恢复报错", async () => {
+    await expect(repo.restoreTrashedDomain("d-none")).rejects.toThrow("回收站里没有这个领域");
+  });
+});

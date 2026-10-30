@@ -201,6 +201,12 @@ interface FieldState {
   deleteDomain: () => Promise<void>;
   /** 迁移后删除：把该领域全部论文移入目标领域，再删除空的旧领域。 */
   migrateDomainThenDelete: (toDomainId: string) => Promise<void>;
+  /** 领域回收站：30 天内删除的领域快照列表（设置页展示与恢复）。 */
+  listTrashedDomains: () => Promise<Array<{ id: string; name: string; code: string; deletedAt: string; papers: number; daysLeft: number }>>;
+  /** 领域回收站恢复：整域论文/笔记/作者/解析全文一并找回。 */
+  restoreTrashedDomain: (id: string) => Promise<void>;
+  /** 领域回收站彻底删除：快照不可再恢复。 */
+  purgeTrashedDomain: (id: string) => Promise<void>;
   importPdfs: (
     paths: string[],
     onProgress?: (done: number, total: number, current: string) => void,
@@ -830,15 +836,47 @@ export const useField = create<FieldState>((set, get) => ({
     if (!id) return;
     try {
       // 先取消这些论文的在途作业并移出排队，免得轮询在论文删掉后还占着队列、扣着配额。
-      await forgetPapers(await repo.paperIdsInDomain(id));
+      const paperIds = await repo.paperIdsInDomain(id);
+      await forgetPapers(paperIds);
+      // 删除前先存整域快照进回收站（30 天内可恢复，见 repo.trashDomain）。
+      let trashed: Awaited<ReturnType<typeof repo.trashDomain>> = null;
+      if (paperIds.length) trashed = await repo.trashDomain(id);
       await repo.deleteDomain(id);
       const domains = await repo.listDomains();
       set({ selectedDomainId: domains[0]?.id ?? null, dialog: null, selectedPaperId: null, paper: null });
       await get().refresh();
+      if (trashed && paperIds.length) {
+        const domainName = get().domains.find((domain) => domain.id === id)?.name ?? id;
+        get().setFlash({
+          tone: "ok",
+          text: `已删除「${domainName}」。回收站保留 ${paperIds.length} 篇论文 30 天，可在设置里恢复。`,
+        });
+      }
     } catch (err) {
       get().setFlash({ tone: "error", text: `删除领域失败：${errText(err)}，数据未改动。` });
       throw err;
     }
+  },
+
+  /** 回收站：列出 30 天内删除的领域（设置页展示剩余天数与论文数）。 */
+  listTrashedDomains: async () => repo.listTrashedDomains(),
+
+  /** 回收站恢复：整域论文/笔记/作者/解析全文一并找回。 */
+  restoreTrashedDomain: async (id) => {
+    try {
+      const papers = await repo.restoreTrashedDomain(id);
+      await get().refresh();
+      get().setFlash({ tone: "ok", text: `已从回收站恢复领域，找回 ${papers} 篇论文。` });
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `恢复失败：${errText(err)}，数据未改动。` });
+      throw err;
+    }
+  },
+
+  /** 回收站彻底删除：快照不可再恢复（二次确认在设置页）。 */
+  purgeTrashedDomain: async (id) => {
+    await repo.purgeTrashedDomain(id);
+    get().setFlash({ tone: "ok", text: "已彻底删除该快照。" });
   },
 
   migrateDomainThenDelete: async (toDomainId) => {
