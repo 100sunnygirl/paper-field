@@ -35,7 +35,7 @@ import {
   type FulltextSelection,
 } from "../lib/fulltext";
 import { onMarkdownClick, renderMarkdown } from "../lib/markdown";
-import { loadNoteStyle, loadPreviewFirst, noteStylePrompt, saveNoteStyle, savePreviewFirst, type NoteStyle, NOTE_STYLE_LABELS } from "../lib/aiPrefs";
+import { loadNoteStyle, loadPreviewFirst, noteStylePrompt, saveNoteStyle, savePreviewFirst, taskChainFor, type AiTask, type NoteStyle, NOTE_STYLE_LABELS } from "../lib/aiPrefs";
 import { draftInputScope } from "../lib/prompts";
 import { isNoteHintDismissed, NOTE_HINT_QUESTIONS, setNoteHintDismissed } from "../lib/noteHints";
 import { loadNoteLayout, moveNoteKind as moveNoteKindInOrder, saveNoteLayout, type NoteLayout } from "../lib/noteLayout";
@@ -862,13 +862,22 @@ function AiChainPlan({ settings }: { settings: LlmSettings }) {
     (provider) => provider.enabled && (!provider.requiresKey || provider.hasKey),
   );
   if (!chain.length) return null;
-  const primary = chain[0];
+  // 两类任务分别解析回退链：任务首选置顶，其余按全局顺序补齐（跟随全局时两行相同）。
+  const describe = (task: AiTask, name: string): string => {
+    const ordered = [...chain].sort(
+      (a, b) => (taskChainFor(task, chain)?.indexOf(a.id) ?? 0) - (taskChainFor(task, chain)?.indexOf(b.id) ?? 0),
+    );
+    const primary = ordered[0];
+    const rest = ordered.slice(1, 3).map((provider) => provider.label);
+    return `${name}：将用 ${primary.label}${primary.model ? `（${primary.model}）` : ""}${
+      ordered.length > 1 ? `；失败时回退 ${rest.join("、")}${ordered.length > 3 ? " 等" : ""}` : "（无回退）"
+    }`;
+  };
   return (
-    <p className="ef-ai-chain">
-      将用 <b>{primary.label}</b>
-      {primary.model ? <span className="mono">（{primary.model}）</span> : null}
-      {chain.length > 1 ? `；失败时按设置顺序回退 ${chain.slice(1, 3).map((provider) => provider.label).join("、")}${chain.length > 3 ? ` 等 ${chain.length - 1} 个` : ""}` : ""}
-    </p>
+    <div className="ef-ai-chain">
+      <p>{describe("meta", "补全论文信息")}</p>
+      <p>{describe("notes", "起草阅读笔记")}</p>
+    </div>
   );
 }
 

@@ -5844,3 +5844,28 @@ mark.ef-ft-hit.is-current { background: var(--pf-signal); }
   font-size: var(--pf-fs-caption);
   color: var(--pf-secondary);
 }
+/* 任务模型分配（设置页 AI 卡）。 */
+.ef-task-primary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border: 1px dashed var(--pf-divider);
+}
+.ef-task-primary-note { margin: 0; font-size: var(--pf-fs-caption); color: var(--pf-secondary); }
+.ef-task-primary-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--pf-fs-caption);
+}
+.ef-task-primary-row select {
+  border: 1px solid var(--pf-divider);
+  background: var(--pf-canvas);
+  color: var(--pf-ink);
+  padding: 4px 8px;
+  font-size: var(--pf-fs-caption);
+}
+.ef-task-primary small { color: var(--pf-secondary); font-size: var(--pf-fs-caption); }
+.ef-ai-chain p { margin: 0 0 2px; }

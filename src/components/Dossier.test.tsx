@@ -900,24 +900,25 @@ describe("ReadingStage · AI 的事前展示（提供商/模型/回退）", () =
     };
   }
 
-  it("已配置时按钮上方显示「将用 + 首选（模型）+ 回退顺序」", () => {
+  it("已配置时按钮上方显示两类任务各自的「将用 + 首选（模型）+ 回退顺序」", () => {
     useField.setState({ mode: "field", paper: paper({}), selectedPaperId: "p1", settings: settingsWith(3) });
     renderStage();
-    const line = screen.getByText(/将用/);
-    expect(line.textContent).toContain("DeepSeek");
-    expect(line.textContent).toContain("model-0");
-    expect(line.textContent).toContain("失败时按设置顺序回退 Kimi、智谱 GLM");
+    const zone = document.querySelector(".ef-ai-chain")!;
+    expect(zone.textContent).toContain("补全论文信息：将用 DeepSeek");
+    expect(zone.textContent).toContain("起草阅读笔记：将用 DeepSeek");
+    expect(zone.textContent).toContain("model-0");
+    expect(zone.textContent).toContain("失败时回退 Kimi、智谱 GLM");
   });
 
-  it("只配一个提供商时不显示回退说明；未配置时不显示这一行", () => {
+  it("只配一个提供商时显示「无回退」；未配置时不显示这一行", () => {
     useField.setState({ mode: "field", paper: paper({}), selectedPaperId: "p1", settings: settingsWith(1) });
     const { unmount } = renderStage();
-    expect(screen.getByText(/将用/).textContent).not.toContain("回退");
+    expect(document.querySelector(".ef-ai-chain")!.textContent).toContain("（无回退）");
     unmount();
 
     useField.setState({ settings: { version: 2, usage: {}, providers: [] } });
     renderStage();
-    expect(screen.queryByText(/将用/)).toBeNull();
+    expect(document.querySelector(".ef-ai-chain")).toBeNull();
   });
 });
 
@@ -1188,5 +1189,29 @@ describe("ReadingStage · 起草风格偏好与领域上下文", () => {
     fireEvent.change(screen.getByLabelText("领域上下文"), { target: { value: "" } });
     fireEvent.click(screen.getByRole("button", { name: "起草选中 5 块" }));
     expect(runDraftNotes).toHaveBeenLastCalledWith("p1", false, expect.not.objectContaining({ contextNote: expect.anything() }));
+  });
+});
+
+describe("ReadingStage · 任务分别选模型的事前展示", () => {
+  it("两类任务分别展示各自首选与回退；跟随全局时同一顺序", () => {
+    localStorage.setItem("paper-field.task-primary.notes", "p2");
+    const settings = {
+      version: 2 as const,
+      usage: {},
+      providers: [
+        { id: "p1", presetId: null, label: "DeepSeek", baseUrl: "u", model: "m1", enabled: true, hasKey: true, requiresKey: true },
+        { id: "p2", presetId: null, label: "Kimi", baseUrl: "u", model: "m2", enabled: true, hasKey: true, requiresKey: true },
+        { id: "p3", presetId: null, label: "智谱", baseUrl: "u", model: "m3", enabled: true, hasKey: true, requiresKey: true },
+      ],
+    };
+    useField.setState({ mode: "field", paper: paper({}), selectedPaperId: "p1", settings });
+    renderStage();
+    const chain = screen.getByText(/补全论文信息：将用/);
+    expect(chain.textContent).toContain("DeepSeek（m1）");
+    expect(chain.textContent).toContain("失败时回退 Kimi、智谱");
+    const notes = screen.getByText(/起草阅读笔记：将用/);
+    expect(notes.textContent).toContain("Kimi（m2）");
+    expect(notes.textContent).toContain("失败时回退 DeepSeek、智谱");
+    localStorage.removeItem("paper-field.task-primary.notes");
   });
 });

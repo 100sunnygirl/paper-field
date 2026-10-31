@@ -1493,3 +1493,32 @@ describe("自动补全开关与待处理篇数预览", () => {
     listReady.mockRestore?.();
   });
 });
+
+describe("任务模型分配（元数据/笔记分别选模型）", () => {
+  it("为两类任务分别选择首选模型并写进本机记忆；可恢复跟随全局", async () => {
+    localStorage.removeItem("paper-field.task-primary.meta");
+    localStorage.removeItem("paper-field.task-primary.notes");
+    useField.setState({
+      settings: {
+        version: 2,
+        usage: {},
+        providers: [
+          { id: "p-1", presetId: "deepseek", label: "DeepSeek", baseUrl: "u", model: "m1", enabled: true, hasKey: true, requiresKey: true },
+          { id: "p-2", presetId: null, label: "Kimi", baseUrl: "u", model: "m2", enabled: true, hasKey: true, requiresKey: true },
+        ],
+      },
+    });
+    render(<SystemView />);
+    const metaSelect = screen.getByLabelText("补全论文信息首选模型");
+    const notesSelect = screen.getByLabelText("起草阅读笔记首选模型");
+    expect(metaSelect).toHaveValue("");
+    fireEvent.change(metaSelect, { target: { value: "p-2" } });
+    fireEvent.change(notesSelect, { target: { value: "p-1" } });
+    expect(localStorage.getItem("paper-field.task-primary.meta")).toBe("p-2");
+    expect(localStorage.getItem("paper-field.task-primary.notes")).toBe("p-1");
+    // 恢复跟随全局。
+    fireEvent.change(metaSelect, { target: { value: "" } });
+    expect(localStorage.getItem("paper-field.task-primary.meta")).toBeNull();
+    localStorage.removeItem("paper-field.task-primary.notes");
+  });
+});

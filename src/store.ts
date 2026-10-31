@@ -1347,7 +1347,7 @@ export const useField = create<FieldState>((set, get) => ({
             ...fresh,
             filledByApi: filledFrom(fresh.fieldSources, "api"),
           });
-          const raw = await completeChat({ jobId: ctx.jobId, system: PREPARE_META_SYSTEM, user: prompt, signal: ctx.signal });
+          const raw = await completeChat({ jobId: ctx.jobId, system: PREPARE_META_SYSTEM, user: prompt, signal: ctx.signal, task: "meta" });
           await ctx.checkpoint();
           ctx.stage("apply");
           const meta = normalizeMeta(extractJson(raw));
@@ -1573,7 +1573,7 @@ export const useField = create<FieldState>((set, get) => ({
         { type: "draftNotes", paperId: id, prompt, stage: "request", onCancel: cancelChat },
         async (ctx) => {
           await get().refresh();
-          const raw = await completeChat({ jobId: ctx.jobId, system: DRAFT_NOTES_SYSTEM, user: prompt, signal: ctx.signal });
+          const raw = await completeChat({ jobId: ctx.jobId, system: DRAFT_NOTES_SYSTEM, user: prompt, signal: ctx.signal, task: "notes" });
           await ctx.checkpoint();
           ctx.stage("apply");
           const notes = normalizeNotes(extractJson(raw));

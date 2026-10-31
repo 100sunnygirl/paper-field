@@ -79,3 +79,46 @@ export function saveAutoBackfill(on: boolean): void {
     // 存不下只影响本次会话的记忆。
   }
 }
+
+/** 任务 → 首选提供商：元数据补全与笔记起草可分别选模型（本机偏好）。 */
+export type AiTask = "meta" | "notes";
+
+const TASK_PRIMARY_KEYS: Record<AiTask, string> = {
+  meta: "paper-field.task-primary.meta",
+  notes: "paper-field.task-primary.notes",
+};
+
+/** null = 跟随全局回退顺序。 */
+export function loadTaskPrimary(task: AiTask): string | null {
+  try {
+    return localStorage.getItem(TASK_PRIMARY_KEYS[task]);
+  } catch {
+    return null;
+  }
+}
+
+export function saveTaskPrimary(task: AiTask, providerId: string | null): void {
+  try {
+    if (providerId) localStorage.setItem(TASK_PRIMARY_KEYS[task], providerId);
+    else localStorage.removeItem(TASK_PRIMARY_KEYS[task]);
+  } catch {
+    // 存不下只影响下次默认。
+  }
+}
+
+/**
+ * 任务的回退链：首选（若设置且可用）置顶，其余按全局顺序补齐。
+ * 返回 null 表示没有自定义（完全跟随全局）。
+ */
+export function taskChainFor(
+  task: AiTask,
+  providers: Array<Pick<LlmProviderLike, "id">>,
+): string[] | null {
+  const primary = loadTaskPrimary(task);
+  if (!primary || !providers.some((provider) => provider.id === primary)) return null;
+  return [primary, ...providers.map((provider) => provider.id).filter((id) => id !== primary)];
+}
+
+export interface LlmProviderLike {
+  id: string;
+}
