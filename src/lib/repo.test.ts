@@ -357,6 +357,45 @@ describe("三种模式搜索（缺陷 1：作者/DOI/标签命中）", () => {
     expect(await repo.listArchive({ search: "archive-tag", openSource: "closed" })).toEqual([]);
   });
 
+  it("listArchive：附带最近改笔记时间与已写笔记块数（notes_revised_at / notes_filled）", async () => {
+    const read = (await repo.listPapers(domainA, "已读的老论文"))[0];
+    await repo.updateNote(read.id, "summary", "一句话总结", "manual", true);
+    await repo.updateNote(read.id, "highlights", "亮点一条", "manual", true);
+    // 再写一块空字符串：不计入已写块数。
+    await repo.updateNote(read.id, "weaknesses", "   ", "manual", true);
+
+    const rows = await repo.listArchive({ search: "已读的老论文" });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].notesFilled).toBe(2);
+    expect(rows[0].notesRevisedAt).toBeTruthy();
+  });
+
+  it("listArchive 搜索范围扩展：含笔记 / 含全文命中（默认只查元数据）", async () => {
+    const read = (await repo.listPapers(domainA, "已读的老论文"))[0];
+    await repo.updateNote(read.id, "highlights", "独特的笔记暗号是 blue-whale-42", "manual", true);
+    await repo.saveParsedMarkdown(read.id, "全文里的独特暗号 fulltext-mark-77 出现在解析正文里。");
+
+    // 默认（只查元数据）：暗号搜不到。
+    expect(await repo.listArchive({ search: "blue-whale-42" })).toEqual([]);
+    expect(await repo.listArchive({ search: "fulltext-mark-77" })).toEqual([]);
+    // 含笔记：笔记内容命中。
+    expect((await repo.listArchive({ search: "blue-whale-42", searchNotes: true })).map((p) => p.id)).toEqual([
+      read.id,
+    ]);
+    // 含全文：解析全文命中（笔记暗号同时也写进了全文时同样命中）。
+    expect((await repo.listArchive({ search: "fulltext-mark-77", searchFulltext: true })).map((p) => p.id)).toEqual([
+      read.id,
+    ]);
+
+    const noteHits = await repo.noteHitExcerpts("blue-whale-42", [read.id]);
+    expect(noteHits).toHaveLength(1);
+    expect(noteHits[0].kind).toBe("highlights");
+    expect(noteHits[0].snippet).toContain("blue-whale-42");
+    const ftHits = await repo.fulltextHitExcerpts("fulltext-mark-77", [read.id]);
+    expect(ftHits).toHaveLength(1);
+    expect(ftHits[0].snippet).toContain("fulltext-mark-77");
+  });
+
   it("searchAll：跨领域命中（作者 / 摘要）", async () => {
     const hits = await repo.searchAll("Radford");
     expect(hits.map((p) => p.title)).toEqual(["Contrastive Learning"]);
