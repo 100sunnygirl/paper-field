@@ -956,7 +956,9 @@ function ContextPanel({
       : { label: "补著录信息", run: () => openDialog("edit-paper", paper.id) };
     nextHint = `著录还缺 ${metaFlags.length - metaDone} 项（摘要 / 年份 / 出处 / 标识符 / 作者）。`;
   } else if (nextEmptyKind) {
-    nextAction = { label: `写${NOTE_LABELS[nextEmptyKind].zh}`, run: () => onJump(`note-${nextEmptyKind}`) };
+    // 「去写」前缀与笔记块自身的「写X」入口区分开：两者都真实在页面上，
+    // 同名会让「写总结」这类按钮查询命中两个（journey paper-list-and-notes 的 strict mode）。
+    nextAction = { label: `去写${NOTE_LABELS[nextEmptyKind].zh}`, run: () => onJump(`note-${nextEmptyKind}`) };
     nextHint = `笔记已写 ${notesWritten} / ${NOTE_DISPLAY_ORDER.length} 块。`;
   } else if (paper.readingStatus !== "read") {
     nextAction = { label: "标记已读", run: () => void markRead(paper.id) };
