@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { trackJob } from "../lib/activity";
 import { setContextFolded } from "../lib/contextFold";
 import { listReReads } from "../lib/reReads";
 import { NOTE_HINT_QUESTIONS } from "../lib/noteHints";
@@ -365,6 +366,109 @@ describe("ReadingStage · 正文阅读外观（A−/A+、行宽）", () => {
     };
     expect(persisted.default.width).toBe("wide");
     expect(persisted.papers.p1).toBeUndefined();
+  });
+});
+
+describe("ReadingStage · 资料栏「解析状态小卡」", () => {
+  function parseCard() {
+    return screen.getByRole("group", { name: "解析状态" }) as HTMLElement;
+  }
+
+  it("完成态：状态 / 上次用的源合并在一张小卡里", () => {
+    const parsed = {
+      ...paper({}),
+      pdfPath: "/library/a.pdf",
+      mineruStatus: "done",
+      mineruProvider: "api",
+      parsedMarkdown: "# 全文",
+    } as PaperDetail;
+    useField.setState({ mode: "field", paper: parsed, selectedPaperId: "p1" });
+    renderStage();
+    const card = parseCard();
+    expect(within(card).getByText("已完成")).toBeInTheDocument();
+    expect(within(card).getByText(/上次用 官方 API/)).toBeInTheDocument();
+  });
+
+  it("失败态：失败原因 + 下次将用的源 + 两个修复动作（重新解析 / 去设置测试连接）", () => {
+    const failed = {
+      ...paper({}),
+      pdfPath: "/library/a.pdf",
+      mineruStatus: "error",
+      mineruProvider: "api",
+      mineruError: "mineru.net 返回 -60018：当日额度已用尽",
+    } as PaperDetail;
+    const retryMineru = vi.fn(async () => undefined);
+    const openSystemCard = vi.fn();
+    useField.setState({
+      mode: "field",
+      paper: failed,
+      selectedPaperId: "p1",
+      retryMineru,
+      openSystemCard,
+      mineru: { ...useField.getState().mineru, local: { enabled: true, socketPath: "~/.mineru/doclib.sock" }, configured: true },
+      effectiveProvider: "local",
+    });
+    renderStage();
+    const card = parseCard();
+    expect(within(card).getByText("解析失败")).toBeInTheDocument();
+    expect(within(card).getByText(/-60018/)).toBeInTheDocument();
+    expect(within(card).getByText(/下次将用：本地 CLI（按回退顺序重选）/)).toBeInTheDocument();
+    fireEvent.click(within(card).getByRole("button", { name: "重新解析" }));
+    expect(retryMineru).toHaveBeenCalledWith("p1");
+    fireEvent.click(within(card).getByRole("button", { name: /去设置测试连接/ }));
+    expect(openSystemCard).toHaveBeenCalledWith("mineru");
+  });
+
+  it("失败但全部源未通过探测：说明先测试连接，不再假装有下次源", () => {
+    const failed = {
+      ...paper({}),
+      pdfPath: "/library/a.pdf",
+      mineruStatus: "error",
+      mineruError: "连接超时",
+    } as PaperDetail;
+    useField.setState({
+      mode: "field",
+      paper: failed,
+      selectedPaperId: "p1",
+      mineru: { ...useField.getState().mineru, local: { enabled: true, socketPath: "~/.mineru/doclib.sock" }, configured: true },
+      effectiveProvider: null,
+    });
+    renderStage();
+    expect(within(parseCard()).getByText(/按回退顺序重选（当前探测均未通过，可先测试连接）/)).toBeInTheDocument();
+  });
+
+  it("无 PDF 的论文不渲染小卡", () => {
+    useField.setState({ mode: "field", paper: paper({}), selectedPaperId: "p1" });
+    renderStage();
+    expect(screen.queryByRole("group", { name: "解析状态" })).toBeNull();
+  });
+});
+
+describe("ReadingStage · 解析中原位进度", () => {
+  it("解析中：小卡显示阶段与页进度（与作业面板同源），可直达面板", () => {
+    const parsing = {
+      ...paper({}),
+      pdfPath: "/library/a.pdf",
+      mineruStatus: "parsing",
+    } as PaperDetail;
+    useField.setState({ mode: "field", paper: parsing, selectedPaperId: "p1" });
+    // 模拟活动实况：该论文有解析作业在「解析」阶段、官方 API 回报页进度。
+    trackJob("job-1", "p1", "parse", { provider: "api", pages: { done: 6, total: 24 } });
+    useField.setState({ jobs: [{ id: "job-1", paperId: "p1", type: "mineruParse", status: "running", prompt: null, resultJson: null, error: null, createdAt: "2026-10-01T00:00:00Z", startedAt: null, finishedAt: null }] });
+    renderStage();
+    const card = screen.getByRole("group", { name: "解析状态" });
+    expect(within(card).getByText(/正在解析…/)).toBeInTheDocument();
+    expect(within(card).getByText(/第 6 \/ 24 页/)).toBeInTheDocument();
+    expect(within(card).getByText(/官方 API/)).toBeInTheDocument();
+    fireEvent.click(within(card).getByRole("button", { name: "查看作业面板" }));
+    expect(useField.getState().jobsOpen).toBe(true);
+  });
+
+  it("不在解析中：不显示原位进度行", () => {
+    const done = { ...paper({}), pdfPath: "/library/a.pdf", mineruStatus: "done" } as PaperDetail;
+    useField.setState({ mode: "field", paper: done, selectedPaperId: "p1" });
+    renderStage();
+    expect(screen.queryByText(/正在解析…/)).toBeNull();
   });
 });
 

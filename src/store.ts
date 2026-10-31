@@ -30,7 +30,8 @@ import {
   forgetPapers,
   markPauseAfterCurrent,
   resumeMineru,
-  stopBatch,
+  stopBatchUnsubmitted,
+  stopBatchWithIds,
 } from "./lib/mineruRun";
 import { getActivity, reorderBatch } from "./lib/activity";
 import {
@@ -50,6 +51,7 @@ import {
 import { cancelJob as cancelTrackedJob, jobDoneStep, runTracked } from "./lib/jobs";
 import { pickProviderFromHealths, providerLabel, summarizeHealths } from "./lib/mineruPlan";
 import { backupLibrary, restoreLibrary, writeLastBackup } from "./lib/backup";
+import { saveReparseSnapshot } from "./lib/reparse";
 import { DEFAULT_BIBLIO, loadBiblioSettings, saveBiblioSettings, type BiblioSaveInput, type BiblioStatus } from "./lib/biblio";
 import { filledFrom, lookupPaper, type LookupResult, verifyReachable } from "./lib/lookup";
 import { normalizeArxivId, normalizeDoi, safeHttpUrl, withDefaultScheme } from "./lib/urls";
@@ -286,6 +288,10 @@ interface FieldState {
   lookupOutcome: { paperId: string; at: number; found: boolean } | null;
   mineruHealth: ProviderHealth[];
   effectiveProvider: MineruProviderKind | null;
+  /** 是否正在探测解析源（启动 / 手动重探的窗口期）：状态条显示「正在检测」而非「未配置」。 */
+  mineruProbing: boolean;
+  /** 最近一次探测完成的时刻（epoch 毫秒）；null = 本次启动还没有探测结果。 */
+  mineruProbedAt: number | null;
   dialog:
     | "paper"
     | "domain"
@@ -306,6 +312,7 @@ interface FieldState {
     | "confirm-retry"
     | "pick-domain"
     | "edit-paper"
+    | "confirm-reparse"
     | null;
   /** 对话框打开时锁定的目标论文：之后选中怎么变，对话框都只作用于它。 */
   dialogPaperId: string | null;
@@ -431,6 +438,10 @@ interface FieldState {
    */
   attachPdfToPaper: (paperId: string, path: string) => Promise<void>;
   retryMineru: (paperId: string) => Promise<void>;
+  /** 「确认重新解析」放行：直接走取消旧轮 → 重置 → 强制重提（不再二次确认）。 */
+  confirmReparse: () => Promise<void>;
+  /** retryMineru 的实际提交段：探测可用源后取消旧轮、重置状态、按回退顺序重提。 */
+  submitMineruRetry: (paperId: string, overrides?: { provider?: "local" | "ssh" | "api"; pageRange?: string }) => Promise<void>;
   /** INTAKE 页批量重试：把全部解析失败（error）论文重新提交给 MinerU。 */
   retryFailedMineru: () => Promise<void>;
   /** 作业面板批量重试：把指定论文重新提交给 MinerU（一次事务重置、一个批次入链）。 */
@@ -489,6 +500,8 @@ interface FieldState {
   openPaperFulltext: (paperId: string) => Promise<void>;
   /** 作业面板「停止批次」：取消正在解析的一篇，并把本批其余排队论文移出队列。 */
   stopMineruBatch: (batchId: number) => Promise<void>;
+  /** 作业面板「仅停止未提交」：只移出排队论文，正在处理的一篇照常收尾。 */
+  stopMineruBatchUnsubmitted: (batchId: number) => Promise<void>;
   /** 作业面板「当前篇完成后暂停」：当前篇正常收尾，剩余论文写为暂停（可「继续本批」恢复）。 */
   pauseBatchAfterCurrent: (batchId: number) => void;
   /**
@@ -538,6 +551,8 @@ interface FieldState {
   saveMineruSettings: (input: MineruSaveInput, options?: { deferJobs?: boolean }) => Promise<void>;
   saveBiblioSettings: (input: BiblioSaveInput) => Promise<void>;
   probeMineru: () => Promise<ProviderHealth[]>;
+  /** 设置页测试成功后的「用一篇 PDF 试解析」：取最早一篇待解析论文单独提交。 */
+  tryParseOnePaper: () => Promise<void>;
   /** 显式启动被暂存的自动补全；返回待补全篇数（读不到为 null）。 */
   startMetaBackfill: () => Promise<number | null>;
   /** 显式续跑被暂存的解析；返回待解析篇数（读不到为 null）。 */
@@ -691,6 +706,8 @@ export const useField = create<FieldState>((set, get) => ({
   lookupOutcome: null,
   mineruHealth: [],
   effectiveProvider: null,
+  mineruProbing: false,
+  mineruProbedAt: null,
   dialog: null,
   dialogPaperId: null,
   dialogPaperIds: [],
@@ -801,15 +818,41 @@ export const useField = create<FieldState>((set, get) => ({
 
   stopMineruBatch: async (batchId) => {
     const kind = getActivity().batches.find((item) => item.id === batchId)?.kind;
-    const stopped = await stopBatch(batchId);
+    const { stopped, paperIds } = await stopBatchWithIds(batchId);
     await get().refresh();
     if (!kind) return;
     if (kind === "mineru") {
       log.info("mineru", `作业面板停止解析批次：${stopped} 篇不再写入`);
-      get().setFlash({ tone: "ok", text: mineruStopCopy(stopped) });
+      // 受影响的论文仍列在批次卡的文字列表里；提示里给一键重新排队。
+      get().setFlash({
+        tone: "ok",
+        text: mineruStopCopy(stopped),
+        action: stopped
+          ? { label: `重新排队 ${paperIds.length} 篇`, run: () => void get().retryMineruPapers(paperIds) }
+          : undefined,
+      });
     } else {
       log.info("llm", `作业面板停止 AI 补全批次：${stopped} 篇`);
       get().setFlash({ tone: "ok", text: `已停止补全，${stopped} 篇不再写入。` });
+    }
+  },
+
+  /** 「仅停止未提交」：只移出还没轮到的排队论文，正在解析的一篇继续收尾（远端已在跑）。 */
+  stopMineruBatchUnsubmitted: async (batchId) => {
+    const kind = getActivity().batches.find((item) => item.id === batchId)?.kind;
+    const { stopped, paperIds } = await stopBatchUnsubmitted(batchId);
+    await get().refresh();
+    if (!stopped) return;
+    if (kind === "mineru") {
+      log.info("mineru", `作业面板仅停止未提交：${stopped} 篇移出解析队列`);
+      get().setFlash({
+        tone: "ok",
+        text: `已移出 ${stopped} 篇排队论文，正在解析的一篇继续收尾（远端任务不撤回）。`,
+        action: { label: `重新排队 ${stopped} 篇`, run: () => void get().retryMineruPapers(paperIds) },
+      });
+    } else {
+      log.info("llm", `作业面板仅停止未提交：${stopped} 篇移出补全队列`);
+      get().setFlash({ tone: "ok", text: `已移出 ${stopped} 篇排队论文，正在补全的一篇继续。` });
     }
   },
 
@@ -906,7 +949,8 @@ export const useField = create<FieldState>((set, get) => ({
       dialog === "confirm-notes" ||
       dialog === "ai-diff" ||
       dialog === "ai-preview" ||
-      dialog === "ai-note-preview";
+      dialog === "ai-note-preview" ||
+      dialog === "confirm-reparse";
     const checkedScoped =
       dialog === "delete-checked" ||
       dialog === "move-checked" ||
@@ -1635,35 +1679,91 @@ export const useField = create<FieldState>((set, get) => ({
   },
 
   retryMineru: async (paperId) => {
-    if (!get().mineru.configured) {
-      get().setFlash({
-        tone: "warn",
-        text: "尚未启用任何 MinerU 解析源。可到设置页配置本地 / SSH / 官方 API。",
-        action: { label: "去设置", run: () => get().openSystemCard("mineru") },
-      });
+    // 已有解析全文时先确认：重新解析会作废本轮成果并重新提交（可能重复计入官方 API
+    // 页数额度）。旧版全文保留、完成后可对照——确认对话框见 Dialogs 的 ConfirmReparseDialog。
+    const current = get().paper?.id === paperId ? get().paper : await repo.getPaper(paperId);
+    if (current?.parsedMarkdown.trim()) {
+      set({ dialog: "confirm-reparse", dialogPaperId: paperId });
       return;
     }
-    // 探测结果可能过期：无生效源时先重探一次再下结论。
-    if (!get().effectiveProvider) await get().probeMineru();
-    if (!get().effectiveProvider) {
-      const detail = summarizeHealths(get().mineru.order, get().mineruHealth);
-      get().setFlash({
-        tone: "warn",
-        text: detail
-          ? `当前没有可用的 MinerU 解析源（${detail}）。可到设置页查看失败原因。`
-          : "当前没有可用的 MinerU 解析源（本地 / SSH / 官方 API 均未通过探测），可到设置页配置或查看失败原因。",
-        action: { label: "去设置", run: () => get().openSystemCard("mineru") },
-      });
-      return;
+    await get().submitMineruRetry(paperId);
+  },
+
+  /** 「确认重新解析」对话框的放行入口：走原本的取消旧轮 → 重置 → 强制重提流程。 */
+  confirmReparse: async () => {
+    const paperId = get().dialogPaperId;
+    if (!paperId) return;
+    set({ dialog: null, dialogPaperId: null });
+    await get().submitMineruRetry(paperId);
+  },
+
+  submitMineruRetry: async (paperId, overrides) => {
+    // 单篇覆盖：临时指定源（本轮一次性，不改全局默认）。指定源时跳过回退探测，
+    // 但该源必须已启用；页码范围覆盖同样只作用本轮（沿用全局档位：桌面端按设置取值）。
+    let providerOverride: "local" | "ssh" | "api" | undefined;
+    if (overrides?.provider) {
+      const mineru = get().mineru;
+      const enabled =
+        overrides.provider === "local"
+          ? mineru.local.enabled
+          : overrides.provider === "ssh"
+            ? mineru.ssh.enabled
+            : mineru.api.hasToken;
+      if (!enabled) {
+        get().setFlash({
+          tone: "warn",
+          text: `所选解析源（${providerLabel(overrides.provider)}）未启用：可先到设置页启用，或改用「自动选择」。`,
+          action: { label: "去设置", run: () => get().openSystemCard("mineru") },
+        });
+        return;
+      }
+      providerOverride = overrides.provider;
+    } else {
+      // 探测结果可能过期：无生效源时先重探一次再下结论。
+      if (!get().effectiveProvider) await get().probeMineru();
+      if (!get().effectiveProvider) {
+        const detail = summarizeHealths(get().mineru.order, get().mineruHealth);
+        get().setFlash({
+          tone: "warn",
+          text: detail
+            ? `当前没有可用的 MinerU 解析源（${detail}）。可到设置页查看失败原因。`
+            : "当前没有可用的 MinerU 解析源（本地 / SSH / 官方 API 均未通过探测），可到设置页配置或查看失败原因。",
+          action: { label: "去设置", run: () => get().openSystemCard("mineru") },
+        });
+        return;
+      }
     }
     try {
       // 跨源切换唯一入口：先取消旧的一轮，再重置 docRef/parseIds/provider 并收回所有权，
-      // 以 force 重新提交，由后端按回退顺序重选源。旧的一轮之后写什么都不生效。
+      // 以 force 重新提交（覆盖源时直接指定 provider，单篇一次性）。旧的一轮之后写什么都不生效。
+      // 重置会清掉 mineru_provider：有旧全文时先把「旧版 + 上次用的源」快照存到本机，
+      // 新结果完成后界面给两版对照（mineruRun 完成时补新版权重，失败时作废快照）。
+      const before = await repo.getPaper(paperId);
+      const hadFulltext = Boolean(before?.parsedMarkdown.trim());
+      if (hadFulltext) {
+        saveReparseSnapshot({ paperId, markdown: before!.parsedMarkdown, provider: before!.mineruProvider });
+      }
       await cancelParses([paperId]);
       await repo.resetMineru([paperId]);
       await get().refresh();
-      get().setFlash({ tone: "ok", text: "已将这篇论文发送到 MinerU 解析。" });
-      enqueueMineruBatch(mineruHost(), [paperId], true);
+      const via = providerOverride ? `（指定${providerLabel(providerOverride)}）` : "";
+      get().setFlash({
+        tone: "ok",
+        text: hadFulltext
+          ? `已重新提交解析${via}。完成后解析全文顶部可对照新旧两版。`
+          : `已将这篇论文发送到 MinerU 解析${via}。`,
+      });
+      enqueueMineruBatch(
+        providerOverride || overrides?.pageRange
+          ? {
+              ...mineruHost(),
+              ...(providerOverride ? { submitProvider: providerOverride } : {}),
+              ...(overrides?.pageRange ? { submitPageRange: overrides.pageRange } : {}),
+            }
+          : mineruHost(),
+        [paperId],
+        true,
+      );
     } catch (err) {
       get().setFlash({ tone: "error", text: `重新解析失败：${errText(err)}，数据未改动。` });
       throw err;
@@ -1698,6 +1798,13 @@ export const useField = create<FieldState>((set, get) => ({
     }
     try {
       // 与单篇重试同构：重置解析状态后重新提交；连续失败由批次熔断兜底提示。
+      // 已有全文的论文同样先快照旧版（重置会清 provider，逐篇读出后再重置）。
+      for (const id of ids) {
+        const before = await repo.getPaper(id);
+        if (before?.parsedMarkdown.trim()) {
+          saveReparseSnapshot({ paperId: id, markdown: before.parsedMarkdown, provider: before.mineruProvider });
+        }
+      }
       await cancelParses(ids);
       await repo.resetMineru(ids);
       await get().refresh();
@@ -2844,13 +2951,35 @@ export const useField = create<FieldState>((set, get) => ({
   },
 
   probeMineru: async () => {
-    const healths = await mineruProbe();
-    const mineru = get().mineru;
-    set({
-      mineruHealth: healths,
-      effectiveProvider: pickProviderFromHealths(mineru.order, healths),
-    });
-    return healths;
+    // 探测窗口期先亮「正在检测」：桌面端最长 20 秒，期间不再误显「未配置 / 不可用」。
+    set({ mineruProbing: true });
+    try {
+      const healths = await mineruProbe();
+      const mineru = get().mineru;
+      set({
+        mineruHealth: healths,
+        effectiveProvider: pickProviderFromHealths(mineru.order, healths),
+        mineruProbedAt: Date.now(),
+      });
+      return healths;
+    } finally {
+      set({ mineruProbing: false });
+    }
+  },
+
+  tryParseOnePaper: async () => {
+    let ids: string[] = [];
+    try {
+      ids = await repo.listPendingMineru();
+    } catch {
+      ids = [];
+    }
+    if (!ids.length) {
+      get().setFlash({ tone: "warn", text: "没有待解析的论文。可先导入一篇 PDF（⌘N），再回来试解析。" });
+      return;
+    }
+    // 只提交最早的一篇：试解析的目的是验证链路，不给整批压力。
+    await get().retryMineruPapers([ids[0]]);
   },
 
   startMetaBackfill: async () => {
@@ -3175,6 +3304,9 @@ function mineruHost(autoMeta?: boolean) {
     },
     // 缺省（undefined / true）：解析完成自动排队 AI 补全（既有流程）。
     autoMeta: autoMeta === false ? false : true,
+    openSettings: () => {
+      useField.getState().openSystemCard("mineru");
+    },
   };
 }
 

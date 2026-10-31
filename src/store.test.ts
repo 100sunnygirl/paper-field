@@ -13,6 +13,7 @@ vi.mock("./lib/repo", () => ({
     listArchive: vi.fn(async () => []),
     listIntake: vi.fn(async () => []),
     listFailedMineru: vi.fn(async () => [] as string[]),
+    listPendingMineru: vi.fn(async () => [] as string[]),
     createDomain: vi.fn(),
     updatePaper: vi.fn(async () => undefined),
     movePapers: vi.fn(async () => undefined),
@@ -85,6 +86,7 @@ beforeEach(() => {
   vi.mocked(repo.listIntake).mockClear();
   vi.mocked(repo.listPapers).mockClear();
   vi.mocked(repo.listFailedMineru).mockReset();
+  vi.mocked(repo.listPendingMineru).mockReset();
   vi.mocked(repo.setReadingStatus).mockReset();
   vi.mocked(repo.setMineruState).mockReset();
   vi.mocked(repo.createDomain).mockReset();
@@ -414,7 +416,30 @@ describe("作业面板批量与分型重试", () => {
     expect(useField.getState().flash?.tone).toBe("ok");
     expect(useField.getState().flash?.text).toBe("已重新提交 2 篇补全（进度见作业面板）。");
   });
+
+  it("tryParseOnePaper：只取最早一篇待解析论文单独提交", async () => {
+    vi.mocked(repo.listPendingMineru).mockResolvedValue(["p-first", "p-second"]);
+    useField.setState({ mineru: configuredMineru });
+
+    await useField.getState().tryParseOnePaper();
+
+    expect(repo.resetMineru).toHaveBeenCalledWith(["p-first"]);
+    expect(useField.getState().flash?.text).toContain("已将 1 篇重新发送到 MinerU 解析");
+  });
+
+  it("tryParseOnePaper：没有待解析论文时给导入指引", async () => {
+    vi.mocked(repo.listPendingMineru).mockResolvedValue([]);
+    vi.mocked(repo.resetMineru).mockClear();
+
+    await useField.getState().tryParseOnePaper();
+
+    expect(useField.getState().flash?.tone).toBe("warn");
+    expect(useField.getState().flash?.text).toContain("没有待解析的论文");
+    expect(useField.getState().flash?.text).toContain("⌘N");
+    expect(repo.resetMineru).not.toHaveBeenCalled();
+  });
 });
+
 
 describe("批量选择与批量删除（batchMode / deleteCheckedPapers）", () => {
   it("deleteCheckedPapers：按勾选批量删除、退出批量模式、清空勾选并提示", async () => {

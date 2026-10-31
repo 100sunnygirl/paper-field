@@ -139,6 +139,33 @@ describe("SystemView · MinerU 三源卡片", () => {
     expect(screen.getByText("尚未启用任何解析源，导入将只入库、不解析。")).toBeInTheDocument();
   });
 
+  it("五态：已启用但尚未探测时提示「尚未探测」，不再直接判不可用", () => {
+    useField.setState({ mineru: mineruState(), effectiveProvider: null, mineruHealth: [], mineruProbing: false });
+    render(<SystemView />);
+    expect(screen.getByText(/已启用解析源，尚未探测/)).toBeInTheDocument();
+    expect(screen.queryByText(/已启用的解析源均未通过探测/)).toBeNull();
+  });
+
+  it("五态：全局探测进行中（启动 / 保存触发）状态条显示探测中", () => {
+    useField.setState({ mineru: mineruState(), effectiveProvider: null, mineruHealth: [], mineruProbing: true });
+    render(<SystemView />);
+    expect(screen.getByText("正在探测各解析源…")).toBeInTheDocument();
+    expect(screen.queryByText(/尚未探测/)).toBeNull();
+  });
+
+  it("五态：显示最近一次探测时间", () => {
+    const at = new Date();
+    at.setHours(9, 5, 0, 0);
+    useField.setState({
+      mineru: mineruState(),
+      effectiveProvider: "local",
+      mineruProbedAt: at.getTime(),
+      mineruHealth: healths([["local", true, "doclib 可达"]]),
+    });
+    render(<SystemView />);
+    expect(screen.getByText(/上次探测 今天 09:05/)).toBeInTheDocument();
+  });
+
   it("探测成功的源显示延迟毫秒数", () => {
     useField.setState({
       mineru: mineruState(),
@@ -147,6 +174,98 @@ describe("SystemView · MinerU 三源卡片", () => {
     });
     render(<SystemView />);
     expect(screen.getByText(/doclib 可达/)).toHaveTextContent("15ms");
+  });
+});
+
+describe("SystemView · MinerU 一键自检与试解析引导", () => {
+  beforeEach(() => {
+    useField.setState(useField.getInitialState(), true);
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("一键自检逐个测试已启用的源并汇总跳过数", async () => {
+    useField.setState({ mineru: mineruState(), effectiveProvider: "local" });
+    const spy = vi.spyOn(mineruModule, "testMineru").mockResolvedValue("连接正常");
+    render(<SystemView />);
+    fireEvent.click(screen.getByRole("button", { name: "一键自检" }));
+    await waitFor(() => expect(spy).toHaveBeenCalledTimes(3));
+    for (const provider of ["local", "ssh", "api"]) {
+      expect(spy).toHaveBeenCalledWith(provider);
+    }
+    expect(await screen.findByText(/三个源都已逐个测试/)).toBeInTheDocument();
+    spy.mockRestore();
+  });
+
+  it("未启用任何源：自检给配置指引而不是空转", async () => {
+    useField.setState({ mineru: mineruState({ configured: false, local: { enabled: false, socketPath: "~/.mineru/doclib.sock" }, ssh: { ...DEFAULT_MINERU.ssh }, api: { ...DEFAULT_MINERU.api } }) });
+    render(<SystemView />);
+    fireEvent.click(screen.getByRole("button", { name: "一键自检" }));
+    expect(await screen.findByText(/尚未启用任何解析源：先在下方勾选/)).toBeInTheDocument();
+  });
+
+  it("测试失败时在卡片上给出修复建议", async () => {
+    useField.setState({ mineru: mineruState(), effectiveProvider: "local" });
+    const spy = vi.spyOn(mineruModule, "testMineru").mockRejectedValue(new Error("Token 无效或已过期"));
+    render(<SystemView />);
+    const apiCard = screen.getByRole("region", { name: "官方 API" });
+    fireEvent.click(within(apiCard).getByRole("button", { name: "测试连接" }));
+    expect(await within(apiCard).findByText(/建议：到 mineru\.net 重新获取 Token/)).toBeInTheDocument();
+    spy.mockRestore();
+  });
+
+  it("测试成功后提供「用一篇 PDF 试解析」，点击提交最早一篇", async () => {
+    const saveMineruSettings = vi.fn(async (_input: MineruSaveInput, _options?: { deferJobs?: boolean }) => undefined);
+    useField.setState({
+      mineru: mineruState(),
+      effectiveProvider: "local",
+      saveMineruSettings,
+      tryParseOnePaper: vi.fn(async () => undefined),
+    });
+    const listPendingMineru = vi.spyOn(repo, "listPendingMineru").mockResolvedValue(["p-earliest", "p-later"]);
+    vi.spyOn(mineruModule, "testMineru").mockResolvedValue("连接正常");
+    render(<SystemView />);
+    // 与既有 deferJobs 流程一致：先改脏一个字段（测试连接会先落盘），成功后给试解析引导。
+    const ssh = screen.getByRole("region", { name: "SSH 远程" });
+    fireEvent.click(within(ssh).getByRole("button", { name: "高级" }));
+    fireEvent.change(within(ssh).getByLabelText("主机"), { target: { value: "new-imac" } });
+    fireEvent.click(within(ssh).getByRole("button", { name: "测试连接" }));
+    const block = screen.getByRole("heading", { level: 3, name: "MinerU 解析源" }).closest("article") as HTMLElement;
+    expect(await within(block).findByText(/未自动续跑解析/)).toBeInTheDocument();
+    fireEvent.click(within(block).getByRole("button", { name: "用一篇 PDF 试解析" }));
+    await waitFor(() => expect(listPendingMineru).toHaveBeenCalled());
+    expect(useField.getState().tryParseOnePaper).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("SystemView · 页码范围为公共设置", () => {
+  beforeEach(() => {
+    useField.setState(useField.getInitialState(), true);
+    localStorage.clear();
+  });
+
+  it("只启用官方 API（无本地 / SSH）时页码范围同样可见，无需展开高级项", () => {
+    useField.setState({
+      mineru: mineruState({
+        local: { enabled: false, socketPath: "~/.mineru/doclib.sock" },
+        ssh: { ...DEFAULT_MINERU.ssh, enabled: false },
+      }),
+      effectiveProvider: "api",
+    });
+    render(<SystemView />);
+    expect(screen.getByLabelText("页码范围")).toBeInTheDocument();
+    // 解析档位仍只在本地 / SSH 启用时出现。
+    expect(screen.queryByLabelText("解析档位")).toBeNull();
+  });
+
+  it("页码范围标注各源接受的写法", () => {
+    useField.setState({ mineru: mineruState(), effectiveProvider: "local" });
+    render(<SystemView />);
+    expect(screen.getByText(/官方 API 非 all 时随提交带上 page_ranges/)).toBeInTheDocument();
+    expect(screen.getByText(/在取回全文时按该范围截取/)).toBeInTheDocument();
   });
 });
 

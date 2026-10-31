@@ -19,14 +19,18 @@ vi.mock("./lib/settings", async (importOriginal) => ({
 
 vi.mock("./lib/mineru", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./lib/mineru")>()),
-  // 「继续本批」会真正入链解析：挂起提交，让断言只看 resetMineru 的落库效果。
-  mineruSubmit: vi.fn((): Promise<MineruSubmitResult> => new Promise(() => {})),
+  // 默认提交直接失败收场：断言只看 resetMineru 的落库效果；批次把该篇记 fail 后
+  // 链自然跑空，不留挂起任务堵住后续用例（挂起语义的用例自行 mockImplementation 覆盖）。
+  mineruSubmit: vi.fn(async (): Promise<MineruSubmitResult> => {
+    throw new Error("提交失败（测试默认）");
+  }),
 }));
 
 import { beginBatchItem, endBatchItem, finishBatch, getActivity, queueBatch, resetActivity, startBatch } from "./lib/activity";
 import { runTracked } from "./lib/jobs";
-import { dequeueFromBatch } from "./lib/mineruRun";
-import { DEFAULT_MINERU, type MineruSubmitResult } from "./lib/mineru";
+import { dequeueFromBatch, enqueueMineru } from "./lib/mineruRun";
+import { DEFAULT_MINERU, mineruSubmit, type MineruSubmitResult } from "./lib/mineru";
+import { getReparseRecord, resetReparseSnapshots } from "./lib/reparse";
 import { repo } from "./lib/repo";
 import { cancelChat, completeChat } from "./lib/settings";
 import { useField } from "./store";
@@ -78,6 +82,7 @@ beforeEach(async () => {
   useField.setState(useField.getInitialState(), true);
   useField.setState({ settings: usableSettings });
   resetActivity();
+  resetReparseSnapshots();
   vi.mocked(completeChat).mockReset();
   vi.mocked(cancelChat).mockClear();
 });
@@ -207,6 +212,115 @@ describe("作业面板的队列操作", () => {
     expect(useField.getState().flash?.text).toBe(
       "已在本机停止解析，3 篇不再写入。远端任务不撤回，可能仍在继续，配额或页数可能已经计入。",
     );
+  });
+
+  it("重新解析已有全文：先弹确认对话框，确认后快照旧版并强制重提", async () => {
+    const id = await makePaper(true);
+    await repo.setMineruState(id, { status: "done", provider: "api" });
+    await repo.saveParsedMarkdown(id, "# 旧版全文");
+    useField.setState({
+      mineru: { ...DEFAULT_MINERU, ssh: { ...DEFAULT_MINERU.ssh, enabled: true }, configured: true },
+      effectiveProvider: "ssh",
+    });
+
+    await useField.getState().retryMineru(id);
+
+    // 已有全文：先弹「确认重新解析」，不直接提交。
+    expect(useField.getState().dialog).toBe("confirm-reparse");
+    expect(useField.getState().dialogPaperId).toBe(id);
+    expect(vi.mocked(mineruSubmit)).not.toHaveBeenCalled();
+
+    await useField.getState().confirmReparse();
+
+    // 确认后：旧版（含上次用的源）已快照，解析状态重置为 queued 并入链强制重提。
+    expect(getReparseRecord(id)?.prev).toMatchObject({ provider: "api", markdown: "# 旧版全文" });
+    expect((await repo.getPaper(id))!.mineruStatus).toBe("queued");
+    expect(useField.getState().flash?.text).toContain("对照新旧两版");
+    await vi.waitFor(() => expect(vi.mocked(mineruSubmit)).toHaveBeenCalled());
+  });
+
+  it("没有全文时 retryMineru 不弹确认，直接提交", async () => {
+    const id = await makePaper(true);
+    useField.setState({
+      mineru: { ...DEFAULT_MINERU, ssh: { ...DEFAULT_MINERU.ssh, enabled: true }, configured: true },
+      effectiveProvider: "ssh",
+    });
+
+    await useField.getState().retryMineru(id);
+
+    expect(useField.getState().dialog).toBeNull();
+    expect(useField.getState().flash?.text).toContain("已将这篇论文发送到 MinerU 解析");
+    await vi.waitFor(() => expect(vi.mocked(mineruSubmit)).toHaveBeenCalled());
+  });
+
+  it("仅停止未提交：排队论文写 cancelled、当前篇不动，提示带一键重新排队", async () => {
+    const [p1, p2, p3] = [await makePaper(true), await makePaper(true), await makePaper(true)];
+    await repo.resetMineru([p1, p2, p3]);
+    const batchId = queueBatch("mineru", [p1, p2, p3]);
+    startBatch(batchId);
+    beginBatchItem(batchId, p1);
+    const retryMineruPapers = vi.fn(async () => undefined);
+    useField.setState({ retryMineruPapers });
+
+    await useField.getState().stopMineruBatchUnsubmitted(batchId);
+
+    expect(getActivity().batches[0].results).toEqual({ [p2]: "cancelled", [p3]: "cancelled" });
+    expect((await repo.getPaper(p2))!.mineruStatus).toBe("cancelled");
+    expect((await repo.getPaper(p1))!.mineruStatus).toBe("queued");
+    const flash = useField.getState().flash;
+    expect(flash?.text).toContain("已移出 2 篇排队论文，正在解析的一篇继续收尾");
+    expect(flash?.text).toContain("远端任务不撤回");
+    expect(flash?.action?.label).toBe("重新排队 2 篇");
+    flash?.action?.run();
+    await vi.waitFor(() => expect(retryMineruPapers).toHaveBeenCalledWith([p2, p3]));
+  });
+
+  it("全部停止的提示也带「一键重新排队」（受影响论文含正在解析的一篇）", async () => {
+    const [p1, p2] = [await makePaper(true), await makePaper(true)];
+    await repo.resetMineru([p1, p2]);
+    const batchId = queueBatch("mineru", [p1, p2]);
+    startBatch(batchId);
+    beginBatchItem(batchId, p1);
+    const retryMineruPapers = vi.fn(async () => undefined);
+    useField.setState({ retryMineruPapers });
+
+    await useField.getState().stopMineruBatch(batchId);
+
+    const flash = useField.getState().flash;
+    expect(flash?.text).toBe(
+      "已在本机停止解析，2 篇不再写入。远端任务不撤回，可能仍在继续，配额或页数可能已经计入。",
+    );
+    expect(flash?.action?.label).toBe("重新排队 2 篇");
+    flash?.action?.run();
+    await vi.waitFor(() => expect(retryMineruPapers).toHaveBeenCalledTimes(1));
+  });
+
+  it("submitMineruRetry 单篇覆盖：指定未启用源给指引，启用源则本轮直提", async () => {
+    // 前面的用例把解析链堵在挂起的提交上：先放行为失败，让链跑空再测覆盖。
+    vi.mocked(mineruSubmit).mockRejectedValue(new Error("blocked"));
+    await new Promise<void>((resolve) => enqueueMineru(async () => resolve()));
+    vi.mocked(mineruSubmit).mockReset();
+    vi.mocked(mineruSubmit).mockImplementation((): Promise<MineruSubmitResult> => new Promise(() => {}));
+
+    const id = await makePaper(true);
+    // 只启用官方 API：指定本地应被拦下。
+    useField.setState({
+      mineru: { ...DEFAULT_MINERU, api: { ...DEFAULT_MINERU.api, hasToken: true }, configured: true },
+      effectiveProvider: "api",
+    });
+    await useField.getState().submitMineruRetry(id, { provider: "local" });
+    expect(useField.getState().flash?.tone).toBe("warn");
+    expect(useField.getState().flash?.text).toContain("未启用");
+
+    // 指定已启用的官方 API：直接重提，提示写明指定源；提交挂起不断言其后的轮询。
+    vi.mocked(mineruSubmit).mockClear();
+    await useField.getState().submitMineruRetry(id, { provider: "api" });
+    expect((await repo.getPaper(id))!.mineruStatus).toBe("queued");
+    expect(useField.getState().flash?.text).toContain("指定官方 API");
+    // 提交在后台链上跑（默认失败收场不堵链）；第 4 参 = 指定源。
+    await vi.waitFor(() => expect(vi.mocked(mineruSubmit).mock.calls.length).toBeGreaterThanOrEqual(1), 5000);
+    const overrideCall = vi.mocked(mineruSubmit).mock.calls.find((call) => call[3] === "api");
+    expect(overrideCall).toBeTruthy();
   });
 
   it("AI 补全批次也能停止：排队论文移出", async () => {

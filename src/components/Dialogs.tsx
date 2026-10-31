@@ -5,9 +5,11 @@ import { DOMAIN_ACCENTS } from "../lib/domainExtras";
 import { loadRecentDomains, orderDomainsByRecent } from "../lib/domainRecent";
 import { looksLikeNonPaper, scanImportItem, type ImportItemScan, type PaperRef } from "../lib/importScan";
 import { lookupPaper } from "../lib/lookup";
-import { pickPdfFiles, pickPdfFolder } from "../lib/mineru";
+import { pickPdfFiles, pickPdfFolder, type MineruProviderKind, type MineruSettingsV2 } from "../lib/mineru";
+import { mineruPreflight } from "../lib/mineruPreflight";
 import { providerLabel } from "../lib/mineruPlan";
 import { parsePastedRef, type ParsedRef } from "../lib/pasteRef";
+import { fulltextStats } from "../lib/reparse";
 import { repo } from "../lib/repo";
 import {
   META_FIELD_LABELS,
@@ -24,7 +26,13 @@ import { formatDate, isTauri } from "../lib/util";
 import { useField, type ExportFormat, type ImportMode } from "../store";
 import { ImportTarget } from "./ImportTarget";
 import { Button, Dialog, Field, Icon } from "./ui";
-import { DEFAULT_EXPORT_CONTENT, type ExportContentOptions } from "../lib/export";
+import {
+  buildMergedMarkdownExport,
+  browserMultiExportFilename,
+  writeExportFiles,
+  DEFAULT_EXPORT_CONTENT,
+  type ExportContentOptions,
+} from "../lib/export";
 
 /** 导入模式：导入即自动解析是默认流程，但不是每次收集都想立刻烧解析/补全额度。 */
 const IMPORT_MODES: Array<{ value: ImportMode; label: string; hint: string }> = [
@@ -562,10 +570,36 @@ export function PaperDialog() {
                 ))
               : items.map((item, index) => renderItem(item, index))}
           </ul>
+          {/* 提交前预检：官方 API 在启用链里时，把页数与额度算在明处（可算的部分）。 */}
+          {fresh.length ? <ImportPreflight files={fresh.length} settings={mineru} /> : null}
         </>
       ) : null}
       {error ? <p className="ef-error">{error}</p> : null}
     </Dialog>
+  );
+}
+
+/** 导入清单的提交前预检：官方 API 限额、页码范围算出的页数与本批预计页数（标红超限）。 */
+function ImportPreflight({ files, settings }: { files: number; settings: MineruSettingsV2 }) {
+  const preflight = mineruPreflight({ files, settings });
+  if (!preflight.apiInChain && !preflight.warnings.length) return null;
+  return (
+    <div className="ef-import-preflight" aria-label="提交前预检">
+      <p className="ef-import-preflight-title">
+        提交前预检 · 本批 {files} 篇
+        {preflight.estPages !== null ? ` · 预计 ${preflight.estPages} 页（每篇 ${preflight.pageRange.pages} 页）` : ""}
+      </p>
+      {preflight.warnings.map((warning) => (
+        <p key={warning} className="ef-import-preflight-warn">
+          {warning}
+        </p>
+      ))}
+      {preflight.notes.map((note) => (
+        <p key={note} className="ef-import-preflight-note">
+          {note}
+        </p>
+      ))}
+    </div>
   );
 }
 
@@ -2108,6 +2142,169 @@ export function ConfirmNotesDialog() {
         <Button type="button" size="sm" variant="text" onClick={() => setChecked(new Set(rows.map((row) => row.key)))}>
           全部替换
         </Button>
+      </p>
+    </Dialog>
+  );
+}
+
+/**
+ * 已有解析全文时的「重新解析」确认：说明这是重新提交而非续跑、可能重复计入官方 API
+ * 页数额度、将用哪个源；旧版全文保留、完成后可两版对照。可先导出当前全文留存。
+ */
+export function ConfirmReparseDialog() {
+  const dialog = useField((s) => s.dialog);
+  const closeDialog = useField((s) => s.closeDialog);
+  const submitMineruRetry = useField((s) => s.submitMineruRetry);
+  const effectiveProvider = useField((s) => s.effectiveProvider);
+  const mineru = useField((s) => s.mineru);
+  const setFlash = useField((s) => s.setFlash);
+  const { paper, missing } = useDialogPaper();
+  const open = dialog === "confirm-reparse" && Boolean(paper);
+  const [busy, setBusy] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  // 单篇参数覆盖（只作用本轮，不改全局默认）：
+  const [providerChoice, setProviderChoice] = useState<"auto" | MineruProviderKind>("auto");
+  const [pageRangeChoice, setPageRangeChoice] = useState<string>("");
+  useEffect(() => {
+    if (open) {
+      setProviderChoice("auto");
+      setPageRangeChoice("");
+    }
+  }, [open]);
+  useCloseWhenMissing(dialog === "confirm-reparse", missing);
+
+  const stats = paper?.parsedMarkdown ? fulltextStats(paper.parsedMarkdown) : null;
+
+  async function exportCurrent() {
+    if (!paper || exporting) return;
+    setExporting(true);
+    try {
+      const files = buildMergedMarkdownExport(
+        [{ domain: paper.domain, papers: [paper] }],
+        new Date(),
+        { notes: false, abstract: false, parsedText: true },
+      );
+      const where = await writeExportFiles(files, files[0]?.relativePath ?? browserMultiExportFilename("paper", new Date()));
+      setFlash({ tone: "ok", text: `已导出当前全文 · ${where}` });
+    } catch (err) {
+      if (String(err).includes("EXPORT_CANCELLED")) return;
+      setFlash({ tone: "error", text: `导出全文失败：${err instanceof Error ? err.message : String(err)}` });
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  async function confirm() {
+    if (!paper || busy) return;
+    setBusy(true);
+    try {
+      await submitMineruRetry(paper.id, {
+        provider: providerChoice === "auto" ? undefined : providerChoice,
+        // 页码范围留空 = 沿用全局设置；填了就只作用本轮。
+        ...(pageRangeChoice.trim() ? { pageRange: pageRangeChoice.trim() } : {}),
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog
+      open={open}
+      title="重新解析这篇论文？"
+      onClose={closeDialog}
+      footer={
+        <>
+          <Button type="button" onClick={closeDialog}>
+            取消
+          </Button>
+          <Button type="button" variant="text" disabled={exporting} onClick={() => void exportCurrent()}>
+            {exporting ? "导出中…" : "先导出全文"}
+          </Button>
+          <Button variant="primary" type="button" disabled={busy} onClick={() => void confirm()}>
+            确认重新解析
+          </Button>
+        </>
+      }
+    >
+      <p>
+        <strong>{paper?.titleZh || paper?.title}</strong>
+      </p>
+      <p>
+        重新解析是<b>重新提交</b>，不是续跑旧任务：本轮解析进度会作废，
+        {providerChoice === "auto" ? (
+          <>
+            按回退顺序重新选源提交（当前将用：
+            <b>{effectiveProvider ? providerLabel(effectiveProvider) : "自动选择（按回退顺序探测）"}</b>
+            {mineru.order.length > 1 && !effectiveProvider ? "，全部不可用时提示失败" : ""}）。
+          </>
+        ) : (
+          <>
+            本轮指定用 <b>{providerLabel(providerChoice)}</b> 提交（一次性覆盖，不改全局默认；失败不自动回退）。
+          </>
+        )}
+      </p>
+      {/* 单篇参数面板：临时换源 / 缩页码范围，长论文可先解析前 20 页试效果。 */}
+      <div className="ef-reparse-params" role="group" aria-label="单篇解析参数（只作用本轮）">
+        <label>
+          <span>解析源</span>
+          <select
+            aria-label="单篇解析源"
+            value={providerChoice}
+            onChange={(e) => setProviderChoice(e.target.value as "auto" | MineruProviderKind)}
+          >
+            <option value="auto">自动选择（按回退顺序）</option>
+            {mineru.local.enabled ? <option value="local">本地 CLI</option> : null}
+            {mineru.ssh.enabled ? <option value="ssh">SSH 远程</option> : null}
+            {mineru.api.hasToken ? <option value="api">官方 API</option> : null}
+          </select>
+        </label>
+        <label>
+          <span>页码范围（留空用全局「{mineru.pageRange || "all"}」）</span>
+          <input
+            aria-label="单篇页码范围"
+            value={pageRangeChoice}
+            placeholder={mineru.pageRange || "all"}
+            onChange={(e) => setPageRangeChoice(e.target.value)}
+          />
+        </label>
+        <p className="ef-advanced-hint">
+          模型版本 / 语言 / 公式表格开关是官方 API 的全局设置，本轮沿用；页码范围写法如 1-3,5 或 all。
+          页码范围覆盖暂只在官方 API 提交时生效（本地 / SSH 的范围由取回端按全局设置截取）。
+        </p>
+      </div>
+      {stats ? (
+        <p>
+          当前已有全文：约 {stats.chars.toLocaleString("zh-Hans-CN")} 字 · {stats.sections} 个小节
+          {paper?.mineruProvider ? ` · 解析源 ${providerLabel(paper.mineruProvider)}` : ""}。
+          重解析期间这份全文继续可见；新结果完成后会给出两版对照，由你决定采用哪一版；解析失败时旧版保持不动。
+        </p>
+      ) : null}
+      {(() => {
+        // 单篇提交前预检：官方 API 在启用链里时把页数与限额算在明处。
+        const preflight = mineruPreflight({ files: 1, settings: mineru });
+        if (!preflight.apiInChain && !preflight.warnings.length) return null;
+        return (
+          <div className="ef-import-preflight">
+            {preflight.warnings.map((warning) => (
+              <p key={warning} className="ef-import-preflight-warn">
+                {warning}
+              </p>
+            ))}
+            {preflight.pageRange.pages !== null ? (
+              <p className="ef-import-preflight-note">
+                本次按页码范围「{mineru.pageRange}」提交，约 {preflight.pageRange.pages} 页。
+              </p>
+            ) : (
+              <p className="ef-import-preflight-note">
+                页码范围为「{mineru.pageRange || "all"}」：以 PDF 实际页数为准，超过 200 页 / 200MB 的文件会被官方 API 拒绝（提交时由桌面端核验）。
+              </p>
+            )}
+          </div>
+        );
+      })()}
+      <p>
+        官方 API 按提交计页：重新解析可能再次计入当日 1000 页额度。担心丢内容可先「导出全文」留存。
       </p>
     </Dialog>
   );

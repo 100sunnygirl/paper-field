@@ -2874,6 +2874,32 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   color: var(--pf-muted);
 }
 .ef-missing.is-error { color: var(--pf-danger); min-height: 0; margin: 6px 0; line-height: var(--pf-lh-ui); }
+
+/* ---- 解析状态小卡（资料栏）：状态 / 来源 / 失败原因合并呈现 ---- */
+.ef-parse-card {
+  margin: 10px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--pf-divider);
+  border-left: var(--pf-marker) solid var(--pf-ink);
+  font-size: var(--pf-fs-caption);
+  line-height: var(--pf-lh-ui);
+}
+.ef-parse-card.is-failed { border-left-color: var(--pf-danger); }
+.ef-parse-card p { margin: 0 0 4px; }
+.ef-parse-card p:last-child { margin-bottom: 0; }
+.ef-parse-head { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; }
+.ef-parse-head b { color: var(--pf-ink); font-weight: 700; }
+.ef-parse-state.is-ok { color: var(--pf-success); font-weight: 600; }
+.ef-parse-state.is-error { color: var(--pf-danger); font-weight: 600; }
+.ef-parse-provider { color: var(--pf-muted); }
+.ef-parse-reason { color: var(--pf-danger); }
+.ef-parse-next { color: var(--pf-muted); }
+.ef-parse-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
 .ef-identifier {
   display: flex;
   align-items: baseline;
@@ -4949,6 +4975,18 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   font-size: var(--pf-fs-caption);
   color: var(--pf-secondary);
 }
+/* 导入清单的提交前预检：标题墨色、警示用既有 danger 色、口径说明弱化。 */
+.ef-import-preflight {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border: 1px solid var(--pf-divider);
+  background: var(--pf-panel);
+}
+.ef-import-preflight p { margin: 0 0 4px; font-size: var(--pf-fs-caption); }
+.ef-import-preflight p:last-child { margin-bottom: 0; }
+.ef-import-preflight-title { color: var(--pf-ink); font-weight: 600; }
+.ef-import-preflight-warn { color: var(--pf-danger); }
+.ef-import-preflight-note { color: var(--pf-muted); }
 .ef-dialog-foot {
   display: flex;
   gap: 10px;
@@ -5938,6 +5976,15 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   color: var(--pf-secondary);
 }
 .ef-batchcard-actions > span { flex: 1 1 220px; }
+/* 停止确认里的远端口径说明：整行占满，警示色描边。 */
+.ef-batchcard-remote {
+  flex: 1 1 100%;
+  margin: 0;
+  padding: 8px 10px;
+  border-left: var(--pf-marker) solid var(--pf-danger);
+  background: var(--pf-danger-bg);
+  color: var(--pf-body);
+}
 
 /* 作业卡：左缘黄头墨身标记块（排队中退为灰条）；标题可点，跳到阅读页。 */
 .ef-jobcard {
@@ -6862,6 +6909,21 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 .ef-fulltext .ef-note-text { margin-top: 6px; animation: pf-fade var(--pf-t-enter); }
 .ef-fulltext .ef-empty-note { margin: 6px 0 0; }
 
+/* ---- 重新解析的两版对照（折叠区与并读面板共用，挂在检索行上方）---- */
+.ef-reparse-note {
+  margin: 6px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--pf-divider);
+  border-left: var(--pf-marker) solid var(--pf-ink);
+  background: var(--pf-surface);
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-body);
+}
+.ef-reparse-note.is-compare { border-left-color: var(--pf-success); }
+.ef-reparse-note p { margin: 0; }
+.ef-reparse-note b { color: var(--pf-ink); font-weight: 700; }
+.ef-reparse-actions { display: flex; gap: 8px; margin-top: 8px !important; flex-wrap: wrap; }
+
 /* ---- 全文并读（半高分屏面板）----
    阅读滚动区改为上下两行：上=解析全文面板（自带小节目录、独立滚动），
    下=摘要与笔记（原 .ef-reading-grid，独立滚动）；工具条「全文并读」一键折回单栏。 */
@@ -7400,3 +7462,90 @@ mark.ef-ft-hit.is-current { background: var(--pf-signal); }
 }
 .ef-task-primary small { color: var(--pf-secondary); font-size: var(--pf-fs-caption); }
 .ef-ai-chain p { margin: 0 0 2px; }
+
+/* 解析进行中的原位进度行（资料栏小卡内）：阶段 + 页数 + 解析源，与作业面板同源。 */
+.ef-parse-live {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  color: var(--pf-ink);
+  font-weight: 600;
+}
+
+/* 解析质量提示（解析全文顶部）：黄底弱化为纸面 + 左缘墨线，逐条一行。 */
+.ef-quality-note {
+  position: relative;
+  margin: 6px 0 12px;
+  padding: 10px 34px 10px 12px;
+  border: 1px solid var(--pf-divider);
+  border-left: var(--pf-marker) solid var(--pf-ink);
+  background: var(--pf-panel);
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-body);
+}
+.ef-quality-note p { margin: 0 0 4px; }
+.ef-quality-note p:last-child { margin-bottom: 0; }
+.ef-quality-note > button {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  padding: 2px;
+  border: 0;
+  background: none;
+  color: var(--pf-muted);
+  cursor: pointer;
+}
+
+/* 重新解析对话框的单篇参数面板：与导入预检同底色的一个分组。 */
+.ef-reparse-params {
+  margin: 10px 0;
+  padding: 10px 12px;
+  border: 1px solid var(--pf-divider);
+  background: var(--pf-panel);
+  display: grid;
+  gap: 10px;
+}
+.ef-reparse-params label {
+  display: grid;
+  gap: 4px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-body);
+}
+.ef-reparse-params label > span { color: var(--pf-ink); font-weight: 600; }
+.ef-reparse-params .ef-advanced-hint { margin: 0; }
+
+/* ---- 人工校正层（解析全文）：本机展示层修正，原始结果保留 ---- */
+.ef-corrections-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin: 6px 0 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--pf-divider);
+  border-left: var(--pf-marker) solid var(--pf-success);
+  background: var(--pf-success-bg);
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-body);
+}
+.ef-md.is-corrected { outline: none; }
+.ef-correction-editor {
+  display: grid;
+  gap: 8px;
+  margin: 6px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--pf-divider);
+  background: var(--pf-surface);
+}
+.ef-correction-editor b { color: var(--pf-ink); font-size: var(--pf-fs-caption); }
+.ef-correction-editor input,
+.ef-correction-editor textarea {
+  font: inherit;
+  font-size: var(--pf-fs-caption);
+  padding: 6px 8px;
+  border: 1px solid var(--pf-control-border);
+  background: var(--pf-surface);
+  color: var(--pf-body);
+}
+.ef-correction-actions { display: flex; gap: 8px; justify-content: flex-end; }

@@ -21,6 +21,7 @@ import {
 import { cancelJob, cancelJobsForPapers, JobCancelled, liveJobsFor, runTracked, type JobCtx } from "./jobs";
 import { loadJobNotifyPrefs, systemNotify, type JobNotifyPrefs } from "./notifyPrefs";
 import { journalBegin, journalFinish, journalItem } from "./jobJournal";
+import { clearReparseSnapshot, completeReparseSnapshot, fulltextStats, getReparseRecord, saveReparseSnapshot } from "./reparse";
 import { formatSpan } from "./jobsView";
 import { log } from "./logger";
 import { repo } from "./repo";
@@ -44,6 +45,15 @@ interface Host {
    * 缺省 true 与既有行为一致）。仅影响本 host 的批次，回填与显式补全入口不受它管。
    */
   autoMeta?: boolean;
+  /** 熔断建议卡的直达：打开设置页 MinerU 卡（降档 / 换源在这里改）。 */
+  openSettings?: () => void;
+  /**
+   * 单篇覆盖的指定源（重新解析参数面板）：设置后提交不按回退顺序自动选源，
+   * 而是把这个源传给提交端（本轮一次性，不改全局默认）。
+   */
+  submitProvider?: MineruProviderKind;
+  /** 单篇覆盖的页码范围：本轮提交 / 取回全文按这个范围（留空沿用全局 pageRange）。 */
+  submitPageRange?: string;
 }
 
 /**
@@ -95,8 +105,13 @@ export async function dequeueFromBatch(batchId: number, paperId: string): Promis
  * 还没建作业就打上移出标记（建好作业后会立刻看到并自行取消）。返回停止的篇数。
  */
 export async function stopBatch(batchId: number): Promise<number> {
+  return (await stopBatchWithIds(batchId)).stopped;
+}
+
+/** stopBatch 的明细版：连同受影响的论文 id 一起返回（提示里的「一键重新排队」用）。 */
+export async function stopBatchWithIds(batchId: number): Promise<{ stopped: number; paperIds: string[] }> {
   const batch = getActivity().batches.find((item) => item.id === batchId);
-  if (!batch) return 0;
+  if (!batch) return { stopped: 0, paperIds: [] };
   const pending = batch.paperIds.filter((id) => !batch.results[id] && id !== batch.currentPaperId);
   for (const id of pending) {
     if (batch.kind === "mineru") await dequeueFromBatch(batchId, id);
@@ -114,7 +129,26 @@ export async function stopBatch(batchId: number): Promise<number> {
     }
     stopped += 1;
   }
-  return stopped;
+  return { stopped, paperIds: current ? [...pending, current] : [...pending] };
+}
+
+/**
+ * 「仅停止未提交」：只把还没轮到的排队论文移出本批（解析类写库 cancelled，重启不续跑），
+ * 正在处理的一篇照常收尾——它的远端任务已在跑，中止只会白花已计入的页数。
+ * 返回移出的篇数与论文 id。
+ */
+export async function stopBatchUnsubmitted(batchId: number): Promise<{ stopped: number; paperIds: string[] }> {
+  const batch = getActivity().batches.find((item) => item.id === batchId);
+  if (!batch) return { stopped: 0, paperIds: [] };
+  const pending = batch.paperIds.filter((id) => !batch.results[id] && id !== batch.currentPaperId);
+  for (const id of pending) {
+    if (batch.kind === "mineru") await dequeueFromBatch(batchId, id);
+    else {
+      dequeued.add(queueKey(batchId, id));
+      endBatchItem(batchId, id, "cancelled");
+    }
+  }
+  return { stopped: pending.length, paperIds: [...pending] };
 }
 
 /**
@@ -306,6 +340,8 @@ async function processOne(
   paperId: string,
   force: boolean,
   batchId?: number,
+  /** 批次级 settings 视图（含单篇页码覆盖）；缺省读 host.mineru()。 */
+  batchSettings?: MineruSettingsV2,
 ): Promise<BatchItemResult> {
   const paper = await repo.getPaper(paperId);
   if (!paper?.pdfPath) return "skip";
@@ -314,8 +350,17 @@ async function processOne(
     if (host.autoMeta !== false) enqueueMeta(async () => void (await autoPrepare(host, paperId)));
     return "ok";
   }
-  const settings = host.mineru();
+  const settings = batchSettings ?? host.mineru();
   if (!settings.configured) return "skip";
+  // 强制重解析且已有全文：先把旧版快照存到本机，新结果完成后界面给两版对照
+  //（失败 / 取消则作废快照——旧版仍是当前全文，无需对照）。
+  // store 的重试入口在重置前已存过更完整的快照（含上次用的源）：那种情况不覆盖。
+  const hadPrevFulltext = force && Boolean(paper.parsedMarkdown.trim());
+  if (hadPrevFulltext && !getReparseRecord(paperId)) {
+    saveReparseSnapshot({ paperId, markdown: paper.parsedMarkdown, provider: paper.mineruProvider });
+  }
+  let newMarkdown = "";
+  let newProvider: string | null = null;
 
   const inflight = paper.mineruStatus === "submitted" || paper.mineruStatus === "parsing";
   if (!force && inflight && !(await resumeAllowed(paper))) {
@@ -354,7 +399,7 @@ async function processOne(
       await host.refresh();
       if (!canResume) {
         await checkpoint(ctx, batchId);
-        const submitted = await mineruSubmit(paperId, paper.pdfPath!, force);
+        const submitted = await mineruSubmit(paperId, paper.pdfPath!, force, host.submitProvider);
         await checkpoint(ctx, batchId);
         docRef = submitted.shortId;
         parseIds = submitted.parseIds;
@@ -386,6 +431,8 @@ async function processOne(
             expectedFingerprint,
           );
           await checkpoint(ctx, batchId);
+          newMarkdown = markdown;
+          newProvider = provider;
           return (await commitParseSuccess(ctx, markdown)) ? "done" : "cancelled";
         }
       }
@@ -402,10 +449,25 @@ async function processOne(
         expectedFingerprint,
       );
       await checkpoint(ctx, batchId);
+      newMarkdown = markdown;
+      newProvider = provider;
       return (await commitParseSuccess(ctx, markdown)) ? "done" : "cancelled";
     },
   );
   await host.refresh();
+  if (hadPrevFulltext) {
+    if (result.outcome === "done" && newMarkdown) {
+      const stats = fulltextStats(newMarkdown);
+      completeReparseSnapshot(paperId, {
+        provider: newProvider,
+        chars: stats.chars,
+        sections: stats.sections,
+      });
+    } else {
+      // 失败 / 取消：旧版全文原样保留（没有任何写入），对照垫片作废。
+      clearReparseSnapshot(paperId);
+    }
+  }
   if (result.outcome === "done") {
     // 「入库并解析」模式：解析完不自动排队 AI 补全（用户明说这次只要解析）。
     if (host.autoMeta !== false) enqueueMeta(async () => void (await autoPrepare(host, paperId)));
@@ -418,6 +480,23 @@ async function processOne(
 
 /** 连续失败达到该值即熔断剩余批次：解析源大概率繁忙或不可用，继续只会逐篇耗时超时。 */
 const CONSECUTIVE_FAIL_LIMIT = 3;
+
+/**
+ * 失败 / 熔断后的下一步策略建议：按当前设置给一条具体可动的降档路径。
+ * 只提设置里真实存在的选项（档位只对 doclib 有意义、模型版本只对官方 API 有意义）。
+ */
+export function minuDowngradeAdvice(settings: MineruSettingsV2): string {
+  const hasDoclib = settings.local.enabled || settings.ssh.enabled;
+  const hasApi = settings.api.hasToken;
+  const parts: string[] = [];
+  if (hasDoclib && settings.tier !== "flash") parts.push("把解析档位降到 flash 再试");
+  if (hasApi && settings.api.modelVersion !== "pipeline") parts.push("官方 API 换回 pipeline 模型版本");
+  if (settings.pageRange !== "all") parts.push("或把页码范围再缩小（如先解析前 20 页）分批解析");
+  else parts.push("或缩小页码范围（如 1-20）分批解析");
+  if (hasApi && (hasDoclib || !parts.length)) parts.push("确认官方 API Token 仍有效");
+  if (!hasDoclib && !hasApi) parts.push("先在设置页启用一个解析源");
+  return parts.slice(0, 2).join("，");
+}
 
 export const PAUSED_ERROR = "连续失败已暂停，可在 INTAKE 页重试";
 /** 用户「当前篇完成后暂停」写进论文的暂停原因（「继续本批」恢复）。 */
@@ -479,10 +558,13 @@ export async function runMineruBatch(
   batchId?: number,
 ): Promise<void> {
   // 守卫语义：order 中无任何启用源 → 静默返回（入口 importPdfs/retryMineru 已给出指引）。
-  if (!host.mineru().configured) {
+  const baseSettings = host.mineru();
+  if (!baseSettings.configured) {
     if (batchId !== undefined) discardBatch(batchId);
     return;
   }
+  // 单篇页码范围覆盖：只作用这一轮提交（本轮 processOne 读到的 settings 用覆盖后的值）。
+  const settings = host.submitPageRange ? { ...baseSettings, pageRange: host.submitPageRange } : baseSettings;
   const id = batchId ?? queueBatch("mineru", paperIds);
   startBatch(id);
   // 本机批次记录：清单、逐篇结果与起止时间（localStorage，重启可回看；见 jobJournal.ts 的口径说明）。
@@ -529,7 +611,7 @@ export async function runMineruBatch(
         continue;
       }
       beginBatchItem(id, paperId);
-      const result = await processOne(host, paperId, force, id);
+      const result = await processOne(host, paperId, force, id, settings);
       endBatchItem(id, paperId, result);
       journalItem(journalId, paperId, result);
       if (result === "ok") {
@@ -554,7 +636,8 @@ export async function runMineruBatch(
       log.warn("mineru", `连续失败 ${consecutiveFails} 篇，熔断暂停剩余 ${pausedCount} 篇`);
       host.flash(
         "error",
-        `MinerU 解析连续失败 ${consecutiveFails} 篇，已暂停剩余 ${pausedCount} 篇。解析源可能繁忙或不可用，可在设置页测试连接，稍后在 INTAKE 页重试。`,
+        `MinerU 解析连续失败 ${consecutiveFails} 篇，已暂停剩余 ${pausedCount} 篇。下一步建议：${minuDowngradeAdvice(host.mineru())}。可在设置页测试连接，稍后在 INTAKE 页重试。`,
+        ...(host.openSettings ? [{ label: "去设置调整解析源", run: () => host.openSettings!() }] : []),
       );
       notifyAway(prefs, "MinerU 解析已暂停", `连续失败 ${consecutiveFails} 篇，剩余 ${pausedCount} 篇未处理`, true);
       return;
@@ -573,8 +656,8 @@ export async function runMineruBatch(
       host.flash(
         "error",
         big
-          ? `MinerU 解析失败 ${fail} 篇（成功 ${ok} · 用时 ${elapsedText}），可在资料栏重试。`
-          : `MinerU 解析失败 ${fail} 篇，可在资料栏重试。`,
+          ? `MinerU 解析失败 ${fail} 篇（成功 ${ok} · 用时 ${elapsedText}）。可先${minuDowngradeAdvice(host.mineru())}，再在资料栏逐篇重试。`
+          : `MinerU 解析失败 ${fail} 篇，可在资料栏重试；反复失败可${minuDowngradeAdvice(host.mineru())}。`,
         ...(action ? [action] : []),
       );
     } else if (ok && !host.hasKey()) {

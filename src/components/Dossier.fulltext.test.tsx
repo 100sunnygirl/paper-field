@@ -1,5 +1,12 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { repo } from "../lib/repo";
+import {
+  completeReparseSnapshot,
+  resetReparseSnapshots,
+  saveReparseSnapshot,
+} from "../lib/reparse";
+import { resetCorrections, saveCorrection } from "../lib/parseCorrections";
 import { NOTE_DISPLAY_ORDER, type NoteKind, type PaperDetail } from "../lib/types";
 import { useField } from "../store";
 import { ReadingStage } from "./Dossier";
@@ -92,6 +99,112 @@ beforeAll(() => {
 
 beforeEach(() => {
   useField.setState(useField.getInitialState(), true);
+  resetReparseSnapshots();
+  resetCorrections();
+});
+
+describe("ReadingStage · 重新解析的两版对照", () => {
+  it("快照还没补新版（解析进行中）：说明当前显示的仍是上一版", () => {
+    saveReparseSnapshot({ paperId: "p1", markdown: "# 上一版", provider: "api" });
+    useField.setState({ mode: "field", paper: paper(), selectedPaperId: "p1" });
+    renderStage();
+    expect(screen.getByText(/正在重新解析：这里显示的仍是上一版全文/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /恢复旧版/ })).toBeNull();
+  });
+
+  it("新结果完成后展示两版对照，「采用新版」清掉快照", () => {
+    saveReparseSnapshot({ paperId: "p1", markdown: "# 上一版", provider: "api" });
+    completeReparseSnapshot("p1", { provider: "local", chars: 9999, sections: 4 });
+    useField.setState({ mode: "field", paper: paper(), selectedPaperId: "p1" });
+    renderStage();
+    expect(screen.getByText(/新旧版本对照/)).toBeInTheDocument();
+    expect(screen.getByText(/旧版（官方 API）/)).toBeInTheDocument();
+    expect(screen.getByText(/新版（本地 CLI）/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /采用新版（当前显示）/ }));
+    expect(screen.queryByText(/新旧版本对照/)).toBeNull();
+  });
+
+  it("「恢复旧版」把快照里的旧全文写回库并刷新", async () => {
+    saveReparseSnapshot({ paperId: "p1", markdown: "# 上一版", provider: "api" });
+    completeReparseSnapshot("p1", { provider: "local", chars: 10, sections: 1 });
+    const save = vi.spyOn(repo, "saveParsedMarkdown").mockResolvedValue(undefined);
+    const refresh = vi.fn(async () => undefined);
+    useField.setState({ mode: "field", paper: paper(), selectedPaperId: "p1", refresh });
+    renderStage();
+    fireEvent.click(screen.getByRole("button", { name: /恢复旧版/ }));
+    await waitFor(() => expect(save).toHaveBeenCalledWith("p1", "# 上一版"));
+    expect(refresh).toHaveBeenCalled();
+    expect(useField.getState().flash?.text).toContain("已恢复上一版解析全文");
+    save.mockRestore();
+  });
+
+  it("没有快照时不渲染对照区", () => {
+    useField.setState({ mode: "field", paper: paper(), selectedPaperId: "p1" });
+    renderStage();
+    expect(screen.queryByRole("note", { name: "新旧版本对照" })).toBeNull();
+    expect(screen.queryByText(/正在重新解析/)).toBeNull();
+  });
+});
+
+describe("ReadingStage · 解析完成的质量提示", () => {
+  it("全文只有标题没有正文：给出疑似空页 / 正文过少提示，可关闭且本版不再出现", () => {
+    const sparse = "# 引言\n\n## 方法\n\n## 实验\n\n## 结论\n\n## 讨论\n\n## 局限\n\n## 展望\n\n一句正文。";
+    const p2 = { ...paper(), parsedMarkdown: sparse } as PaperDetail;
+    useField.setState({ mode: "field", paper: p2, selectedPaperId: "p1" });
+    renderStage();
+    const note = screen.getByRole("note", { name: "解析质量提示" });
+    expect(within(note).getByText(/没有正文，可能是空页/)).toBeInTheDocument();
+    expect(within(note).getByText(/只解析出部分页面/)).toBeInTheDocument();
+    fireEvent.click(within(note).getByRole("button", { name: "收起质量提示" }));
+    expect(screen.queryByRole("note", { name: "解析质量提示" })).toBeNull();
+    expect(localStorage.getItem(`paper-field.parse-quality-dismissed:p1:${sparse.length}`)).toBe("1");
+  });
+
+  it("正文充分且带表格公式的全文：不显示质量提示", () => {
+    const rich = "# 引言\n\n## 方法\n\n" + "一段足够长的正文内容。\n\n".repeat(15) + "| a | b |\n|---|---|\n| 1 | 2 |\n其中 $x^2$ 为公式。";
+    const p2 = { ...paper(), parsedMarkdown: rich } as PaperDetail;
+    useField.setState({ mode: "field", paper: p2, selectedPaperId: "p1" });
+    renderStage();
+    expect(screen.queryByRole("note", { name: "解析质量提示" })).toBeNull();
+  });
+});
+
+describe("ReadingStage · 解析结果的人工校正层", () => {
+  it("选中段落 → 「标记解析有误…」→ 填写并保存：展示层替换该小节，提示保留原文", () => {
+    useField.setState({ mode: "field", paper: paper(), selectedPaperId: "p1" });
+    renderStage();
+    const stub = stubSelectionInsideStage("方法正文第一段。");
+    fireSelectionChange();
+    fireEvent.click(screen.getByRole("button", { name: "标记解析有误…" }));
+    const editor = screen.getByRole("form", { name: "编辑本地校正" });
+    fireEvent.change(within(editor).getByLabelText("校正说明"), { target: { value: "公式编号错位" } });
+    fireEvent.change(within(editor).getByLabelText("校正后的内容"), { target: { value: "方法正文第一段（已校正）。" } });
+    fireEvent.click(within(editor).getByRole("button", { name: "保存校正" }));
+    expect(useField.getState().flash?.text).toContain("仅本机展示层生效");
+    // 展示层已替换
+    expect(document.querySelector(".ef-fulltext .ef-md")?.textContent).toContain("方法正文第一段（已校正）。");
+    expect(screen.getByRole("note", { name: "本地校正层" }).textContent).toContain("本机校正 1 处");
+    expect(screen.getByRole("note", { name: "本地校正层" }).textContent).toContain("原始结果保留");
+    stub.restore();
+  });
+
+  it("「放弃全部校正」恢复原始解析结果", () => {
+    saveCorrection({
+      paperId: "p1",
+      markdown: PARSED,
+      sectionId: "ft-sec-2",
+      sectionLabel: "§1.1 方法",
+      note: "n",
+      fixed: "校正后的方法段。",
+    });
+    useField.setState({ mode: "field", paper: paper(), selectedPaperId: "p1" });
+    renderStage();
+    expect(document.querySelector(".ef-fulltext .ef-md")?.textContent).toContain("校正后的方法段。");
+    fireEvent.click(screen.getByRole("button", { name: /放弃全部校正/ }));
+    expect(document.querySelector(".ef-fulltext .ef-md")?.textContent).toContain("方法正文第一段。");
+    expect(screen.queryByRole("note", { name: "本地校正层" })).toBeNull();
+    expect(useField.getState().flash?.text).toContain("恢复原始解析结果");
+  });
 });
 
 describe("ReadingStage · 从解析全文摘录到笔记", () => {

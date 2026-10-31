@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
+import { getActivity, subscribeActivity, type JobStage } from "../lib/activity";
 import { bindingLabel, currentKeymap, eventMatchesBinding } from "../lib/keymap";
 import {
   FONT_STEPS,
@@ -37,6 +38,17 @@ import {
 import { onMarkdownClick, renderMarkdown } from "../lib/markdown";
 import { loadNoteStyle, loadPreviewFirst, noteStylePrompt, saveNoteStyle, savePreviewFirst, taskChainFor, type AiTask, type NoteStyle, NOTE_STYLE_LABELS } from "../lib/aiPrefs";
 import { draftInputScope } from "../lib/prompts";
+import { providerLabel } from "../lib/mineruPlan";
+import { checkParseQuality } from "../lib/parseQuality";
+import {
+  applyCorrections,
+  clearCorrections,
+  getCorrections,
+  removeCorrection,
+  saveCorrection,
+} from "../lib/parseCorrections";
+import { clearReparseSnapshot, fulltextStats, getReparseRecord } from "../lib/reparse";
+import { repo } from "../lib/repo";
 import { isNoteHintDismissed, NOTE_HINT_QUESTIONS, setNoteHintDismissed } from "../lib/noteHints";
 import { loadNoteLayout, moveNoteKind as moveNoteKindInOrder, saveNoteLayout, type NoteLayout } from "../lib/noteLayout";
 import { loadReadingSpots, saveReadingSpot } from "../lib/readingSpot";
@@ -46,7 +58,6 @@ import { openLocalPdf } from "../lib/mineru";
 import {
   JOB_STATUS_LABELS,
   JOB_TYPE_LABELS,
-  MINERU_PROVIDER_LABELS,
   MINERU_STATUS_LABELS,
   NOTE_DISPLAY_ORDER,
   NOTE_LABELS,
@@ -133,6 +144,16 @@ function ReReadBlock({ paperId, firstReadAt }: { paperId: string; firstReadAt: s
     </div>
   );
 }
+
+/** 解析作业的阶段一句话（与作业面板 stageHint 同口径的简化版）。 */
+const PARSE_STAGE_LABELS: Record<JobStage, string> = {
+  queue: "排队等待解析…",
+  submit: "正在上传 PDF 并提交解析…",
+  parse: "正在解析…",
+  fetch: "解析完成，正在取回全文…",
+  request: "请求模型…",
+  apply: "写入结果…",
+};
 
 /** 把区段锚点 id 转成浮标 / 提示里可读的中文标签。 */
 function spotSectionLabel(section: string, headings: ReturnType<typeof extractFulltextHeadings>): string {
@@ -458,6 +479,76 @@ function NoteEditor({
 }
 
 /**
+ * 重新解析的两版对照：新结果完成后在解析全文顶部展示新旧统计对照，由用户决定
+ * 采用哪一版（快照存本机，见 lib/reparse）。解析进行中先说明「当前仍是上一版」。
+ */
+function ReparseCompareNote({ paper }: { paper: PaperDetail }) {
+  const setFlash = useField((s) => s.setFlash);
+  const refresh = useField((s) => s.refresh);
+  const [record, setRecord] = useState(() => getReparseRecord(paper.id));
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    setRecord(getReparseRecord(paper.id));
+  }, [paper.id, paper.parsedMarkdown]);
+
+  if (!record) return null;
+  const prevStats = fulltextStats(record.prev.markdown);
+
+  function adoptNew() {
+    clearReparseSnapshot(paper.id);
+    setRecord(null);
+  }
+
+  async function restoreOld() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await repo.saveParsedMarkdown(paper.id, record!.prev.markdown);
+      clearReparseSnapshot(paper.id);
+      setRecord(null);
+      await refresh();
+      setFlash({ tone: "ok", text: "已恢复上一版解析全文。" });
+    } catch (err) {
+      setFlash({
+        tone: "error",
+        text: `恢复旧版失败：${err instanceof Error ? err.message : String(err)}，新版保持不变。`,
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!record.next) {
+    // 重解析还在进行：旧版全文就是当前显示的内容，先给一句确定性。
+    return (
+      <p className="ef-reparse-note" role="note">
+        正在重新解析：这里显示的仍是上一版全文，新结果完成后可在两版之间选择。
+      </p>
+    );
+  }
+  return (
+    <div className="ef-reparse-note is-compare" role="note" aria-label="新旧版本对照">
+      <p>
+        <b>重新解析完成，新旧版本对照</b>
+        <br />
+        旧版（{providerLabel(record.prev.provider)}）约 {prevStats.chars.toLocaleString("zh-Hans-CN")} 字 ·{" "}
+        {prevStats.sections} 节 → 新版（{providerLabel(record.next.provider)}）约{" "}
+        {record.next.chars.toLocaleString("zh-Hans-CN")} 字 · {record.next.sections} 节
+        {prevStats.chars === record.next.chars && prevStats.sections === record.next.sections ? " · 两版统计一致" : ""}
+      </p>
+      <p className="ef-reparse-actions">
+        <Button type="button" size="sm" disabled={busy} onClick={() => void restoreOld()}>
+          恢复旧版
+        </Button>
+        <Button type="button" size="sm" variant="primary" onClick={adoptNew}>
+          采用新版（当前显示）
+        </Button>
+      </p>
+    </div>
+  );
+}
+
+/**
  * 解析全文的渲染容器：渲染后按小节补锚点（消毒层剥掉了外部 id），
  * 选中文字后浮出「摘到笔记」条，一键把引用写入对应笔记块并保留跳回锚点。
  */
@@ -470,7 +561,85 @@ function FulltextDoc({
   onPick: (pick: FulltextSelection) => void;
 }) {
   const setNoteDraft = useField((s) => s.setNoteDraft);
+  const mineru = useField((s) => s.mineru);
+  // 解析完成的静态质量提示：空页 / 表格公式疑似丢失 / 以标题为主。只在首次看到这版全文时出现（可关闭，本机记忆该版本）。
+  const qualityKey = `paper-field.parse-quality-dismissed:${paper.id}:${[...paper.parsedMarkdown].length}`;
+  const [qualityDismissed, setQualityDismissed] = useState(() => {
+    try {
+      return localStorage.getItem(qualityKey) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const qualityWarnings = useMemo(
+    () =>
+      checkParseQuality(paper.parsedMarkdown, {
+        pageRange: mineru.pageRange,
+        enableFormula: mineru.api.enableFormula,
+        enableTable: mineru.api.enableTable,
+      }),
+    [paper.parsedMarkdown, mineru.pageRange, mineru.api.enableFormula, mineru.api.enableTable],
+  );
+  const shownWarnings = qualityDismissed ? [] : qualityWarnings;
+
+  function dismissQuality() {
+    setQualityDismissed(true);
+    try {
+      localStorage.setItem(qualityKey, "1");
+    } catch {
+      // 存不住就本次会话内不再出现。
+    }
+  }
   const setFlash = useField((s) => s.setFlash);
+  // 人工校正层（本机 localStorage，不进数据库、不随备份走）：原始结果不动，只改本机展示。
+  const [correctionRecord, setCorrectionRecord] = useState(() => getCorrections(paper.id, paper.parsedMarkdown));
+  useEffect(() => {
+    setCorrectionRecord(getCorrections(paper.id, paper.parsedMarkdown));
+  }, [paper.id, paper.parsedMarkdown]);
+  // 校正过的文本版本号：保存 / 删除校正后刷新渲染。
+  const [correctionsVersion, setCorrectionsVersion] = useState(0);
+  const shownMarkdown = useMemo(
+    () => applyCorrections(paper.parsedMarkdown, correctionRecord),
+    // correctionsVersion 参与依赖：校正变化即重新应用。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [paper.parsedMarkdown, correctionRecord, correctionsVersion],
+  );
+  // 编辑中的校正（小节锚点 + 草稿）。
+  const [editingCorrection, setEditingCorrection] = useState<{ sectionId: string; note: string; fixed: string } | null>(null);
+
+  function startCorrection(heading: (typeof headings)[number]) {
+    const existing = correctionRecord?.corrections.find((item) => item.sectionId === heading.id);
+    setEditingCorrection({
+      sectionId: heading.id,
+      note: existing?.note ?? "",
+      fixed: existing?.fixed ?? "",
+    });
+  }
+
+  function saveCorrectionDraft() {
+    if (!editingCorrection) return;
+    const heading = headings.find((item) => item.id === editingCorrection.sectionId);
+    saveCorrection({
+      paperId: paper.id,
+      markdown: paper.parsedMarkdown,
+      sectionId: editingCorrection.sectionId,
+      sectionLabel: heading ? `§${heading.number} ${heading.text}` : editingCorrection.sectionId,
+      note: editingCorrection.note,
+      fixed: editingCorrection.fixed,
+    });
+    setCorrectionRecord(getCorrections(paper.id, paper.parsedMarkdown));
+    setCorrectionsVersion((v) => v + 1);
+    setEditingCorrection(null);
+    setFlash({ tone: "ok", text: "已保存本地校正：仅本机展示层生效，原始解析结果保留；重新解析后自动作废。" });
+  }
+
+  function deleteCorrection(sectionId: string) {
+    removeCorrection(paper.id, sectionId);
+    setCorrectionRecord(getCorrections(paper.id, paper.parsedMarkdown));
+    setCorrectionsVersion((v) => v + 1);
+    setEditingCorrection(null);
+    setFlash({ tone: "ok", text: "已删除这条校正，恢复显示原始解析结果。" });
+  }
   const rootRef = useRef<HTMLDivElement>(null);
   const headings = useMemo(() => extractFulltextHeadings(paper.parsedMarkdown), [paper.parsedMarkdown]);
   const [bar, setBar] = useState<{ pick: FulltextSelection; top: number; left: number } | null>(null);
@@ -562,6 +731,22 @@ function FulltextDoc({
 
   return (
     <>
+      <ReparseCompareNote paper={paper} />
+      {shownWarnings.length ? (
+        <div className="ef-quality-note" role="note" aria-label="解析质量提示">
+          {shownWarnings.map((warning) => (
+            <p key={warning.kind}>{warning.message}</p>
+          ))}
+          <button
+            type="button"
+            aria-label="收起质量提示"
+            title="收起（这版全文不再提示）"
+            onClick={dismissQuality}
+          >
+            <Icon name="close" />
+          </button>
+        </div>
+      ) : null}
       <div className="ef-ft-search" role="search">
         <Icon name="search" />
         <input
@@ -606,12 +791,68 @@ function FulltextDoc({
           </>
         ) : null}
       </div>
+      {/* 校正层生效时展示校正后文本；原文随时可对照（applyCorrections 只替换小节正文）。 */}
       <div
         ref={rootRef}
-        className="ef-note-text ef-md"
+        className={`ef-note-text ef-md${correctionRecord?.corrections.length ? " is-corrected" : ""}`}
         onClick={onMarkdownClick}
-        dangerouslySetInnerHTML={{ __html: renderMarkdown(paper.parsedMarkdown) }}
+        dangerouslySetInnerHTML={{ __html: renderMarkdown(shownMarkdown) }}
       />
+      {/* 校正层状态条：有几条校正、如何回到原文。 */}
+      {correctionRecord?.corrections.length ? (
+        <p className="ef-corrections-bar" role="note" aria-label="本地校正层">
+          本机校正 {correctionRecord.corrections.length} 处（
+          {correctionRecord.corrections.map((item) => item.sectionLabel).join("、")}）· 只影响本机显示，原始结果保留
+          <Button
+            type="button"
+            size="sm"
+            variant="text"
+            onClick={() => {
+              clearCorrections(paper.id);
+              setCorrectionRecord(null);
+              setCorrectionsVersion((v) => v + 1);
+              setFlash({ tone: "ok", text: "已放弃全部本地校正，恢复原始解析结果。" });
+            }}
+          >
+            放弃全部校正
+          </Button>
+        </p>
+      ) : null}
+      {/* 校正编辑器：从下方小节菜单进入，针对一个小节记录「哪里错 + 正确内容」。 */}
+      {editingCorrection ? (
+        <div className="ef-correction-editor" role="form" aria-label="编辑本地校正">
+          {(() => {
+            const heading = headings.find((item) => item.id === editingCorrection.sectionId);
+            return <b>{heading ? `校正 §${heading.number} ${heading.text}` : "校正该小节"}</b>;
+          })()}
+          <input
+            value={editingCorrection.note}
+            placeholder="哪里解析有误（如：表 2 数字错位）"
+            aria-label="校正说明"
+            onChange={(e) => setEditingCorrection({ ...editingCorrection, note: e.target.value })}
+          />
+          <textarea
+            value={editingCorrection.fixed}
+            placeholder="该小节的正确内容（留空 = 仅标记有误，不改正文）"
+            aria-label="校正后的内容"
+            rows={4}
+            onChange={(e) => setEditingCorrection({ ...editingCorrection, fixed: e.target.value })}
+          />
+          <div className="ef-correction-actions">
+            <Button type="button" size="sm" onClick={() => setEditingCorrection(null)}>
+              取消
+            </Button>
+            {correctionRecord?.corrections.some((item) => item.sectionId === editingCorrection.sectionId) ? (
+              <Button type="button" size="sm" variant="danger" onClick={() => deleteCorrection(editingCorrection.sectionId)}>
+                删除这条校正
+              </Button>
+            ) : null}
+            <Button type="button" size="sm" variant="primary" onClick={saveCorrectionDraft}>
+              保存校正
+            </Button>
+          </div>
+        </div>
+      ) : null}
       {bar ? (
         <div
           className="ef-excerpt-bar"
@@ -627,6 +868,11 @@ function FulltextDoc({
           <button type="button" className="ef-excerpt-copy" onClick={() => void copyCitation()}>
             复制引用
           </button>
+          {bar.pick.heading ? (
+            <button type="button" onClick={() => startCorrection(bar.pick.heading!)}>
+              标记解析有误…
+            </button>
+          ) : null}
         </div>
       ) : null}
     </>
@@ -1134,6 +1380,8 @@ function ContextPanel({
   const runRefreshLinks = useField((s) => s.runRefreshLinks);
   const retryMineru = useField((s) => s.retryMineru);
   const mineru = useField((s) => s.mineru);
+  const effectiveProvider = useField((s) => s.effectiveProvider);
+  const openSystemCard = useField((s) => s.openSystemCard);
   const cancelJob = useField((s) => s.cancelJob);
   const savePaperPatch = useField((s) => s.savePaperPatch);
   const setMode = useField((s) => s.setMode);
@@ -1148,6 +1396,13 @@ function ContextPanel({
   const active = jobs.filter(
     (job) => job.paperId === paper.id && (job.status === "running" || job.status === "queued"),
   );
+  // 解析进行中的实况（阶段 / 解析源 / 页进度）：正文侧原位同步作业面板的信息。
+  const activity = useSyncExternalStore(subscribeActivity, getActivity);
+  const liveParse = useMemo(() => {
+    const parseJob = active.find((job) => job.type === "mineruParse");
+    if (!parseJob) return null;
+    return activity.jobs[parseJob.id] ?? null;
+  }, [active, activity]);
   // 解析全文的小节标题 → 本页目录的二级导航；过长时截断显示并注明其余节数。
   const fulltextHeadings = useMemo(() => extractFulltextHeadings(paper.parsedMarkdown), [paper.parsedMarkdown]);
   const visibleHeadings = fulltextHeadings.slice(0, TOC_SECTION_LIMIT);
@@ -1447,33 +1702,61 @@ function ContextPanel({
             </p>
           </div>
         </details>
+        {/* 解析状态小卡：状态 / 来源 / 失败原因合并呈现；失败时给出下一步动作。 */}
         {paper.pdfPath ? (
-          <p className="ef-missing">
-            MinerU · {paper.mineruStatus ? MINERU_STATUS_LABELS[paper.mineruStatus] : "尚未解析"}
-          </p>
+          <div className={`ef-parse-card${parseFailed ? " is-failed" : ""}`} role="group" aria-label="解析状态">
+            <p className="ef-parse-head">
+              <b>MinerU 解析</b>
+              <span className={`ef-parse-state${parseFailed ? " is-error" : parseDone ? " is-ok" : ""}`}>{parseLabel}</span>
+              {paper.mineruProvider ? (
+                <span className="ef-parse-provider">· 上次用 {providerLabel(paper.mineruProvider)}</span>
+              ) : null}
+            </p>
+            {paper.mineruError ? <p className="ef-parse-reason">{paper.mineruError}</p> : null}
+            {parseRunning && liveParse ? (
+              <p className="ef-parse-live" aria-live="polite">
+                {PARSE_STAGE_LABELS[liveParse.stage]}
+                {liveParse.pages ? ` · 第 ${liveParse.pages.done} / ${liveParse.pages.total} 页` : ""}
+                {liveParse.provider ? ` · ${providerLabel(liveParse.provider)}` : ""}
+                <Button type="button" size="sm" variant="text" onClick={() => setJobsOpen(true)}>
+                  查看作业面板
+                </Button>
+              </p>
+            ) : null}
+            {parseFailed ? (
+              <p className="ef-parse-next">
+                下次将用：
+                {mineru.configured
+                  ? effectiveProvider
+                    ? `${providerLabel(effectiveProvider)}（按回退顺序重选）`
+                    : "按回退顺序重选（当前探测均未通过，可先测试连接）"
+                  : "尚未配置解析源"}
+              </p>
+            ) : null}
+            <div className="ef-parse-actions">
+              {!mineru.configured ? (
+                <Button type="button" variant="link" onClick={() => void setMode("system")}>
+                  配置 MinerU 解析源
+                  <Icon name="right" />
+                </Button>
+              ) : paper.mineruStatus !== "queued" &&
+                paper.mineruStatus !== "submitted" &&
+                paper.mineruStatus !== "parsing" &&
+                paper.mineruStatus !== "done" ? (
+                <Button type="button" onClick={() => void retryMineru(paper.id)}>
+                  {paper.mineruStatus === "error" || paper.mineruStatus === "cancelled" ? "重新解析" : "发送到 MinerU 解析"}
+                </Button>
+              ) : null}
+              {parseFailed && mineru.configured ? (
+                <Button type="button" variant="link" onClick={() => openSystemCard("mineru")}>
+                  去设置测试连接
+                  <Icon name="right" />
+                </Button>
+              ) : null}
+            </div>
+          </div>
         ) : null}
-        {paper.pdfPath && paper.mineruProvider ? (
-          <p className="ef-missing">
-            解析源：{MINERU_PROVIDER_LABELS[paper.mineruProvider] ?? paper.mineruProvider}
-          </p>
-        ) : null}
-        {paper.mineruError ? <p className="ef-missing is-error">{paper.mineruError}</p> : null}
         <BiblioCacheRow paper={paper} />
-        {paper.pdfPath && !mineru.configured ? (
-          <Button type="button" variant="link" onClick={() => void setMode("system")}>
-            配置 MinerU 解析源
-            <Icon name="right" />
-          </Button>
-        ) : paper.pdfPath &&
-          mineru.configured &&
-          paper.mineruStatus !== "queued" &&
-          paper.mineruStatus !== "submitted" &&
-          paper.mineruStatus !== "parsing" &&
-          paper.mineruStatus !== "done" ? (
-          <Button type="button" onClick={() => void retryMineru(paper.id)}>
-            {paper.mineruStatus === "error" || paper.mineruStatus === "cancelled" ? "重新解析" : "发送到 MinerU 解析"}
-          </Button>
-        ) : null}
       </ContextBlock>
 
       <ContextBlock id="toc" title="本页目录">
