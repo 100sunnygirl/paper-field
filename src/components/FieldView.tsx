@@ -1445,6 +1445,16 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
               <Button
                 type="button"
                 size="sm"
+                disabled={!checkedPaperIds.length}
+                title="为勾选的论文排队补全空白信息：只补空白字段，不覆盖你手动改过的内容；逐篇执行，进度见作业面板"
+                onClick={() => void retryFailedMetaJobs(checkedPaperIds)}
+              >
+                <Icon name="spark" />
+                补全空白信息
+              </Button>
+              <Button
+                type="button"
+                size="sm"
                 variant="danger"
                 disabled={!checkedPaperIds.length}
                 onClick={() => openDialog("delete-checked")}

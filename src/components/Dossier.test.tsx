@@ -777,3 +777,563 @@ describe("ReadingStage · 复读记录（已读论文）", () => {
     expect(listReReads("p1")).toEqual([]);
   });
 });
+
+
+describe("ReadingStage · AI 助手「先预览再写入」干跑开关", () => {
+  beforeEach(() => {
+    localStorage.removeItem("paper-field.ai-preview-first");
+  });
+
+  it("默认关闭：补全论文信息直接执行；开启后带 dryRun 并写进本机记忆", () => {
+    const runPrepareMeta = vi.fn(async () => undefined);
+    const settings = {
+      version: 2 as const,
+      usage: {},
+      providers: [
+        { id: "a", presetId: "deepseek", label: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-chat", enabled: true, hasKey: true, requiresKey: true },
+      ],
+    };
+    useField.setState({ mode: "field", paper: paper({}), selectedPaperId: "p1", settings, runPrepareMeta });
+    renderStage();
+    fireEvent.click(screen.getByRole("button", { name: "补全论文信息" }));
+    expect(runPrepareMeta).toHaveBeenLastCalledWith("p1", false, false, undefined);
+
+    fireEvent.click(screen.getByLabelText("先预览再写入"));
+    expect(localStorage.getItem("paper-field.ai-preview-first")).toBe("1");
+    fireEvent.click(screen.getByRole("button", { name: "补全论文信息" }));
+    expect(runPrepareMeta).toHaveBeenLastCalledWith("p1", false, false, { dryRun: true });
+    // 关掉开关恢复直接执行，本机记忆同步清除。
+    fireEvent.click(screen.getByLabelText("先预览再写入"));
+    expect(localStorage.getItem("paper-field.ai-preview-first")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "补全论文信息" }));
+    expect(runPrepareMeta).toHaveBeenLastCalledWith("p1", false, false, undefined);
+  });
+});
+
+describe("ReadingStage · 查询落空的内联「补充标识符再查」", () => {
+  it("落空且无标识符时展示表单；填 arXiv 后保存并跳过缓存重查", async () => {
+    const savePaperPatch = vi.fn(async () => undefined);
+    const runRefreshLinks = vi.fn(async () => undefined);
+    useField.setState({
+      mode: "field",
+      paper: paper({}),
+      selectedPaperId: "p1",
+      lookupOutcome: { paperId: "p1", at: Date.now(), found: false },
+      savePaperPatch,
+      runRefreshLinks,
+    });
+    renderStage();
+    expect(screen.getByText(/文献库没有查到这篇论文/)).toBeInTheDocument();
+    // 预填当前标识符（本例没有）
+    expect(screen.getByLabelText("arXiv 编号（重查用）")).toHaveValue("");
+    fireEvent.change(screen.getByLabelText("arXiv 编号（重查用）"), { target: { value: "1706.03762" } });
+    fireEvent.click(screen.getByRole("button", { name: "补充并重查" }));
+    await waitFor(() => expect(savePaperPatch).toHaveBeenCalledWith("p1", { arxivId: "1706.03762" }));
+    await waitFor(() => expect(runRefreshLinks).toHaveBeenCalledWith("p1"));
+  });
+
+  it("查到过（found）或已有 DOI 时只在落空时出现；已有标识符预填", async () => {
+    const savePaperPatch = vi.fn(async () => undefined);
+    const runRefreshLinks = vi.fn(async () => undefined);
+    const withDoi = { ...paper({}), doi: "10.4/x" } as PaperDetail;
+    useField.setState({
+      mode: "field",
+      paper: withDoi,
+      selectedPaperId: "p1",
+      lookupOutcome: { paperId: "p1", at: Date.now(), found: false },
+      savePaperPatch,
+      runRefreshLinks,
+    });
+    renderStage();
+    expect(screen.getByLabelText("DOI（重查用）")).toHaveValue("10.4/x");
+    fireEvent.change(screen.getByLabelText("arXiv 编号（重查用）"), { target: { value: "2401.00001" } });
+    fireEvent.click(screen.getByRole("button", { name: "补充并重查" }));
+    await waitFor(() =>
+      expect(savePaperPatch).toHaveBeenCalledWith("p1", { arxivId: "2401.00001", doi: "10.4/x" }),
+    );
+
+    // 查到过：不出现表单。
+    act(() => {
+      useField.setState({ lookupOutcome: { paperId: "p1", at: Date.now(), found: true } });
+    });
+    expect(screen.queryByText(/文献库没有查到这篇论文/)).toBeNull();
+  });
+
+  it("两个输入都为空时给出提示、不发起重查", () => {
+    const savePaperPatch = vi.fn(async () => undefined);
+    const runRefreshLinks = vi.fn(async () => undefined);
+    useField.setState({
+      mode: "field",
+      paper: paper({}),
+      selectedPaperId: "p1",
+      lookupOutcome: { paperId: "p1", at: Date.now(), found: false },
+      savePaperPatch,
+      runRefreshLinks,
+    });
+    renderStage();
+    fireEvent.click(screen.getByRole("button", { name: "补充并重查" }));
+    expect(useField.getState().flash?.tone).toBe("warn");
+    expect(useField.getState().flash?.text).toContain("先填 arXiv 编号或 DOI");
+    expect(savePaperPatch).not.toHaveBeenCalled();
+    expect(runRefreshLinks).not.toHaveBeenCalled();
+  });
+});
+
+describe("ReadingStage · 起草笔记的块级控制", () => {
+  function usableSettings() {
+    return {
+      version: 2 as const,
+      usage: {},
+      providers: [
+        { id: "a", presetId: "deepseek", label: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-chat", enabled: true, hasKey: true, requiresKey: true },
+      ],
+    };
+  }
+
+  it("展开后显示输入范围（摘要/全文字数与截断提示）与参考范围开关", () => {
+    const runDraftNotes = vi.fn(async () => undefined);
+    const parsed = {
+      ...paper({}),
+      parsedMarkdown: "# 引言\n\n" + "字".repeat(12100),
+    } as PaperDetail;
+    useField.setState({
+      mode: "field",
+      paper: parsed,
+      selectedPaperId: "p1",
+      settings: usableSettings(),
+      runDraftNotes,
+    });
+    renderStage();
+    fireEvent.click(screen.getByRole("button", { name: "起草阅读笔记…" }));
+    const controls = document.querySelector(".ef-draft-controls")!;
+    expect(controls.textContent).toContain("本次输入：摘要 12 字");
+    expect(controls.textContent).toContain("解析全文");
+    expect(controls.textContent).toContain("只送前 12000 字");
+    // 关掉「参考解析全文」：起草调用带 includeFulltext=false。
+    fireEvent.click(screen.getByRole("checkbox", { name: "参考解析全文" }));
+    fireEvent.click(screen.getByRole("button", { name: "起草选中 5 块" }));
+    expect(runDraftNotes).toHaveBeenLastCalledWith("p1", false, expect.objectContaining({
+      includeFulltext: false,
+    }));
+  });
+
+  it("展开后默认全选；「只补空白块」只起草空块；取消勾选后按选中块起草", () => {
+    const runDraftNotes = vi.fn(async () => undefined);
+    useField.setState({
+      mode: "field",
+      paper: paper({ summary: "已有总结" }),
+      selectedPaperId: "p1",
+      settings: usableSettings(),
+      runDraftNotes,
+    });
+    renderStage();
+    fireEvent.click(screen.getByRole("button", { name: "起草阅读笔记…" }));
+    expect(screen.getByText(/选择要起草的笔记块/)).toBeInTheDocument();
+    // 只补空白块：跳过已有内容的总结。
+    fireEvent.click(screen.getByRole("button", { name: "只补空白块" }));
+    expect(runDraftNotes).toHaveBeenLastCalledWith("p1", false, expect.objectContaining({
+      kinds: ["highlights", "weaknesses", "implications", "remarks"],
+      includeFulltext: true,
+    }));
+    // 再展开（勾选状态保留：仍是全 5 块），取消「亮点」，起草选中的 4 块。
+    fireEvent.click(screen.getByRole("button", { name: "起草阅读笔记…" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "起草亮点" }));
+    fireEvent.click(screen.getByRole("button", { name: "起草选中 4 块" }));
+    expect(runDraftNotes).toHaveBeenLastCalledWith("p1", false, expect.objectContaining({
+      kinds: ["summary", "weaknesses", "implications", "remarks"],
+      includeFulltext: true,
+    }));
+  });
+
+  it("「先预览再写入」开启时起草带 dryRun（逐块 diff 采纳）", () => {
+    const runDraftNotes = vi.fn(async () => undefined);
+    localStorage.setItem("paper-field.ai-preview-first", "1");
+    useField.setState({
+      mode: "field",
+      paper: paper({}),
+      selectedPaperId: "p1",
+      settings: usableSettings(),
+      runDraftNotes,
+    });
+    renderStage();
+    fireEvent.click(screen.getByRole("button", { name: "起草阅读笔记…" }));
+    fireEvent.click(screen.getByRole("button", { name: "起草选中 5 块" }));
+    expect(runDraftNotes).toHaveBeenLastCalledWith("p1", false, expect.objectContaining({
+      includeFulltext: true,
+      dryRun: true,
+    }));
+  });
+
+  it("全部取消勾选时「起草选中」禁用", () => {
+    const runDraftNotes = vi.fn(async () => undefined);
+    useField.setState({
+      mode: "field",
+      paper: paper({}),
+      selectedPaperId: "p1",
+      settings: usableSettings(),
+      runDraftNotes,
+    });
+    renderStage();
+    fireEvent.click(screen.getByRole("button", { name: "起草阅读笔记…" }));
+    for (const kind of ["总结", "亮点", "不足", "启示", "备注"]) {
+      fireEvent.click(screen.getByRole("checkbox", { name: `起草${kind}` }));
+    }
+    expect(screen.getByRole("button", { name: "起草选中 0 块" })).toBeDisabled();
+  });
+});
+
+describe("ReadingStage · AI 判断附原文段落锚点", () => {
+  it("笔记里的（原文 §N.M）引用渲染为可点击锚点，跳回解析全文对应小节", () => {
+    const parsed = "# 引言\n\n正文。\n\n## 方法\n\n内容。";
+    const base = paper({ summary: "方法很稳（原文 §1.1）。" });
+    useField.setState({ mode: "field", paper: { ...base, parsedMarkdown: parsed } as PaperDetail, selectedPaperId: "p1" });
+    renderStage();
+    // 引用被转成链接（无全文时保持纯文本）。
+    const link = document.querySelector('.ef-note-text a[href="#ft-sec-1"]');
+    expect(link).not.toBeNull();
+    expect(link!.textContent).toContain("§1.1");
+  });
+
+  it("没有解析全文时引用保持纯文本", () => {
+    const base = paper({ summary: "方法很稳（原文 §1.1）。" });
+    useField.setState({ mode: "field", paper: base, selectedPaperId: "p1" });
+    renderStage();
+    expect(document.querySelector('.ef-note-text a[href="#ft-sec-1"]')).toBeNull();
+    expect(document.querySelector(".ef-note-text")!.textContent).toContain("（原文 §1.1）");
+  });
+});
+
+describe("ReadingStage · AI 的事前展示（提供商/模型/回退）", () => {
+  function settingsWith(n: number) {
+    const labels = ["DeepSeek", "Kimi", "智谱 GLM", "OpenAI"];
+    return {
+      version: 2 as const,
+      usage: {},
+      providers: labels.slice(0, n).map((label, index) => ({
+        id: `p${index}`,
+        presetId: null,
+        label,
+        baseUrl: `https://api.example.com/v${index}`,
+        model: `model-${index}`,
+        enabled: true,
+        hasKey: true,
+        requiresKey: true,
+      })),
+    };
+  }
+
+  it("已配置时按钮上方显示两类任务各自的「将用 + 首选（模型）+ 回退顺序」", () => {
+    useField.setState({ mode: "field", paper: paper({}), selectedPaperId: "p1", settings: settingsWith(3) });
+    renderStage();
+    const zone = document.querySelector(".ef-ai-chain")!;
+    expect(zone.textContent).toContain("补全论文信息：将用 DeepSeek");
+    expect(zone.textContent).toContain("起草阅读笔记：将用 DeepSeek");
+    expect(zone.textContent).toContain("model-0");
+    expect(zone.textContent).toContain("失败时回退 Kimi、智谱 GLM");
+  });
+
+  it("只配一个提供商时显示「无回退」；未配置时不显示这一行", () => {
+    useField.setState({ mode: "field", paper: paper({}), selectedPaperId: "p1", settings: settingsWith(1) });
+    const { unmount } = renderStage();
+    expect(document.querySelector(".ef-ai-chain")!.textContent).toContain("（无回退）");
+    unmount();
+
+    useField.setState({ settings: { version: 2, usage: {}, providers: [] } });
+    renderStage();
+    expect(document.querySelector(".ef-ai-chain")).toBeNull();
+  });
+});
+
+describe("ReadingStage · 溯源徽章点开字段详情", () => {
+  function sourcedPaper(): PaperDetail {
+    const base = paper({});
+    return {
+      ...base,
+      abstract: "一段摘要。",
+      fieldSources: { abstract: "api", venue: "llm", doi: "user" },
+      fieldProviders: { abstract: "crossref" },
+      metaConfidence: 0.87,
+      llmPreparedAt: "2024-06-01T08:00:00.000Z",
+    } as PaperDetail;
+  }
+
+  it("点击徽章浮层显示来源库、置信度、补全时间与字段名；再点收起", () => {
+    useField.setState({ mode: "field", paper: sourcedPaper(), selectedPaperId: "p1" });
+    renderStage();
+    const badge = screen.getByRole("button", { name: "数据库 · Crossref" });
+    fireEvent.click(badge);
+    const pop = screen.getByRole("dialog", { name: "摘要来源详情" });
+    expect(pop.textContent).toContain("来源：数据库 · Crossref");
+    expect(pop.textContent).toContain("0.87");
+    expect(pop.textContent).toContain("2024.06.01");
+    expect(pop.textContent).toContain("暂未保存历史记录");
+    // 再点收起。
+    fireEvent.click(badge);
+    expect(screen.queryByRole("dialog", { name: "摘要来源详情" })).toBeNull();
+  });
+
+  it("模型来源徽章显示「模型」；无置信度/时间时诚实标注未记录", () => {
+    useField.setState({ mode: "field", paper: sourcedPaper(), selectedPaperId: "p1" });
+    renderStage();
+    fireEvent.click(screen.getByRole("button", { name: "模型" }));
+    const pop = screen.getByRole("dialog", { name: "来源来源详情" });
+    expect(pop.textContent).toContain("来源：模型");
+    expect(pop.textContent).toContain("0.87");
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "来源来源详情" })).toBeNull();
+
+    // 无置信度/补全时间的论文：标注「未记录」。
+    const bare = { ...paper({}), fieldSources: { venue: "llm" } } as PaperDetail;
+    useField.setState({ paper: bare });
+    fireEvent.click(screen.getByRole("button", { name: "模型" }));
+    expect(screen.getByRole("dialog", { name: "来源来源详情" }).textContent).toContain("未记录");
+  });
+});
+
+describe("ReadingStage · AI 按钮置灰时浮层说明原因", () => {
+  it("未配置 AI：点击置灰按钮给出原因与「去设置」入口", () => {
+    useField.setState({ mode: "field", paper: paper({}), selectedPaperId: "p1" });
+    renderStage();
+    fireEvent.click(screen.getByRole("button", { name: /补全论文信息/ }));
+    const pop = screen.getByRole("tooltip");
+    expect(pop.textContent).toContain("尚未配置可用的 AI 服务");
+    fireEvent.click(within(pop).getByRole("button", { name: /去设置/ }));
+    expect(useField.getState().mode).toBe("system");
+  });
+
+  it("作业进行中：原因指向作业进行并给「查看作业面板」", () => {
+    const settings = {
+      version: 2 as const,
+      usage: {},
+      providers: [
+        { id: "a", presetId: "deepseek", label: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-chat", enabled: true, hasKey: true, requiresKey: true },
+      ],
+    };
+    const jobs = [
+      { id: "j1", paperId: "p1", type: "prepareMeta" as const, status: "running" as const, prompt: null, resultJson: null, error: null, createdAt: "", startedAt: null, finishedAt: null },
+    ];
+    useField.setState({ mode: "field", paper: paper({}), selectedPaperId: "p1", settings, jobs });
+    renderStage();
+    fireEvent.click(screen.getByRole("button", { name: /补全论文信息/ }));
+    const pop = screen.getByRole("tooltip");
+    expect(pop.textContent).toContain("AI 作业正在进行");
+    fireEvent.click(within(pop).getByRole("button", { name: /查看作业面板/ }));
+    expect(useField.getState().jobsOpen).toBe(true);
+  });
+
+  it("作业进行中时「起草阅读笔记…」同样给出原因浮层", () => {
+    const settings = {
+      version: 2 as const,
+      usage: {},
+      providers: [
+        { id: "a", presetId: "deepseek", label: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-chat", enabled: true, hasKey: true, requiresKey: true },
+      ],
+    };
+    const jobs = [
+      { id: "j1", paperId: "p1", type: "draftNotes" as const, status: "running" as const, prompt: null, resultJson: null, error: null, createdAt: "", startedAt: null, finishedAt: null },
+    ];
+    useField.setState({ mode: "field", paper: paper({}), selectedPaperId: "p1", settings, jobs });
+    renderStage();
+    fireEvent.click(screen.getByRole("button", { name: /起草阅读笔记/ }));
+    expect(screen.getByRole("tooltip").textContent).toContain("AI 作业正在进行");
+  });
+});
+
+describe("ReadingStage · 「重新查询文献库」更名与影响说明", () => {
+  it("资料栏缓存行的「跳过缓存，立即重查」沿用 force 语义；AI 区按钮已并入免 Key 的「查询文献库」", () => {
+    useField.setState({ mode: "field", paper: paper({}), selectedPaperId: "p1" });
+    renderStage();
+    // 更名后不再有「刷新链接」字样的按钮。
+    expect(screen.queryByRole("button", { name: "刷新链接" })).toBeNull();
+    // 免 Key 的「查询文献库」按钮带影响范围说明（更新哪些字段、保留哪些人工修改）。
+    const button = screen.getByRole("button", { name: "查询文献库" });
+    expect(button.getAttribute("title")).toContain("不需要配置 AI Key");
+    expect(button.getAttribute("title")).toContain("你手动改过的字段不会被覆盖");
+  });
+});
+
+describe("ReadingStage · 著录缓存可见与强制重查", () => {
+  it("显示缓存说明、本会话查询时间与「跳过缓存，立即重查」；点击走 runRefreshLinks", async () => {
+    const runRefreshLinks = vi.fn(async () => undefined);
+    useField.setState({
+      mode: "field",
+      paper: paper({}),
+      selectedPaperId: "p1",
+      lookupOutcome: { paperId: "p1", at: 1700000000000, found: true },
+      runRefreshLinks,
+    });
+    renderStage();
+    const row = screen.getByText(/文献库结果本地缓存约一天/);
+    expect(row.textContent).toContain("本会话上次查询");
+    fireEvent.click(screen.getByRole("button", { name: "跳过缓存，立即重查" }));
+    await waitFor(() => expect(runRefreshLinks).toHaveBeenCalledWith("p1"));
+  });
+
+  it("本会话没查过时标注「还没有查询过」；落空原因来自查询通知", () => {
+    const runRefreshLinks = vi.fn(async () => undefined);
+    useField.setState({
+      mode: "field",
+      paper: paper({}),
+      selectedPaperId: "p1",
+      runRefreshLinks,
+      lookupHint: { paperId: "p1", notices: [{ source: "arxiv", code: "no_match", message: "arXiv 没有匹配的条目" }] },
+    });
+    renderStage();
+    expect(screen.getByText(/本会话还没有查询过/)).toBeInTheDocument();
+    // 落空原因同时出现在 AI 助手区的查询提示与缓存行（同一数据源，两处引用）。
+    expect(screen.getAllByText("arXiv 没有匹配的条目").length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("ReadingStage · 不依赖 AI Key 的「查询文献库」按钮", () => {
+  it("未配置 AI 时按钮可用、排在动作区首位并说明不需要 Key", async () => {
+    const runRefreshLinks = vi.fn(async () => undefined);
+    useField.setState({ mode: "field", paper: paper({}), selectedPaperId: "p1", runRefreshLinks });
+    renderStage();
+    const lookup = screen.getByRole("button", { name: "查询文献库" });
+    expect(lookup).toBeEnabled();
+    expect(lookup.getAttribute("title")).toContain("不需要配置 AI Key");
+    // 它是 AI 动作区的第一个按钮（排在需要 Key 的「补全论文信息」之前）。
+    const zone = document.querySelector(".ef-ai-buttons")!;
+    expect(zone.querySelector("button")!.textContent).toContain("查询文献库");
+    fireEvent.click(lookup);
+    await waitFor(() => expect(runRefreshLinks).toHaveBeenCalledWith("p1"));
+  });
+});
+
+describe("ReadingStage · 未配置 AI 的「粘贴 Key 即测」引导卡", () => {
+  it("显示服务选择与 Key 输入；保存调用 saveLlmSettings 且提供商启用、Key 传入", async () => {
+    const saveLlmSettings = vi.fn(async (_input: import("../lib/settings").LlmSaveInput) => undefined);
+    useField.setState({ mode: "field", paper: paper({}), selectedPaperId: "p1", saveLlmSettings });
+    renderStage();
+    expect(screen.getByText(/粘贴 Key 即测/)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("选择 AI 服务"), { target: { value: "deepseek" } });
+    fireEvent.change(screen.getByLabelText("API Key"), { target: { value: "sk-test-123" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存并测试" }));
+    await waitFor(() => expect(saveLlmSettings).toHaveBeenCalledTimes(1));
+    const input = vi.mocked(saveLlmSettings).mock.calls[0]![0];
+    const primary = input.providers[0]!;
+    expect(primary.presetId).toBe("deepseek");
+    expect(primary.enabled).toBe(true);
+    expect(primary.apiKey).toBe("sk-test-123");
+    expect(primary.model).toBeTruthy();
+  });
+
+  it("Key 为空时按钮禁用；已配置 AI 时不渲染引导卡", () => {
+    const saveLlmSettings = vi.fn(async () => undefined);
+    useField.setState({ mode: "field", paper: paper({}), selectedPaperId: "p1", saveLlmSettings });
+    renderStage();
+    expect(screen.getByRole("button", { name: "保存并测试" })).toBeDisabled();
+
+    const configured = {
+      version: 2 as const,
+      usage: {},
+      providers: [
+        { id: "a", presetId: "deepseek", label: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-chat", enabled: true, hasKey: true, requiresKey: true },
+      ],
+    };
+    useField.setState({ settings: configured });
+    renderStage();
+    expect(screen.queryByText(/粘贴 Key 即测/)).toBeNull();
+  });
+});
+
+describe("ReadingStage · AI 助手菜单标注影响与耗时", () => {
+  it("三个动作各带一行说明：改什么 + 是否用 Key + 大致耗时", () => {
+    const settings = {
+      version: 2 as const,
+      usage: {},
+      providers: [
+        { id: "a", presetId: "deepseek", label: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-chat", enabled: true, hasKey: true, requiresKey: true },
+      ],
+    };
+    useField.setState({ mode: "field", paper: paper({}), selectedPaperId: "p1", settings });
+    renderStage();
+    const zone = document.querySelector(".ef-ai-buttons")!;
+    expect(zone.textContent).toContain("补标题、作者、标识符等著录 · 不用 Key · 大致几秒");
+    expect(zone.textContent).toContain("文献库优先、模型只补空 · 用 Key · 大致几秒到一分钟");
+    expect(zone.textContent).toContain("按所选块起草草稿 · 用 Key · 大致十几秒到两分钟（视全文长度）");
+  });
+});
+
+describe("ReadingStage · 起草风格偏好与领域上下文", () => {
+  function usableSettings() {
+    return {
+      version: 2 as const,
+      usage: {},
+      providers: [
+        { id: "a", presetId: "deepseek", label: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-chat", enabled: true, hasKey: true, requiresKey: true },
+      ],
+    };
+  }
+
+  beforeEach(() => {
+    localStorage.removeItem("paper-field.note-style");
+  });
+
+  it("选择风格（本机记住）与预填领域简介（可删改）注入起草调用", () => {
+    const runDraftNotes = vi.fn(async () => undefined);
+    const domain = { id: "d1", name: "多模态", code: "MM-01", summary: "关注视觉指令对齐与幻觉抑制", sortOrder: 0, createdAt: "2024-01-01T00:00:00.000Z" };
+    useField.setState({
+      mode: "field",
+      paper: paper({}),
+      selectedPaperId: "p1",
+      domains: [domain],
+      settings: usableSettings(),
+      runDraftNotes,
+    });
+    renderStage();
+    fireEvent.click(screen.getByRole("button", { name: "起草阅读笔记…" }));
+    // 领域上下文预填领域简介。
+    expect(screen.getByLabelText("领域上下文")).toHaveValue("关注视觉指令对齐与幻觉抑制");
+    fireEvent.change(screen.getByLabelText("起草风格"), { target: { value: "critical" } });
+    expect(localStorage.getItem("paper-field.note-style")).toBe("critical");
+    fireEvent.click(screen.getByRole("button", { name: "起草选中 5 块" }));
+    expect(runDraftNotes).toHaveBeenLastCalledWith("p1", false, expect.objectContaining({
+      styleNote: expect.stringContaining("批判性视角"),
+      contextNote: "关注视觉指令对齐与幻觉抑制",
+    }));
+  });
+
+  it("删空领域上下文后不注入；重开面板恢复预填", () => {
+    const runDraftNotes = vi.fn(async () => undefined);
+    const domain = { id: "d1", name: "多模态", code: "MM-01", summary: "关注视觉指令对齐", sortOrder: 0, createdAt: "2024-01-01T00:00:00.000Z" };
+    useField.setState({
+      mode: "field",
+      paper: paper({}),
+      selectedPaperId: "p1",
+      domains: [domain],
+      settings: usableSettings(),
+      runDraftNotes,
+    });
+    renderStage();
+    fireEvent.click(screen.getByRole("button", { name: "起草阅读笔记…" }));
+    fireEvent.change(screen.getByLabelText("领域上下文"), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "起草选中 5 块" }));
+    expect(runDraftNotes).toHaveBeenLastCalledWith("p1", false, expect.not.objectContaining({ contextNote: expect.anything() }));
+  });
+});
+
+describe("ReadingStage · 任务分别选模型的事前展示", () => {
+  it("两类任务分别展示各自首选与回退；跟随全局时同一顺序", () => {
+    localStorage.setItem("paper-field.task-primary.notes", "p2");
+    const settings = {
+      version: 2 as const,
+      usage: {},
+      providers: [
+        { id: "p1", presetId: null, label: "DeepSeek", baseUrl: "u", model: "m1", enabled: true, hasKey: true, requiresKey: true },
+        { id: "p2", presetId: null, label: "Kimi", baseUrl: "u", model: "m2", enabled: true, hasKey: true, requiresKey: true },
+        { id: "p3", presetId: null, label: "智谱", baseUrl: "u", model: "m3", enabled: true, hasKey: true, requiresKey: true },
+      ],
+    };
+    useField.setState({ mode: "field", paper: paper({}), selectedPaperId: "p1", settings });
+    renderStage();
+    const chain = screen.getByText(/补全论文信息：将用/);
+    expect(chain.textContent).toContain("DeepSeek（m1）");
+    expect(chain.textContent).toContain("失败时回退 Kimi、智谱");
+    const notes = screen.getByText(/起草阅读笔记：将用/);
+    expect(notes.textContent).toContain("Kimi（m2）");
+    expect(notes.textContent).toContain("失败时回退 DeepSeek、智谱");
+    localStorage.removeItem("paper-field.task-primary.notes");
+  });
+});

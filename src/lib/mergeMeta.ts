@@ -48,6 +48,12 @@ export interface MergeMode {
   overwrite: boolean;
   /** 刷新链接：文献库之间可以互相更新。 */
   replaceApi: boolean;
+  /**
+   * 字段级覆盖白名单（确认对话框逐项勾选的结果）：只允许替换勾选的手动字段。
+   * 缺省（undefined）= 不限，沿用整批 overwrite 语义；空集 = 任何手动字段都不替换。
+   * 只收窄、不放宽：不在名单里的字段最多维持不覆盖，绝不会获得额外写入权限。
+   */
+  allowFields?: ReadonlySet<MetaField>;
 }
 
 /** 标识符只能来自用户或文献库：模型给的 DOI、arXiv、年份一律不写。 */
@@ -77,14 +83,15 @@ export function decide(
 ): boolean {
   if (incoming === "llm" && IDENTIFIER_FIELDS.has(field)) return false;
   if (!hasPrev || !prev || prev === "file") return true;
-  if (prev === "user") return mode.overwrite && !userEditedSince;
+  const allowed = !mode.allowFields || mode.allowFields.has(field);
+  if (prev === "user") return mode.overwrite && allowed && !userEditedSince;
   if (incoming === "api") {
     if (prev === "llm") return true;
     return mode.replaceApi; // api → api：只有刷新链接
   }
   // incoming === "llm"
   if (prev === "api") return false;
-  return mode.overwrite; // llm → llm
+  return mode.overwrite && allowed; // llm → llm
 }
 
 const OPEN: OpenSource[] = ["unknown", "open", "closed", "request"];
@@ -110,8 +117,9 @@ export function planPreparedMeta(
   source: "api" | "llm",
   startedRev?: number,
   replaceApi = false,
+  allowFields?: ReadonlySet<MetaField>,
 ): MergePlan {
-  const mode: MergeMode = { overwrite, replaceApi };
+  const mode: MergeMode = { overwrite, replaceApi, ...(allowFields ? { allowFields } : {}) };
   // 请求发出后用户又改过元数据：手动字段一律保留。startedRev 缺省表示不绑定在途请求。
   const userEditedSince = startedRev !== undefined && prev.metaRev > startedRev;
   const sources: FieldSources = { ...prev.fieldSources };

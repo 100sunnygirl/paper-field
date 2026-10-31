@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { biblioProviderLabel, FIELD_SOURCE_LABELS, OPEN_SOURCE_LABELS, type FieldSource, type OpenSource } from "../lib/types";
+import { formatDate } from "../lib/util";
 import { openExternal, safeHttpUrl } from "../lib/urls";
 
 export type ButtonVariant = "primary" | "secondary" | "text" | "danger" | "link";
@@ -266,11 +267,78 @@ export function OpenChip({ value }: { value: string }) {
   return <span className={`ef-chip ${key}`}>{OPEN_SOURCE_LABELS[key]}</span>;
 }
 
-export function SourceBadge({ source, provider }: { source?: FieldSource | null; provider?: string | null }) {
+/**
+ * 溯源徽章的点开详情：来源库/模型名、置信度与补全时间。单字段的查询时间与
+ * 当时值（字段小史）暂未持久化，浮层里诚实标注。
+ */
+export interface SourceBadgeDetail {
+  /** 徽章所在字段的显示名（浮层标题）。 */
+  fieldLabel: string;
+  /** 最近一次模型补全时间（llmPreparedAt）；null 表示未记录。 */
+  preparedAt: string | null;
+  /** 整篇补全的置信度（metaConfidence）；单字段匹配分暂未分字段记录。 */
+  confidence: number | null | undefined;
+}
+
+export function SourceBadge({
+  source,
+  provider,
+  detail,
+}: {
+  source?: FieldSource | null;
+  provider?: string | null;
+  detail?: SourceBadgeDetail;
+}) {
   if (!source) return null;
   const database = source === "api" ? biblioProviderLabel(provider) : null;
   const label = database ? `${FIELD_SOURCE_LABELS.api} · ${database}` : FIELD_SOURCE_LABELS[source];
-  return <span className="ef-source-badge">{label}</span>;
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+  if (!detail) return <span className="ef-source-badge">{label}</span>;
+  return (
+    <span className="ef-source-wrap" ref={rootRef}>
+      <button
+        type="button"
+        className="ef-source-badge ef-source-badge-btn"
+        aria-expanded={open}
+        title={`${detail.fieldLabel}来源详情`}
+        onClick={() => setOpen((value) => !value)}
+      >
+        {label}
+      </button>
+      {open ? (
+        <span className="ef-source-pop" role="dialog" aria-label={`${detail.fieldLabel}来源详情`}>
+          <b>{detail.fieldLabel}</b>
+          <span>来源：{label}</span>
+          <span>
+            匹配分数：
+            {typeof detail.confidence === "number" ? detail.confidence.toFixed(2) : "未记录"}
+            （整篇补全的置信度）
+          </span>
+          <span>
+            最近一次模型补全：
+            {detail.preparedAt ? formatDate(detail.preparedAt) : "未记录"}
+          </span>
+          <em>单字段的查询时间与当时值（字段小史）暂未保存历史记录。</em>
+        </span>
+      ) : null}
+    </span>
+  );
 }
 
 export function ExternalResource({

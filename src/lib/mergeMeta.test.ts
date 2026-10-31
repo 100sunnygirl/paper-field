@@ -121,3 +121,47 @@ describe("planPreparedMeta", () => {
     }
   });
 });
+
+describe("字段级覆盖白名单（确认对话框逐项勾选）", () => {
+  it("overwrite=true 但字段不在白名单：user 与 llm 来源的字段都保留", () => {
+    const allow = new Set<MetaField>(["venue"]);
+    const prev: MergePrev = {
+      ...PREV,
+      title: "模型旧标题",
+      codeUrl: "https://github.com/a",
+      fieldSources: { title: "llm", venue: "user", codeUrl: "llm" },
+    };
+    const plan = planPreparedMeta(
+      prev,
+      meta({ title: "新标题", venue: "新期刊", codeURL: "https://github.com/b" }),
+      true,
+      "llm",
+      prev.metaRev,
+      false,
+      allow,
+    );
+    // venue 在白名单里：允许替换手动值。
+    expect(plan.venue).toBe("新期刊");
+    expect(plan.fieldSources.venue).toBe("llm");
+    // title / codeUrl 不在白名单：即便 overwrite=true 也保留。
+    expect(plan.title).toBe("模型旧标题");
+    expect(plan.codeUrl).toBe("https://github.com/a");
+  });
+
+  it("空白字段不受白名单影响（名单只收窄覆盖，不拦新增）", () => {
+    const plan = planPreparedMeta(PREV, meta({ abstract: "AI 摘要" }), true, "llm", PREV.metaRev, false, new Set<MetaField>());
+    expect(plan.abstract).toBe("AI 摘要");
+  });
+
+  it("decide：白名单外请求发出后又改过的手动值仍保留（双保险）", () => {
+    const mode = { overwrite: true, replaceApi: false, allowFields: new Set<MetaField>(["venue"]) };
+    expect(decide("venue", "user", true, "llm", mode, false)).toBe(true);
+    expect(decide("venue", "user", true, "llm", mode, true)).toBe(false);
+    expect(decide("title", "user", true, "llm", mode, false)).toBe(false);
+  });
+
+  it("缺省白名单（undefined）沿用整批覆盖语义，不改变既有行为", () => {
+    expect(decide("title", "user", true, "llm", { overwrite: true, replaceApi: false }, false)).toBe(true);
+    expect(decide("title", "user", true, "llm", { overwrite: true, replaceApi: false, allowFields: undefined }, false)).toBe(true);
+  });
+});

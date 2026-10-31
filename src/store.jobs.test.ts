@@ -329,3 +329,29 @@ describe("作业面板的队列操作", () => {
     expect(await repo.getPaper(id)).toBeNull();
   });
 });
+
+describe("自动补全开关（本机偏好）", () => {
+  it("关闭后保存设置不自动排回填批次；开启（缺省）时排队（以 activity 批次为 observable）", async () => {
+    const paperId = await makePaper();
+    await repo.saveParsedMarkdown(paperId, "# 全文");
+    resetActivity();
+
+    // 关闭：保存设置后没有 meta 批次入链（浏览器镜像需要显式 Key 才 usable）。
+    localStorage.setItem("paper-field.auto-backfill", "0");
+    await useField.getState().saveLlmSettings({
+      providers: usableSettings.providers.map((provider) => ({ ...provider, apiKey: "sk-test" })),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(getActivity().batches.filter((batch) => batch.kind === "meta")).toEqual([]);
+
+    // 开启（删除开关=缺省开）：meta 批次入链（浏览器镜像需要显式 Key 才 usable）。
+    localStorage.removeItem("paper-field.auto-backfill");
+    const withKey: import("./lib/settings").LlmSaveInput = {
+      providers: usableSettings.providers.map((provider) => ({ ...provider, apiKey: "sk-test" })),
+    };
+    await useField.getState().saveLlmSettings(withKey);
+    await vi.waitFor(() =>
+      expect(getActivity().batches.some((batch) => batch.kind === "meta")).toBe(true),
+    );
+  });
+});

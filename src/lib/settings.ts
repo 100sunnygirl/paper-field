@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { taskChainFor } from "./aiPrefs";
 import type { LlmProviderView, LlmSettings, LlmUsage } from "./types";
 import { isTauri, uid } from "./util";
 
@@ -513,6 +514,8 @@ export async function completeChat(input: {
   system: string;
   user: string;
   signal?: AbortSignal;
+  /** 任务类型：浏览器预览端按任务首选重排候选顺序（桌面端请求顺序由 Rust 决定）。 */
+  task?: "meta" | "notes";
 }): Promise<string> {
   if (isTauri()) {
     return invoke<string>("llm_complete", {
@@ -523,10 +526,15 @@ export async function completeChat(input: {
   }
 
   const store = readBrowserStore();
-  // 依序尝试 enabled 且（requiresKey ? 已存 Key : 免 Key）的 providers。
-  const candidates = store.providers.filter(
+  // 依序尝试 enabled 且（requiresKey ? 已存 Key : 免 Key）的 providers；
+  // 任务设置了首选模型时把首选提到最前，其余按全局顺序（回退链派生）。
+  const usable = store.providers.filter(
     (provider) => provider.enabled && (!provider.requiresKey || provider.apiKey.trim()),
   );
+  const chain = input.task ? taskChainFor(input.task, usable) : null;
+  const candidates = chain
+    ? [...usable].sort((a, b) => chain.indexOf(a.id) - chain.indexOf(b.id))
+    : usable;
   if (!candidates.length) throw new Error("NO_API_KEY");
   const failures: string[] = [];
   for (const provider of candidates) {

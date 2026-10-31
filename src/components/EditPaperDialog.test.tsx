@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { repo } from "../lib/repo";
 import { useField } from "../store";
 import type { NoteKind, PaperDetail } from "../lib/types";
-import { ConfirmMetaDialog, EditPaperDialog } from "./Dialogs";
+import { ConfirmMetaDialog, ConfirmNotesDialog, EditPaperDialog } from "./Dialogs";
 
 vi.mock("../lib/mineru", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/mineru")>();
@@ -236,6 +236,122 @@ describe("ConfirmMetaDialog · 覆盖顺序", () => {
     useField.setState({ dialog: "confirm-meta", dialogPaperId: "paper-1", paper: fakeDetail(), selectedPaperId: "paper-1" });
     render(<ConfirmMetaDialog />);
     expect(screen.getByRole("dialog").textContent).toContain("文献库查到的值优先，模型只补仍空的字段");
+  });
+});
+
+describe("ConfirmMetaDialog · 字段级对照勾选", () => {
+  function manualDetail(): PaperDetail {
+    return fakeDetail({
+      fieldSources: { title: "user", venue: "user", abstract: "llm" },
+    });
+  }
+
+  it("列出手动字段与当前值，默认全部不勾选；勾选后按名单覆盖", () => {
+    const runPrepareMeta = vi.fn(async () => undefined);
+    useField.setState({
+      dialog: "confirm-meta",
+      dialogPaperId: "paper-1",
+      paper: manualDetail(),
+      selectedPaperId: "paper-1",
+      runPrepareMeta,
+    });
+    render(<ConfirmMetaDialog />);
+    // 手动字段逐项列出（含当前值），非手动字段（摘要）不在名单里。
+    expect(screen.getByText("英文标题")).toBeInTheDocument();
+    expect(screen.getByText("会议 / 期刊")).toBeInTheDocument();
+    expect(screen.queryByText("摘要")).toBeNull();
+    expect(screen.getByText(/已勾选 0 \/ 2 项/)).toBeInTheDocument();
+    // 默认全不勾：点「保留我的修改」走 overwrite=false，不带名单。
+    fireEvent.click(screen.getByRole("button", { name: "保留我的修改" }));
+    expect(runPrepareMeta).toHaveBeenCalledWith("paper-1", false, false, { allowFields: undefined });
+
+    // 重开对话框，勾选「会议 / 期刊」后按勾选覆盖。
+    act(() => useField.setState({ dialog: "confirm-meta", dialogPaperId: "paper-1" }));
+    fireEvent.click(screen.getByLabelText(/会议 \/ 期刊/));
+    expect(screen.getByText(/已勾选 1 \/ 2 项/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "按勾选覆盖（1 / 2 项）" }));
+    expect(runPrepareMeta).toHaveBeenLastCalledWith("paper-1", true, false, { allowFields: ["venue"] });
+  });
+
+  it("全选 / 全不选切换整批勾选", () => {
+    useField.setState({
+      dialog: "confirm-meta",
+      dialogPaperId: "paper-1",
+      paper: manualDetail(),
+      selectedPaperId: "paper-1",
+      runPrepareMeta: vi.fn(async () => undefined),
+    });
+    render(<ConfirmMetaDialog />);
+    fireEvent.click(screen.getByRole("button", { name: "全选" }));
+    expect(screen.getByText(/已勾选 2 \/ 2 项/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "全不选" }));
+    expect(screen.getByText(/已勾选 0 \/ 2 项/)).toBeInTheDocument();
+  });
+
+  it("没有手动字段记录时退回整批语义说明", () => {
+    useField.setState({
+      dialog: "confirm-meta",
+      dialogPaperId: "paper-1",
+      paper: fakeDetail(),
+      selectedPaperId: "paper-1",
+    });
+    render(<ConfirmMetaDialog />);
+    expect(screen.getByText(/没有记录到具体的手动字段/)).toBeInTheDocument();
+  });
+});
+
+describe("ConfirmNotesDialog · 逐块勾选覆盖", () => {
+  function touchedDetail(): PaperDetail {
+    const detail = fakeDetail({ userNotesTouched: true });
+    return {
+      ...detail,
+      notes: {
+        ...detail.notes,
+        summary: { ...detail.notes.summary, content: "我的总结", userEdited: true },
+        highlights: { ...detail.notes.highlights, content: "", userEdited: false },
+      },
+    };
+  }
+
+  it("改过的块默认保留、未改过的默认替换；按勾选名单起草", async () => {
+    const runDraftNotes = vi.fn(async () => undefined);
+    useField.setState({
+      dialog: "confirm-notes",
+      dialogPaperId: "paper-1",
+      pendingDraftJob: "paper-1",
+      paper: touchedDetail(),
+      selectedPaperId: "paper-1",
+      runDraftNotes,
+    });
+    render(<ConfirmNotesDialog />);
+    expect(screen.getAllByText("你改过").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("未改过").length).toBe(4);
+    // 默认：未改过的 4 块勾选，改过的「总结」不勾。
+    expect(screen.getByText(/已勾选 4 \/ 5 块/)).toBeInTheDocument();
+    expect(screen.getByText("我的总结")).toBeInTheDocument();
+    // 勾上「总结」→ 5 块全替换。
+    fireEvent.click(screen.getByLabelText(/总结/));
+    expect(screen.getByText(/已勾选 5 \/ 5 块/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "按勾选覆盖（5 块）" }));
+    await waitFor(() => expect(runDraftNotes).toHaveBeenCalledTimes(1));
+    expect(runDraftNotes).toHaveBeenCalledWith("paper-1", true, { kinds: expect.arrayContaining(["summary", "highlights", "weaknesses", "implications", "remarks"]) });
+  });
+
+  it("全部保留后覆盖名单为空（没有任何块被替换）", async () => {
+    const runDraftNotes = vi.fn(async () => undefined);
+    useField.setState({
+      dialog: "confirm-notes",
+      dialogPaperId: "paper-1",
+      pendingDraftJob: "paper-1",
+      paper: touchedDetail(),
+      selectedPaperId: "paper-1",
+      runDraftNotes,
+    });
+    render(<ConfirmNotesDialog />);
+    fireEvent.click(screen.getByRole("button", { name: "全部保留" }));
+    expect(screen.getByText(/已勾选 0 \/ 5 块/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "按勾选覆盖（0 块）" }));
+    await waitFor(() => expect(runDraftNotes).toHaveBeenCalledWith("paper-1", true, { kinds: [] }));
   });
 });
 

@@ -11,6 +11,7 @@ vi.mock("../lib/repo", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/repo")>();
   return { repo: { ...actual.repo, pdfCount: vi.fn(async () => { throw new Error("no engine in jsdom"); }) } };
 });
+import { repo } from "../lib/repo";
 import { SystemView } from "./SystemView";
 import * as mineruModule from "../lib/mineru";
 import * as updater from "../lib/updater";
@@ -1444,5 +1445,81 @@ describe("SystemView · 设置读取失败提示", () => {
     render(<SystemView />);
     const alerts = screen.queryAllByRole("alert").map((a) => a.textContent ?? "");
     expect(alerts.filter((t) => t.includes("设置文件无法读取"))).toHaveLength(0);
+  });
+});
+
+describe("自动补全开关与待处理篇数预览", () => {
+  it("显示开关与待补全篇数；切换写进本机记忆", async () => {
+    localStorage.removeItem("paper-field.auto-backfill");
+    const listReady = vi.spyOn(repo, "listReadyForMeta").mockResolvedValue(["p1", "p2", "p3"]);
+    // 配置可用（hasKey 的启用提供商）时开关行显示篇数预览与自动排队说明。
+    useField.setState({
+      settings: {
+        version: 2,
+        usage: {},
+        providers: [llmProviderViews()[0]!],
+      },
+    });
+    render(<SystemView />);
+    const checkbox = await screen.findByRole("checkbox", { name: "自动补全旧论文" });
+    expect(checkbox).toBeChecked();
+    const info = await screen.findByText(/当前待补全/);
+    expect(info.textContent).toContain("3 篇");
+
+    fireEvent.click(checkbox);
+    expect(localStorage.getItem("paper-field.auto-backfill")).toBe("0");
+    expect(screen.getByText(/关闭后仍可单篇/)).toBeInTheDocument();
+
+    fireEvent.click(checkbox);
+    expect(localStorage.getItem("paper-field.auto-backfill")).toBeNull();
+    listReady.mockRestore?.();
+  });
+
+  it("篇数读不到时显示省略号占位，不阻塞开关", async () => {
+    localStorage.setItem("paper-field.auto-backfill", "0");
+    const listReady = vi.spyOn(repo, "listReadyForMeta").mockRejectedValue(new Error("no engine"));
+    useField.setState({
+      settings: {
+        version: 2,
+        usage: {},
+        providers: [llmProviderViews()[0]!],
+      },
+    });
+    render(<SystemView />);
+    const checkbox = await screen.findByRole("checkbox", { name: "自动补全旧论文" });
+    expect(checkbox).not.toBeChecked();
+    const info = await screen.findByText(/当前待补全/);
+    expect(info.textContent).toContain("… 篇");
+    localStorage.removeItem("paper-field.auto-backfill");
+    listReady.mockRestore?.();
+  });
+});
+
+describe("任务模型分配（元数据/笔记分别选模型）", () => {
+  it("为两类任务分别选择首选模型并写进本机记忆；可恢复跟随全局", async () => {
+    localStorage.removeItem("paper-field.task-primary.meta");
+    localStorage.removeItem("paper-field.task-primary.notes");
+    useField.setState({
+      settings: {
+        version: 2,
+        usage: {},
+        providers: [
+          { id: "p-1", presetId: "deepseek", label: "DeepSeek", baseUrl: "u", model: "m1", enabled: true, hasKey: true, requiresKey: true },
+          { id: "p-2", presetId: null, label: "Kimi", baseUrl: "u", model: "m2", enabled: true, hasKey: true, requiresKey: true },
+        ],
+      },
+    });
+    render(<SystemView />);
+    const metaSelect = screen.getByLabelText("补全论文信息首选模型");
+    const notesSelect = screen.getByLabelText("起草阅读笔记首选模型");
+    expect(metaSelect).toHaveValue("");
+    fireEvent.change(metaSelect, { target: { value: "p-2" } });
+    fireEvent.change(notesSelect, { target: { value: "p-1" } });
+    expect(localStorage.getItem("paper-field.task-primary.meta")).toBe("p-2");
+    expect(localStorage.getItem("paper-field.task-primary.notes")).toBe("p-1");
+    // 恢复跟随全局。
+    fireEvent.change(metaSelect, { target: { value: "" } });
+    expect(localStorage.getItem("paper-field.task-primary.meta")).toBeNull();
+    localStorage.removeItem("paper-field.task-primary.notes");
   });
 });

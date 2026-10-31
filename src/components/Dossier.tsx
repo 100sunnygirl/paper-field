@@ -27,6 +27,7 @@ import {
   buildExcerptMarkdown,
   buildSectionCitation,
   extractFulltextHeadings,
+  linkSectionRefs,
   headingForSelection,
   highlightFulltextMatches,
   insertQuoteAtCursor,
@@ -34,6 +35,8 @@ import {
   type FulltextSelection,
 } from "../lib/fulltext";
 import { onMarkdownClick, renderMarkdown } from "../lib/markdown";
+import { loadNoteStyle, loadPreviewFirst, noteStylePrompt, saveNoteStyle, savePreviewFirst, taskChainFor, type AiTask, type NoteStyle, NOTE_STYLE_LABELS } from "../lib/aiPrefs";
+import { draftInputScope } from "../lib/prompts";
 import { isNoteHintDismissed, NOTE_HINT_QUESTIONS, setNoteHintDismissed } from "../lib/noteHints";
 import { loadNoteLayout, moveNoteKind as moveNoteKindInOrder, saveNoteLayout, type NoteLayout } from "../lib/noteLayout";
 import { loadReadingSpots, saveReadingSpot } from "../lib/readingSpot";
@@ -54,8 +57,9 @@ import {
   type PaperDetail,
   type ReadingStatus,
 } from "../lib/types";
-import { hasUsableProvider } from "../lib/settings";
-import { arxivAbsUrl, arxivPdfUrl, doiUrl, openExternal, safeHttpUrl } from "../lib/urls";
+import { hasUsableProvider, LLM_PRESETS } from "../lib/settings";
+import type { LlmSettings } from "../lib/types";
+import { arxivAbsUrl, arxivPdfUrl, doiUrl, normalizeArxivId, normalizeDoi, openExternal, safeHttpUrl } from "../lib/urls";
 import { formatDate, isTauri, modLabel, pad2 } from "../lib/util";
 import { useField } from "../store";
 import { TitlePendingBadge, titleStillFromFile } from "./PaperMatrix";
@@ -197,6 +201,8 @@ function NoteEditor({
   const editing = hasDraft && !dismissed;
   const block = paper.notes[kind];
   const value = editing ? draft : block.content;
+  // 小节锚点表：把「原文 §N」引用变成可点击的并排对照链接（无解析全文时为空表）。
+  const noteHeadings = useMemo(() => extractFulltextHeadings(paper.parsedMarkdown), [paper.parsedMarkdown]);
   const [saving, setSaving] = useState(false);
   const [failed, setFailed] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -416,7 +422,11 @@ function NoteEditor({
           {value.trim() ? `${[...value.trim()].length} 字 · 已折叠` : "未写 · 已折叠"}
         </p>
       ) : value.trim() ? (
-        <div className="ef-note-text ef-md" onClick={onMarkdownClick} dangerouslySetInnerHTML={{ __html: renderMarkdown(value) }} />
+        <div
+          className="ef-note-text ef-md"
+          onClick={onMarkdownClick}
+          dangerouslySetInnerHTML={{ __html: renderMarkdown(linkSectionRefs(value, noteHeadings)) }}
+        />
       ) : (
         // 空块本身就是入口：点这里就地开写，不必去工具条或右上角找按钮。
         // 上方一行可关闭的研究问题，给「不知从哪下笔」一个切入点。
@@ -664,6 +674,435 @@ function ContextBlock({
   );
 }
 
+/**
+ * 著录缓存状态行：本地缓存约一天的事前说明 + 本会话上次查询时间 + 「跳过缓存，
+ * 立即重查」直达（等价于「重新查询文献库」的 force 语义）。缓存的写入时间是
+ * 桌面端（Rust）持有并暂不回报前端，这里只报本会话的查询记录，不冒充缓存时间。
+ */
+function BiblioCacheRow({ paper }: { paper: PaperDetail }) {
+  const lookupOutcome = useField((s) => s.lookupOutcome);
+  const lookupHint = useField((s) => s.lookupHint);
+  const runRefreshLinks = useField((s) => s.runRefreshLinks);
+  const mine = lookupOutcome?.paperId === paper.id;
+  return (
+    <div className="ef-biblio-cache">
+      <p>
+        文献库结果本地缓存约一天
+        {mine ? ` · 本会话上次查询：${new Date(lookupOutcome!.at).toLocaleTimeString()}` : " · 本会话还没有查询过"}
+      </p>
+      {lookupHint?.paperId === paper.id && lookupHint.notices.length ? (
+        <p className="ef-biblio-cache-why">
+          {lookupHint.notices.map((notice) => notice.message).join(" ")}
+        </p>
+      ) : null}
+      <Button type="button" size="sm" onClick={() => void runRefreshLinks(paper.id)}>
+        跳过缓存，立即重查
+      </Button>
+    </div>
+  );
+}
+
+/**
+ * 查询落空时的内联补救：补充或更正 arXiv / DOI 后立即跳过缓存重查一次。
+ * 输入预填现有标识符（更正错误 id 与补新 id 是同一条恢复路径）。
+ */
+function LookupRetryForm({ paper }: { paper: PaperDetail }) {
+  const lookupOutcome = useField((s) => s.lookupOutcome);
+  const savePaperPatch = useField((s) => s.savePaperPatch);
+  const runRefreshLinks = useField((s) => s.runRefreshLinks);
+  const setFlash = useField((s) => s.setFlash);
+  const [arxivId, setArxivId] = useState(paper.arxivId ?? "");
+  const [doi, setDoi] = useState(paper.doi ?? "");
+  const [busy, setBusy] = useState(false);
+  // 查询落空之后用户改了论文（换了目标或重查成功）：表单随最新状态重置。
+  useEffect(() => {
+    setArxivId(paper.arxivId ?? "");
+    setDoi(paper.doi ?? "");
+  }, [paper.id, lookupOutcome?.at]);
+
+  async function retry() {
+    if (busy) return;
+    const patch: { arxivId?: string; doi?: string } = {};
+    const arxiv = normalizeArxivId(arxivId) ?? arxivId.trim();
+    const doiNorm = normalizeDoi(doi) ?? doi.trim();
+    if (arxiv) patch.arxivId = arxiv;
+    if (doiNorm) patch.doi = doiNorm;
+    if (!Object.keys(patch).length) {
+      setFlash({ tone: "warn", text: "先填 arXiv 编号或 DOI，再点「补充并重查」。" });
+      return;
+    }
+    setBusy(true);
+    try {
+      await savePaperPatch(paper.id, patch);
+      // 刷新链接跳过约一天的本地缓存，立即重查。
+      await runRefreshLinks(paper.id);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="ef-lookup-retry">
+      <p>文献库没有查到这篇论文。补充或更正标识符后立即重查：</p>
+      <div className="ef-lookup-retry-fields">
+        <label>
+          arXiv
+          <input
+            value={arxivId}
+            onChange={(e) => setArxivId(e.target.value)}
+            placeholder="1706.03762"
+            aria-label="arXiv 编号（重查用）"
+            disabled={busy}
+          />
+        </label>
+        <label>
+          DOI
+          <input
+            value={doi}
+            onChange={(e) => setDoi(e.target.value)}
+            placeholder="10.1038/…"
+            aria-label="DOI（重查用）"
+            disabled={busy}
+          />
+        </label>
+        <Button type="button" size="sm" disabled={busy} onClick={() => void retry()}>
+          {busy ? "重查中…" : "补充并重查"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * AI 动作的置灰原因浮层：按钮灰着时点击/悬停都能看到原因（未配置 Key / 有作业进行中），
+ * 未配置时浮层内直接给「去设置」入口，不再让新手卡在灰按钮前。
+ */
+function AiGateButton({
+  gated,
+  reason,
+  showConfigure,
+  action,
+  children,
+}: {
+  gated: boolean;
+  reason: string;
+  /** 置灰原因为「未配置」时提供去设置的入口。 */
+  showConfigure: boolean;
+  action: () => void;
+  children: ReactNode;
+}) {
+  const [showTip, setShowTip] = useState(false);
+  if (!gated) {
+    return (
+      <Button type="button" onClick={action}>
+        {children}
+      </Button>
+    );
+  }
+  return (
+    <span
+      className="ef-ai-gate"
+      onMouseEnter={() => setShowTip(true)}
+      onMouseLeave={() => setShowTip(false)}
+    >
+      <button
+        type="button"
+        className="ef-btn ef-btn-secondary is-gated"
+        aria-disabled="true"
+        onClick={() => setShowTip(true)}
+      >
+        {children}
+      </button>
+      {showTip ? (
+        <span className="ef-source-pop ef-ai-gate-pop" role="tooltip">
+          <span>{reason}</span>
+          {showConfigure ? (
+            <Button type="button" size="sm" variant="link" onClick={() => void useField.getState().setMode("system")}>
+              去设置
+              <Icon name="right" />
+            </Button>
+          ) : (
+            <Button type="button" size="sm" variant="link" onClick={() => useField.getState().setJobsOpen(true)}>
+              查看作业面板
+            </Button>
+          )}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+/**
+ * 未配置 AI 时的一步式引导卡：选服务 → 粘贴 Key → 保存即测。
+ * 保存走 saveLlmSettings（桌面端 Key 进系统钥匙串），保存成功即「已配置」，
+ * 后续补全/起草入口自然解锁；不冒充「测试连接」，结果以保存后的状态提示为准。
+ */
+function AiOnboardingCard() {
+  const saveLlmSettings = useField((s) => s.saveLlmSettings);
+  const providers = useField((s) => s.settings.providers);
+  const [presetId, setPresetId] = useState(LLM_PRESETS[0]?.id ?? "openai");
+  const [apiKey, setApiKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const preset = LLM_PRESETS.find((item) => item.id === presetId) ?? LLM_PRESETS[0];
+  const keyable = LLM_PRESETS.filter((item) => item.requiresKey);
+
+  async function saveAndTest() {
+    if (busy || !apiKey.trim() || !preset) return;
+    setBusy(true);
+    try {
+      // 复用已有提供商（保留用户改过的地址/模型），否则按预设新建一个。
+      const existing = providers.find((provider) => provider.presetId === preset.id);
+      await saveLlmSettings({
+        providers: [
+          {
+            id: existing?.id ?? `${preset.id}-default`,
+            presetId: preset.id,
+            label: preset.label,
+            baseUrl: existing?.baseUrl || preset.baseUrl,
+            model: existing?.model || preset.models[0] || "",
+            enabled: true,
+            requiresKey: preset.requiresKey,
+            apiKey: apiKey,
+          },
+          ...providers
+            .filter((provider) => provider.presetId !== preset.id)
+            .map((provider) => ({
+              id: provider.id,
+              presetId: provider.presetId,
+              label: provider.label,
+              baseUrl: provider.baseUrl,
+              model: provider.model,
+              enabled: false,
+              requiresKey: provider.requiresKey,
+              apiKey: null,
+            })),
+        ],
+      });
+      setApiKey("");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="ef-ai-onboard">
+      <p>
+        <b>粘贴 Key 即测</b>
+        ：选一个服务，把 API Key 粘进下面，点「保存并测试」。Key 存进系统钥匙串，不会回显。
+      </p>
+      <div className="ef-ai-onboard-row">
+        <select
+          aria-label="选择 AI 服务"
+          value={presetId}
+          onChange={(e) => setPresetId(e.target.value)}
+          disabled={busy}
+        >
+          {keyable.map((item) => (
+            <option key={item.id} value={item.id}>
+              {item.label}
+            </option>
+          ))}
+        </select>
+        <input
+          type="password"
+          value={apiKey}
+          placeholder="sk-…"
+          aria-label="API Key"
+          autoComplete="off"
+          disabled={busy}
+          onChange={(e) => setApiKey(e.target.value)}
+        />
+        <Button type="button" size="sm" variant="primary" disabled={busy || !apiKey.trim()} onClick={() => void saveAndTest()}>
+          {busy ? "保存中…" : "保存并测试"}
+        </Button>
+      </div>
+      <p className="ef-ai-onboard-note">保存后可用「先预览再写入」+「逐块采纳」控制 AI 写入；也可先只用量询文献库（不需要 Key）。</p>
+    </div>
+  );
+}
+
+/**
+ * AI 动作的事前展示：发请求前就能看到将用哪个提供商/模型、失败时按什么顺序回退
+ * （与设置页「回退顺序」同源）。实际命中的提供商由桌面端执行，暂不回报前端。
+ */
+function AiChainPlan({ settings }: { settings: LlmSettings }) {
+  const chain = settings.providers.filter(
+    (provider) => provider.enabled && (!provider.requiresKey || provider.hasKey),
+  );
+  if (!chain.length) return null;
+  // 两类任务分别解析回退链：任务首选置顶，其余按全局顺序补齐（跟随全局时两行相同）。
+  const describe = (task: AiTask, name: string): string => {
+    const ordered = [...chain].sort(
+      (a, b) => (taskChainFor(task, chain)?.indexOf(a.id) ?? 0) - (taskChainFor(task, chain)?.indexOf(b.id) ?? 0),
+    );
+    const primary = ordered[0];
+    const rest = ordered.slice(1, 3).map((provider) => provider.label);
+    return `${name}：将用 ${primary.label}${primary.model ? `（${primary.model}）` : ""}${
+      ordered.length > 1 ? `；失败时回退 ${rest.join("、")}${ordered.length > 3 ? " 等" : ""}` : "（无回退）"
+    }`;
+  };
+  return (
+    <div className="ef-ai-chain">
+      <p>{describe("meta", "补全论文信息")}</p>
+      <p>{describe("notes", "起草阅读笔记")}</p>
+    </div>
+  );
+}
+
+/**
+ * 起草阅读笔记的块级控制：展开后可只起草选中的笔记块（如只要总结），
+ * 配合「先预览再写入」逐块 diff 采纳；不展开则按旧语义起草全部五块。
+ */
+function DraftNotesControls({ paper, disabled, previewFirst }: { paper: PaperDetail; disabled: boolean; previewFirst: boolean }) {
+  const runDraftNotes = useField((s) => s.runDraftNotes);
+  const configured = hasUsableProvider(useField((s) => s.settings));
+  const [open, setOpen] = useState(false);
+  const gated = !configured || disabled;
+  const gateReason = !configured
+    ? "尚未配置可用的 AI 服务：需要启用提供商并填写 API Key（免 Key 本地服务也可以）。"
+    : "这篇论文有 AI 作业正在进行：等它结束或取消后再发起新的。";
+  // 勾选要起草的块：默认全部（与旧语义一致）；空块快捷入口只勾空块。
+  const [kinds, setKinds] = useState<Set<NoteKind>>(() => new Set(NOTE_DISPLAY_ORDER));
+  // 参考范围：默认摘要 + 解析全文；关掉后草稿只依据摘要与题录。
+  const [includeFulltext, setIncludeFulltext] = useState(true);
+  // 起草风格（本机偏好）与领域上下文（展开时预填领域简介，发送前可删改）。
+  const [style, setStyle] = useState<NoteStyle>(() => loadNoteStyle());
+  const [context, setContext] = useState("");
+  const [contextTouched, setContextTouched] = useState(false);
+  const scope = useMemo(() => draftInputScope(paper), [paper]);
+  const domainSummary = useField((s) => s.domains.find((domain) => domain.id === paper.domainId)?.summary ?? "");
+  function toggle(kind: NoteKind, on: boolean) {
+    setKinds((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(kind);
+      else next.delete(kind);
+      return next;
+    });
+  }
+  function start(onlyEmpty: boolean) {
+    const target = onlyEmpty
+      ? NOTE_DISPLAY_ORDER.filter((kind) => !(paper.notes[kind]?.content ?? "").trim())
+      : [...kinds];
+    if (!target.length) return;
+    setOpen(false);
+    // 领域上下文：预填领域简介（未手改时），发送前可删改——已删空就不注入。
+    const contextNote = contextTouched ? context.trim() : domainSummary.trim();
+    saveNoteStyle(style);
+    // 干跑开关开启时逐块预览采纳；否则走确认对话框保护语义。
+    void runDraftNotes(paper.id, false, {
+      kinds: target,
+      includeFulltext,
+      styleNote: noteStylePrompt(style),
+      ...(contextNote ? { contextNote } : {}),
+      ...(previewFirst ? { dryRun: true } : {}),
+    });
+  }
+  return (
+    <>
+      <div className="ef-ai-action">
+        <AiGateButton gated={gated} reason={gateReason} showConfigure={!configured} action={() => setOpen((value) => !value)}>
+          <Icon name="edit" />
+          起草阅读笔记…
+        </AiGateButton>
+        <small>按所选块起草草稿 · 用 Key · 大致十几秒到两分钟（视全文长度）</small>
+      </div>
+      {open ? (
+        <div className="ef-draft-controls">
+          <p>
+            本次输入：摘要 {scope.abstractChars} 字
+            {paper.parsedMarkdown.trim()
+              ? ` · 解析全文 ${scope.fulltextChars} 字${scope.truncated ? "（超出上限，只送前 12000 字）" : ""}`
+              : " · 未解析全文"}
+          </p>
+          <p>选择要起草的笔记块（可只起草总结一块）：</p>
+          <div className="ef-draft-kinds">
+            {NOTE_DISPLAY_ORDER.map((kind) => (
+              <label key={kind}>
+                <input
+                  type="checkbox"
+                  checked={kinds.has(kind)}
+                  onChange={(e) => toggle(kind, e.target.checked)}
+                  aria-label={`起草${NOTE_LABELS[kind].zh}`}
+                />
+                {NOTE_LABELS[kind].zh}
+                {(paper.notes[kind]?.content ?? "").trim() ? <em>已有内容</em> : null}
+              </label>
+            ))}
+          </div>
+          <div className="ef-draft-style">
+            <label>
+              风格
+              <select
+                aria-label="起草风格"
+                value={style}
+                onChange={(e) => {
+                  const next = e.target.value as NoteStyle;
+                  setStyle(next);
+                  saveNoteStyle(next);
+                }}
+              >
+                {(Object.keys(NOTE_STYLE_LABELS) as NoteStyle[]).map((value) => (
+                  <option key={value} value={value}>
+                    {NOTE_STYLE_LABELS[value]}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              领域上下文（可删改）
+              <textarea
+                aria-label="领域上下文"
+                value={contextTouched ? context : domainSummary}
+                placeholder="留空则不注入；可写研究问题或关注点"
+                rows={2}
+                onChange={(e) => {
+                  setContext(e.target.value);
+                  setContextTouched(true);
+                }}
+              />
+            </label>
+          </div>
+          {paper.parsedMarkdown.trim() ? (
+            <label className="ef-draft-fulltext" title="关闭后草稿只依据摘要与题录，不读解析全文">
+              <input
+                type="checkbox"
+                checked={includeFulltext}
+                onChange={(e) => setIncludeFulltext(e.target.checked)}
+                aria-label="参考解析全文"
+              />
+              参考解析全文
+            </label>
+          ) : null}
+          <div className="ef-draft-actions">
+            <Button
+              type="button"
+              size="sm"
+              disabled={!NOTE_DISPLAY_ORDER.some((kind) => !(paper.notes[kind]?.content ?? "").trim())}
+              title="只起草当前为空的块（空块被填不覆盖任何手写内容）"
+              onClick={() => start(true)}
+            >
+              只补空白块
+            </Button>
+            <Button type="button" size="sm" variant="primary" disabled={!kinds.size} onClick={() => start(false)}>
+              起草选中 {kinds.size} 块
+            </Button>
+          </div>
+          <p className="ef-draft-note">
+            {previewFirst
+              ? "起草后先出逐块 diff 预览，勾选采纳才写入。"
+              : "起草期间你改过的块与「你改过」标记的块不会被覆盖；配合上方「先预览再写入」可逐块采纳。"}
+          </p>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+/** 溯源徽章的点开详情（字段名 + 全局补全时间/置信度；单字段小史暂未记录）。 */
+function badgeDetail(paper: PaperDetail, fieldLabel: string) {
+  return { fieldLabel, preparedAt: paper.llmPreparedAt, confidence: paper.metaConfidence };
+}
+
 function ContextPanel({
   paper,
   activeSection,
@@ -693,17 +1132,19 @@ function ContextPanel({
   const setReadingStatus = useField((s) => s.setReadingStatus);
   const runPrepareMeta = useField((s) => s.runPrepareMeta);
   const runRefreshLinks = useField((s) => s.runRefreshLinks);
-  const runDraftNotes = useField((s) => s.runDraftNotes);
   const retryMineru = useField((s) => s.retryMineru);
   const mineru = useField((s) => s.mineru);
   const cancelJob = useField((s) => s.cancelJob);
   const savePaperPatch = useField((s) => s.savePaperPatch);
   const setMode = useField((s) => s.setMode);
   const lookupHint = useField((s) => s.lookupHint);
+  const lookupOutcome = useField((s) => s.lookupOutcome);
   const openDialog = useField((s) => s.openDialog);
   const setFlash = useField((s) => s.setFlash);
   const markRead = useField((s) => s.markRead);
   const setJobsOpen = useField((s) => s.setJobsOpen);
+  // 「先预览再写入」：补全论文信息的干跑开关（本机记忆）。
+  const [previewFirst, setPreviewFirst] = useState(loadPreviewFirst);
   const active = jobs.filter(
     (job) => job.paperId === paper.id && (job.status === "running" || job.status === "queued"),
   );
@@ -889,7 +1330,7 @@ function ContextPanel({
         {paper.codeUrl && safeHttpUrl(paper.codeUrl) ? (
           <ExternalResource href={paper.codeUrl} icon="code">
             代码仓库
-            <SourceBadge source={paper.fieldSources?.codeUrl} provider={paper.fieldProviders?.codeUrl} />
+            <SourceBadge source={paper.fieldSources?.codeUrl} provider={paper.fieldProviders?.codeUrl} detail={badgeDetail(paper, "代码仓库")} />
           </ExternalResource>
         ) : (
           <p className="ef-missing">未提供代码仓库</p>
@@ -897,14 +1338,14 @@ function ContextPanel({
         {paper.projectPage && safeHttpUrl(paper.projectPage) ? (
           <ExternalResource href={paper.projectPage} icon="link">
             项目主页
-            <SourceBadge source={paper.fieldSources?.projectPage} provider={paper.fieldProviders?.projectPage} />
+            <SourceBadge source={paper.fieldSources?.projectPage} provider={paper.fieldProviders?.projectPage} detail={badgeDetail(paper, "项目主页")} />
           </ExternalResource>
         ) : (
           <p className="ef-missing">未提供项目主页</p>
         )}
         <div className="ef-identifier">
           arXiv
-          <SourceBadge source={paper.fieldSources?.arxivId} provider={paper.fieldProviders?.arxivId} />
+          <SourceBadge source={paper.fieldSources?.arxivId} provider={paper.fieldProviders?.arxivId} detail={badgeDetail(paper, "arXiv")} />
           <span className="ef-identifier-value">
             {arxivAbsUrl(paper.arxivId) ? (
               <button type="button" className="mono ef-id-link" onClick={() => void openExternal(arxivAbsUrl(paper.arxivId))}>
@@ -929,7 +1370,7 @@ function ContextPanel({
         <div className="ef-identifier">
           <span>
             来源
-            <SourceBadge source={paper.fieldSources?.venue} provider={paper.fieldProviders?.venue} />
+            <SourceBadge source={paper.fieldSources?.venue} provider={paper.fieldProviders?.venue} detail={badgeDetail(paper, "来源")} />
           </span>
           <span className="mono">{[paper.venue, paper.year].filter(Boolean).join(" ") || "未提供"}</span>
         </div>
@@ -978,10 +1419,10 @@ function ContextPanel({
             ) : (
               <p>作者信息待补充</p>
             )}
-            <SourceBadge source={paper.fieldSources?.authors} provider={paper.fieldProviders?.authors} />
+            <SourceBadge source={paper.fieldSources?.authors} provider={paper.fieldProviders?.authors} detail={badgeDetail(paper, "作者")} />
             <p>
               DOI
-              <SourceBadge source={paper.fieldSources?.doi} provider={paper.fieldProviders?.doi} />
+              <SourceBadge source={paper.fieldSources?.doi} provider={paper.fieldProviders?.doi} detail={badgeDetail(paper, "DOI")} />
               <br />
               <span className="ef-identifier-value">
                 {doiUrl(paper.doi) ? (
@@ -1017,6 +1458,7 @@ function ContextPanel({
           </p>
         ) : null}
         {paper.mineruError ? <p className="ef-missing is-error">{paper.mineruError}</p> : null}
+        <BiblioCacheRow paper={paper} />
         {paper.pdfPath && !mineru.configured ? (
           <Button type="button" variant="link" onClick={() => void setMode("system")}>
             配置 MinerU 解析源
@@ -1168,28 +1610,59 @@ function ContextPanel({
         {hasUsableProvider(settings) ? (
           <p>用于补全论文信息或起草阅读笔记。AI 不会自动把论文标成已读。</p>
         ) : (
-          <p>尚未配置 AI 服务，可到设置页配置。手动阅读与笔记不受影响。</p>
+          <p>尚未配置 AI 服务：「查询文献库」不需要 Key，可直接补标题、作者与标识符；模型补全与起草可稍后到设置页配置。</p>
         )}
+        <AiChainPlan settings={settings} />
         <div className="ef-ai-buttons">
-          <Button
-            type="button"
-            disabled={!hasUsableProvider(settings) || Boolean(active.length)}
-            onClick={() => {
+          <div className="ef-ai-action">
+            <Button
+              type="button"
+              variant="secondary"
+              disabled={Boolean(active.length)}
+              title="只查文献库补著录（arXiv/DOI/年份/出处/摘要），不需要配置 AI Key；你手动改过的字段不会被覆盖"
+              onClick={() => void runRefreshLinks(paper.id)}
+            >
+              <Icon name="link" />
+              查询文献库
+            </Button>
+            <small>补标题、作者、标识符等著录 · 不用 Key · 大致几秒</small>
+          </div>
+          <AiGateButton
+            gated={!hasUsableProvider(settings) || Boolean(active.length)}
+            reason={
+              !hasUsableProvider(settings)
+                ? "尚未配置可用的 AI 服务：需要启用提供商并填写 API Key（免 Key 本地服务也可以）。"
+                : "这篇论文有 AI 作业正在进行：等它结束或取消后再发起新的。"
+            }
+            showConfigure={!hasUsableProvider(settings)}
+            action={() => {
               // AI 不会静默覆盖：手动改过的论文信息先经确认对话框选择保留或覆盖。
               if (paper.userMetaTouched) {
                 openDialog("confirm-meta", paper.id);
                 return;
               }
-              void runPrepareMeta(paper.id, false);
+              // 干跑开关：先查询与生成，预览确认后才写库。
+              void runPrepareMeta(paper.id, false, false, previewFirst ? { dryRun: true } : undefined);
             }}
           >
             <Icon name="file" />
             补全论文信息
-          </Button>
-          <Button type="button" disabled={Boolean(active.length)} onClick={() => void runRefreshLinks(paper.id)}>
-            <Icon name="link" />
-            刷新链接
-          </Button>
+          </AiGateButton>
+          <small className="ef-ai-action-note">文献库优先、模型只补空 · 用 Key · 大致几秒到一分钟</small>
+          <label
+            className={`ef-ai-preview-toggle${previewFirst ? " is-on" : ""}`}
+            title="开启后先查询与生成并展示将写入的字段，确认后才写库（不会多花一次模型请求）"
+          >
+            <input
+              type="checkbox"
+              checked={previewFirst}
+              onChange={(e) => {
+                setPreviewFirst(e.target.checked);
+                savePreviewFirst(e.target.checked);
+              }}
+            />
+            先预览再写入
+          </label>
           {lookupHint?.paperId === paper.id && lookupHint.notices.length ? (
             <div className="ef-lookup-hint">
               {lookupHint.notices.map((notice) => (
@@ -1200,14 +1673,8 @@ function ContextPanel({
               </button>
             </div>
           ) : null}
-          <Button
-            type="button"
-            disabled={!hasUsableProvider(settings) || Boolean(active.length)}
-            onClick={() => void runDraftNotes(paper.id)}
-          >
-            <Icon name="edit" />
-            起草阅读笔记
-          </Button>
+          {lookupOutcome?.paperId === paper.id && !lookupOutcome.found ? <LookupRetryForm paper={paper} /> : null}
+          <DraftNotesControls paper={paper} disabled={Boolean(active.length)} previewFirst={previewFirst} />
         </div>
         {active.map((job) => (
           <div key={job.id} className="ef-job-row">
@@ -1221,10 +1688,13 @@ function ContextPanel({
           </div>
         ))}
         {hasUsableProvider(settings) ? null : (
-          <Button type="button" variant="link" onClick={() => void setMode("system")}>
-            配置 AI 服务
-            <Icon name="right" />
-          </Button>
+          <>
+            <AiOnboardingCard />
+            <Button type="button" variant="link" onClick={() => void setMode("system")}>
+              更多服务与高级配置（Base URL / 模型 / 免 Key 本地服务）
+              <Icon name="right" />
+            </Button>
+          </>
         )}
       </ContextBlock>
     </aside>
@@ -2032,7 +2502,7 @@ export function ReadingStage({
               <h2 className="ef-section-label">
                 <span>
                   摘要
-                  <SourceBadge source={paper.fieldSources?.abstract} provider={paper.fieldProviders?.abstract} />
+                  <SourceBadge source={paper.fieldSources?.abstract} provider={paper.fieldProviders?.abstract} detail={badgeDetail(paper, "摘要")} />
                 </span>
                 <i className="ef-section-rule" aria-hidden="true" />
               </h2>
@@ -2062,6 +2532,8 @@ export function ReadingStage({
                   size="sm"
                   className="ef-save-all"
                   title="保存这篇论文当前全部未保存的笔记草稿"
+                  // 按住焦点再动作：不触发草稿编辑框的失焦自动保存，避免同一块被存两次。
+                  onMouseDown={(e) => e.preventDefault()}
                   onClick={() => void saveAllNoteDrafts(paper.id)}
                 >
                   保存本篇全部（{draftCount} 处草稿）
