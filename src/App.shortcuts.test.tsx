@@ -29,6 +29,7 @@ vi.mock("./lib/repo", () => ({
     listIntake: vi.fn(async () => []),
     listPendingMineru: vi.fn(async () => []),
     searchAll: vi.fn(async () => []),
+    domainCensus: vi.fn(async () => []),
   },
 }));
 
@@ -155,5 +156,64 @@ describe("requestMarkRead", () => {
     } finally {
       resetKeymap();
     }
+  });
+});
+
+describe("⌘1-9 / ⌘↑⌘↓ 领域快捷切换", () => {
+  const SWITCH_DOMAINS = [
+    { id: "d-1", name: "多模态", code: "MM-01", summary: null, sortOrder: 1, createdAt: "2024-01-01T00:00:00.000Z" },
+    { id: "d-2", name: "指令对齐", code: "AL-02", summary: null, sortOrder: 2, createdAt: "2024-01-02T00:00:00.000Z" },
+    { id: "d-3", name: "强化学习", code: "RL-03", summary: null, sortOrder: 3, createdAt: "2024-01-03T00:00:00.000Z" },
+  ];
+
+  async function readyForSwitch() {
+    await readyApp();
+    const selectDomain = vi.fn(async () => undefined);
+    act(() => {
+      useField.setState({ mode: "field", domains: SWITCH_DOMAINS, selectedDomainId: "d-1", dialog: null, selectDomain });
+    });
+    return selectDomain;
+  }
+
+  function press(key: string) {
+    return fireEvent.keyDown(document.body, { key, metaKey: true, bubbles: true, cancelable: true });
+  }
+
+  it("⌘2 直达第 2 个领域", async () => {
+    const selectDomain = await readyForSwitch();
+    press("2");
+    await waitFor(() => expect(selectDomain).toHaveBeenCalledWith("d-2"));
+  });
+
+  it("⌘9 超出领域数时不动作；当前领域再按 ⌘1 不重复切换", async () => {
+    const selectDomain = await readyForSwitch();
+    press("9");
+    expect(selectDomain).not.toHaveBeenCalled();
+    press("1");
+    expect(selectDomain).not.toHaveBeenCalled();
+  });
+
+  it("⌘↓ 切到下一个领域、⌘↑ 切回；首个领域上 ⌘↑ 不越界", async () => {
+    const selectDomain = await readyForSwitch();
+    press("ArrowDown");
+    await waitFor(() => expect(selectDomain).toHaveBeenCalledWith("d-2"));
+    selectDomain.mockClear();
+    // 仍在 d-1（spy 不真切换）：⌘↑ 保持第 1 个，不再往上
+    press("ArrowUp");
+    expect(selectDomain).not.toHaveBeenCalled();
+  });
+
+  it("输入框内或对话框打开时 ⌘2 不切换领域", async () => {
+    const selectDomain = await readyForSwitch();
+    const input = document.createElement("input");
+    document.body.appendChild(input);
+    input.focus();
+    // 事件发源自己在输入的输入框（target 是 INPUT，App 侧判 typing）
+    fireEvent.keyDown(input, { key: "2", metaKey: true, bubbles: true, cancelable: true });
+    expect(selectDomain).not.toHaveBeenCalled();
+    act(() => useField.setState({ dialog: "pick-domain" }));
+    (document.body as HTMLElement).focus();
+    press("2");
+    expect(selectDomain).not.toHaveBeenCalled();
   });
 });

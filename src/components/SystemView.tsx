@@ -39,6 +39,7 @@ import { openExternal } from "../lib/urls";
 import { formatDate, isTauri, modLabel, pad2, uid } from "../lib/util";
 import { useField } from "../store";
 import { LogPanel } from "./LogPanel";
+import { DomainTrashCard } from "./DomainTrashCard";
 import { PreRestoreList } from "./PreRestoreList";
 import { SecretsOverview } from "./SecretsOverview";
 import { Button, Dialog, Field, Icon } from "./ui";
@@ -138,6 +139,7 @@ const SYSTEM_CARDS = [
   },
   { id: "export", title: "数据导出", keywords: ["导出", "Markdown", "分享", "md"] },
   { id: "backup", title: "备份与恢复", keywords: ["备份", "恢复", "zip", "原数据", "文库"] },
+  { id: "domain-trash", title: "领域回收站", keywords: ["回收站", "领域", "恢复", "删除", "误删", "快照"] },
   { id: "shortcuts", title: "快捷键", keywords: ["快捷键", "键盘", "⌘", "shortcut"] },
   { id: "update", title: "软件更新", keywords: ["更新", "版本", "升级", "重启"] },
   {
@@ -922,7 +924,8 @@ function BackupBlock({ focused }: { focused: boolean }) {
   }
 
   return (
-    <article
+    <>
+      <article
       id="settings-backup"
       className={`page-block pf-stagger${focused ? " is-focused" : ""}`}
       style={{ "--pf-i": 4 } as CSSProperties}
@@ -987,7 +990,9 @@ function BackupBlock({ focused }: { focused: boolean }) {
         </div>
       ) : null}
       <PreRestoreList />
+      <DomainTrashCard />
     </article>
+    </>
   );
 }
 

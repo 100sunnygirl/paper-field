@@ -91,8 +91,8 @@ export function PaperSearch() {
               setScopeOpen(false);
             }
           }}
-          placeholder="搜索标题、作者或 DOI"
-          title="按标题、作者、标签或 DOI 搜索；范围可切换当前领域 / 全部领域"
+          placeholder="搜索：标题、作者、DOI；支持 tag: domain: year:"
+          title="按标题、作者、标签或 DOI 搜索；支持 tag:/domain:/year: 前缀（如 tag:rlhf year:2024）；范围可切换当前领域 / 全部领域"
           aria-label="搜索论文"
         />
         {search ? (

@@ -49,6 +49,9 @@ import {
 } from "./lib/importFailures";
 import { redactSecrets } from "./lib/redact";
 import { noteReadingStatus } from "./lib/readingSince";
+import { recordDomainVisit } from "./lib/domainRecent";
+import { domainSpotOf, saveDomainSpot } from "./lib/domainSpot";
+import { hasStructuredQuery, parseSearchQuery } from "./lib/searchQuery";
 import { repo } from "./lib/repo";
 import { cancelChat, completeChat, hasUsableProvider, loadSettings, readLlmSettings, saveSettings, type LlmSaveInput } from "./lib/settings";
 import { log } from "./lib/logger";
@@ -166,6 +169,9 @@ interface FieldState {
     | "move-paper"
     | "delete-paper"
     | "delete-checked"
+    | "move-checked"
+    | "tag-checked"
+    | "merge-domain"
     | "pick-domain"
     | "edit-paper"
     | null;
@@ -189,6 +195,12 @@ interface FieldState {
    * 领域进度条与状态条已读计数据此做一次轻量 +1 动画（prefers-reduced-motion 下静态）。
    */
   readPulse: number;
+  /** 刚恢复了哪个领域上次的搜索词（列表栏据此显示「已恢复…清空」提示行）。 */
+  restoredSearchFor: string | null;
+  clearRestoredSearchHint: () => void;
+  /** 待恢复的列表滚动位置（FieldView 应用后清空）。 */
+  restoreListTop: { domainId: string; top: number } | null;
+  clearRestoreListTop: () => void;
   /** 打开作业面板并高亮指定作业卡（入库页作业行入口）。 */
   highlightJob: (jobId: string) => void;
   /**
@@ -220,12 +232,35 @@ interface FieldState {
   setArchiveFilter: (value: OpenSource | "all") => Promise<void>;
   /** reselect：当前选中不在新列表里时改选第一篇（切换模式等用户导航）；平时只在论文被删时回落。 */
   refresh: (options?: { reselect?: boolean }) => Promise<void>;
-  /** target：论文对话框的目标论文（缺省为当前论文）；delete-checked 为冻结的勾选集。 */
+  /**
+   * target：论文对话框的目标论文（缺省为当前论文）；delete-checked / move-checked /
+   * tag-checked 为打开时冻结的勾选集（确认期间后台刷新改动勾选也不影响）。
+   */
   openDialog: (dialog: FieldState["dialog"], target?: string | string[]) => void;
   closeDialog: () => void;
-  createDomain: (input: { name: string; code: string; summary?: string }) => Promise<void>;
-  updateDomain: (input: { name: string; code: string; summary?: string }) => Promise<void>;
+  createDomain: (input: { name: string; code: string; summary?: string; keyQuestion?: string | null; accent?: string | null }) => Promise<void>;
+  updateDomain: (input: { name: string; code: string; summary?: string; keyQuestion?: string | null; accent?: string | null }) => Promise<void>;
+  /** 领域手动排序：把新顺序（id 数组）写回 sort_order 并同步 store 里的领域列表。 */
+  applyDomainOrder: (orderedIds: string[]) => Promise<void>;
   deleteDomain: () => Promise<void>;
+  /** 迁移后删除：把该领域全部论文移入目标领域，再删除空的旧领域。 */
+  migrateDomainThenDelete: (toDomainId: string) => Promise<void>;
+  /** 领域合并预览：两边论文数与同名条目。 */
+  previewDomainMerge: (fromDomainId: string, intoDomainId: string) => Promise<{
+    fromName: string;
+    intoName: string;
+    fromCount: number;
+    intoCount: number;
+    duplicates: Array<{ title: string }>;
+  } | null>;
+  /** 合并执行：from 全部论文（含笔记/解析/作者）迁入 into，然后删除 from。 */
+  mergeDomains: (fromDomainId: string, intoDomainId: string) => Promise<void>;
+  /** 领域回收站：30 天内删除的领域快照列表（设置页展示与恢复）。 */
+  listTrashedDomains: () => Promise<Array<{ id: string; name: string; code: string; deletedAt: string; papers: number; daysLeft: number }>>;
+  /** 领域回收站恢复：整域论文/笔记/作者/解析全文一并找回。 */
+  restoreTrashedDomain: (id: string) => Promise<void>;
+  /** 领域回收站彻底删除：快照不可再恢复。 */
+  purgeTrashedDomain: (id: string) => Promise<void>;
   importPdfs: (
     paths: string[],
     onProgress?: (done: number, total: number, current: string) => void,
@@ -293,6 +328,8 @@ interface FieldState {
   movePaperBack: (originDomainId: string, paperId: string) => Promise<void>;
   /** 为已有论文关联 / 替换本机 PDF（编辑对话框与拖入正文舞台共用）。 */
   attachPaperPdf: (paperId: string, path: string) => Promise<void>;
+  /** 移动对话框内就地新建领域并把目标论文移入：一次完成「建领域 + 移动」。 */
+  createDomainAndMove: (name: string, paperId?: string) => Promise<void>;
   deletePaper: (paperId?: string) => Promise<void>;
   /** 撤销最近一次删除（论文 / 批量 / 领域）：限时缓冲里的快照原样回插；窗口已过则提示。 */
   undoDelete: () => Promise<void>;
@@ -301,6 +338,14 @@ interface FieldState {
   setCheckedPaperIds: (ids: string[]) => void;
   /** 删除 delete-checked 对话框打开时冻结的那批论文。 */
   deleteCheckedPapers: () => Promise<void>;
+  /** 批量移动：把 move-checked 对话框打开时冻结的那批移入指定领域。 */
+  moveCheckedPapers: (domainId: string) => Promise<void>;
+  /** 批量标记阅读状态（只有用户入口调用；与单篇 setReadingStatus 同一写库路径）。 */
+  setCheckedReadingStatus: (status: "unread" | "reading" | "read") => Promise<void>;
+  /** 批量添加标签（作用于 tag-checked 冻结的那批；与单篇编辑同口径记 user 来源）。 */
+  addTagsToChecked: (tags: string[]) => Promise<void>;
+  /** 批量移除标签（作用于 tag-checked 冻结的那批）。 */
+  removeTagsFromChecked: (tags: string[]) => Promise<void>;
   setJobsOpen: (open: boolean) => void;
   /** 作业面板「移出队列」：该篇轮到时直接跳过（不提交 MinerU），解析状态保持不变。 */
   dequeueMineruPaper: (batchId: number, paperId: string) => void;
@@ -482,6 +527,8 @@ export const useField = create<FieldState>((set, get) => ({
   jobsPinned: false,
   highlightJobId: null,
   readPulse: 0,
+  restoredSearchFor: null,
+  restoreListTop: null,
   systemFocus: null,
   settingsLeaveGuard: null,
   pendingMode: null,
@@ -516,6 +563,10 @@ export const useField = create<FieldState>((set, get) => ({
   highlightJob: (jobId) => {
     set({ jobsOpen: true, highlightJobId: jobId });
   },
+
+  clearRestoredSearchHint: () => set({ restoredSearchFor: null }),
+
+  clearRestoreListTop: () => set({ restoreListTop: null }),
 
   openSystemCard: (anchor) => {
     const state = get();
@@ -677,10 +728,11 @@ export const useField = create<FieldState>((set, get) => ({
       dialog === "move-paper" ||
       dialog === "confirm-meta" ||
       dialog === "confirm-notes";
+    const checkedScoped = dialog === "delete-checked" || dialog === "move-checked" || dialog === "tag-checked";
     set({
       dialog,
       dialogPaperId: paperScoped ? (typeof target === "string" ? target : state.paper?.id ?? state.selectedPaperId) : null,
-      dialogPaperIds: dialog === "delete-checked" ? (Array.isArray(target) ? [...target] : [...state.checkedPaperIds]) : [],
+      dialogPaperIds: checkedScoped ? (Array.isArray(target) ? [...target] : [...state.checkedPaperIds]) : [],
     });
   },
   closeDialog: () => set({ dialog: null, dialogPaperId: null, dialogPaperIds: [], pendingDraftJob: null }),
@@ -736,7 +788,13 @@ export const useField = create<FieldState>((set, get) => ({
     ]);
     let papers: PaperListItem[] = [];
     if (state.selectedDomainId) {
-      papers = await repo.listPapers(state.selectedDomainId, state.search);
+      // tag:/domain:/year: 前缀走结构化检索（跨领域范围），普通词仍限本领域全文匹配。
+      const structured = parseSearchQuery(state.search);
+      if (hasStructuredQuery(state.search)) {
+        papers = await repo.searchStructured(structured);
+      } else {
+        papers = await repo.listPapers(state.selectedDomainId, state.search);
+      }
     }
     const archive = await repo.listArchive({
       search: state.mode === "archive" ? state.search : "",
@@ -820,13 +878,44 @@ export const useField = create<FieldState>((set, get) => ({
   },
 
   selectDomain: async (id) => {
+    // 每个领域独立记住搜索、选中论文与列表位置：离开时保存，进入时恢复（现场感不被打断）。
+    const prev = get();
+    if (prev.mode === "field" && prev.selectedDomainId) {
+      saveDomainSpot(prev.selectedDomainId, {
+        search: prev.search,
+        paperId: prev.selectedPaperId,
+        listTop: typeof document === "undefined" ? 0 : document.querySelector(".ef-paper-list")?.scrollTop ?? 0,
+        at: Date.now(),
+      });
+    }
+    const spot = id ? domainSpotOf(id) : undefined;
     try {
       selectionEpoch += 1;
-      // 残留横幅的依据：换到的领域与搜索词输入时不同，且词还留着。
-      const carried = Boolean(get().search.trim()) && id !== get().selectedDomainId;
-      // 切换领域后导入目标重新跟随新选中的领域（此前的显式改选不再延续）。
-      set({ selectedDomainId: id, selectedPaperId: null, paper: null, mode: "field", dialog: null, dialogPaperId: null, dialogPaperIds: [], searchCarried: carried, importTargetDomainId: null });
+      // 切领域 = 恢复目标领域自己的现场：搜索词取自该领域记忆（没有则清空），
+      // 旧词不再残留，残留横幅（searchCarried）在此路径恒不亮，字段留给其余路径。
+      set({
+        selectedDomainId: id,
+        selectedPaperId: null,
+        paper: null,
+        mode: "field",
+        dialog: null,
+        dialogPaperId: null,
+        dialogPaperIds: [],
+        // 目标领域自己的搜索词（没有则清空，不沿用离开领域的条件）。
+        search: spot?.search ?? "",
+        restoredSearchFor: spot?.search ? id : null,
+        restoreListTop: spot && spot.listTop > 0 ? { domainId: id!, top: spot.listTop } : null,
+        searchCarried: false,
+        // 切换领域后导入目标重新跟随新选中的领域（此前的显式改选不再延续）。
+        importTargetDomainId: null,
+      });
+      // 最近使用置顶（领域切换对话框）：切换成功路径才记，失败不污染记录。
+      if (id) recordDomainVisit(id);
       await get().refresh();
+      // 恢复上次选中的论文：仍在本领域列表中时才生效，被删/被移走则回落第一篇。
+      if (spot?.paperId && get().papers.some((paper) => paper.id === spot.paperId)) {
+        await get().selectPaper(spot.paperId);
+      }
     } catch (err) {
       get().setFlash({ tone: "error", text: `切换领域失败：${errText(err)}，数据未改动。` });
       throw err;
@@ -842,14 +931,16 @@ export const useField = create<FieldState>((set, get) => ({
     set({ selectedPaperId: id, paper });
     if (paper && get().mode === "field") {
       set({ selectedDomainId: paper.domainId });
+      rememberDomainSpotPartial(get(), { paperId: paper.id });
     }
   },
 
   setSearch: (value) => {
     // The input shows `value` at once; the query runs SEARCH_DEBOUNCE_MS after
     // the last keystroke. Every caller's promise settles when that refresh does.
-    // 用户主动输入（或清空）即解除「切领域残留」横幅。
+    // 用户主动输入（或清空）即解除「切领域残留」横幅，并写入当前领域的搜索记忆。
     set({ search: value, searchCarried: false });
+    rememberDomainSpotPartial(get(), { search: value });
     if (searchTimer) clearTimeout(searchTimer);
     // Clearing the box restores the full list at once; there is nothing to debounce.
     const delay = value.trim() === "" ? 0 : SEARCH_DEBOUNCE_MS;
@@ -901,6 +992,22 @@ export const useField = create<FieldState>((set, get) => ({
     await get().refresh();
   },
 
+  applyDomainOrder: async (orderedIds) => {
+    if (!orderedIds.length) return;
+    try {
+      await repo.reorderDomains(orderedIds);
+      // 本地立即按新顺序重排（⌘1-9 与下拉同步跟随；refresh 也会带回同样顺序）。
+      const rank = new Map(orderedIds.map((id, index) => [id, index]));
+      const domains = [...get().domains].sort(
+        (a, b) => (rank.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.id) ?? Number.MAX_SAFE_INTEGER),
+      );
+      set({ domains });
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `调整领域顺序失败：${errText(err)}，数据未改动。` });
+      throw err;
+    }
+  },
+
   deleteDomain: async () => {
     const id = get().selectedDomainId;
     if (!id) return;
@@ -919,6 +1026,9 @@ export const useField = create<FieldState>((set, get) => ({
       const priorDrafts = Object.fromEntries(
         paperIds.map((paperId) => [paperId, get().drafts[paperId]]).filter(([, value]) => value),
       ) as DeleteUndoEntry["drafts"];
+      // 删除前先存整域快照进回收站（30 天内可恢复，见 repo.trashDomain）。
+      let trashed: Awaited<ReturnType<typeof repo.trashDomain>> = null;
+      if (paperIds.length) trashed = await repo.trashDomain(id);
       // 限时撤销：删除前的应用层快照（领域行 + 论文/笔记/解析/关联/作业），失败则本次不可撤销。
       const entry = await snapshotForUndo(() => repo.snapshotDomainForUndo?.(id, domainName));
       await repo.deleteDomain(id);
@@ -933,6 +1043,9 @@ export const useField = create<FieldState>((set, get) => ({
         tone: "ok",
         text: `已删除领域「${domainName}」${paperIds.length ? `与 ${paperIds.length} 篇论文` : ""}。`,
       };
+      if (trashed && paperIds.length) {
+        flash.text += " 回收站保留 30 天，可在设置里恢复。";
+      }
       if (entry) {
         flash.action = undoDeleteAction();
         flash.durationMs = DELETE_UNDO_TOAST_MS;
@@ -940,6 +1053,92 @@ export const useField = create<FieldState>((set, get) => ({
       get().setFlash(flash);
     } catch (err) {
       get().setFlash({ tone: "error", text: `删除领域失败：${errText(err)}，数据未改动。` });
+      throw err;
+    }
+  },
+
+  previewDomainMerge: async (fromDomainId, intoDomainId) => {
+    if (!fromDomainId || fromDomainId === intoDomainId) return null;
+    return repo.mergePreview(fromDomainId, intoDomainId);
+  },
+
+  mergeDomains: async (fromDomainId, intoDomainId) => {
+    if (!fromDomainId || fromDomainId === intoDomainId) return;
+    try {
+      // 与删除域同一口径：先取消在途作业，再整体迁移并删除来源域。
+      await forgetPapers(await repo.paperIdsInDomain(fromDomainId));
+      const moved = await repo.mergeDomains(fromDomainId, intoDomainId);
+      const domains = await repo.listDomains();
+      const target = domains.find((domain) => domain.id === intoDomainId);
+      selectionEpoch += 1;
+      const wasSelected = get().selectedDomainId === fromDomainId;
+      set({
+        domains,
+        dialog: null,
+        ...(wasSelected ? { selectedDomainId: intoDomainId, selectedPaperId: null, paper: null } : {}),
+      });
+      await get().refresh();
+      get().setFlash({
+        tone: "ok",
+        text: target
+          ? `已把 ${moved} 篇论文并入「${target.name}」，来源领域已删除。`
+          : `已并入 ${moved} 篇论文，来源领域已删除。`,
+      });
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `合并领域失败：${errText(err)}，数据未改动。` });
+      throw err;
+    }
+  },
+
+  /** 回收站：列出 30 天内删除的领域（设置页展示剩余天数与论文数）。 */
+  listTrashedDomains: async () => repo.listTrashedDomains(),
+
+  /** 回收站恢复：整域论文/笔记/作者/解析全文一并找回。 */
+  restoreTrashedDomain: async (id) => {
+    try {
+      const papers = await repo.restoreTrashedDomain(id);
+      await get().refresh();
+      get().setFlash({ tone: "ok", text: `已从回收站恢复领域，找回 ${papers} 篇论文。` });
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `恢复失败：${errText(err)}，数据未改动。` });
+      throw err;
+    }
+  },
+
+  /** 回收站彻底删除：快照不可再恢复（二次确认在设置页）。 */
+  purgeTrashedDomain: async (id) => {
+    await repo.purgeTrashedDomain(id);
+    get().setFlash({ tone: "ok", text: "已彻底删除该快照。" });
+  },
+
+  migrateDomainThenDelete: async (toDomainId) => {
+    const from = get().selectedDomainId;
+    if (!from || from === toDomainId) return;
+    try {
+      const ids = await repo.paperIdsInDomain(from);
+      // 先取消在途作业再迁移：论文换域后旧队列项不再命中它们。
+      await forgetPapers(ids);
+      const moved = await repo.migrateDomainPapers(from, toDomainId);
+      await repo.deleteDomain(from);
+      const domains = await repo.listDomains();
+      const target = domains.find((domain) => domain.id === toDomainId);
+      selectionEpoch += 1;
+      set({
+        selectedDomainId: toDomainId,
+        dialog: null,
+        selectedPaperId: null,
+        paper: null,
+        domains,
+      });
+      await get().refresh();
+      get().setFlash({
+        tone: "ok",
+        text: target
+          ? `已把 ${moved} 篇论文迁入「${target.name}」，旧领域已删除。`
+          : `已迁移 ${moved} 篇论文，旧领域已删除。`,
+      });
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `迁移后删除失败：${errText(err)}，数据未改动。` });
       throw err;
     }
   },
@@ -1457,6 +1656,8 @@ export const useField = create<FieldState>((set, get) => ({
         // 留在原领域：论文已不在本列表，选中回落到第一篇（refresh 兜底）。
         set({ dialog: null, dialogPaperId: null, selectedPaperId: null, paper: null });
       }
+      // 移入的目标领域同样算一次「最近使用」：下次切换时置顶。
+      recordDomainVisit(domainId);
       await get().refresh();
       const domain = get().domains.find((d) => d.id === domainId);
       const originName = get().domains.find((d) => d.id === originDomainId)?.name;
@@ -1535,6 +1736,16 @@ export const useField = create<FieldState>((set, get) => ({
       get().setFlash({ tone: "error", text: `关联 PDF 失败：${errText(err)}，数据未改动。` });
       throw err;
     }
+  },
+
+  createDomainAndMove: async (name, paperId) => {
+    const id = paperId ?? get().dialogPaperId ?? get().selectedPaperId;
+    const trimmed = name.trim();
+    if (!trimmed) throw new Error("领域名称必填");
+    if (!id) return;
+    // 建领域后直接走既有 movePaper：选中、刷新与「论文已移动到…」提示保持同一语义。
+    const domain = await repo.createDomain({ name: trimmed, code: "" });
+    await get().movePaper(domain.id, id);
   },
 
   deletePaper: async (paperId) => {
@@ -1667,6 +1878,78 @@ export const useField = create<FieldState>((set, get) => ({
       get().setFlash(flash);
     } catch (err) {
       get().setFlash({ tone: "error", text: `批量删除失败：${errText(err)}，数据未改动。` });
+      throw err;
+    }
+  },
+
+  moveCheckedPapers: async (domainId) => {
+    // 移动 move-checked 对话框打开时冻结的那批：确认期间勾选变化不影响本批。
+    const frozen = get().dialogPaperIds;
+    const ids = frozen.length ? [...frozen] : [...get().checkedPaperIds];
+    if (!ids.length) return;
+    try {
+      await repo.movePapers(ids, domainId);
+      selectionEpoch += 1;
+      set({ dialog: null, dialogPaperIds: [] });
+      // 批量模式保留：refresh 会把勾选裁剪到当前可见列表（移走的自动退出勾选集）。
+      await get().refresh();
+      const domain = get().domains.find((d) => d.id === domainId);
+      get().setFlash({
+        tone: "ok",
+        text: domain ? `已将 ${ids.length} 篇论文移动到「${domain.name}」。` : `已将 ${ids.length} 篇论文移动到新领域。`,
+      });
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `批量移动失败：${errText(err)}，数据未改动。` });
+      throw err;
+    }
+  },
+
+  setCheckedReadingStatus: async (status) => {
+    const ids = [...new Set(get().checkedPaperIds)].filter(Boolean);
+    if (!ids.length) return;
+    const labels = { unread: "未读", reading: "在读", read: "已读" };
+    try {
+      for (const id of ids) {
+        // 只有用户入口走到这里（AI 永远不会批量标已读）；repo 内维护 read_at 往返语义。
+        await repo.setReadingStatus(id, status);
+        noteReadingStatus(id, status);
+      }
+      await get().refresh();
+      get().setFlash({ tone: "ok", text: `已将 ${ids.length} 篇论文标为${labels[status]}。` });
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `批量标记失败：${errText(err)}，数据未改动。` });
+      throw err;
+    }
+  },
+
+  addTagsToChecked: async (tags) => {
+    const frozen = get().dialogPaperIds;
+    const ids = frozen.length ? [...frozen] : [...get().checkedPaperIds];
+    const wanted = [...new Set(tags.map((tag) => tag.trim()).filter(Boolean))];
+    if (!ids.length || !wanted.length) return;
+    try {
+      await repo.applyTagsToPapers(ids, wanted, "add");
+      set({ dialog: null, dialogPaperIds: [] });
+      await get().refresh();
+      get().setFlash({ tone: "ok", text: `已为 ${ids.length} 篇论文添加标签：${wanted.join("、")}。` });
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `批量添加标签失败：${errText(err)}，数据未改动。` });
+      throw err;
+    }
+  },
+
+  removeTagsFromChecked: async (tags) => {
+    const frozen = get().dialogPaperIds;
+    const ids = frozen.length ? [...frozen] : [...get().checkedPaperIds];
+    const wanted = [...new Set(tags.map((tag) => tag.trim()).filter(Boolean))];
+    if (!ids.length || !wanted.length) return;
+    try {
+      await repo.applyTagsToPapers(ids, wanted, "remove");
+      set({ dialog: null, dialogPaperIds: [] });
+      await get().refresh();
+      get().setFlash({ tone: "ok", text: `已从 ${ids.length} 篇论文移除标签：${wanted.join("、")}。` });
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `批量移除标签失败：${errText(err)}，数据未改动。` });
       throw err;
     }
   },
@@ -2150,6 +2433,21 @@ async function persistPaperDrafts(paperId: string): Promise<{ saved: number; fai
     }
   }
   return { saved, failed };
+}
+
+/** 就地更新当前领域现场的一部分（保留其他字段）；只在阅读页且已选领域时记。 */
+function rememberDomainSpotPartial(
+  state: Pick<FieldState, "mode" | "selectedDomainId" | "search" | "selectedPaperId">,
+  patch: { search?: string; paperId?: string | null },
+): void {
+  if (state.mode !== "field" || !state.selectedDomainId) return;
+  const current = domainSpotOf(state.selectedDomainId);
+  saveDomainSpot(state.selectedDomainId, {
+    search: patch.search !== undefined ? patch.search : current?.search ?? "",
+    paperId: patch.paperId !== undefined ? patch.paperId : current?.paperId ?? null,
+    listTop: current?.listTop ?? 0,
+    at: Date.now(),
+  });
 }
 
 function mineruHost(autoMeta?: boolean) {

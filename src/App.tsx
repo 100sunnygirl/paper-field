@@ -9,7 +9,9 @@ import {
   DomainPickerDialog,
   EditPaperDialog,
   PaperDialog,
+  TagCheckedPapersDialog,
 } from "./components/Dialogs";
+import { MergeDomainDialog } from "./components/MergeDomainDialog";
 import { ReadingStage } from "./components/Dossier";
 import { PaperNav } from "./components/FieldView";
 import { JobsPanel } from "./components/JobsPanel";
@@ -145,6 +147,31 @@ export default function App() {
       }
       // 设置页没有论文列表，资料抽屉打开时也不在背后切换论文：方向键交还给页面滚动。
       if (typing || dialog || mode === "system" || contextOpen) return;
+      // ⌘1-9 直达第 N 个领域；⌘↑/⌘↓ 在相邻领域间切换（裸方向键仍是论文导航）。
+      if (meta && /^[1-9]$/.test(event.key)) {
+        const target = useField.getState().domains[Number(event.key) - 1];
+        if (target && target.id !== useField.getState().selectedDomainId) {
+          event.preventDefault();
+          void useField.getState().selectDomain(target.id);
+        }
+        return;
+      }
+      if (meta && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+        event.preventDefault();
+        const list = useField.getState().domains;
+        if (list.length) {
+          const current = list.findIndex((d) => d.id === useField.getState().selectedDomainId);
+          const next =
+            event.key === "ArrowDown"
+              ? Math.min(list.length - 1, current + 1)
+              : Math.max(0, current <= 0 ? 0 : current - 1);
+          const target = list[next];
+          if (target && target.id !== useField.getState().selectedDomainId) {
+            void useField.getState().selectDomain(target.id);
+          }
+        }
+        return;
+      }
       if (event.key === "ArrowDown") {
         event.preventDefault();
         void navigatePapers(1);
@@ -261,6 +288,8 @@ export default function App() {
       <DomainPickerDialog />
       <DeletePaperDialog />
       <DeleteCheckedPapersDialog />
+      <TagCheckedPapersDialog />
+      <MergeDomainDialog />
       <EditPaperDialog />
       <ConfirmNotesDialog />
       <ConfirmMetaDialog />

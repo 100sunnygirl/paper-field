@@ -77,10 +77,11 @@ describe("PaperSearch · 列表栏搜索框", () => {
     await waitFor(() => expect(repo.listDomains).toHaveBeenCalled());
   });
 
-  it("placeholder 提示可搜字段", () => {
+  it("placeholder 提示可搜字段与 tag:/domain:/year: 语法", () => {
     useField.setState({ mode: "field" });
     render(<PaperSearch />);
-    expect(screen.getByPlaceholderText("搜索标题、作者或 DOI")).toBeInTheDocument();
+    const input = screen.getByPlaceholderText("搜索：标题、作者、DOI；支持 tag: domain: year:");
+    expect(input).toHaveAttribute("title", expect.stringContaining("tag:"));
   });
 
   it("有搜索词时显示清空按钮，点击清空 store.search", async () => {

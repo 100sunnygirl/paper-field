@@ -950,3 +950,237 @@ describe("手动添加的 PDF 进文库", () => {
     expect(await repo.adoptManualPdf("/home/u/b.pdf")).toEqual({ libraryPath: "/home/u/b.pdf", originalPath: "/home/u/b.pdf" });
   });
 });
+
+describe("批量移动与批量标签（movePapers / tagsOfPapers / applyTagsToPapers）", () => {
+  async function seedThree(): Promise<{ d1: string; d2: string; papers: string[] }> {
+    const d1 = await makeDomain("MM-01");
+    const d2 = await makeDomain("AL-02");
+    const papers: string[] = [];
+    for (const title of ["A", "B", "C"]) {
+      const paper = await repo.createPaper({ domainId: d1, title });
+      papers.push(paper.id);
+    }
+    return { d1, d2, papers };
+  }
+
+  it("movePapers 把整批论文改到目标领域（同事务）", async () => {
+    const { d1, d2, papers } = await seedThree();
+    await repo.movePapers(papers, d2);
+    for (const id of papers) {
+      const paper = await repo.getPaper(id);
+      expect(paper?.domainId).toBe(d2);
+    }
+    void d1;
+  });
+
+  it("tagsOfPapers 汇总这批论文的标签与覆盖篇数", async () => {
+    const { d1, papers } = await seedThree();
+    await repo.updatePaper(papers[0], { tags: ["benchmark", "综述"] }, true);
+    await repo.updatePaper(papers[1], { tags: ["benchmark"] }, true);
+    void d1;
+    const tags = await repo.tagsOfPapers(papers);
+    expect(tags).toEqual([
+      { tag: "benchmark", count: 2 },
+      { tag: "综述", count: 1 },
+    ]);
+  });
+
+  it("applyTagsToPapers add 合并去重、remove 整批剔除，并把 tags 记为手动来源", async () => {
+    const { papers } = await seedThree();
+    await repo.applyTagsToPapers(papers, ["benchmark", "综述"], "add");
+    expect((await repo.getPaper(papers[0]))?.tags.sort()).toEqual(["benchmark", "综述"]);
+    expect((await repo.getPaper(papers[2]))?.tags.sort()).toEqual(["benchmark", "综述"]);
+
+    await repo.applyTagsToPapers(papers, ["综述"], "remove");
+    const after = await repo.getPaper(papers[1]);
+    expect(after?.tags).toEqual(["benchmark"]);
+    expect(after?.fieldSources?.tags).toBe("user");
+    expect(after?.userMetaTouched).toBe(true);
+  });
+
+  it("applyTagsToPapers 空标签或空 id 集不写库", async () => {
+    const { papers } = await seedThree();
+    await repo.applyTagsToPapers(papers, ["  "], "add");
+    await repo.applyTagsToPapers([], ["x"], "add");
+    expect((await repo.getPaper(papers[0]))?.tags).toEqual([]);
+  });
+});
+
+describe("reorderDomains（手动排序写回 sort_order）", () => {
+  it("按传入顺序连续编号，listDomains 按新顺序返回", async () => {
+    const d1 = await makeDomain("MM-01");
+    const d2 = await makeDomain("AL-02");
+    const d3 = await makeDomain("RL-03");
+    const before = await repo.listDomains();
+    expect(before.map((d) => d.id)).toEqual([d1, d2, d3]);
+
+    await repo.reorderDomains([d3, d1, d2]);
+    const after = await repo.listDomains();
+    expect(after.map((d) => d.id)).toEqual([d3, d1, d2]);
+    expect(after.map((d) => d.sortOrder)).toEqual([1, 2, 3]);
+  });
+
+  it("空顺序不写库", async () => {
+    const d1 = await makeDomain();
+    await repo.reorderDomains([]);
+    expect((await repo.listDomains()).map((d) => d.id)).toEqual([d1]);
+  });
+});
+
+describe("领域关键问题（app_meta 附加字段）", () => {
+  it("createDomain 带关键问题写入，listDomains / getDomain 读回", async () => {
+    const domain = await repo.createDomain({
+      name: "世界模型",
+      code: "",
+      keyQuestion: "  具身智能需要什么样的世界模型？ ",
+    });
+    expect(domain.keyQuestion).toBe("具身智能需要什么样的世界模型？");
+    const listed = await repo.listDomains();
+    expect(listed[listed.length - 1].keyQuestion).toBe("具身智能需要什么样的世界模型？");
+    const got = await repo.getDomain(domain.id);
+    expect(got?.keyQuestion).toBe("具身智能需要什么样的世界模型？");
+  });
+
+  it("updateDomain 清空关键问题后读回 null（不残留 app_meta 空条目）", async () => {
+    const domain = await repo.createDomain({ name: "A", code: "", keyQuestion: "Q?" });
+    await repo.updateDomain(domain.id, { name: "A", code: "AA", keyQuestion: "  " });
+    expect((await repo.getDomain(domain.id))?.keyQuestion).toBeNull();
+    const meta = await holder.engine!.select<{ value: string }>(
+      "SELECT value FROM app_meta WHERE key = 'domain-extra'",
+    );
+    expect(meta).toHaveLength(0);
+  });
+
+  it("updateDomain 未传 keyQuestion 时不动已有值", async () => {
+    const domain = await repo.createDomain({ name: "A", code: "", keyQuestion: "Q?" });
+    await repo.updateDomain(domain.id, { name: "A2", code: "" });
+    expect((await repo.getDomain(domain.id))?.keyQuestion).toBe("Q?");
+    expect((await repo.getDomain(domain.id))?.name).toBe("A2");
+  });
+});
+
+describe("领域强调色（accent 附加字段）", () => {
+  it("updateDomain 只改强调色不影响关键问题；清空回落 null", async () => {
+    const domain = await repo.createDomain({ name: "A", code: "", keyQuestion: "Q?" });
+    await repo.updateDomain(domain.id, { name: "A", code: "AA", accent: "indigo" });
+    let got = await repo.getDomain(domain.id);
+    expect(got?.accent).toBe("indigo");
+    expect(got?.keyQuestion).toBe("Q?");
+    await repo.updateDomain(domain.id, { name: "A", code: "AA", accent: "  " });
+    got = await repo.getDomain(domain.id);
+    expect(got?.accent).toBeNull();
+    expect(got?.keyQuestion).toBe("Q?");
+  });
+});
+
+describe("领域回收站（app_meta 快照）", () => {
+  it("trashDomain 快照整域数据，restoreTrashedDomain 一并找回论文/笔记/作者/解析全文", async () => {
+    const domain = await repo.createDomain({ name: "要删的领域", code: "D-05" });
+    const paper = await repo.createPaper({ domainId: domain.id, title: "Recover Me" });
+    await repo.updateNote(paper.id, "summary", "恢复我的总结", "manual", true);
+    await repo.saveParsedMarkdown(paper.id, "# 全文\n恢复我");
+    await repo.replaceAuthors(paper.id, [{ name: "Someone" }], true);
+
+    const trashed = await repo.trashDomain(domain.id);
+    expect(trashed?.paperCount).toBe(1);
+    await repo.deleteDomain(domain.id);
+    expect(await repo.getPaper(paper.id)).toBeNull();
+
+    // 快照在回收站可见（含剩余天数）
+    const list = await repo.listTrashedDomains();
+    expect(list.map((row) => row.id)).toContain(domain.id);
+    expect(list[0].papers).toBe(1);
+    expect(list[0].daysLeft).toBe(30);
+
+    // 恢复：id 全部沿用，笔记与全文都在
+    const restored = await repo.restoreTrashedDomain(domain.id);
+    expect(restored).toBe(1);
+    const detail = await repo.getPaper(paper.id);
+    expect(detail?.title).toBe("Recover Me");
+    expect(detail?.notes.summary.content).toBe("恢复我的总结");
+    expect(detail?.parsedMarkdown).toContain("恢复我");
+    expect(detail?.authors.map((a) => a.name)).toEqual(["Someone"]);
+    expect(await repo.getDomain(domain.id)).not.toBeNull();
+    // 恢复后快照出列
+    expect((await repo.listTrashedDomains()).map((row) => row.id)).not.toContain(domain.id);
+  });
+
+  it("purgeTrashedDomain 彻底删除快照", async () => {
+    const domain = await repo.createDomain({ name: "X", code: "" });
+    const paper = await repo.createPaper({ domainId: domain.id, title: "T" });
+    await repo.trashDomain(domain.id);
+    await repo.deleteDomain(domain.id);
+    await repo.purgeTrashedDomain(domain.id);
+    expect((await repo.listTrashedDomains()).map((row) => row.id)).not.toContain(domain.id);
+    void paper;
+  });
+
+  it("快照不存在的恢复报错", async () => {
+    await expect(repo.restoreTrashedDomain("d-none")).rejects.toThrow("回收站里没有这个领域");
+  });
+});
+
+describe("领域合并（mergePreview / mergeDomains）", () => {
+  it("mergePreview 列出两边论文数与同名论文；mergeDomains 迁移并删除来源域", async () => {
+    const d1 = await makeDomain("MM-01");
+    const d2 = await makeDomain("AL-02");
+    await repo.createPaper({ domainId: d1, title: "Same" });
+    await repo.createPaper({ domainId: d1, title: "Only A" });
+    await repo.createPaper({ domainId: d2, title: "Same" });
+    await repo.createPaper({ domainId: d2, title: "Only B" });
+
+    const preview = await repo.mergePreview(d1, d2);
+    expect(preview?.fromCount).toBe(2);
+    expect(preview?.intoCount).toBe(2);
+    expect(preview?.duplicates).toEqual([{ title: "Same" }]);
+
+    const moved = await repo.mergeDomains(d1, d2);
+    expect(moved).toBe(2);
+    expect(await repo.getDomain(d1)).toBeNull();
+    // 同名论文合并后共存（预览里已提示，由用户自行处理）。
+    const papers = await repo.listPapers(d2);
+    expect(papers.map((p) => p.title).sort()).toEqual(["Only A", "Only B", "Same", "Same"]);
+  });
+
+  it("mergePreview 领域不存在时返回 null", async () => {
+    const d1 = await makeDomain();
+    expect(await repo.mergePreview(d1, "d-none")).toBeNull();
+  });
+});
+
+describe("searchStructured（tag:/domain:/year: 结构化检索）", () => {
+  async function seedLibrary(): Promise<{ d1: string; d2: string }> {
+    const d1 = await makeDomain("MM-01");
+    const d2 = await makeDomain("AL-02");
+    const p1 = await repo.createPaper({ domainId: d1, title: "CLIP Revisit" });
+    await repo.updatePaper(p1.id, { tags: ["clip", "contrastive"], year: 2021 }, true);
+    const p2 = await repo.createPaper({ domainId: d2, title: "RLHF Survey" });
+    await repo.updatePaper(p2.id, { tags: ["rlhf"], year: 2024 }, true);
+    return { d1, d2 };
+  }
+
+  it("tag: 精确匹配标签", async () => {
+    await seedLibrary();
+    const rows = await repo.searchStructured({ tags: ["rlhf"], domains: [], years: [], text: "" });
+    expect(rows.map((row) => row.title)).toEqual(["RLHF Survey"]);
+  });
+
+  it("domain: 匹配领域名或短码；year: 匹配年份；可组合", async () => {
+    await seedLibrary();
+    const byCode = await repo.searchStructured({ tags: [], domains: ["AL-02"], years: [], text: "" });
+    expect(byCode.map((row) => row.title)).toEqual(["RLHF Survey"]);
+    // makeDomain 生成的领域名是「领域 AL-02」：按名称完整匹配只命中该域。
+    const byName = await repo.searchStructured({ tags: [], domains: ["领域 AL-02"], years: [], text: "" });
+    expect(byName.map((row) => row.title)).toEqual(["RLHF Survey"]);
+    const combined = await repo.searchStructured({ tags: ["clip"], domains: [], years: [2021], text: "" });
+    expect(combined.map((row) => row.title)).toEqual(["CLIP Revisit"]);
+    const none = await repo.searchStructured({ tags: ["clip"], domains: [], years: [2024], text: "" });
+    expect(none).toEqual([]);
+  });
+
+  it("自由文本部分仍走标题/作者等全文匹配", async () => {
+    await seedLibrary();
+    const rows = await repo.searchStructured({ tags: [], domains: [], years: [], text: "survey" });
+    expect(rows.map((row) => row.title)).toEqual(["RLHF Survey"]);
+  });
+});
