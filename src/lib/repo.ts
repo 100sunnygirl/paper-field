@@ -590,6 +590,68 @@ export const repo = {
     return rows.map((row) => row.path);
   },
 
+  /**
+   * 导入去重用的全库轻量引用：每篇论文的标题 / 标识符 / 所属领域 / PDF 路径。
+   * 导入预览用它做两件事——按路径定位「已在库中」的原条目（省逐条查询），
+   * 以及 DOI/arXiv/标题的跨领域重复候选（同一论文换文件名/路径也能对上）。
+   */
+  async paperRefsForDedup(): Promise<
+    Array<{
+      id: string;
+      title: string;
+      titleZh: string | null;
+      arxivId: string | null;
+      doi: string | null;
+      domainId: string;
+      domainName: string;
+      pdfPath: string | null;
+      pdfOriginalPath: string | null;
+    }>
+  > {
+    const engine = await getEngine();
+    const rows = await engine.select<PaperRow>(PAPER_LIST_SQL);
+    return rows.map((row) => ({
+      id: row.id,
+      title: row.title,
+      titleZh: row.title_zh ?? null,
+      arxivId: row.arxiv_id ?? null,
+      doi: row.doi ?? null,
+      domainId: row.domain_id,
+      domainName: row.domain_name ?? "",
+      pdfPath: row.pdf_path ?? null,
+      pdfOriginalPath: row.pdf_original_path ?? null,
+    }));
+  },
+
+  /**
+   * 为已有论文补充本地 PDF：把文库副本路径写进 pdf_path / pdf_original_path。
+   * 论文已有关联 PDF 时不替换（返回 has-pdf，由调用方解释）；原本没有 PDF 的论文
+   * 顺带进入待解析（mineru_status 仍为空时记 pending，由既有解析队列接手）。
+   */
+  async attachPdfToPaper(
+    paperId: string,
+    adopted: { libraryPath: string; originalPath: string },
+  ): Promise<"attached" | "has-pdf"> {
+    const engine = await getEngine();
+    const rows = await engine.select<PaperRow>("SELECT * FROM papers WHERE id = ?", [paperId]);
+    const paper = rows[0];
+    if (!paper) throw new Error("论文不存在");
+    if (paper.pdf_path && paper.pdf_path.trim()) return "has-pdf";
+    const at = nowIso();
+    await engine.batch([
+      {
+        sql: `UPDATE papers
+              SET pdf_path = ?, pdf_original_path = ?,
+                  mineru_status = COALESCE(mineru_status, 'pending'),
+                  updated_at = ?
+              WHERE id = ?`,
+        params: [adopted.libraryPath, adopted.originalPath, at, paperId],
+        expect: "one",
+      },
+    ]);
+    return "attached";
+  },
+
   /** 库内带 PDF 的论文数（设置页备份预检显示用）。 */
   async pdfCount(): Promise<number> {
     const engine = await getEngine();

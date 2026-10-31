@@ -57,6 +57,7 @@ import { hasUsableProvider } from "../lib/settings";
 import { arxivAbsUrl, arxivPdfUrl, doiUrl, openExternal, safeHttpUrl } from "../lib/urls";
 import { formatDate, isTauri, modLabel, pad2 } from "../lib/util";
 import { useField } from "../store";
+import { TitlePendingBadge, titleStillFromFile } from "./PaperMatrix";
 import { Button, Dialog, Empty, ExternalResource, Icon, SourceBadge, type IconName } from "./ui";
 
 /** 本页目录里解析全文章节二级项的显示上限：更长的全文只列前若干节并注明其余节数。 */
@@ -1949,6 +1950,9 @@ export function ReadingStage({
             ) : null}
             <h1 id="paper-title" className="ef-read-title" tabIndex={-1}>
               {title}
+              {titleStillFromFile(paper.fieldSources) ? (
+                <TitlePendingBadge onEdit={() => openDialog("edit-paper", paper.id)} />
+              ) : null}
             </h1>
             {english ? <p className="ef-paper-en">{english}</p> : null}
             <p className="ef-paper-author-line">

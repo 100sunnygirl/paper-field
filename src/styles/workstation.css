@@ -3209,6 +3209,163 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   margin: 4px 0 12px;
   background: var(--pf-surface);
 }
+/* 手动添加的「粘贴识别」框：单框收整段粘贴（arXiv / DOI / BibTeX），
+   识别结论以一行浅色说明回显，「已找到」命中行加侧标。 */
+.ef-manual-paper .ef-field textarea.ef-paste-box {
+  min-height: 64px;
+  font-family: var(--pf-font-mono);
+  font-size: var(--pf-fs-caption);
+}
+.ef-paste-recognized {
+  margin: 2px 0 10px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+}
+.ef-paste-recognized.is-hit {
+  padding-left: 8px;
+  border-left: var(--pf-marker) solid var(--pf-ink);
+  color: var(--pf-ink);
+}
+.ef-paste-recognized.is-miss { color: var(--pf-muted); }
+/* 「将导入到：领域名」：导入对话框顶部与 INTAKE 页头部共用的目标领域选择器。
+   下拉清单浮在内容之上，宽度不超过父容器；当前目标加侧标强调。 */
+.ef-import-target {
+  position: relative;
+  margin: 0 0 10px;
+}
+.ef-import-target-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--pf-control-border);
+  border-radius: var(--pf-radius);
+  background: var(--pf-surface);
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+  cursor: pointer;
+  transition: border-color var(--pf-direct), background var(--pf-direct);
+}
+.ef-import-target-btn strong {
+  color: var(--pf-ink);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ef-import-target-btn .ef-ico { width: 14px; height: 14px; flex: none; }
+.ef-import-target-btn:hover { border-color: var(--pf-ink); background: var(--pf-hover-flat); }
+.ef-import-target-menu {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: min(280px, 100%);
+  max-height: 240px;
+  overflow: auto;
+  padding: 6px;
+  border: 1px solid var(--pf-divider);
+  border-left: var(--pf-marker) solid var(--pf-ink);
+  border-radius: var(--pf-radius);
+  background: var(--pf-surface);
+  box-shadow: 0 10px 24px rgba(24, 25, 23, 0.14);
+}
+.ef-import-target-empty {
+  margin: 4px 6px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
+}
+.ef-import-target-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 7px 8px;
+  border: 0;
+  background: none;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-ink);
+  text-align: left;
+  cursor: pointer;
+}
+.ef-import-target-option .mono { color: var(--pf-muted); }
+.ef-import-target-option:hover { background: var(--pf-hover-flat); }
+.ef-import-target-option.is-current { background: var(--pf-hover-flat); font-weight: 600; }
+.ef-import-target-new {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 6px 4px 2px;
+  border-top: 1px solid var(--pf-divider);
+  margin-top: 4px;
+}
+.ef-import-target-new input {
+  flex: 1;
+  min-width: 0;
+  min-height: var(--pf-control-height);
+  padding: 6px 10px;
+  border: 1px solid var(--pf-control-border);
+  border-radius: var(--pf-radius);
+  background: var(--pf-surface);
+  color: var(--pf-ink);
+  font-size: var(--pf-fs-caption);
+}
+.ef-import-target-new input:focus {
+  outline: none;
+  border-color: var(--pf-ink);
+  box-shadow: 0 0 0 1px var(--pf-ink);
+}
+/* INTAKE「导入待重试」清单：toast 上的重试入口会消失，这份清单长期常驻，
+   逐条展示失败原因，可整批「仅重试失败文件」或逐条放弃。 */
+.ef-import-retry {
+  margin: 8px 0 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--pf-divider);
+  border-left: var(--pf-marker) solid var(--pf-danger);
+  background: var(--pf-surface);
+}
+.ef-import-retry-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+  font-size: var(--pf-fs-caption);
+}
+.ef-import-retry-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 132px;
+  overflow: auto;
+}
+.ef-import-retry-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--pf-divider);
+  font-size: var(--pf-fs-caption);
+}
+.ef-import-retry-list li:last-child { border-bottom: 0; }
+.ef-import-retry-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--pf-ink);
+}
+.ef-import-retry-list em {
+  max-width: 46%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--pf-secondary);
+  font-style: normal;
+}
 
 /* ---- Status strip ----
    底栏与顶栏同为墨色，把工作台上下框住；条目以竖向发丝线分隔。 */
@@ -3625,6 +3782,158 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   color: var(--pf-secondary);
   text-decoration: line-through;
 }
+/* 逐文件目标领域：行尾的小下拉 + 文件夹分组头（跨领域收集时按目录整组指派）。 */
+.ef-import-row-side {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+.ef-import-row-domain,
+.ef-import-bulk-domain select {
+  appearance: none;
+  -webkit-appearance: none;
+  max-width: 128px;
+  padding: 2px 20px 2px 8px;
+  border: 1px solid var(--pf-control-border);
+  border-radius: var(--pf-radius);
+  background: var(--pf-surface);
+  color: var(--pf-ink);
+  font-size: var(--pf-fs-caption);
+  background-image: linear-gradient(45deg, transparent 50%, var(--pf-ink) 50%),
+    linear-gradient(135deg, var(--pf-ink) 50%, transparent 50%);
+  background-position: calc(100% - 12px) calc(50% - 1px), calc(100% - 8px) calc(50% - 1px);
+  background-size: 4px 4px;
+  background-repeat: no-repeat;
+}
+.ef-import-row-domain:hover,
+.ef-import-bulk-domain select:hover { border-color: var(--pf-ink); }
+.ef-import-row-domain:disabled { opacity: 0.55; }
+.ef-import-bulk-domain {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--pf-secondary);
+  font-size: var(--pf-fs-caption);
+}
+.ef-import-group {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 10px;
+  background: var(--pf-hover-flat);
+  border-bottom: 1px solid var(--pf-divider);
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+}
+.ef-import-group-dir {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 「标题待确认」徽标：标题来源仍是文件名的论文，在列表行与正文标题旁提示可校对。 */
+.ef-title-pending {
+  margin-left: 8px;
+  padding: 1px 6px;
+  border: 1px solid var(--pf-control-border);
+  border-radius: var(--pf-radius);
+  background: var(--pf-hover-flat);
+  color: var(--pf-secondary);
+  font-size: 11px;
+  font-weight: 400;
+  white-space: nowrap;
+  vertical-align: 2px;
+  cursor: pointer;
+  transition: border-color var(--pf-direct), color var(--pf-direct);
+}
+.ef-title-pending:hover {
+  border-color: var(--pf-ink);
+  color: var(--pf-ink);
+}
+/* INTAKE 集中校对区标题行的补充说明（复用待重试清单的框架样式）。 */
+.ef-import-retry.is-title-review { border-left-color: var(--pf-ink); }
+.ef-import-retry-actions {
+  display: inline-flex;
+  gap: 2px;
+  flex: none;
+}
+.ef-import-retry-link {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--pf-ink);
+  cursor: pointer;
+  text-align: left;
+}
+.ef-import-retry-link:hover { text-decoration: underline; }
+/* 批量导入小结卡：常驻列表栏头部（现场/入库页），失败清单可整批重试。 */
+.ef-import-summary {
+  margin: 8px 0 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--pf-divider);
+  border-left: var(--pf-marker) solid var(--pf-ink);
+  background: var(--pf-surface);
+  font-size: var(--pf-fs-caption);
+}
+.ef-import-summary-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.ef-import-summary-actions { margin-top: 6px; }
+/* 导入模式选择（只入库 / 入库并解析 / 解析后补全）+ 本批解析源说明。 */
+.ef-import-mode {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  margin: 0 0 8px;
+}
+.ef-import-mode-source {
+  flex: 1;
+  min-width: 160px;
+  text-align: right;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
+}
+/* 重复候选提示：匹配依据 + 「补充到已有条目」分支（由用户决定合并/保留/另建）。 */
+.ef-import-dup {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 60%;
+}
+.ef-import-dup-info {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--pf-secondary);
+  font-size: var(--pf-fs-caption);
+}
+/* 「已在库中」直达原条目：点开即关掉导入对话框、切到所属领域打开那篇论文。 */
+.ef-import-dup-link {
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--pf-secondary);
+  font-size: var(--pf-fs-caption);
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--pf-secondary) 45%, transparent);
+  text-underline-offset: 2px;
+}
+.ef-import-dup-link:hover { color: var(--pf-ink); }
 .ef-dialog-foot {
   display: flex;
   gap: 10px;
