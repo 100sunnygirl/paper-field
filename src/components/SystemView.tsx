@@ -18,6 +18,7 @@ import {
   testLlmProvider,
   type LlmSaveInput,
 } from "../lib/settings";
+import { loadAutoBackfill, saveAutoBackfill } from "../lib/aiPrefs";
 import type { LlmProviderView } from "../lib/types";
 import { MODE_LABELS } from "../lib/types";
 import { biblioEmailConfigured, type BiblioSaveInput } from "../lib/biblio";
@@ -1510,6 +1511,8 @@ function LlmSettingsBlock({ focused }: { focused: boolean }) {
         </p>
       ) : null}
 
+      <AutoBackfillRow />
+
       {saved.providers.length ? (
         <div className="ef-usage">
           <span className="ef-params-label">用量小结</span>
@@ -2495,5 +2498,54 @@ function UpdateBlock({ focused }: { focused: boolean }) {
       )}
       {installMessage ? <p className="ef-update-install-msg">{installMessage}</p> : null}
     </article>
+  );
+}
+
+
+/**
+ * 「自动补全旧论文」开关与待处理篇数预览：关闭后保存设置 / 启动不再自动排回填
+ * （显式「启用自动补全」与单篇手动补全不受影响）。篇数是实时预览（读不到不显示）。
+ */
+function AutoBackfillRow() {
+  const [on, setOn] = useState(loadAutoBackfill);
+  const [count, setCount] = useState<number | null>(null);
+  const settings = useField((s) => s.settings);
+  const usable = hasUsableProvider(settings);
+  useEffect(() => {
+    let alive = true;
+    // 引擎不可用（如部分测试环境只提供部分 repo）时安静地不显示篇数。
+    if (typeof repo.listReadyForMeta === "function") {
+      void repo
+        .listReadyForMeta()
+        .then((ids) => {
+          if (alive) setCount(ids.length);
+        })
+        .catch(() => {
+          if (alive) setCount(null);
+        });
+    }
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return (
+    <div className="ef-auto-backfill">
+      <label>
+        <input
+          type="checkbox"
+          checked={on}
+          onChange={(e) => {
+            setOn(e.target.checked);
+            saveAutoBackfill(e.target.checked);
+          }}
+        />
+        自动补全旧论文
+      </label>
+      <span className="ef-auto-backfill-info">
+        {usable
+          ? `开启后保存设置与启动时会自动为旧论文排队补全（当前待补全 ${count === null ? "…" : count} 篇）。关闭后仍可单篇「补全论文信息」或显式启用。`
+          : "配置可用的 AI 服务后此开关才会生效。"}
+      </span>
+    </div>
   );
 }

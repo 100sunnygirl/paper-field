@@ -56,3 +56,26 @@ export function noteStylePrompt(style: NoteStyle): string {
   if (style === "experimental") return "Reader style: 实验视角——关注可复现性、数据集/指标、训练与推理成本、可落地的实验改动。";
   return "Reader style: 简洁——每块尽量短，只保留关键信息。";
 }
+
+/**
+ * 自动补全旧论文的开关（本机偏好）：关闭时保存设置 / 启动不再自动排回填，
+ * 显式「启用自动补全」与单篇手动补全不受影响。
+ */
+const BACKFILL_AUTO_KEY = "paper-field.auto-backfill";
+
+export function loadAutoBackfill(): boolean {
+  try {
+    return localStorage.getItem(BACKFILL_AUTO_KEY) !== "0";
+  } catch {
+    return true;
+  }
+}
+
+export function saveAutoBackfill(on: boolean): void {
+  try {
+    if (on) localStorage.removeItem(BACKFILL_AUTO_KEY);
+    else localStorage.setItem(BACKFILL_AUTO_KEY, "0");
+  } catch {
+    // 存不下只影响本次会话的记忆。
+  }
+}

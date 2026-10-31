@@ -29,6 +29,8 @@ import { nowIso } from "./util";
 interface Host {
   mineru: () => MineruSettingsV2;
   hasKey: () => boolean;
+  /** 「自动补全旧论文」开关（本机偏好）；缺省视为开启。关闭时 resumeMineru 不自动排回填。 */
+  autoBackfill?: () => boolean;
   refresh: () => Promise<void>;
   /** 结束通知可带一个直达入口（如「查看全文」）；实现方负责跳转。 */
   flash: (tone: "ok" | "warn" | "error", text: string, action?: { label: string; run: () => void }) => void;
@@ -621,7 +623,7 @@ export async function resumeMineru(host: Host): Promise<void> {
     host.flash("ok", "继续上次未完成的解析。");
     await runMineruBatch(host, runnable, false);
   }
-  if (host.hasKey()) enqueueBackfill(host);
+  if (host.hasKey() && host.autoBackfill?.() !== false) enqueueBackfill(host);
 }
 
 /** AI 回填连续失败达到该值即暂停：多半是 Key 错了或本地模型没启动。 */

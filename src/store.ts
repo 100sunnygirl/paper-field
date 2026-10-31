@@ -58,6 +58,7 @@ import { redactSecrets } from "./lib/redact";
 import { noteReadingStatus } from "./lib/readingSince";
 import { repo } from "./lib/repo";
 import { cancelChat, completeChat, hasUsableProvider, loadSettings, readLlmSettings, saveSettings, type LlmSaveInput } from "./lib/settings";
+import { loadAutoBackfill } from "./lib/aiPrefs";
 import { log } from "./lib/logger";
 import { dismissAll, notify, type ToastAction } from "./toasts";
 import type {
@@ -1885,7 +1886,9 @@ export const useField = create<FieldState>((set, get) => ({
             : "AI 服务设置已保存。"
           : "已保存提供商列表，但当前没有可用的 AI 服务：请启用并填写 API Key，或使用免 Key 的本地服务。",
       });
-      if (usable && !options?.deferBackfill) enqueueBackfill(mineruHost());
+      // 「自动补全旧论文」开关（本机偏好）：关闭时保存设置不自动排回填；
+      // 显式「启用自动补全」（startMetaBackfill）与单篇手动补全不受影响。
+      if (usable && !options?.deferBackfill && loadAutoBackfill()) enqueueBackfill(mineruHost());
     } catch (err) {
       get().setFlash({ tone: "error", text: `保存 AI 服务设置失败：${errText(err)}，数据未改动。` });
       throw err;
@@ -2230,6 +2233,7 @@ function mineruHost() {
     mineru: () => useField.getState().mineru,
     // 门禁派生口径：任一 enabled 且（requiresKey ? 已存 Key : 免 Key）的提供商。
     hasKey: () => hasUsableProvider(useField.getState().settings),
+    autoBackfill: () => loadAutoBackfill(),
     refresh: () => useField.getState().refresh(),
     flash: (tone: "ok" | "warn" | "error", text: string, action?: { label: string; run: () => void }) =>
       useField.getState().setFlash({ tone, text, ...(action ? { action } : {}) }),
