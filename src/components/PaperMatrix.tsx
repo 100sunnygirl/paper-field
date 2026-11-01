@@ -88,12 +88,12 @@ export function PaperRow({
           {READING_STATUS_LABELS[paper.readingStatus]}
         </span>
       </div>
-      <h3>
-        {title}
+      <div className="ef-row-titleline">
+        <h3>{title}</h3>
         {titleStillFromFile(paper.fieldSources) ? (
           <TitlePendingBadge onEdit={() => openDialog("edit-paper", paper.id)} />
         ) : null}
-      </h3>
+      </div>
       {english ? <p className="ef-row-en">{english}</p> : null}
       <div className="ef-row-meta">
         <span>{[paper.venue, paper.year].filter(Boolean).join(" · ") || "会议 / 期刊待补充"}</span>
