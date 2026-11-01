@@ -9,6 +9,28 @@ Prove the reading workstation in the browser preview. `npm run dev` serves the R
 
 The desktop app (`npm run tauri dev`) is a different runtime. A green browser journey does not prove Tauri IPC, the system keychain, native PDF import, MinerU, or a real LLM.
 
+## Sync
+
+The skill did not record a sync commit before this section. On main, the verification files last changed in `95c7c0ad40977ee2ed0a36b765f26a9343ea4a26` (squash of the skill; the tree matches `5e7c25e`, which is not an ancestor of main). The commit these checks were run against, and the sync commit, is `1a573f32c5c99283994f514ae09093d83accea61`.
+
+No commit in that range changes a behavior the journeys describe. The only frontend file in the range is `src/components/Dialogs.test.tsx`, and it only waits for a folder scan. The browser journey never clicks 选择文件夹. `src/components/Dialogs.tsx` is unchanged. Rust edits are gated on `desktop-e2e` (profile path, log path, test PDF picker) or are new tests of the existing LLM and MinerU HTTP clients, including `api_base` and `extract_batch_url` in `src-tauri/src/mineru_api.rs`. `npm run dev` still serves this same React shell. Vite, React, and sql.js stay on 8.3.4, 19.3.1, and 1.15.0.
+
+| Check | Property | Code | Bounds |
+|---|---|---|---|
+| `reading-shell` | Rail 阅读 / 归档 / 入库 / 设置, footer 已读 1 / 3, 队列空闲, 尚未配置 AI 服务, MinerU 未配置, seed list, 归档 excludes 在读, 入库 excludes 已读 | `Shell.tsx`, `FieldView.tsx`, `App.tsx`, `seed.ts`, `vite.config.ts` port 43173, `workstation.css` at 1400px and 1100px | Viewport 1600×1000. Fresh context so IndexedDB `paper-field` is empty and the seed loads. |
+| `paper-list-and-notes` | Search CLIP, open 从自然语言监督中学习可迁移视觉模型, 写总结, 保存笔记, source 手动笔记 | `PaperSearch.tsx`, `Dossier.tsx` `NoteEditor`, `seed.ts` empty CLIP notes | Same viewport and fresh context. Do not click the LLaVA row; its abstract also matches CLIP. |
+| `add-paper-manual` | Dialog says 浏览器预览不能读取本机 PDF, 创建论文 keeps the typed title | `Dialogs.tsx` `ManualPaperForm`, `store.ts` `createManualPaper` | No arXiv id and no DOI. Title is user-owned, so a quiet bibliography lookup must not replace it. |
+| `mark-reading-status` | 修改阅读状态 moves the CLIP paper from 在读 to 已读, footer becomes 已读 2 / 3, 归档 lists it | `Dossier.tsx` reading-status `<select>`, `store.ts` `setReadingStatus`, archive list in `FieldView.tsx` | Context rail is visible only at ≥1400px. The journey does not open the 资料 drawer. |
+| `system-settings` | Headings AI 服务设置, 数据导出, 备份与恢复, 快捷键, MinerU 解析源, 文献库; regions 本地 CLI, SSH 远程, 官方 API; saving 联系邮箱 shows 已配置 for Crossref | `SystemView.tsx`, `biblio.ts` browser `localStorage` path | Do not click 测试连接, 检查更新, 备份, or 恢复. |
+
+Command, from the repo root: `scripts/drive-smoke.sh <check>` or `scripts/drive-smoke.sh all`. `all` runs the five checks in the table order, one new browser context each. Exit 0 is a pass, exit 1 is an assertion or page error, exit 2 is a missing tool, an unknown check, or a foreign process on 43173.
+
+These checks still do not cover code that landed after `95c7c0a`:
+
+- `tests/desktop/smoke.spec.mjs` opens the real Tauri window, imports a PDF, saves 总结, and reopens the same SQLite profile. A green browser journey does not prove that restart.
+- `src-tauri/src/llm.rs` contract tests and `src-tauri/src/mineru_api.rs` upload, poll, and zip download. Browser preview never calls those clients.
+- The native file picker, the system keychain, and a live MinerU or LLM call.
+
 ## Launch
 
 From the repo root, after `npm ci`:
