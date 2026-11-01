@@ -556,8 +556,12 @@ describe("SystemView · AI 服务设置（多提供商）", () => {
     fireEvent.click(within(first).getByRole("button", { name: "获取模型列表" }));
     expect(await within(first).findByText(/已获取 2 个模型/)).toBeInTheDocument();
     expect(fetchMock.mock.calls[0]![0]).toBe("https://api.deepseek.com/v1/models");
-    fireEvent.click(within(first).getByRole("button", { name: "展开模型列表" }));
-    const options = within(within(first).getByRole("listbox", { name: "候选模型" }))
+    const toggle = within(first).getByRole("button", { name: "展开模型列表" });
+    // 按钮用 mousedown preventDefault 保住输入框焦点，否则 blur 会立刻把列表关掉。
+    fireEvent.mouseDown(toggle);
+    fireEvent.click(toggle);
+    const list = await within(first).findByRole("listbox", { name: "候选模型" });
+    const options = within(list)
       .getAllByRole("option")
       .map((option) => option.textContent);
     // 拉取列表由 lib 侧排序（chat 在 coder 前），∪ 预设推荐去重后追加 reasoner。
