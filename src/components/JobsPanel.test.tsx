@@ -603,8 +603,8 @@ describe("排队总览与调度", () => {
     // p1 处理中：队列里 9 篇，默认展示 6 篇。
     expect(within(queue).getAllByText(/· 待解析/)).toHaveLength(6);
     expect(within(queue).getByRole("button", { name: /还有 3 篇/ })).toBeInTheDocument();
-    // 折叠的 3 篇按领域计数（p8 多模态、p9/p10 指令对齐），按数量从多到少排。
-    expect(within(queue).getByText("指令对齐 2 · 多模态 1")).toBeInTheDocument();
+    // 领域名来自异步的 paperBriefs。折叠的 3 篇按数量从多到少排（p9/p10 指令对齐、p8 多模态）。
+    expect(await within(queue).findByText("指令对齐 2 · 多模态 1")).toBeInTheDocument();
 
     fireEvent.click(within(queue).getByRole("button", { name: /还有 3 篇/ }));
     expect(within(queue).getAllByText(/· 待解析/)).toHaveLength(9);
@@ -637,12 +637,12 @@ describe("排队总览与调度", () => {
   it("置顶 / 上移 / 下移换位与「清空其余」二次确认", async () => {
     const { batchId, queue } = await setupQueue();
     // 排队第一篇（p2）只能下移；第二篇（p3）可置顶 / 上移 / 下移。
-    expect(within(queue).getAllByRole("button", { name: /置顶到下一篇/ }).length).toBeGreaterThan(0);
-    fireEvent.click(within(queue).getByRole("button", { name: "置顶到下一篇：第p3篇" }));
+    expect(await within(queue).findAllByRole("button", { name: /置顶到下一篇/ })).not.toHaveLength(0);
+    fireEvent.click(await within(queue).findByRole("button", { name: "置顶到下一篇：第p3篇" }));
     expect(actions.reorderQueue).toHaveBeenCalledWith(batchId, "p3", "top");
-    fireEvent.click(within(queue).getByRole("button", { name: "下移一位：第p2篇" }));
+    fireEvent.click(await within(queue).findByRole("button", { name: "下移一位：第p2篇" }));
     expect(actions.reorderQueue).toHaveBeenCalledWith(batchId, "p2", "down");
-    fireEvent.click(within(queue).getByRole("button", { name: "上移一位：第p3篇" }));
+    fireEvent.click(await within(queue).findByRole("button", { name: "上移一位：第p3篇" }));
     expect(actions.reorderQueue).toHaveBeenCalledWith(batchId, "p3", "up");
 
     fireEvent.click(within(queue).getByRole("button", { name: "清空其余…" }));
