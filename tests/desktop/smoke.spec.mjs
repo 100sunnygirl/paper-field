@@ -43,7 +43,8 @@ describe(`real Tauri desktop — ${phase}`, () => {
       await $('[role="dialog"]').waitForDisplayed();
       // This native-import button is absent from browser preview.
       await click('button*=选择 PDF');
-      await click('button=导入 1');
+      // 选了目标领域后按钮是「导入 1 篇到「领域」」，不再是精确的「导入 1」。
+      await click('button*=导入 1');
       // Dismiss the responsive list drawer, not the import dialog: wait for
       // import completion first so Escape cannot conceal a failed import.
       await $('[role="dialog"]').waitForExist({ reverse: true });
