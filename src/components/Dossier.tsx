@@ -1948,12 +1948,14 @@ export function ReadingStage({
                 这篇论文不在当前列表中（搜索或筛选条件不匹配），仍可继续阅读与编辑。
               </p>
             ) : null}
-            <h1 id="paper-title" className="ef-read-title" tabIndex={-1}>
-              {title}
+            <div className="ef-read-title-line">
+              <h1 id="paper-title" className="ef-read-title" tabIndex={-1}>
+                {title}
+              </h1>
               {titleStillFromFile(paper.fieldSources) ? (
                 <TitlePendingBadge onEdit={() => openDialog("edit-paper", paper.id)} />
               ) : null}
-            </h1>
+            </div>
             {english ? <p className="ef-paper-en">{english}</p> : null}
             <p className="ef-paper-author-line">
               {paper.authors.length

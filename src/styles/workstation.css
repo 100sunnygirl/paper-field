@@ -4056,9 +4056,18 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* 「标题待确认」徽标：标题来源仍是文件名的论文，在列表行与正文标题旁提示可校对。 */
+/* 「标题待确认」徽标放在标题旁边，不写进 h1/h3，标题的可访问文本保持只有题名。 */
+.ef-read-title-line,
+.ef-row-titleline {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+.ef-row-titleline h3 { margin: 0; }
 .ef-title-pending {
-  margin-left: 8px;
+  margin-left: 0;
   padding: 1px 6px;
   border: 1px solid var(--pf-control-border);
   border-radius: var(--pf-radius);
