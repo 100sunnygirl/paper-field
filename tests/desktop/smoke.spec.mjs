@@ -29,6 +29,12 @@ describe(`real Tauri desktop — ${phase}`, () => {
     await openPaperList();
     await click('[aria-label^="切换研究领域"]');
     if (phase === 'create') {
+      // 快捷菜单里没有「新建领域」，要先进入「管理领域…」才到原来的对话框。
+      const manage = await $('button=管理领域…');
+      if (await manage.isExisting()) {
+        await manage.waitForDisplayed();
+        await manage.click();
+      }
       await click('button=新建领域');
       await $('input[placeholder="多模态"]').setValue(domain);
       await click('button=创建领域');
