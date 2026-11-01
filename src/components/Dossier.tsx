@@ -701,7 +701,9 @@ function ContextPanel({
       : { label: "补著录信息", run: () => openDialog("edit-paper", paper.id) };
     nextHint = `著录还缺 ${metaFlags.length - metaDone} 项（摘要 / 年份 / 出处 / 标识符 / 作者）。`;
   } else if (nextEmptyKind) {
-    nextAction = { label: `写${NOTE_LABELS[nextEmptyKind].zh}`, run: () => onJump(`note-${nextEmptyKind}`) };
+    // 「去补…」与笔记块自身的「写…」按钮区分开。可访问名按包含匹配：
+    // 「去写总结」仍包含「写总结」，读屏和按名点击会同时命中就地编辑和只跳锚点的两个按钮。
+    nextAction = { label: `去补${NOTE_LABELS[nextEmptyKind].zh}`, run: () => onJump(`note-${nextEmptyKind}`) };
     nextHint = `笔记已写 ${notesWritten} / ${NOTE_DISPLAY_ORDER.length} 块。`;
   } else if (paper.readingStatus !== "read") {
     nextAction = { label: "标记已读", run: () => void markRead(paper.id) };
