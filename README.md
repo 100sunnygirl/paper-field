@@ -29,7 +29,7 @@ The product chrome is a **reading workstation**: charcoal top bar, pale mode rai
 
 Prerequisites:
 
-1. **Node.js 20+** (npm)
+1. **Node.js 24+** (npm)
 2. **Rust stable** via [rustup](https://rustup.rs)
 3. macOS 15+: Xcode Command Line Tools (`xcode-select --install`)
 4. Windows 10+ x64: Visual Studio Build Tools with **Desktop development with C++**, and Microsoft Edge WebView2 Runtime
@@ -152,7 +152,7 @@ Windows notes: local doclib access requires a curl build with `--unix-socket` su
 
 ## 从源码安装 / Install from source
 
-前置：macOS 15+、Xcode CLT（`xcode-select --install`）或 Windows 10+ x64、Visual Studio Build Tools（Desktop development with C++）、Rust（[rustup](https://rustup.rs)，stable MSVC）、Node.js 20+。
+前置：macOS 15+、Xcode CLT（`xcode-select --install`）或 Windows 10+ x64、Visual Studio Build Tools（Desktop development with C++）、Rust（[rustup](https://rustup.rs)，stable MSVC）、Node.js 24+。
 
 ```bash
 git clone https://github.com/100sunnygirl/paper-field.git
