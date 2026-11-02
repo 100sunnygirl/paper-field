@@ -41,8 +41,11 @@ only and are saved under `test-results/desktop`.
 - No MinerU/LLM/API credentials or parsing services are configured. Network API
   behavior, OS keychain integration, installer installation/uninstallation, signing/notarization, upgrades,
   migration from previous releases and external PDF viewer launch remain untested.
-- WDIO 9.32.0 is intentionally pinned with service 1.5.1: the published service's
-  peer range is WDIO 9, even though upstream main documentation also describes 10.
+- `webdriverio` 9.32.0 is intentionally pinned with service 1.5.1: the published
+  service's peer range is WebdriverIO 9. `@wdio/mocha-framework` 10.1.0 has no
+  WebdriverIO peer dependency and requires Node 22.19+; CI uses Node 24.
+  `proxy-agent` 8.0.2 is explicit because `@puppeteer/browsers` 3 requires it as
+  a peer; the WebdriverIO 9 browser helper retains its own 6.x dependency.
 
 The production guard checks the resolved **default** Cargo dependency graph;
 optional dependencies appearing in Cargo.lock are expected.
