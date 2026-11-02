@@ -9,6 +9,7 @@ import { pickPdfFiles, pickPdfFolder } from "../lib/mineru";
 import { providerLabel } from "../lib/mineruPlan";
 import { parsePastedRef, type ParsedRef } from "../lib/pasteRef";
 import { repo } from "../lib/repo";
+import { type PartitionedTitles } from "../lib/readingHolds";
 import {
   META_FIELD_LABELS,
   NOTE_DISPLAY_ORDER,
@@ -1076,11 +1077,11 @@ export function DomainPickerDialog() {
   // 批量移动：勾选集在对话框打开时冻结（dialogPaperIds），确认期间不被后台刷新改动。
   const movingChecked = dialog === "move-checked";
   const open = dialog === "pick-domain" || moving || movingChecked;
-  // 去向选择：移动后「跟随到目标领域」（默认）或「留在当前领域」，本机记住偏好。
   const [follow, setFollow] = useState(() => loadMoveFollow());
 
   useEffect(() => {
-    if (open) setFollow(loadMoveFollow());
+    if (!open) return;
+    setFollow(loadMoveFollow());
   }, [open]);
 
   function chooseFollow(next: boolean) {
@@ -2112,6 +2113,61 @@ export function ConfirmNotesDialog() {
     </Dialog>
   );
 }
+
+/** userMetaTouched 时的补全论文信息确认：AI 不会静默覆盖手动修改过的字段。 */
+
+export function RestoreDiffDialog() {
+  const dialog = useField((s) => s.dialog);
+  const preview = useField((s) => s.restorePreview);
+  const confirmRestore = useField((s) => s.confirmRestore);
+  const cancelRestore = useField((s) => s.cancelRestore);
+  const open = dialog === "restore-diff" && preview.phase !== "idle";
+  const diff: PartitionedTitles | null = preview.phase === "idle" ? null : preview.diff;
+  const columns = diff
+    ? ([
+        ["仅当前文库", diff.onlyCurrent],
+        ["仅备份", diff.onlyBackup],
+        ["两边都有", diff.both],
+      ] as const)
+    : [];
+
+  return (
+    <Dialog
+      open={open}
+      title="恢复前的文献"
+      danger
+      onClose={() => void cancelRestore()}
+      footer={
+        <>
+          <Button type="button" onClick={() => void cancelRestore()}>
+            取消
+          </Button>
+          <Button type="button" variant="primary" disabled={preview.phase !== "previewed"} onClick={() => void confirmRestore()}>
+            恢复并重启
+          </Button>
+        </>
+      }
+    >
+      {columns.map(([label, bucket]) => (
+        <section key={label}>
+          <h3>
+            {label}（{bucket.rows.length + bucket.hidden}）
+          </h3>
+          <ul>
+            {bucket.rows.map((row) => (
+              <li key={row.id}>
+                {"renamed" in row && row.renamed ? `${row.label} → ${row.backupLabel}` : row.label}
+              </li>
+            ))}
+          </ul>
+          {bucket.hidden ? <p>另有 {bucket.hidden} 篇</p> : null}
+        </section>
+      ))}
+    </Dialog>
+  );
+}
+
+/** userMetaTouched 时的补全论文信息确认：AI 不会静默覆盖手动修改过的字段。 */
 
 /** userMetaTouched 时的补全论文信息确认：AI 不会静默覆盖手动修改过的字段。 */
 export function ConfirmMetaDialog() {

@@ -60,7 +60,14 @@ describe(`real Tauri desktop — ${phase}`, () => {
       await $('textarea[aria-label="总结内容"]').setValue(note);
       await click('//section[@id="note-summary"]//button[normalize-space(.)="保存笔记"]');
     } else if (phase === 'reopen') {
-      await click(`button.ef-domain-option*=${domain}`);
+      const quick = $(`button.ef-domain-menu-item*=${domain}`);
+      const legacy = $(`button.ef-domain-option*=${domain}`);
+      await browser.waitUntil(
+        async () => (await quick.isDisplayed()) || (await legacy.isDisplayed()),
+        { timeoutMsg: `Domain ${domain} was not offered after opening the switcher` },
+      );
+      if (await quick.isDisplayed()) await quick.click();
+      else await legacy.click();
       await $('[role="dialog"]').waitForExist({ reverse: true });
       await openPaperList();
       await click('//div[@aria-label="论文列表"]//button[.//h3[normalize-space(.)="smoke"]]');
