@@ -10,6 +10,7 @@ These files describe the user-visible behavior `drive.mjs` is allowed to prove. 
 | `mark-reading-status` | [mark-reading-status.md](mark-reading-status.md) | 资料 rail, 修改阅读状态 |
 | `system-settings` | [system-settings.md](system-settings.md) | 主导航 设置 |
 | `reading-holds` | [reading-holds.md](reading-holds.md) | filename paper, move dialog, Ctrl R, 设置 |
+| `reading-next` | [reading-next.md](reading-next.md) | 导入到, keyboard note save, search clear, batch buttons, 密钥 |
 
 Run one journey or all of them:
 

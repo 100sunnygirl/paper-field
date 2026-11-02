@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { browserExportFilename, buildDomainExport } from "./export";
+import { assignExportFolders, browserExportFilename, buildDomainExport, libraryExportFilename } from "./export";
 import type { Domain, PaperDetail } from "./types";
 
 function makeDomain(overrides: Partial<Domain> = {}): Domain {
@@ -137,6 +137,27 @@ describe("buildDomainExport", () => {
   it("浏览器下载名是小写领域代码加 export.md，而不是 download", () => {
     expect(browserExportFilename(makeDomain())).toBe("mm-01-export.md");
     expect(browserExportFilename(makeDomain({ code: "", name: "多模态" }))).toBe("多模态-export.md");
+    expect(libraryExportFilename(new Date(2026, 0, 2, 3, 4, 5))).toBe("paper-field-20260102-030405.md");
+  });
+
+  it("同名领域目录追加 id 前四位，再追加序号，不改 README 正文", () => {
+    const now = new Date(2026, 0, 2, 3, 4, 5);
+    const first = buildDomainExport(makeDomain({ id: "abcd-1", code: "MM-01" }), [], now);
+    const second = buildDomainExport(makeDomain({ id: "WXYZ-2", code: "mm-01" }), [], now);
+    const third = buildDomainExport(makeDomain({ id: "wxyz-3", code: "MM-01" }), [makePaper({ id: "p-3" })], now);
+    const files = assignExportFolders([
+      { domainId: "abcd-1", files: first },
+      { domainId: "WXYZ-2", files: second },
+      { domainId: "wxyz-3", files: third },
+    ]);
+    const folders = files.filter((file) => file.relativePath.endsWith("README.md")).map((file) => file.relativePath.split("/")[0]);
+    expect(folders).toEqual([
+      "MM-01-20260102-030405",
+      "mm-01-20260102-030405-wxyz",
+      "MM-01-20260102-030405-wxyz-2",
+    ]);
+    expect(files.find((file) => file.relativePath.startsWith("mm-01-20260102-030405-wxyz/"))!.content).toBe(second[0].content);
+    expect(files.some((file) => file.relativePath.startsWith("MM-01-20260102-030405-wxyz-2/") && !file.relativePath.endsWith("README.md"))).toBe(true);
   });
 
   it("README 索引包含标题与阅读状态", () => {

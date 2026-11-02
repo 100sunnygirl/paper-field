@@ -45,6 +45,7 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
   const setBatchMode = useField((s) => s.setBatchMode);
   const toggleCheckedPaper = useField((s) => s.toggleCheckedPaper);
   const setCheckedPaperIds = useField((s) => s.setCheckedPaperIds);
+  const markRead = useField((s) => s.markRead);
   const [censusEpoch, setCensusEpoch] = useState(0);
 
   if (mode === "field" && selectedDomainId && !search.trim()) {
@@ -221,6 +222,17 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
               已选 {checkedPaperIds.length} / {list.length}
             </span>
             <span className="ef-batch-actions">
+              <Button type="button" size="sm" disabled={!checkedPaperIds.length} onClick={() => openDialog("move-checked")}>
+                移动到领域
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                disabled={!checkedPaperIds.length}
+                onClick={() => void markRead(checkedPaperIds)}
+              >
+                标为已读
+              </Button>
               <Button
                 type="button"
                 size="sm"

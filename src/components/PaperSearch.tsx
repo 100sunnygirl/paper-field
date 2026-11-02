@@ -14,7 +14,6 @@ export function PaperSearch() {
   const search = useField((s) => s.search);
   const setSearch = useField((s) => s.setSearch);
   const selectDomain = useField((s) => s.selectDomain);
-  const selectPaper = useField((s) => s.selectPaper);
   const [scopeOpen, setScopeOpen] = useState(false);
   const [scopeResults, setScopeResults] = useState<PaperListItem[] | null>(null);
   const [scopeSearching, setScopeSearching] = useState(false);
@@ -40,8 +39,7 @@ export function PaperSearch() {
 
   async function jumpToPaper(item: PaperListItem) {
     setScopeOpen(false);
-    await selectDomain(item.domainId);
-    await selectPaper(item.id);
+    await selectDomain(item.domainId, item.id);
   }
 
   return (

@@ -50,7 +50,8 @@ Journeys, each in a new browser context so the seed data loads again:
 | `mark-reading-status` | 修改阅读状态 from 在读 to 已读, then the paper appears under 归档 |
 | `system-settings` | 设置 sections, MinerU source cards, save 联系邮箱 |
 | `reading-holds` | filename claim, unchanged note save, create-domain move, Ctrl R undo, note checklist, desktop-only restore |
-| `all` | the six above |
+| `reading-next` | import target, keyboard note save, draft count, search clear, batch buttons, filename badge, settings anchors and keys |
+| `all` | the seven above |
 
 Exit 0 when every requested journey passes. Exit 1 on an assertion or page error. Exit 2 when Playwright is missing or the journey name is unknown. The report is `evidence/drive-report.json`.
 

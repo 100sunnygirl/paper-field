@@ -77,7 +77,7 @@ vi.mock("./lib/settings", () => ({
 
 vi.mock("./lib/export", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./lib/export")>();
-  return { ...actual, exportDomain: vi.fn() };
+  return { ...actual, deliverExport: vi.fn() };
 });
 
 // 日志落盘命令统一替换为内存假 store：隔离 IPC 并提供落盘行为断言（logger.test.ts 先例）。
@@ -111,7 +111,8 @@ vi.mock("./lib/util", async (importOriginal) => {
 
 import { DEFAULT_MINERU, mineruMarkdown, mineruProbe, mineruSubmit, saveMineruSettings as saveMineru } from "./lib/mineru";
 import { loadSettings, saveSettings } from "./lib/settings";
-import { exportDomain } from "./lib/export";
+import { deliverExport } from "./lib/export";
+import { NOTE_KINDS } from "./lib/types";
 import { isTauri } from "./lib/util";
 import { clear as clearLog, getEntries, log } from "./lib/logger";
 import { repo } from "./lib/repo";
@@ -256,7 +257,7 @@ beforeEach(async () => {
     providers: [],
     usage: {},
   } as Awaited<ReturnType<typeof loadSettings>>);
-  vi.mocked(exportDomain).mockReset();
+  vi.mocked(deliverExport).mockReset();
 });
 
 afterEach(() => {
@@ -663,31 +664,65 @@ describe("设置保存 × MinerU 补全深链路", () => {
 
 // ---------- 导出 ----------
 
+function exportable(id: string): PaperDetail {
+  const notes = Object.fromEntries(
+    NOTE_KINDS.map((kind) => [
+      kind,
+      { id: `${id}-${kind}`, paperId: id, kind, content: "", source: "manual" as const, userEdited: false, revisedAt: null },
+    ]),
+  ) as PaperDetail["notes"];
+  return detailOf(id, { notes });
+}
+
 describe("导出的通知触达", () => {
   beforeEach(() => {
     useField.setState({ selectedDomainId: "d-1" });
     vi.mocked(repo.getDomain).mockImplementation(async () => domainOf("d-1"));
-    vi.mocked(repo.papersForExport).mockResolvedValue([detailOf("a"), detailOf("b")]);
+    vi.mocked(repo.papersForExport).mockResolvedValue([exportable("a"), exportable("b")]);
   });
 
   it("导出成功：ok 通知带篇数与去向并留 info 日志", async () => {
-    vi.mocked(exportDomain).mockResolvedValue("/tmp/export");
+    vi.mocked(deliverExport).mockResolvedValue("/tmp/export");
 
     await act(async () => {
-      await useField.getState().exportCurrentDomain();
+      await useField.getState().exportLibrary({ kind: "domain", domainId: "d-1" });
     });
 
+    expect(deliverExport).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(deliverExport).mock.calls[0][1]).toBe("mm-01-export.md");
     expect(useField.getState().flash).toMatchObject({ tone: "ok", text: "已导出 2 篇 · /tmp/export" });
     expect(getEntries()).toContainEqual(
       expect.objectContaining({ level: "info", scope: "ui", message: "已导出 2 篇 · /tmp/export" }),
     );
   });
 
-  it("用户取消目录选择（EXPORT_CANCELLED）：无通知、无 emit 日志", async () => {
-    vi.mocked(exportDomain).mockRejectedValue(new Error("EXPORT_CANCELLED"));
+  it("全部领域一次送出，空领域也在里面", async () => {
+    const empty = { ...domainOf("d-empty"), name: "空领域", code: "EMPTY" };
+    vi.mocked(repo.listDomains).mockResolvedValue([domainOf("d-1"), empty]);
+    vi.mocked(repo.papersForExport).mockImplementation(async (id: string) => (id === "d-1" ? [exportable("a"), exportable("b")] : []));
+    vi.mocked(deliverExport).mockResolvedValue("/tmp/all");
 
     await act(async () => {
-      await useField.getState().exportCurrentDomain();
+      await useField.getState().exportLibrary({ kind: "all" });
+    });
+
+    expect(deliverExport).toHaveBeenCalledTimes(1);
+    const [files, name] = vi.mocked(deliverExport).mock.calls[0];
+    expect(name).toMatch(/^paper-field-\d{8}-\d{6}\.md$/);
+    const readmes = files.filter((file) => file.relativePath.endsWith("README.md"));
+    expect(readmes).toHaveLength(2);
+    expect(readmes.map((file) => file.relativePath.split("/")[0].slice(-15))).toEqual([
+      readmes[0].relativePath.split("/")[0].slice(-15),
+      readmes[0].relativePath.split("/")[0].slice(-15),
+    ]);
+    expect(useField.getState().flash).toMatchObject({ tone: "ok", text: "已导出 2 篇 · /tmp/all" });
+  });
+
+  it("用户取消目录选择（EXPORT_CANCELLED）：无通知、无 emit 日志", async () => {
+    vi.mocked(deliverExport).mockRejectedValue(new Error("EXPORT_CANCELLED"));
+
+    await act(async () => {
+      await useField.getState().exportLibrary({ kind: "domain", domainId: "d-1" });
     });
 
     expect(useField.getState().flash).toBeNull();
@@ -696,10 +731,10 @@ describe("导出的通知触达", () => {
   });
 
   it("导出失败：error 通知留痕（不向上抛）", async () => {
-    vi.mocked(exportDomain).mockRejectedValue(new Error("写入目标目录失败"));
+    vi.mocked(deliverExport).mockRejectedValue(new Error("写入目标目录失败"));
 
     await act(async () => {
-      await useField.getState().exportCurrentDomain();
+      await useField.getState().exportLibrary({ kind: "domain", domainId: "d-1" });
     });
 
     expect(useField.getState().flash).toMatchObject({ tone: "error", text: "写入目标目录失败" });

@@ -18,9 +18,47 @@ import {
 import { hasUsableProvider } from "../lib/settings";
 import { arxivAbsUrl, arxivPdfUrl, doiUrl, openExternal, safeHttpUrl } from "../lib/urls";
 import { formatDate, pad2 } from "../lib/util";
-import { diffStage, type StageField } from "../lib/readingHolds";
-import { useField } from "../store";
+import { diffStage, titleIsFile, type StageField } from "../lib/readingHolds";
+import { hasDraft, useField } from "../store";
 import { Button, Dialog, Empty, ExternalResource, Icon, SourceBadge } from "./ui";
+
+function NoteReview({ paperId }: { paperId: string }) {
+  const review = useField((s) => (s.noteReview?.paperId === paperId ? s.noteReview : null));
+  const settleNoteReview = useField((s) => s.settleNoteReview);
+  if (!review?.proposals.length) return null;
+  return (
+    <section className="ef-note-review" aria-label="笔记确认">
+      {review.proposals.map((proposal) => (
+        <article key={proposal.kind} className="ef-note-review-block">
+          <h3>{NOTE_LABELS[proposal.kind].zh}</h3>
+          <p className="ef-note-review-label">之前</p>
+          <p>{proposal.before || "（空）"}</p>
+          <p className="ef-note-review-label">之后</p>
+          <p>{proposal.after || "（空）"}</p>
+          <div className="ef-note-review-actions">
+            <Button type="button" size="sm" variant="primary" onClick={() => void settleNoteReview({ accept: [proposal.kind] })}>
+              接受
+            </Button>
+            <Button type="button" size="sm" onClick={() => void settleNoteReview({ skip: [proposal.kind] })}>
+              跳过
+            </Button>
+          </div>
+        </article>
+      ))}
+      <Button
+        type="button"
+        size="sm"
+        onClick={() => {
+          const current = useField.getState().noteReview;
+          if (!current || current.paperId !== paperId) return;
+          void settleNoteReview({ accept: current.proposals.map((item) => item.kind) });
+        }}
+      >
+        接受全部
+      </Button>
+    </section>
+  );
+}
 
 function NoteEditor({
   kind,
@@ -100,6 +138,12 @@ function NoteEditor({
             value={value}
             onChange={(e) => setNoteDraft(paper.id, kind, e.target.value)}
             aria-label={`${label.zh}内容`}
+            onKeyDown={(event) => {
+              if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
+                event.preventDefault();
+                void commit();
+              }
+            }}
           />
           <div className="ef-edit-actions">
             <span className="ef-edit-hint">
@@ -434,6 +478,8 @@ export function ReadingStage({
   const search = useField((s) => s.search);
   const openDialog = useField((s) => s.openDialog);
   const setNoteDraft = useField((s) => s.setNoteDraft);
+  const saveOpenDrafts = useField((s) => s.saveOpenDrafts);
+  const openDraft = useField((s) => hasDraft(s, s.paper?.id));
   const setFlash = useField((s) => s.setFlash);
   const papers = useField((s) => s.papers);
   const archive = useField((s) => s.archive);
@@ -558,7 +604,7 @@ export function ReadingStage({
   const margin = prose ? diffStage(prose, paper) : [];
   const title = prose ? prose.titleZh || prose.title : paper.titleZh || paper.title;
   const english = prose ? (prose.titleZh ? prose.title : "") : paper.titleZh ? paper.title : "";
-  const fileTitle = paper.fieldSources?.title === "file";
+  const fileTitle = titleIsFile(paper.fieldSources);
   // 选中的论文只是被搜索或筛选挡在列表外时仍保持打开（不自动跳到别的论文），这里说明一下。
   const visibleList = mode === "archive" ? archive : mode === "intake" ? intake : papers;
   const outOfList = mode !== "system" && !visibleList.some((item) => item.id === paper.id);
@@ -786,8 +832,14 @@ export function ReadingStage({
                 </small>
                 <i className="ef-section-rule" aria-hidden="true" />
               </h2>
+              {openDraft ? (
+                <Button type="button" size="sm" onClick={() => void saveOpenDrafts(paper.id)}>
+                  保存全部
+                </Button>
+              ) : null}
             </div>
             <p className="ef-notes-caption">每块笔记都标注来源：手动笔记或 AI 起草；AI 不会静默覆盖你改过的笔记。</p>
+            <NoteReview paperId={paper.id} />
             {NOTE_DISPLAY_ORDER.map((kind, index) => (
               <NoteEditor
                 key={kind}

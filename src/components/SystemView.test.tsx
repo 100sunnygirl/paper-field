@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SystemView } from "./SystemView";
+import { SETTINGS_BLOCKS, SystemView } from "./SystemView";
 import { useField } from "../store";
 import { DEFAULT_MINERU, type MineruSaveInput, type MineruSettingsV2 } from "../lib/mineru";
 import { clear as clearLog, log } from "../lib/logger";
@@ -167,7 +167,7 @@ describe("SystemView · 回退顺序调整", () => {
     const saveMineruSettings = vi.fn(async (_input: MineruSaveInput) => undefined);
     useField.setState({ mineru: mineruState(), effectiveProvider: "local", saveMineruSettings });
     render(<SystemView />);
-    const mineruBlock = screen.getByText("MinerU 解析源").closest("article") as HTMLElement;
+    const mineruBlock = screen.getByRole("heading", { name: "MinerU 解析源" }).closest("article") as HTMLElement;
     fireEvent.click(within(mineruBlock).getByRole("button", { name: "保存设置" }));
     await waitFor(() => expect(saveMineruSettings).toHaveBeenCalledTimes(1));
     expect(await screen.findByText(/MinerU 设置已保存（已启用 3 个解析源）/)).toBeInTheDocument();
@@ -235,7 +235,7 @@ function primeLlmBrowser() {
 }
 
 function llmBlock(): HTMLElement {
-  return screen.getByText("AI 服务设置").closest("article") as HTMLElement;
+  return screen.getByRole("heading", { name: "AI 服务设置" }).closest("article") as HTMLElement;
 }
 
 function jsonResponse(status: number, body: unknown): Response {
@@ -532,7 +532,8 @@ describe("SystemView · 设置页顺序与 MinerU 高级项", () => {
     const headings = screen.getAllByRole("heading", { level: 3 }).map((node) => node.textContent);
     const at = (title: string) => headings.indexOf(title);
     expect(at("AI 服务设置")).toBeGreaterThanOrEqual(0);
-    expect(at("数据导出")).toBeGreaterThan(at("AI 服务设置"));
+    expect(at("密钥")).toBeGreaterThan(at("AI 服务设置"));
+    expect(at("数据导出")).toBeGreaterThan(at("密钥"));
     expect(at("备份与恢复")).toBeGreaterThan(at("数据导出"));
     expect(at("快捷键")).toBeGreaterThan(at("备份与恢复"));
     expect(at("软件更新")).toBeGreaterThan(at("快捷键"));
@@ -543,6 +544,73 @@ describe("SystemView · 设置页顺序与 MinerU 高级项", () => {
     expect(screen.queryByRole("option", { name: "English" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "检查更新" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "添加提供商" })).toBeInTheDocument();
+    for (const block of SETTINGS_BLOCKS) {
+      expect(document.getElementById(block.id)?.tagName).toBe("ARTICLE");
+      expect(screen.getByRole("link", { name: block.title })).toHaveAttribute("href", `#${block.id}`);
+    }
+  });
+
+  it("密钥块只显示配置状态，无法读取优先于已保存", () => {
+    useField.setState({
+      settings: {
+        version: 2,
+        usage: {},
+        providers: [
+          {
+            id: "p",
+            presetId: "deepseek",
+            label: "DeepSeek",
+            baseUrl: "https://example.test/v1",
+            model: "m",
+            enabled: true,
+            hasKey: true,
+            keyState: "unreadable",
+            requiresKey: true,
+          },
+        ],
+      },
+      biblio: {
+        email: "",
+        hasOpenalexKey: true,
+        hasS2Key: false,
+        openalexRemainingUsd: null,
+        openalexLimitUsd: null,
+      },
+    });
+    render(<SystemView />);
+    const block = document.getElementById("settings-keys") as HTMLElement;
+    const rows = within(block).getAllByRole("listitem");
+    expect(rows.map((row) => row.textContent?.replace(/\s+/g, ""))).toEqual([
+      "AIKey无法读取",
+      "MinerUToken未配置",
+      "OpenAlexKey已配置",
+      "SemanticScholarKey未配置",
+    ]);
+    expect(block.querySelector("input, textarea")).toBeNull();
+    expect(block.textContent).not.toMatch(/sk-|apiKeyDraft/);
+  });
+
+  it("导出当前领域和全部领域各调用一次 exportLibrary", () => {
+    const exportLibrary = vi.fn(async () => undefined);
+    useField.setState({
+      domains: [
+        {
+          id: "d-1",
+          name: "多模态",
+          code: "MM-01",
+          summary: null,
+          sortOrder: 1,
+          createdAt: "2024-01-01T00:00:00.000Z",
+        },
+      ],
+      selectedDomainId: "d-1",
+      exportLibrary,
+    });
+    render(<SystemView />);
+    fireEvent.click(screen.getByRole("button", { name: "导出全部领域" }));
+    fireEvent.click(screen.getByRole("button", { name: "导出 多模态" }));
+    expect(exportLibrary).toHaveBeenNthCalledWith(1, { kind: "all" });
+    expect(exportLibrary).toHaveBeenNthCalledWith(2, { kind: "domain", domainId: "d-1" });
   });
 
   it("展开官方 API 的高级项后，语言是「英文」，并说明 pipeline / vlm", () => {

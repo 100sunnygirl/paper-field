@@ -167,36 +167,61 @@ ${papers
   return files;
 }
 
+/** Same collision rule as paper filenames: base, then base-id4, then base-id4-2. Case-insensitive. */
+export function assignExportFolders(groups: Array<{ domainId: string; files: ExportFile[] }>): ExportFile[] {
+  const used = new Set<string>();
+  const taken = (name: string) => used.has(name.toLowerCase());
+  const out: ExportFile[] = [];
+  for (const group of groups) {
+    const folder = group.files[0]?.relativePath.split("/")[0] ?? "export";
+    let name = folder;
+    if (taken(name)) name = `${folder}-${group.domainId.slice(0, 4).toLowerCase()}`;
+    let n = 2;
+    while (taken(name)) {
+      name = `${folder}-${group.domainId.slice(0, 4).toLowerCase()}-${n}`;
+      n += 1;
+    }
+    used.add(name.toLowerCase());
+    for (const file of group.files) {
+      const rest = file.relativePath.slice(folder.length);
+      out.push({ relativePath: `${name}${rest}`, content: file.content });
+    }
+  }
+  return out;
+}
+
 /** Browser download name. Shown in the success toast instead of the word "download". */
 export function browserExportFilename(domain: Pick<Domain, "code" | "name">): string {
   const base = slug(domain.code || domain.name).toLowerCase();
   return `${base}-export.md`;
 }
 
-export async function exportDomain(domain: Domain, papers: PaperDetail[]): Promise<string> {
-  const files = buildDomainExport(domain, papers);
+export function libraryExportFilename(now: Date): string {
+  return `paper-field-${exportStamp(now)}.md`;
+}
+
+/** One export_files invocation, or one browser download. A null folder choice is EXPORT_CANCELLED. */
+export async function deliverExport(files: ExportFile[], downloadName: string): Promise<string> {
   if (isTauri()) {
     const { invoke } = await import("@tauri-apps/api/core");
-    // 选择文件夹的对话框由 Rust 侧弹出，导出根目录只来自系统对话框。
     const dir = await invoke<string | null>("export_files", { files });
     if (!dir) throw new Error("EXPORT_CANCELLED");
     return dir;
   }
 
   const blob = new Blob(
-    [
-      files
-        .map((file) => `--- ${file.relativePath} ---\n${file.content}`)
-        .join("\n\n"),
-    ],
+    [files.map((file) => `--- ${file.relativePath} ---\n${file.content}`).join("\n\n")],
     { type: "text/markdown;charset=utf-8" },
   );
-  const filename = browserExportFilename(domain);
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = filename;
+  a.download = downloadName;
   a.click();
   URL.revokeObjectURL(url);
-  return filename;
+  return downloadName;
+}
+
+export async function exportDomain(domain: Domain, papers: PaperDetail[]): Promise<string> {
+  return deliverExport(buildDomainExport(domain, papers), browserExportFilename(domain));
 }

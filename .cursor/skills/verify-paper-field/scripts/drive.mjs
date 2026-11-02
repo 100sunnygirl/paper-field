@@ -5,7 +5,7 @@
  * Journeys (each gets a fresh browser context, so IndexedDB starts empty and the
  * sql.js seed loads again):
  *   reading-shell, paper-list-and-notes, add-paper-manual,
- *   mark-reading-status, system-settings, reading-holds, all
+ *   mark-reading-status, system-settings, reading-holds, reading-next, all
  *
  * Requires env from scripts/_env.sh (PF_TOOLS, PF_URL, PF_EVIDENCE, PLAYWRIGHT_BROWSERS_PATH).
  */
@@ -29,6 +29,7 @@ const JOURNEY_NAMES = [
   "mark-reading-status",
   "system-settings",
   "reading-holds",
+  "reading-next",
 ];
 
 const CLIP_TITLE = "从自然语言监督中学习可迁移视觉模型";
@@ -291,6 +292,95 @@ async function readingHolds(page) {
   await shot(page, "reading-holds-restore");
 }
 
+async function readingNext(page) {
+  await openWorkstation(page);
+
+  await page.getByRole("button", { name: /添加论文/ }).click();
+  const importer = page.getByRole("dialog", { name: "添加论文" });
+  const target = importer.getByRole("combobox", { name: "导入到" });
+  await target.waitFor();
+  await target.selectOption({ label: "指令对齐" });
+  await page.getByRole("button", { name: /切换研究领域：多模态/ }).waitFor();
+  await importer.getByRole("button", { name: "关闭对话框" }).click();
+  await importer.waitFor({ state: "hidden" });
+  await shot(page, "reading-next-import");
+
+  const filename = paperList(page).getByRole("button", { name: new RegExp(FILENAME_TITLE) });
+  const listHeading = filename.getByRole("heading", { name: FILENAME_TITLE, exact: true });
+  await listHeading.waitFor();
+  if (await listHeading.evaluate((node) => (node.textContent ?? "").includes("文件名"))) {
+    throw new Error("filename badge is inside the list heading");
+  }
+  await filename.getByText("文件名", { exact: true }).waitFor();
+  await shot(page, "reading-next-badge");
+
+  await filename.click();
+  await page.getByRole("heading", { name: FILENAME_TITLE, level: 1 }).waitFor();
+  if (await page.getByRole("button", { name: "保存全部" }).count()) {
+    throw new Error("保存全部 showed before a draft was open");
+  }
+  await page.getByRole("button", { name: "写总结" }).click();
+  await page.getByRole("button", { name: "保存全部" }).waitFor();
+  await statusStrip(page).filter({ hasText: /笔记草稿\s*1/ }).waitFor();
+  await shot(page, "reading-next-draft");
+  const editor = page.getByRole("textbox", { name: "总结内容" });
+  await editor.focus();
+  await page.keyboard.press("Control+s");
+  await page.getByRole("status").filter({ hasText: "笔记已保存。" }).waitFor();
+  await page.getByRole("button", { name: "保存全部" }).waitFor({ state: "hidden" });
+  await page.waitForFunction(() => !document.querySelector("footer.ef-status")?.textContent?.includes("笔记草稿"));
+
+  const search = page.getByRole("textbox", { name: "搜索论文" });
+  await search.fill("clip");
+  if ((await search.inputValue()) !== "clip") throw new Error("search box did not take the query");
+  await page.getByRole("button", { name: /切换研究领域：多模态/ }).click();
+  const picker = page.getByRole("dialog", { name: "切换研究领域" });
+  await picker.getByRole("button", { name: "指令对齐" }).click();
+  await page.getByRole("button", { name: /切换研究领域：指令对齐/ }).waitFor();
+  if ((await search.inputValue()) !== "") throw new Error("switching domain left the search box filled");
+  await shot(page, "reading-next-search");
+
+  await page.getByRole("button", { name: "批量选择论文" }).click();
+  await page.getByRole("button", { name: "移动到领域" }).waitFor();
+  await page.getByRole("button", { name: "标为已读" }).waitFor();
+  await shot(page, "reading-next-batch");
+
+  await clickMode(page, "设置");
+  await page.getByRole("heading", { name: "设置", level: 1 }).waitFor();
+  const nav = page.getByRole("navigation", { name: "设置" });
+  for (const title of [
+    "AI 服务设置",
+    "密钥",
+    "数据导出",
+    "备份与恢复",
+    "快捷键",
+    "软件更新",
+    "MinerU 解析源",
+    "文献库",
+    "运行日志",
+  ]) {
+    const href = await nav.getByRole("link", { name: title, exact: true }).getAttribute("href");
+    if (!href?.startsWith("#")) throw new Error(`settings anchor for ${title} is missing`);
+    await page.locator(href).waitFor();
+  }
+  await page.getByRole("button", { name: "导出全部领域" }).waitFor();
+  const keys = page.locator("#settings-keys");
+  await keys.getByRole("heading", { name: "密钥", exact: true }).scrollIntoViewIfNeeded();
+  await keys.getByText("AI Key").waitFor();
+  await keys.getByText("MinerU Token").waitFor();
+  await keys.getByText("OpenAlex Key").waitFor();
+  await keys.getByText("Semantic Scholar Key").waitFor();
+  await keys.getByText("未配置").first().waitFor();
+  const overview = (await keys.innerText()) ?? "";
+  if (/sk-|eyJ|apiKeyDraft|Bearer /.test(overview)) {
+    throw new Error("key overview included secret text");
+  }
+  if (await keys.locator("input, textarea").count()) {
+    throw new Error("key overview rendered an input");
+  }
+  await shot(page, "reading-next-settings");
+}
+
 const JOURNEYS = {
   "reading-shell": readingShell,
   "paper-list-and-notes": paperListAndNotes,
@@ -298,6 +388,7 @@ const JOURNEYS = {
   "mark-reading-status": markReadingStatus,
   "system-settings": systemSettings,
   "reading-holds": readingHolds,
+  "reading-next": readingNext,
 };
 
 async function main() {

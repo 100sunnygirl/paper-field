@@ -922,6 +922,12 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   outline: 1px solid var(--pf-ink);
   outline-offset: -1px;
 }
+.ef-row-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+}
 .ef-row h3 {
   margin: 0;
   font-size: var(--pf-fs-title);
@@ -1506,6 +1512,31 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   color: var(--pf-muted);
   line-height: 1.6;
 }
+.ef-note-review {
+  display: grid;
+  gap: 16px;
+  margin: 12px 0 20px;
+  padding: 12px 14px;
+  border: 1px solid var(--pf-line-strong);
+  background: var(--pf-surface);
+}
+.ef-note-review-block {
+  display: grid;
+  gap: 4px;
+}
+.ef-note-review-block h3,
+.ef-note-review-block p {
+  margin: 0;
+}
+.ef-note-review-label {
+  color: var(--pf-muted);
+  font-size: var(--pf-fs-caption);
+}
+.ef-note-review-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
 .ef-note {
   position: relative;
   border-bottom: 1px solid var(--pf-divider);
@@ -1932,6 +1963,23 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   color: var(--pf-on-dark-2);
 }
 
+.ef-import-failures {
+  position: fixed;
+  z-index: 40;
+  left: 16px;
+  bottom: 52px;
+  width: min(380px, calc(100vw - 32px));
+  padding: 12px 14px;
+  background: var(--pf-surface);
+  border: 1px solid var(--pf-line-strong);
+  box-shadow: var(--pf-edge-hard);
+}
+.ef-import-failures h2 { margin: 0 0 8px; font-size: var(--pf-fs-ui); }
+.ef-import-failures ul { list-style: none; margin: 0 0 8px; padding: 0; }
+.ef-import-failures li { margin: 0 0 6px; }
+.ef-import-failures label { display: flex; gap: 8px; align-items: baseline; }
+.ef-import-failures small { color: var(--pf-muted); }
+
 /* ---- System ---- */
 .ef-system {
   height: 100%;
@@ -1945,6 +1993,17 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 }
 .ef-system-inner { max-width: 1100px; }
 .ef-system-head { margin: 0 0 28px; max-width: 1040px; }
+.ef-settings-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin: 16px 0 0;
+  padding-left: 20px;
+}
+.ef-settings-nav a {
+  color: var(--pf-ink);
+  font-size: var(--pf-fs-caption);
+}
 .ef-system h1 {
   display: flex;
   align-items: center;

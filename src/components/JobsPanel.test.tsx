@@ -57,7 +57,7 @@ function job(overrides: Partial<LlmJob> & Pick<LlmJob, "id" | "paperId">): LlmJo
 const actions = {
   cancelJob: vi.fn(async () => undefined),
   retryMineru: vi.fn(async () => undefined),
-  selectDomain: vi.fn(async () => undefined),
+  landOnPaper: vi.fn(async () => undefined),
   selectPaper: vi.fn(async () => undefined),
   dequeueMineruPaper: vi.fn(),
   stopMineruBatch: vi.fn(async () => undefined),
@@ -171,8 +171,8 @@ describe("JobsPanel", () => {
     expect(actions.dequeueMineruPaper).toHaveBeenCalledWith(batchId, "p3");
 
     fireEvent.click(within(queue).getByText("第二篇"));
-    await waitFor(() => expect(actions.selectPaper).toHaveBeenCalledWith("p2"));
-    expect(actions.selectDomain).toHaveBeenCalledWith("d-2");
+    await waitFor(() => expect(actions.landOnPaper).toHaveBeenCalledWith("p2", "d-2"));
+    expect(actions.selectPaper).not.toHaveBeenCalled();
   });
 
   it("最近结束：失败原因可见，最近一次失败的解析可直接重新解析", () => {
