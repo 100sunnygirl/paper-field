@@ -388,7 +388,7 @@ describe("作业面板批量与分型重试", () => {
     expect(useField.getState().flash?.text).toContain("已将 2 篇重新发送到 MinerU 解析");
   });
 
-  it("retryHistoryJob：按作业类型分派，AI 类一律 overwrite=false", async () => {
+  it("retryHistoryJob：补全重试不覆盖手改，起草笔记先打开确认", async () => {
     const draft = vi.fn(async () => undefined);
     const prepare = vi.fn(async () => undefined);
     useField.setState({ runDraftNotes: draft, runPrepareMeta: prepare });
@@ -397,7 +397,7 @@ describe("作业面板批量与分型重试", () => {
     await useField.getState().retryHistoryJob("p2", "prepareMeta");
     await useField.getState().retryHistoryJob("p3", "mineruParse");
 
-    expect(draft).toHaveBeenCalledWith("p1", false);
+    expect(draft).toHaveBeenCalledWith("p1");
     expect(prepare).toHaveBeenCalledWith("p2", false, false);
   });
 

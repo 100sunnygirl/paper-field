@@ -13,6 +13,7 @@ import {
   EditPaperDialog,
   ExportCheckedDialog,
   PaperDialog,
+  RestoreDiffDialog,
   TagCheckedPapersDialog,
 } from "./components/Dialogs";
 import { MergeDomainDialog } from "./components/MergeDomainDialog";
@@ -289,6 +290,7 @@ export default function App() {
       {/* 作业面板：从状态条「作业」入口上拉的非模态浮层，层级低于对话框、高于列表抽屉。 */}
       <JobsPanel />
       <PaperDialog />
+      <RestoreDiffDialog />
       <DomainDialog />
       <DomainPickerDialog />
       <DeletePaperDialog />
