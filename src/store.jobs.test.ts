@@ -21,6 +21,7 @@ import { beginBatchItem, getActivity, queueBatch, resetActivity, startBatch } fr
 import { runTracked } from "./lib/jobs";
 import { repo } from "./lib/repo";
 import { cancelChat, completeChat } from "./lib/settings";
+import { allowEveryNote } from "./lib/readingHolds";
 import { useField } from "./store";
 import { dismissAll } from "./toasts";
 
@@ -113,7 +114,7 @@ describe("AI 作业的阶段实况", () => {
     const id = await makePaper();
     const reply = deferred<string>();
     vi.mocked(completeChat).mockReturnValue(reply.promise);
-    const run = useField.getState().runDraftNotes(id);
+    const run = useField.getState().runDraftNotes(id, allowEveryNote());
     await vi.waitFor(() => expect(vi.mocked(completeChat)).toHaveBeenCalled());
     const jobId = (await repo.listJobs())[0].id;
     useField.setState({ jobs: await repo.listJobs() });
@@ -135,7 +136,7 @@ describe("AI 作业的阶段实况", () => {
       await repo.finishJob(input.jobId, "cancelled", { error: "cancelled" });
       return '{"summary":"不该写入"}';
     });
-    await useField.getState().runDraftNotes(id);
+    await useField.getState().runDraftNotes(id, allowEveryNote());
     expect((await repo.getPaper(id))!.notes.summary.content).toBe("");
     expect(getActivity().tally.cancelled).toBe(1);
   });
@@ -144,8 +145,8 @@ describe("AI 作业的阶段实况", () => {
     const id = await makePaper();
     const reply = deferred<string>();
     vi.mocked(completeChat).mockReturnValue(reply.promise);
-    const first = useField.getState().runDraftNotes(id);
-    const second = useField.getState().runDraftNotes(id);
+    const first = useField.getState().runDraftNotes(id, allowEveryNote());
+    const second = useField.getState().runDraftNotes(id, allowEveryNote());
     reply.resolve('{"summary":"s"}');
     await Promise.all([first, second]);
     expect(vi.mocked(completeChat)).toHaveBeenCalledTimes(1);
@@ -214,7 +215,7 @@ describe("作业面板的队列操作", () => {
     const id = await makePaper();
     const reply = deferred<string>();
     vi.mocked(completeChat).mockReturnValue(reply.promise);
-    const run = useField.getState().runDraftNotes(id);
+    const run = useField.getState().runDraftNotes(id, allowEveryNote());
     await vi.waitFor(() => expect(vi.mocked(completeChat)).toHaveBeenCalled());
     useField.setState({ selectedPaperId: id });
     await useField.getState().deletePaper();

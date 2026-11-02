@@ -88,6 +88,17 @@ describe("ReadingStage · 笔记与论文信息的入口不重复", () => {
     expect(screen.getByRole("button", { name: /编辑论文信息\s*标题、作者、摘要、PDF 与链接/ })).toBeInTheDocument();
   });
 
+  it("文件名徽章紧挨标题，但不写进标题文本", () => {
+    const row = paper({});
+    row.title = "smoke";
+    row.fieldSources = { title: "file" };
+    useField.setState({ mode: "field", paper: row });
+    renderStage();
+    expect(document.getElementById("paper-title")?.textContent).toBe("smoke");
+    expect(screen.getByText("文件名")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "认领标题" })).toBeInTheDocument();
+  });
+
   it("摘要为空时直接给出编辑论文信息的入口", () => {
     useField.setState({ mode: "field", paper: paper({}, "") });
     renderStage();

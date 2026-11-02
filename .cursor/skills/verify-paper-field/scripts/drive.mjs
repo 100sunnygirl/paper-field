@@ -5,7 +5,7 @@
  * Journeys (each gets a fresh browser context, so IndexedDB starts empty and the
  * sql.js seed loads again):
  *   reading-shell, paper-list-and-notes, add-paper-manual,
- *   mark-reading-status, system-settings, all
+ *   mark-reading-status, system-settings, reading-holds, all
  *
  * Requires env from scripts/_env.sh (PF_TOOLS, PF_URL, PF_EVIDENCE, PLAYWRIGHT_BROWSERS_PATH).
  */
@@ -28,12 +28,14 @@ const JOURNEY_NAMES = [
   "add-paper-manual",
   "mark-reading-status",
   "system-settings",
+  "reading-holds",
 ];
 
 const CLIP_TITLE = "从自然语言监督中学习可迁移视觉模型";
 const LLAVA_TITLE = "视觉指令微调";
 const INSTRUCT_TITLE = "用人类反馈训练语言模型遵循指令";
 const MANUAL_TITLE = "浏览器预览验收条目";
+const FILENAME_TITLE = "visual-instruction-tuning.pdf";
 
 function loadChromium() {
   const pkg = path.join(tools, "package.json");
@@ -104,7 +106,7 @@ async function readingShell(page) {
   await page.getByRole("navigation", { name: "主导航" }).getByRole("button", { name: "阅读", exact: true }).waitFor();
   await page.locator("header.ef-dock").filter({ hasText: "论文阅读工作台" }).waitFor();
   await page.getByRole("button", { name: /切换研究领域：多模态/ }).waitFor();
-  await statusStrip(page).filter({ hasText: /已读\s*1\s*\/\s*3/ }).waitFor();
+  await statusStrip(page).filter({ hasText: /已读\s*1\s*\/\s*4/ }).waitFor();
   await statusStrip(page).filter({ hasText: "队列空闲" }).waitFor();
   await statusStrip(page).filter({ hasText: "尚未配置 AI 服务" }).waitFor();
   await statusStrip(page).filter({ hasText: "MinerU 未配置" }).waitFor();
@@ -179,7 +181,7 @@ async function markReadingStatus(page) {
   }
   await select.selectOption({ label: "已读" });
   await page.getByRole("status").filter({ hasText: "阅读状态已更新为已读" }).waitFor();
-  await statusStrip(page).filter({ hasText: /已读\s*2\s*\/\s*3/ }).waitFor();
+  await statusStrip(page).filter({ hasText: /已读\s*2\s*\/\s*4/ }).waitFor();
   await clickMode(page, "归档");
   await page.getByRole("heading", { name: "归档", exact: true }).waitFor();
   await paperList(page).getByRole("button", { name: new RegExp(CLIP_TITLE) }).waitFor();
@@ -208,12 +210,94 @@ async function systemSettings(page) {
   await biblio.locator("li").filter({ hasText: "Crossref" }).filter({ hasText: "已配置" }).waitFor();
 }
 
+async function readingHolds(page) {
+  await openWorkstation(page);
+  await paperList(page).getByRole("button", { name: new RegExp(FILENAME_TITLE) }).click();
+  await page.getByRole("heading", { name: FILENAME_TITLE, level: 1 }).waitFor();
+  await page.getByText("文件名", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "认领标题" }).waitFor();
+  await shot(page, "reading-holds-filename");
+  await page.getByRole("button", { name: "认领标题" }).click();
+  await page.getByRole("status").filter({ hasText: "标题已记为你的。" }).waitFor();
+  await page.getByRole("button", { name: "认领标题" }).waitFor({ state: "hidden" });
+  await page.getByRole("heading", { name: FILENAME_TITLE, level: 1 }).waitFor();
+  if (await page.getByText("文件名", { exact: true }).count()) {
+    throw new Error("filename badge stayed after the reader claimed the title");
+  }
+  await shot(page, "reading-holds-claim");
+
+  await page.getByRole("button", { name: "写总结" }).click();
+  await page.getByRole("textbox", { name: "总结内容" }).waitFor();
+  await page.getByRole("button", { name: "保存笔记" }).click();
+  await page.getByRole("status").filter({ hasText: "笔记已保存。" }).waitFor();
+  await page.locator("#note-summary").getByRole("button", { name: "写总结" }).waitFor();
+  if (await page.locator("#note-summary").getByText("手动笔记").count()) {
+    throw new Error("unchanged empty note was labeled 手动笔记");
+  }
+
+  await page.getByRole("button", { name: "更多操作" }).click();
+  await page.getByRole("button", { name: "移动到其他领域" }).click();
+  const move = page.getByRole("dialog", { name: "移动到其他领域" });
+  await move.getByRole("textbox", { name: "新领域名称" }).fill("对齐验收");
+  await move.getByRole("button", { name: "创建并移入" }).click();
+  await page.getByRole("button", { name: "切换研究领域：对齐验收" }).waitFor();
+  await move.waitFor({ state: "hidden" });
+  await page.getByRole("heading", { name: FILENAME_TITLE, level: 1 }).waitFor();
+  await shot(page, "reading-holds-moved");
+
+  await page.evaluate(() => {
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "r", ctrlKey: true, bubbles: true, cancelable: true }),
+    );
+  });
+  const marked = page.getByRole("status").filter({ hasText: `已将「${FILENAME_TITLE}」标为已读。` });
+  await marked.waitFor();
+  await marked.getByRole("button", { name: "撤销" }).click();
+  await page.getByRole("status").filter({ hasText: "已撤销标记已读。" }).waitFor();
+  if ((await page.getByLabel("修改阅读状态").inputValue()) !== "unread") {
+    throw new Error("undo did not return the filename paper to 未读");
+  }
+  await statusStrip(page).filter({ hasText: /已读\s*1\s*\/\s*4/ }).waitFor();
+  await shot(page, "reading-holds-undo");
+
+  await clickMode(page, "设置");
+  await page.getByRole("heading", { name: "AI 服务设置", exact: true }).scrollIntoViewIfNeeded();
+  await page.getByLabel("提供商预设").selectOption({ label: "Ollama 本地（免 Key）" });
+  await page.getByRole("button", { name: "添加提供商" }).click();
+  const ai = page.locator("article").filter({ has: page.getByRole("heading", { name: "AI 服务设置", exact: true }) });
+  await ai.getByRole("button", { name: "保存设置" }).click();
+  await page.getByText("AI 服务设置已保存（已启用 1 个提供商）。").waitFor();
+  await clickMode(page, "阅读");
+  await page.getByRole("heading", { name: FILENAME_TITLE, level: 1 }).waitFor();
+  await page.getByRole("button", { name: "起草阅读笔记" }).click();
+  const permit = page.getByRole("dialog", { name: "起草哪些笔记" });
+  await permit.waitFor();
+  for (const label of ["总结", "亮点", "不足", "启示", "备注"]) {
+    await permit.getByText(label, { exact: true }).waitFor();
+  }
+  await permit.getByRole("button", { name: "起草所选" }).waitFor();
+  await shot(page, "reading-holds-permit");
+  await permit.getByRole("button", { name: "取消" }).click();
+  await permit.waitFor({ state: "hidden" });
+
+  await clickMode(page, "设置");
+  await page.getByRole("heading", { name: "备份与恢复", exact: true }).scrollIntoViewIfNeeded();
+  await page.getByRole("button", { name: "恢复", exact: true }).click();
+  await page.getByRole("button", { name: "确认恢复" }).click();
+  await page.getByRole("status").filter({ hasText: "备份与恢复仅在桌面版可用。" }).waitFor();
+  if (await page.getByRole("dialog", { name: "恢复前的文献" }).count()) {
+    throw new Error("browser restore opened a title diff");
+  }
+  await shot(page, "reading-holds-restore");
+}
+
 const JOURNEYS = {
   "reading-shell": readingShell,
   "paper-list-and-notes": paperListAndNotes,
   "add-paper-manual": addPaperManual,
   "mark-reading-status": markReadingStatus,
   "system-settings": systemSettings,
+  "reading-holds": readingHolds,
 };
 
 async function main() {

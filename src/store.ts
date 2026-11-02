@@ -23,7 +23,22 @@ import {
 import { getActivity } from "./lib/activity";
 import { cancelJob as cancelTrackedJob, jobDoneStep, runTracked } from "./lib/jobs";
 import { pickProviderFromHealths, providerLabel, summarizeHealths } from "./lib/mineruPlan";
-import { backupLibrary, restoreLibrary } from "./lib/backup";
+import { backupLibrary } from "./lib/backup";
+import { resetEngine } from "./lib/engine";
+import {
+  adoptProse,
+  libraryLabel,
+  noteWriteNeeded,
+  partitionTitles,
+  readingUndoPlan,
+  RESTORE_TITLE_CAP,
+  stageFieldsInPatch,
+  stageProseFrom,
+  type NotePermit,
+  type PartitionedTitles,
+  type ReadingUndo,
+  type StageProse,
+} from "./lib/readingHolds";
 import { DEFAULT_BIBLIO, loadBiblioSettings, saveBiblioSettings, type BiblioSaveInput, type BiblioStatus } from "./lib/biblio";
 import { filledFrom, lookupPaper, type LookupResult, verifyReachable } from "./lib/lookup";
 import { normalizeArxivId, normalizeDoi, safeHttpUrl, withDefaultScheme } from "./lib/urls";
@@ -45,7 +60,7 @@ import type {
   PaperListItem,
 } from "./lib/types";
 import { NOTE_KINDS } from "./lib/types";
-import { extractJson } from "./lib/util";
+import { extractJson, isTauri } from "./lib/util";
 
 
 interface Flash {
@@ -99,6 +114,7 @@ interface FieldState {
     | "delete-checked"
     | "pick-domain"
     | "edit-paper"
+    | "restore-diff"
     | null;
   /** 对话框打开时锁定的目标论文：之后选中怎么变，对话框都只作用于它。 */
   dialogPaperId: string | null;
@@ -107,6 +123,9 @@ interface FieldState {
   pendingDraftJob: string | null;
   /** 正在编辑、尚未保存的笔记草稿，按论文分开存：切换论文不丢，切回来还在。 */
   drafts: Record<string, Partial<Record<NoteKind, string>>>;
+  stageHold: { paperId: string; prose: StageProse } | null;
+  pendingReadingUndo: (ReadingUndo & { gen: number }) | null;
+  restorePreview: { phase: "idle" } | { phase: "previewed" | "staged"; diff: PartitionedTitles };
   loadError: string | null;
   /** 作业面板（状态条「作业」入口 / ⌘J）：非模态浮层，不拦截阅读区操作。 */
   jobsOpen: boolean;
@@ -162,7 +181,12 @@ interface FieldState {
   stopMineruBatch: (batchId: number) => Promise<void>;
   runPrepareMeta: (paperId?: string, overwrite?: boolean, quiet?: boolean, options?: { llm?: boolean }) => Promise<void>;
   runRefreshLinks: (paperId?: string) => Promise<void>;
-  runDraftNotes: (paperId?: string, overwrite?: boolean) => Promise<void>;
+  runDraftNotes: (paperId?: string, permit?: NotePermit) => Promise<void>;
+  createDomainAndMove: (name: string) => Promise<void>;
+  claimFileTitle: (paperId: string) => Promise<void>;
+  undoMarkRead: (gen: number) => Promise<void>;
+  confirmRestore: () => Promise<void>;
+  cancelRestore: () => Promise<void>;
   cancelJob: (jobId: string, options?: { silent?: boolean }) => Promise<void>;
   saveLlmSettings: (input: LlmSaveInput) => Promise<void>;
   saveMineruSettings: (input: MineruSaveInput) => Promise<void>;
@@ -200,6 +224,8 @@ export function importFailureList(failed: Array<{ name: string; message: string 
 const prepareInflight = new Set<string>();
 const refreshInflight = new Set<string>();
 const draftInflight = new Set<string>();
+let readingUndoGen = 0;
+let createMoveFlight: Promise<void> | null = null;
 
 export const SEARCH_DEBOUNCE_MS = 250;
 let refreshSeq = 0;
@@ -233,6 +259,33 @@ function persistDrafts(drafts: Record<string, Partial<Record<NoteKind, string>>>
 export function hasDraft(state: Pick<FieldState, "drafts">, paperId: string | null | undefined): boolean {
   return Boolean(paperId && state.drafts[paperId] && Object.keys(state.drafts[paperId]!).length);
 }
+
+async function liveLibraryTitles(): Promise<Array<{ id: string; label: string }>> {
+  const domains = await repo.listDomains();
+  const rows: Array<{ id: string; label: string }> = [];
+  for (const domain of domains) {
+    const papers = await repo.listPapers(domain.id);
+    for (const item of papers) rows.push({ id: item.id, label: libraryLabel(item.title, item.titleZh) });
+  }
+  return rows;
+}
+
+function nextStageHold(state: FieldState, paper: PaperDetail | null): FieldState["stageHold"] {
+  if (paper && hasDraft(state, paper.id)) {
+    if (state.stageHold?.paperId === paper.id) return state.stageHold;
+    const onScreen = state.paper?.id === paper.id ? state.paper : paper;
+    return { paperId: paper.id, prose: stageProseFrom(onScreen) };
+  }
+  if (state.stageHold && hasDraft(state, state.stageHold.paperId)) return state.stageHold;
+  return null;
+}
+
+export {
+  defaultNotePermit,
+  noteWriteNeeded,
+  partitionTitles,
+  readingUndoPlan,
+} from "./lib/readingHolds";
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
 let searchWaiters: { resolve: () => void; reject: (err: unknown) => void }[] = [];
 
@@ -266,6 +319,9 @@ export const useField = create<FieldState>((set, get) => ({
   dialogPaperIds: [],
   pendingDraftJob: null,
   drafts: loadDrafts(),
+  stageHold: null,
+  pendingReadingUndo: null,
+  restorePreview: { phase: "idle" },
   loadError: null,
   jobsOpen: false,
 
@@ -280,13 +336,21 @@ export const useField = create<FieldState>((set, get) => ({
     else dismissAll("manual");
   },
   setNoteDraft: (paperId, kind, value) => {
+    const before = hasDraft(get(), paperId);
     const drafts = { ...get().drafts };
     const forPaper = { ...(drafts[paperId] ?? {}) };
     if (value === null) delete forPaper[kind];
     else forPaper[kind] = value;
     if (Object.keys(forPaper).length) drafts[paperId] = forPaper;
     else delete drafts[paperId];
-    set({ drafts });
+    const after = Boolean(drafts[paperId] && Object.keys(drafts[paperId]!).length);
+    let stageHold = get().stageHold;
+    const onScreen = get().paper;
+    if (!before && after && onScreen?.id === paperId && stageHold?.paperId !== paperId) {
+      stageHold = { paperId, prose: stageProseFrom(onScreen) };
+    }
+    if (before && !after && stageHold?.paperId === paperId) stageHold = null;
+    set({ drafts, stageHold });
     persistDrafts(drafts);
   },
   setJobsOpen: (open) => set({ jobsOpen: open }),
@@ -325,7 +389,13 @@ export const useField = create<FieldState>((set, get) => ({
       dialogPaperIds: dialog === "delete-checked" ? (Array.isArray(target) ? [...target] : [...state.checkedPaperIds]) : [],
     });
   },
-  closeDialog: () => set({ dialog: null, dialogPaperId: null, dialogPaperIds: [], pendingDraftJob: null }),
+  closeDialog: () => {
+    if (get().dialog === "restore-diff" && get().restorePreview.phase === "previewed") {
+      void get().cancelRestore();
+      return;
+    }
+    set({ dialog: null, dialogPaperId: null, dialogPaperIds: [], pendingDraftJob: null });
+  },
 
   init: async () => {
     try {
@@ -407,7 +477,18 @@ export const useField = create<FieldState>((set, get) => ({
       set({ stats, jobs, domains, papers, archive, intake, checkedPaperIds });
       return;
     }
-    set({ stats, jobs, domains, papers, archive, intake, selectedPaperId, paper, checkedPaperIds });
+    set({
+      stats,
+      jobs,
+      domains,
+      papers,
+      archive,
+      intake,
+      selectedPaperId,
+      paper,
+      checkedPaperIds,
+      stageHold: nextStageHold(latest, paper),
+    });
   },
 
   setMode: async (mode) => {
@@ -429,10 +510,10 @@ export const useField = create<FieldState>((set, get) => ({
   selectPaper: async (id) => {
     // 每次选择都换一个序号：慢的旧请求与在途的 refresh 都不能把选中改回去。
     const epoch = ++selectionEpoch;
-    set({ selectedPaperId: id });
+    set({ selectedPaperId: id, stageHold: null });
     const paper = id ? await repo.getPaper(id) : null;
     if (epoch !== selectionEpoch) return;
-    set({ selectedPaperId: id, paper });
+    set({ selectedPaperId: id, paper, stageHold: null });
     if (paper && get().mode === "field") {
       set({ selectedDomainId: paper.domainId });
     }
@@ -678,6 +759,12 @@ export const useField = create<FieldState>((set, get) => ({
   savePaperPatch: async (paperId, patch) => {
     try {
       await repo.updatePaper(paperId, patch, true);
+      const fields = stageFieldsInPatch(patch);
+      const fresh = fields.length ? await repo.getPaper(paperId) : null;
+      const hold = get().stageHold;
+      if (fresh && hold?.paperId === paperId && fields.length) {
+        set({ stageHold: { paperId, prose: adoptProse(hold.prose, fresh, fields) } });
+      }
       await get().refresh();
     } catch (err) {
       get().setFlash({ tone: "error", text: `保存论文信息失败：${errText(err)}，数据未改动。` });
@@ -697,6 +784,11 @@ export const useField = create<FieldState>((set, get) => ({
         })),
         true,
       );
+      const fresh = await repo.getPaper(paperId);
+      const hold = get().stageHold;
+      if (fresh && hold?.paperId === paperId) {
+        set({ stageHold: { paperId, prose: adoptProse(hold.prose, fresh, ["authors"]) } });
+      }
       await get().refresh();
     } catch (err) {
       get().setFlash({ tone: "error", text: `保存作者失败：${errText(err)}，数据未改动。` });
@@ -706,7 +798,19 @@ export const useField = create<FieldState>((set, get) => ({
 
   saveNote: async (paperId, kind, content) => {
     try {
+      const row = await repo.getPaper(paperId);
+      if (!row) throw new Error("论文不存在");
+      if (!noteWriteNeeded(row.notes[kind].content, content)) {
+        get().setNoteDraft(paperId, kind, null);
+        get().setFlash({ tone: "ok", text: "笔记已保存。" });
+        return;
+      }
       await repo.updateNote(paperId, kind, content, "manual", true);
+      const fresh = await repo.getPaper(paperId);
+      const hold = get().stageHold;
+      if (fresh && hold?.paperId === paperId) {
+        set({ stageHold: { paperId, prose: adoptProse(hold.prose, fresh, [kind]) } });
+      }
       get().setNoteDraft(paperId, kind, null);
       await get().refresh();
       get().setFlash({ tone: "ok", text: "笔记已保存。" });
@@ -720,7 +824,48 @@ export const useField = create<FieldState>((set, get) => ({
   },
 
   markRead: async (paperId) => {
-    await get().setReadingStatus("read", paperId);
+    const id = paperId ?? get().paper?.id ?? get().selectedPaperId;
+    if (!id) return;
+    const loaded = await repo.getPaper(id);
+    const row = loaded ?? (get().paper?.id === id ? get().paper : null);
+    if (!row) {
+      await repo.setReadingStatus(id, "read");
+      await get().refresh();
+      return;
+    }
+    const undo: ReadingUndo = { paperId: id, status: row.readingStatus, readAt: row.readAt };
+    try {
+      await repo.setReadingStatus(id, "read");
+      if (undo.status !== "read") {
+        const gen = ++readingUndoGen;
+        set({ pendingReadingUndo: { gen, ...undo } });
+        get().setFlash({
+          tone: "ok",
+          text: `已将「${libraryLabel(row.title, row.titleZh)}」标为已读。`,
+          action: { label: "撤销", run: () => void get().undoMarkRead(gen) },
+        });
+      }
+      await get().refresh();
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `更新阅读状态失败：${errText(err)}，数据未改动。` });
+      throw err;
+    }
+  },
+
+  undoMarkRead: async (gen) => {
+    const armed = get().pendingReadingUndo;
+    if (!armed || armed.gen !== gen) return;
+    set({ pendingReadingUndo: null });
+    try {
+      for (const status of readingUndoPlan(armed)) {
+        await repo.setReadingStatus(armed.paperId, status);
+      }
+      await get().refresh();
+      get().setFlash({ tone: "ok", text: "已撤销标记已读。" });
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `撤销标记已读失败：${errText(err)}` });
+      throw err;
+    }
   },
 
   markReading: async (paperId) => {
@@ -734,6 +879,7 @@ export const useField = create<FieldState>((set, get) => ({
   setReadingStatus: async (status, paperId) => {
     const id = paperId ?? get().paper?.id ?? null;
     if (!id) return;
+    set({ pendingReadingUndo: null });
     try {
       await repo.setReadingStatus(id, status);
       await get().refresh();
@@ -741,6 +887,40 @@ export const useField = create<FieldState>((set, get) => ({
       get().setFlash({ tone: "ok", text: `阅读状态已更新为${labels[status]}。` });
     } catch (err) {
       get().setFlash({ tone: "error", text: `更新阅读状态失败：${errText(err)}，数据未改动。` });
+      throw err;
+    }
+  },
+
+  createDomainAndMove: async (name) => {
+    if (createMoveFlight) return createMoveFlight;
+    createMoveFlight = (async () => {
+      const trimmed = name.trim();
+      if (!trimmed) throw new Error("领域名称必填");
+      const paperId = get().dialogPaperId;
+      if (get().dialog !== "move-paper" || !paperId) throw new Error("没有锁定的论文");
+      const domain = await repo.createDomain({ name: trimmed, code: "" });
+      await get().refresh();
+      await get().movePaper(domain.id, paperId);
+    })().finally(() => {
+      createMoveFlight = null;
+    });
+    return createMoveFlight;
+  },
+
+  claimFileTitle: async (paperId) => {
+    const row = await repo.getPaper(paperId);
+    if (!row || row.fieldSources?.title !== "file") return;
+    try {
+      await repo.updatePaper(paperId, { title: row.title }, true);
+      const fresh = await repo.getPaper(paperId);
+      const hold = get().stageHold;
+      if (fresh && hold?.paperId === paperId) {
+        set({ stageHold: { paperId, prose: adoptProse(hold.prose, fresh, ["title", "titleZh"]) } });
+      }
+      await get().refresh();
+      get().setFlash({ tone: "ok", text: "标题已记为你的。" });
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `认领标题失败：${errText(err)}，数据未改动。` });
       throw err;
     }
   },
@@ -955,25 +1135,37 @@ export const useField = create<FieldState>((set, get) => ({
     }
   },
 
-  runDraftNotes: async (paperId, overwrite = false) => {
-    const id = paperId ?? get().selectedPaperId;
+  runDraftNotes: async (paperId, permit) => {
+    const id = paperId ?? get().pendingDraftJob ?? get().selectedPaperId;
     if (!id || draftInflight.has(id)) return;
     if (!hasUsableProvider(get().settings)) {
       get().setFlash({ tone: "warn", text: "尚未配置可用的 AI 服务。可到设置页添加提供商后再起草阅读笔记。" });
       return;
     }
-    // 先占在途锁再读库：双击时第二次调用在这里就返回。
+    if (!permit) {
+      set({ dialog: "confirm-notes", dialogPaperId: id, pendingDraftJob: id });
+      return;
+    }
+    if (!NOTE_KINDS.some((kind) => permit[kind])) {
+      set({ dialog: null, dialogPaperId: null, pendingDraftJob: null });
+      get().setFlash({ tone: "warn", text: "没有选中的笔记块。" });
+      return;
+    }
     draftInflight.add(id);
     const paper = await repo.getPaper(id);
-    if (!paper || (paper.userNotesTouched && !overwrite)) {
+    if (!paper) {
       draftInflight.delete(id);
-      if (paper) set({ dialog: "confirm-notes", dialogPaperId: id, pendingDraftJob: id });
       return;
     }
     if (get().dialog === "confirm-notes") set({ dialog: null, dialogPaperId: null, pendingDraftJob: null });
+    const openDrafts = get().drafts[id] ?? {};
+    const revs = Object.fromEntries(
+      NOTE_KINDS.map((kind) => {
+        const allowed = permit[kind] === true && openDrafts[kind] === undefined;
+        return [kind, allowed ? (paper.notes?.[kind]?.rev ?? 0) : -1];
+      }),
+    ) as Record<NoteKind, number>;
     const prompt = draftNotesUserPrompt(paper);
-    // 记下此刻每块笔记的版本号：请求期间被改过的块回写时整块跳过。
-    const revs = Object.fromEntries(NOTE_KINDS.map((kind) => [kind, paper.notes?.[kind]?.rev ?? 0])) as Record<NoteKind, number>;
     try {
       const result = await runTracked(
         { type: "draftNotes", paperId: id, prompt, stage: "request", onCancel: cancelChat },
@@ -983,13 +1175,13 @@ export const useField = create<FieldState>((set, get) => ({
           await ctx.checkpoint();
           ctx.stage("apply");
           const notes = normalizeNotes(extractJson(raw));
-          const kept = await repo.applyDraftedNotes(id, notes, overwrite, revs, jobDoneStep(ctx.jobId, raw));
+          const kept = await repo.applyDraftedNotes(id, notes, true, revs, jobDoneStep(ctx.jobId, raw));
           if (kept === null) return "cancelled";
-          const editedDuring = kept.filter((kind) => overwrite || !paper.notes?.[kind]?.userEdited);
-          if (editedDuring.length) {
+          const withheld = kept.filter((kind) => revs[kind] !== -1);
+          if (withheld.length) {
             get().setFlash({
               tone: "warn",
-              text: `起草期间你修改了 ${editedDuring.length} 块笔记，这些块保留你的内容，其余已写入 AI 草稿。`,
+              text: `起草期间你修改了 ${withheld.length} 块笔记，这些块保留你的内容，其余已写入 AI 草稿。`,
             });
           } else {
             get().setFlash({ tone: "ok", text: "AI 作业完成。阅读状态未改动。" });
@@ -1094,17 +1286,70 @@ export const useField = create<FieldState>((set, get) => ({
   },
 
   restoreLibrary: async () => {
+    if (!isTauri()) {
+      get().setFlash({ tone: "warn", text: "备份与恢复仅在桌面版可用。" });
+      return;
+    }
     try {
-      const restored = await restoreLibrary();
-      if (!restored) return;
-      get().setFlash({ tone: "ok", text: "已恢复文库，正在重新载入。" });
-    } catch (err) {
-      if (String(err).includes("DESKTOP_ONLY")) {
-        get().setFlash({ tone: "warn", text: "备份与恢复仅在桌面版可用。" });
-        return;
+      const { invoke } = await import("@tauri-apps/api/core");
+      const summary = await invoke<{ papers: number } | null>("restore_library_backup");
+      if (!summary) return;
+      try {
+        const backup = await invoke<Array<{ id: string; title: string; titleZh?: string | null }>>("restore_staged_titles");
+        const current = await liveLibraryTitles();
+        set({
+          restorePreview: {
+            phase: "previewed",
+            diff: partitionTitles(
+              current,
+              backup.map((row) => ({ id: row.id, label: libraryLabel(row.title, row.titleZh) })),
+              RESTORE_TITLE_CAP,
+            ),
+          },
+        });
+        get().openDialog("restore-diff");
+      } catch (err) {
+        await invoke("restore_abandon");
+        set({ restorePreview: { phase: "idle" } });
+        get().setFlash({ tone: "error", text: `无法读取备份标题，已取消恢复，文库未改动。${errText(err)}` });
       }
+    } catch (err) {
       get().setFlash({ tone: "error", text: `恢复失败：${errText(err)}` });
     }
+  },
+
+  confirmRestore: async () => {
+    const preview = get().restorePreview;
+    if (preview.phase !== "previewed") return;
+    if (!isTauri()) {
+      get().setFlash({ tone: "warn", text: "备份与恢复仅在桌面版可用。" });
+      return;
+    }
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("restore_commit_preview");
+      set({ restorePreview: { phase: "staged", diff: preview.diff } });
+      await resetEngine();
+      const { relaunch } = await import("@tauri-apps/plugin-process");
+      await relaunch();
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `恢复未能确认：${errText(err)}。文库未替换。` });
+    }
+  },
+
+  cancelRestore: async () => {
+    const phase = get().restorePreview.phase;
+    if (phase === "staged") return;
+    if (phase === "previewed" && isTauri()) {
+      try {
+        const { invoke } = await import("@tauri-apps/api/core");
+        await invoke("restore_abandon");
+      } catch (err) {
+        get().setFlash({ tone: "error", text: `取消恢复失败：${errText(err)}。文库未改动。` });
+        return;
+      }
+    }
+    set({ dialog: null, dialogPaperId: null, dialogPaperIds: [], pendingDraftJob: null, restorePreview: { phase: "idle" } });
   },
 
   exportCurrentDomain: async () => {

@@ -10,7 +10,7 @@ The workstation chrome: charcoal dock, mode rail, paper list, document stage, co
 - 归档 heading 归档 lists only papers the user marked 已读. On a fresh seed that is 视觉指令微调 only.
 - 入库 heading 入库 lists papers not marked 已读, across domains: the CLIP paper and 用人类反馈训练语言模型遵循指令.
 - 设置 replaces the list and stage with the settings page (`h1` 设置).
-- Status strip (`footer.ef-status`): 已读 1 / 3, 开源 count, 队列空闲, 尚未配置 AI 服务, MinerU 未配置, and a 搜索 hint.
+- Status strip (`footer.ef-status`): 已读 1 / 4, 开源 count, 队列空闲, 尚未配置 AI 服务, MinerU 未配置, and a 搜索 hint. The fourth paper is visual-instruction-tuning.pdf, unread, in 多模态.
 
 ## How to get to it (user POV)
 
@@ -22,7 +22,7 @@ Viewport 1600×1000 so the list and the stage are both columns (see Gotchas).
 
 - `openWorkstation` waits for `navigation` 主导航 and `listbox` 论文列表, then a row whose name matches 视觉指令微调.
 - Mode changes go through `clickMode` (the button inside 主导航, exact name).
-- Counts use `footer.ef-status` text `已读 1 / 3`, `队列空闲`, `尚未配置 AI 服务`, `MinerU 未配置`.
+- Counts use `footer.ef-status` text `已读 1 / 4`, `队列空闲`, `尚未配置 AI 服务`, `MinerU 未配置`.
 - After 归档, the listbox contains 视觉指令微调 and does not contain the CLIP title. After 入库, the CLIP title and 用人类反馈训练语言模型遵循指令 are present and 视觉指令微调 is not.
 - 设置 is `heading` level 1 named 设置. Returning to 阅读 restores 切换研究领域：多模态.
 - Open 视觉指令微调 and expect `heading` 阅读笔记.
@@ -31,6 +31,6 @@ Viewport 1600×1000 so the list and the stage are both columns (see Gotchas).
 
 - `@media (max-width: 1399px)` hides `.ef-context`. `@media (max-width: 1100px)` turns `.ef-nav` into a drawer opened by 论文列表. Drive at 1600×1000.
 - 归档 and 入库 are `h2`s in the list column, not the rail button. Scope rail clicks to 主导航.
-- The status strip counts every domain. The 阅读进度 line in the list column counts only the current domain (已读 1 / 2 for 多模态). Do not assert the footer against the list-column fraction.
+- The status strip counts every domain. The 阅读进度 line in the list column counts only the current domain (已读 1 / 3 for 多模态). Do not assert the footer against the list-column fraction.
 - Fresh context each journey. A reused profile keeps IndexedDB `paper-field` and will not reseed.
 - 打开 PDF and 补充 PDF are not part of this journey. ArXiv links call the desktop opener or `window` navigation.
