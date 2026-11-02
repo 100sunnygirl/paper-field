@@ -1106,7 +1106,7 @@ export const useField = create<FieldState>((set, get) => ({
   },
 
   saveNote: (paperId, kind, content) =>
-    trackNoteSave(paperId, kind, async () => {
+    joinInFlightNoteSave(paperId, kind, async () => {
       try {
         const row = await repo.getPaper(paperId);
         if (!row) throw new Error("论文不存在");
@@ -1919,8 +1919,7 @@ function rememberLookup(
 
 const noteSaveFlight = new Map<string, Promise<void>>();
 
-/** 同一篇同一块只写一次。失焦保存和「保存全部」会叠在同一次点击上。 */
-function trackNoteSave(paperId: string, kind: NoteKind, work: () => Promise<void>): Promise<void> {
+function joinInFlightNoteSave(paperId: string, kind: NoteKind, work: () => Promise<void>): Promise<void> {
   const key = `${paperId}:${kind}`;
   const existing = noteSaveFlight.get(key);
   if (existing) return existing;
