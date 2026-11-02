@@ -48,7 +48,7 @@ jobs:
       # 发布（tag）构建不读缓存：缓存可被其他分支的构建写入，不能进入带签名密钥的产物。
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 20
+          node-version: 24
           cache: ${{ github.ref_type != 'tag' && 'npm' || '' }}
           # 不让 package.json 的 packageManager 字段触发自动缓存，缓存只由上一行决定。
           package-manager-cache: false
@@ -58,7 +58,7 @@ jobs:
           targets: ${{ matrix.toolchain-targets }}
           components: clippy
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: github.ref_type != 'tag'
         with:
           workspaces: src-tauri

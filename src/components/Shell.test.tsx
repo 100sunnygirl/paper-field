@@ -4,7 +4,7 @@ import { useField } from "../store";
 import { Dock, StatusStrip } from "./Shell";
 import { beginBatchItem, endBatchItem, queueBatch, resetActivity, startBatch } from "../lib/activity";
 import { repo } from "../lib/repo";
-import type { LlmJob, PaperDetail } from "../lib/types";
+import { NOTE_DISPLAY_ORDER, type LlmJob, type PaperDetail } from "../lib/types";
 
 vi.mock("../lib/repo", () => ({
   repo: {
@@ -88,12 +88,16 @@ describe("StatusStrip · 作业入口", () => {
 
 describe("StatusStrip · 未保存草稿集中入口", () => {
   function draftPaper(id: string, title: string): PaperDetail {
+    const notes = Object.fromEntries(
+      NOTE_DISPLAY_ORDER.map((kind) => [kind, { content: "" }]),
+    ) as PaperDetail["notes"];
     return {
       id,
       title,
       titleZh: null,
       domainId: "d1",
       domain: { id: "d1", name: "多模态", code: "MM-01", summary: null, sortOrder: 0, createdAt: "2024-01-01T00:00:00.000Z" },
+      notes,
     } as unknown as PaperDetail;
   }
 
