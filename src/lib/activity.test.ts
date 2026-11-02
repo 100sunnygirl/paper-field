@@ -10,6 +10,7 @@ import {
   parsePageProgress,
   patchJobLive,
   queueBatch,
+  reorderBatch,
   resetActivity,
   startBatch,
   subscribeActivity,
@@ -86,6 +87,31 @@ describe("批次生命周期", () => {
     endBatchItem(999, "a", "ok");
     finishBatch(999, "done");
     discardBatch(999);
+    expect(getActivity()).toBe(before);
+  });
+
+  it("reorderBatch 只调排队项：置顶 / 上移 / 下移换位，已处理与进行中的留在原位", () => {
+    const id = queueBatch("mineru", ["a", "b", "c", "d", "e"]);
+    startBatch(id);
+    beginBatchItem(id, "a");
+    endBatchItem(id, "a", "ok");
+    beginBatchItem(id, "b"); // b 处理中
+
+    reorderBatch(id, "e", "top");
+    expect(getActivity().batches[0].paperIds).toEqual(["a", "b", "e", "c", "d"]);
+
+    reorderBatch(id, "c", "down"); // c 与 d 交换
+    expect(getActivity().batches[0].paperIds).toEqual(["a", "b", "e", "d", "c"]);
+
+    reorderBatch(id, "e", "up"); // 已在最前，不动
+    expect(getActivity().batches[0].paperIds).toEqual(["a", "b", "e", "d", "c"]);
+
+    // 已处理 / 进行中的论文不受影响；未知论文与不存在批次均无副作用。
+    const before = getActivity();
+    reorderBatch(id, "a", "top");
+    reorderBatch(id, "b", "down");
+    reorderBatch(id, "nope", "top");
+    reorderBatch(999, "e", "top");
     expect(getActivity()).toBe(before);
   });
 });

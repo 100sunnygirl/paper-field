@@ -52,6 +52,13 @@ const ICONS = {
       <path d="m8 12 3 3 6-7" />
     </>
   ),
+  pin: <path d="M9 3h6l-1 7 3 3H7l3-3zM12 13v8" />,
+  copy: (
+    <>
+      <rect x="9" y="9" width="11" height="11" />
+      <path d="M5 15V4h11" />
+    </>
+  ),
 } as const;
 
 export type IconName = keyof typeof ICONS;

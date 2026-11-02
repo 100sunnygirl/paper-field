@@ -52,8 +52,11 @@
   --pf-fs-h1: 28px;
   --pf-fs-display: clamp(34px, 20px + 1.2vw, 46px);
   /* 阅读阶梯：正文 16px（~1600px 宽）到 18px（~2100px 宽）流式；
-     区段标题 ×1.375、笔记小标题 ×1.125，随正文同步缩放、永不倒挂。 */
-  --pf-body-size: clamp(16px, 9.6px + 0.4vw, 18px);
+     区段标题 ×1.375、笔记小标题 ×1.125，随正文同步缩放、永不倒挂。
+     --pf-body-size-base 是这条流式基线；正文外观（A−/A+/行宽）在 .ef-read
+     上用 --pf-read-scale / --pf-read-width-scale 缩放它，不引入新阶梯。 */
+  --pf-body-size-base: clamp(16px, 9.6px + 0.4vw, 18px);
+  --pf-body-size: var(--pf-body-size-base);
   --pf-doc-h2: calc(var(--pf-body-size) * 1.375);
   --pf-doc-h3: calc(var(--pf-body-size) * 1.125);
   --pf-body-leading: 1.85;
@@ -61,6 +64,9 @@
   --pf-lh-snug: 1.45;
   --pf-lh-ui: 1.6;
   --pf-tracking-tag: 0.08em;
+  /* 阅读外观档位（.ef-read 上由内联样式覆盖）：字号 0.85–1.2，行宽窄 0.85 / 宽 1.2。 */
+  --pf-read-scale: 1;
+  --pf-read-width-scale: 1;
 
   /* ---- Geometry ---- */
   --pf-radius: 2px;
@@ -70,8 +76,10 @@
   /* Side columns grow gently with the window so wide screens are not all canvas. */
   --pf-paper-list-width: clamp(292px, 15vw, 340px);
   --pf-context-width: clamp(256px, 14.5vw, 336px);
-  /* 正文栏稳定行长。更宽的窗口把多余宽度留成页边；收窄时行长只减不增。 */
+  /* 正文栏稳定行长。更宽的窗口把多余宽度留成页边；收窄时行长只减不增。
+     --pf-read-width-base 是各断点的基础行长（阅读外观的行宽档位在此基础上缩放）。 */
   --pf-document-max-width: 760px;
+  --pf-read-width-base: 760px;
   --pf-stage-pad-x: clamp(24px, 2vw, 48px);
   --pf-stage-pad-y: clamp(28px, 1.6vw, 40px);
   --pf-document-pad: clamp(30px, 2.4vw, 56px);
@@ -486,6 +494,47 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 .ef-shell.is-focus .ef-context { display: none; }
 .ef-shell.is-focus .ef-context-toggle { display: inline-flex; }
 .ef-shell[data-mode="system"] .ef-nav { display: none; }
+/* 钉住的作业面板：作为最右一列参与网格（rail / nav / read / jobs），不再浮在正文上。
+   Esc 不收起（App 侧判定）；关闭面板时这列也跟着消失。 */
+.ef-shell.is-jobs-pinned {
+  --pf-jobs-col: 336px;
+  grid-template-columns: var(--pf-rail-width) var(--pf-paper-list-width) minmax(0, 1fr) var(--pf-jobs-col);
+  grid-template-areas:
+    "dock dock dock dock"
+    "rail nav read jobs"
+    "status status status status";
+}
+.ef-shell.is-focus.is-jobs-pinned {
+  grid-template-columns: var(--pf-rail-width) minmax(0, 1fr) var(--pf-jobs-col);
+  grid-template-areas:
+    "dock dock dock"
+    "rail read jobs"
+    "status status status";
+}
+.ef-shell[data-mode="system"].is-jobs-pinned {
+  grid-template-columns: var(--pf-rail-width) minmax(0, 1fr) var(--pf-jobs-col);
+  grid-template-areas:
+    "dock dock dock"
+    "rail read jobs"
+    "status status status";
+}
+.ef-shell.is-jobs-pinned .ef-jobs {
+  position: static;
+  grid-area: jobs;
+  z-index: auto;
+  width: auto;
+  max-height: none;
+  border-top-width: 1px;
+  border-left: 1px solid var(--pf-ink);
+  box-shadow: none;
+  animation: none;
+}
+.ef-shell.is-jobs-pinned .ef-jobs::before { display: none; }
+.ef-jobs.is-pinned .ef-icon-btn[aria-pressed="true"] {
+  border-color: var(--pf-ink);
+  background: var(--pf-ink);
+  color: var(--pf-on-dark);
+}
 
 /* ---- Dock ---- */
 .ef-dock {
@@ -809,6 +858,20 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   width: 8px;
   background: var(--pf-signal);
 }
+/* 标已读的 +1 微反馈：填充闪一层成功色、已读计数轻跳一下（约 700ms，
+   reduced-motion 由全局兜底关闭；不引入新色，成功色与状态条 .ok 同源）。 */
+.ef-progress.is-read-pulse > i::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: var(--pf-tint-success);
+  animation: pf-flash-out 700ms var(--pf-ease-out);
+}
+.ef-progress-value b.is-read-pulse,
+.ef-status b.is-read-pulse {
+  display: inline-block;
+  animation: pf-count-bump 700ms var(--pf-ease-out);
+}
 .ef-list-head {
   display: flex;
   align-items: center;
@@ -1023,6 +1086,37 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 .ef-job-row .status-running { color: var(--pf-ink); font-weight: 600; }
 .ef-job-row .status-error { color: var(--pf-danger); font-weight: 600; }
 .ef-job-row .status-done { color: var(--pf-success); }
+/* 入库页作业行主体：标题 + 阶段一句话（与作业面板同口径），点击在面板里高亮对应卡。 */
+.ef-job-row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 0;
+  border: 0;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+.ef-job-row-main:focus-visible { outline: 2px solid var(--pf-ink); outline-offset: 2px; }
+.ef-job-row-main .status-queued,
+.ef-job-row-main .status-running { display: inline-flex; align-items: center; gap: 5px; }
+.ef-job-row-title {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--pf-ink);
+}
+.ef-job-row-stage { color: var(--pf-muted); }
+/* 面板作业卡的互跳高亮：入库页点过来的那张卡亮信号黄描边（选中提示类用途）。 */
+.ef-jobcard.is-highlight {
+  outline: 2px solid var(--pf-signal);
+  outline-offset: 2px;
+}
 
 .no-results {
   margin: 0;
@@ -1081,6 +1175,10 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   min-height: 0;
   background: var(--pf-canvas);
   z-index: 1;
+  /* 阅读外观（A−/A+/行宽）：只缩放正文阶梯与正文栏宽，界面控件字号不动。
+     --pf-read-scale / --pf-read-width-scale 由 ReadingStage 按本机+本篇记忆内联写入。 */
+  --pf-body-size: calc(var(--pf-body-size-base) * var(--pf-read-scale, 1));
+  --pf-document-max-width: calc(var(--pf-read-width-base, 760px) * var(--pf-read-width-scale, 1));
 }
 .ef-read.has-context {
   grid-template-columns: minmax(0, 1fr) var(--pf-context-width);
@@ -1316,6 +1414,39 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 .ef-row-draft {
   color: var(--pf-danger);
 }
+/* 常驻笔记进度胶囊（分类行右端）：墨框计数；写满后实墨 + 对勾。 */
+.ef-paper-category .ef-note-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  min-height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--pf-ink);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--pf-ink);
+  font-size: var(--pf-fs-tag);
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background-color var(--pf-motion), color var(--pf-motion);
+}
+.ef-note-pill .ef-ico { width: 12px; height: 12px; }
+.ef-note-pill .mono { color: var(--pf-muted); font-weight: 500; }
+.ef-note-pill:hover { background: var(--pf-ink); color: var(--pf-on-dark); }
+.ef-note-pill:hover .mono { color: var(--pf-on-dark-2); }
+.ef-note-pill.is-full {
+  background: var(--pf-ink);
+  color: var(--pf-on-dark);
+}
+.ef-note-pill.is-full .mono { color: var(--pf-on-dark-2); }
+/* 写满那一刻的轻庆祝：胶囊弹一下（约 1s，reduced-motion 下由全局兜底关闭），
+   不打断阅读、不引入新色。 */
+.ef-note-pill.is-celebrate {
+  animation: pf-celebrate-pop 1s var(--pf-ease-out);
+}
 .ef-out-of-list {
   margin: -8px 0 16px;
   font-size: var(--pf-fs-caption);
@@ -1498,14 +1629,61 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   color: var(--pf-body);
   margin: 0;
 }
-.ef-notes-heading { margin-top: 0; }
-.ef-notes-heading .ef-section-label { margin-bottom: 6px; }
+.ef-notes-heading { margin-top: 0; display: flex; align-items: flex-start; gap: 10px; }
+.ef-notes-heading .ef-section-label { margin-bottom: 6px; flex: 1; min-width: 0; }
+/* 「保存本篇全部」：有草稿时出现在阅读笔记标题行右端的统一出口。 */
+.ef-notes-heading .ef-save-all { flex: none; margin-top: 2px; }
 .ef-notes-caption {
   font-size: var(--pf-fs-caption);
   margin: 0 0 4px;
   color: var(--pf-muted);
   line-height: 1.6;
 }
+/* Esc 收起编辑器后的常驻提示：草稿还在，块头可见。 */
+.ef-note-draft-chip {
+  padding: 1px 7px;
+  border: 1px dashed var(--pf-line-strong);
+  font-size: var(--pf-fs-tag);
+  font-weight: 500;
+  color: var(--pf-secondary);
+  line-height: 1.6;
+  white-space: nowrap;
+}
+/* 折叠开关：块头最左的安静图标按钮，折叠时箭头转向右。 */
+.ef-note-fold {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--pf-muted);
+  border-radius: var(--pf-radius);
+  transition: background-color var(--pf-motion), color var(--pf-motion);
+}
+.ef-note-fold .ef-ico { width: 15px; height: 15px; transition: transform var(--pf-direct); }
+.ef-note-fold:hover { background: var(--pf-hover-flat); color: var(--pf-ink); }
+.ef-note-fold[aria-expanded="false"] .ef-ico { transform: rotate(-90deg); }
+.ef-note-collapsed-hint { margin: 0; font-size: var(--pf-fs-caption); color: var(--pf-muted); }
+/* 块排序：上移 / 下移一对安静图标按钮，位于块头末尾。 */
+.ef-note-move { display: inline-flex; gap: 2px; margin-left: 2px; }
+.ef-note-move button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--pf-muted);
+  border-radius: var(--pf-radius);
+  transition: background-color var(--pf-motion), color var(--pf-motion);
+}
+.ef-note-move button .ef-ico { width: 14px; height: 14px; }
+.ef-note-move button:hover:not(:disabled) { background: var(--pf-hover-flat); color: var(--pf-ink); }
+.ef-note-move button:disabled { opacity: 0.35; cursor: default; }
 .ef-note {
   position: relative;
   border-bottom: 1px solid var(--pf-divider);
@@ -1613,6 +1791,38 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 .ef-empty-note { margin: 0; color: var(--pf-muted); font-size: var(--pf-fs-ui); }
 .ef-empty-note .ef-btn-link { display: inline-flex; min-height: 0; margin-left: 4px; }
 /* 空笔记块的就地入口：虚线框占位，点击即在原位打开编辑框。 */
+.ef-note-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+/* 研究问题提示：caption 档的一行切入点 + 右侧收起钮；点「写…」仍从空白开写。 */
+.ef-note-question {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
+  line-height: 1.7;
+}
+.ef-note-question button {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin-top: 2px;
+  border: 0;
+  background: transparent;
+  color: var(--pf-muted);
+  border-radius: var(--pf-radius);
+  cursor: pointer;
+  transition: background-color var(--pf-motion), color var(--pf-motion);
+}
+.ef-note-question button .ef-ico { width: 11px; height: 11px; }
+.ef-note-question button:hover { background: var(--pf-hover-flat); color: var(--pf-ink); }
 .ef-note-start {
   display: flex;
   align-items: center;
@@ -1738,6 +1948,38 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+/* 三段状态条（未读 → 在读 → 已读）：核心仪式状态一眼可见；纯展示，
+   修改仍走原生 select。已到达的段浅墨，当前段实墨。 */
+.ef-read-steps {
+  display: flex;
+  gap: 2px;
+  margin-bottom: 10px;
+}
+.ef-read-steps span {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 24px;
+  padding: 0 2px;
+  border: 1px solid var(--pf-control-border);
+  border-radius: var(--pf-radius);
+  color: var(--pf-muted);
+  font-size: var(--pf-fs-caption);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.ef-read-steps span.is-reached {
+  background: var(--pf-hover-quiet);
+  border-color: var(--pf-line-strong);
+  color: var(--pf-secondary);
+}
+.ef-read-steps span.is-current {
+  background: var(--pf-ink);
+  border-color: var(--pf-ink);
+  color: var(--pf-on-dark);
+  font-weight: 600;
 }
 .ef-status-select .ef-ico { width: 16px; height: 16px; color: var(--pf-ink); }
 .ef-status-select select,
@@ -1880,6 +2122,41 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 }
 .ef-toc a.is-active::before { transform: none; }
 .ef-toc a.is-active .mono { color: var(--pf-ink); }
+/* 解析全文章节的二级导航：缩进一档、小一号，行尾附「复制引用」安静图标按钮。 */
+.ef-toc-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 1px 0 6px;
+  padding-left: 9px;
+  border-left: 1px solid var(--pf-divider);
+}
+.ef-toc-section-row { display: flex; align-items: center; min-width: 0; }
+.ef-toc-section-row a {
+  flex: 1;
+  min-width: 0;
+  min-height: 28px;
+  font-size: var(--pf-fs-caption);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.ef-toc-section-row a .mono { width: auto; min-width: 26px; padding-right: 4px; }
+.ef-toc-copy {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--pf-muted);
+  border-radius: var(--pf-radius);
+  transition: background-color var(--pf-motion), color var(--pf-motion);
+}
+.ef-toc-copy .ef-ico { width: 13px; height: 13px; }
+.ef-toc-copy:hover { background: var(--pf-hover-flat); color: var(--pf-ink); }
+.ef-toc-more { margin: 4px 10px 0; font-size: var(--pf-fs-caption); color: var(--pf-muted); }
 /* AI 助手：资料栏唯一的墨色操作面板，与浅色资料块形成明确分区。 */
 .ef-ai-context {
   position: relative;
@@ -1932,6 +2209,224 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   color: var(--pf-on-dark-2);
 }
 
+/* ---- 资料栏可折叠区块 ----
+   标题行右端一枚安静的折叠开关（与笔记块同一手法）；偏好经 contextFold 记在本机。 */
+.ef-context-block-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+.ef-context-block-head .ef-context-title { flex: 1; margin-bottom: 0; }
+.ef-context-fold {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--pf-muted);
+  border-radius: var(--pf-radius);
+  transition: background-color var(--pf-motion), color var(--pf-motion);
+}
+.ef-context-fold .ef-ico { width: 15px; height: 15px; transition: transform var(--pf-direct); }
+.ef-context-fold:hover { background: var(--pf-hover-flat); color: var(--pf-ink); }
+.ef-context-fold[aria-expanded="false"] .ef-ico { transform: rotate(-90deg); }
+.ef-context-block.is-folded { padding-bottom: 14px; }
+.ef-context-block.is-folded .ef-context-block-head { margin-bottom: 0; }
+/* AI 助手块保持原有墨色面板观感：不吃通用块的顶部分隔线与标题间距。 */
+.ef-context-block.ef-ai-context { border-top: 0; }
+.ef-ai-context .ef-context-block-head { margin-bottom: 8px; }
+.ef-ai-context.is-folded .ef-context-block-head { margin-bottom: 0; }
+.ef-ai-context .ef-context-fold { color: var(--pf-on-dark-3); }
+.ef-ai-context .ef-context-fold:hover { background: var(--pf-ink-2); color: var(--pf-on-dark); }
+
+/* ---- 标识符一键复制 ----
+   arXiv / DOI 行与作者名单旁的小复制钮；纯动作按钮，不带新色。 */
+.ef-identifier-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.ef-id-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--pf-muted);
+  border-radius: var(--pf-radius);
+  cursor: pointer;
+  transition: background-color var(--pf-motion), color var(--pf-motion);
+}
+.ef-id-copy .ef-ico { width: 12px; height: 12px; }
+.ef-id-copy:hover { background: var(--pf-hover-flat); color: var(--pf-ink); }
+/* 带文字的复制钮（复制作者名单）：caption 档、与作者明细同列。 */
+.ef-id-copy.ef-id-copy-text {
+  width: auto;
+  min-height: 24px;
+  padding: 0 8px;
+  gap: 4px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+  border-color: var(--pf-divider);
+}
+.ef-author-copy-row { margin: 0 0 8px; }
+
+/* ---- 阅读外观 ----
+   字号 A−/A+ 与行宽 窄/标准/宽：安静的分段控件，只作用于正文（--pf-read-* 缩放）。 */
+.ef-appearance { display: flex; flex-direction: column; gap: 8px; }
+.ef-appearance-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+}
+.ef-appearance-label {
+  flex: none;
+  width: 34px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
+}
+.ef-appearance-step,
+.ef-appearance-width {
+  min-height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--pf-control-border);
+  background: var(--pf-surface);
+  color: var(--pf-secondary);
+  font-size: var(--pf-fs-caption);
+  border-radius: var(--pf-radius);
+  cursor: pointer;
+  transition: border-color var(--pf-motion), color var(--pf-motion), background-color var(--pf-motion);
+}
+.ef-appearance-step:disabled { opacity: 0.35; cursor: default; }
+.ef-appearance-step:hover:not(:disabled),
+.ef-appearance-width:hover { border-color: var(--pf-ink); color: var(--pf-ink); }
+.ef-appearance-width[aria-pressed="true"] {
+  border-color: var(--pf-ink);
+  background: var(--pf-ink);
+  color: var(--pf-on-dark);
+}
+.ef-appearance-value {
+  flex: 1;
+  min-width: 34px;
+  text-align: center;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-ink);
+}
+.ef-appearance-actions { display: flex; gap: 6px; }
+.ef-appearance-actions button {
+  min-height: 24px;
+  padding: 0 8px;
+  border: 0;
+  background: none;
+  color: var(--pf-secondary);
+  font-size: var(--pf-fs-caption);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.ef-appearance-actions button:hover { color: var(--pf-ink); }
+.ef-appearance-hint {
+  margin: 0;
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-muted);
+  line-height: 1.6;
+}
+
+/* ---- 本篇状态卡 ----
+   资料栏顶部的汇总卡：解析 / 著录 / 笔记三条进度 + 推荐的下一步。
+   白纸面 + 墨顶线（对话同族、无信号黄——它是信息卡不是动作焦点）。 */
+.ef-card {
+  border: 1px solid var(--pf-ink);
+  border-top-width: 3px;
+  background: var(--pf-surface);
+  padding: 12px 12px 10px;
+  margin-bottom: 18px;
+}
+.ef-card-title {
+  margin: 0 0 10px;
+  font-size: var(--pf-fs-ui);
+  line-height: 1.3;
+  font-weight: 700;
+  color: var(--pf-ink);
+}
+.ef-card-progress {
+  list-style: none;
+  margin: 0 0 10px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ef-card-progress li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
+}
+.ef-card-progress li > span:first-child { flex: none; width: 30px; }
+.ef-card-progress b {
+  flex: none;
+  margin-left: auto;
+  font-size: var(--pf-fs-caption);
+  font-weight: 600;
+  color: var(--pf-ink);
+}
+.ef-card-progress b.is-done { color: var(--pf-success); }
+.ef-card-progress b.is-failed { color: var(--pf-danger); }
+.ef-card-bar {
+  flex: 1;
+  min-width: 24px;
+  height: 3px;
+  overflow: hidden;
+  background: #dcdfd5;
+}
+.ef-card-bar i {
+  display: block;
+  height: 100%;
+  background: var(--pf-ink);
+}
+.ef-card-next { border-top: 1px dashed var(--pf-divider); padding-top: 8px; }
+.ef-card-next-label {
+  margin-right: 6px;
+  font-size: var(--pf-fs-tag);
+  letter-spacing: var(--pf-tracking-tag);
+  color: var(--pf-muted);
+}
+.ef-card-next button {
+  min-height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--pf-ink);
+  background: var(--pf-ink);
+  color: var(--pf-on-dark);
+  font-size: var(--pf-fs-caption);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color var(--pf-motion);
+}
+.ef-card-next button:hover { background: var(--pf-ink-2); }
+.ef-card-next b.is-done {
+  font-size: var(--pf-fs-caption);
+  font-weight: 600;
+  color: var(--pf-success);
+}
+.ef-card-next p {
+  margin: 6px 0 0;
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-muted);
+  line-height: 1.6;
+}
+
 /* ---- System ---- */
 .ef-system {
   height: 100%;
@@ -1978,6 +2473,308 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   max-width: 1040px;
   counter-reset: pf-block;
 }
+/* 设置页两栏：左侧「查找设置 + 锚点目录」常驻吸顶，右侧是卡片列；窄屏隐藏目录。 */
+.ef-system-layout {
+  display: grid;
+  grid-template-columns: 216px minmax(0, 1fr);
+  gap: 28px;
+  align-items: start;
+  max-width: 1280px;
+}
+@media (max-width: 1100px) {
+  .ef-system-layout { grid-template-columns: minmax(0, 1fr); }
+  .ef-system-nav { display: none; }
+}
+.ef-system-nav {
+  position: sticky;
+  top: 0;
+  padding: 6px 0 24px;
+}
+.ef-system-search span {
+  display: block;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
+  margin-bottom: 6px;
+}
+.ef-system-search input {
+  width: 100%;
+  height: var(--pf-control-height-sm);
+  padding: 0 10px;
+  font-size: var(--pf-fs-ui);
+  color: var(--pf-body);
+  background: var(--pf-surface);
+  border: 1px solid var(--pf-line-strong);
+}
+.ef-system-nav ul {
+  list-style: none;
+  margin: 14px 0 0;
+  padding: 0;
+  border-left: 1px solid var(--pf-divider);
+}
+.ef-system-nav a {
+  display: block;
+  padding: 7px 12px;
+  font-size: var(--pf-fs-ui);
+  color: var(--pf-secondary);
+  text-decoration: none;
+  border-left: 2px solid transparent;
+  margin-left: -1px;
+}
+.ef-system-nav a:hover { color: var(--pf-ink); background: var(--pf-hover-flat); }
+.ef-system-nav a.is-active {
+  color: var(--pf-ink);
+  font-weight: 600;
+  border-left-color: var(--pf-ink);
+}
+.ef-system-no-match {
+  margin: 0;
+  padding: 22px 24px;
+  background: var(--pf-surface);
+  border: 1px dashed var(--pf-divider);
+  color: var(--pf-muted);
+  font-size: var(--pf-fs-ui);
+}
+.ef-system-back { margin: 14px 0 0; padding-left: 20px; }
+/* 深链定位：目标卡片短暂描边提示（装饰承载「跳到这里」的真实信息）。 */
+@keyframes pf-system-focus {
+  0% { box-shadow: 0 0 0 3px rgba(25, 25, 25, 0.22); }
+  100% { box-shadow: 0 0 0 3px rgba(25, 25, 25, 0); }
+}
+.page-block.is-focused {
+  border-color: var(--pf-ink);
+  animation: pf-system-focus 1.8s var(--pf-direct) 1;
+}
+/* 快捷键行内的「试用」按钮：与 kbd 键帽同高，弱化为次要动作。 */
+.ef-kbd-try {
+  margin-left: 8px;
+  height: 22px;
+  padding: 0 8px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
+  background: transparent;
+  border: 1px solid var(--pf-line-strong);
+  border-radius: var(--pf-radius);
+  cursor: pointer;
+}
+.ef-kbd-try:hover { color: var(--pf-ink); border-color: var(--pf-ink); }
+/* 快捷键卡：查找 + 改键捕获提示。 */
+.ef-shortcut-search {
+  display: block;
+  margin: 0 0 14px;
+  max-width: 320px;
+}
+.ef-shortcut-search span {
+  display: block;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
+  margin-bottom: 6px;
+}
+.ef-shortcut-search input {
+  width: 100%;
+  height: var(--pf-control-height-sm);
+  padding: 0 10px;
+  font-size: var(--pf-fs-ui);
+  color: var(--pf-body);
+  background: var(--pf-surface);
+  border: 1px solid var(--pf-line-strong);
+}
+.ef-kbd-capture {
+  margin: 12px 0 0;
+  padding: 8px 12px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-body);
+  background: var(--pf-panel);
+  border: 1px solid var(--pf-ink);
+}
+.ef-kbd-note .ef-btn { margin-left: 8px; }
+/* 各设置卡的生效规则说明：哪些立即生效、哪些等保存按钮。 */
+.ef-save-rules {
+  margin: 0 0 14px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
+  line-height: 1.7;
+}
+/* 数据导出卡：范围 + 内容选择 + 导出前预览。 */
+.ef-export-content {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 20px;
+  align-items: center;
+  border: 1px solid var(--pf-divider);
+  border-radius: var(--pf-radius);
+  padding: 10px 14px 12px;
+  margin: 0 0 14px;
+}
+.ef-export-content legend {
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
+  padding: 0 6px;
+}
+.ef-export-content label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--pf-fs-ui);
+  color: var(--pf-secondary);
+}
+.ef-export-content input { accent-color: var(--pf-ink); }
+.ef-export-preview {
+  margin: 0 0 14px;
+  font-size: var(--pf-fs-ui);
+  color: var(--pf-secondary);
+}
+.ef-export-preview b { color: var(--pf-ink); font-weight: 600; }
+/* 密钥与令牌总览：一行一条（名称 / 状态 / 定位·清除），保存项打点标绿。 */
+.ef-secrets-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.ef-secrets-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 40px;
+  border-bottom: 1px dashed var(--pf-divider);
+  font-size: var(--pf-fs-ui);
+}
+.ef-secrets-row:last-child { border-bottom: 0; }
+.ef-secrets-label { flex: 1; min-width: 0; color: var(--pf-body); }
+.ef-secrets-status {
+  flex: none;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.ef-secrets-status.is-ok { color: var(--pf-success); font-weight: 600; }
+.ef-secrets-status.is-error { color: var(--pf-danger); font-weight: 600; }
+.ef-secrets-status.is-ok::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  background: var(--pf-success);
+  border-radius: 50%;
+}
+.ef-secrets-actions { flex: none; display: inline-flex; gap: 6px; }
+.ef-secrets-empty { font-size: var(--pf-fs-caption); color: var(--pf-muted); }
+/* 上手清单：最小可用配置路径，逐项状态 + 去配置入口。 */
+.ef-setup-list { list-style: none; margin: 0; padding: 0; }
+.ef-setup-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  border-bottom: 1px dashed var(--pf-divider);
+  font-size: var(--pf-fs-ui);
+}
+.ef-setup-item:last-child { border-bottom: 0; }
+.ef-setup-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1.5px solid var(--pf-line-strong);
+}
+.ef-setup-item.is-done .ef-setup-dot { background: var(--pf-success); border-color: var(--pf-success); }
+.ef-setup-text { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.ef-setup-text b { font-weight: 600; color: var(--pf-ink); }
+.ef-setup-detail { color: var(--pf-muted); font-size: var(--pf-fs-caption); }
+.ef-setup-state { flex: none; font-size: var(--pf-fs-caption); color: var(--pf-muted); }
+.ef-setup-item.is-done .ef-setup-state { color: var(--pf-success); font-weight: 600; }
+.ef-setup-summary { margin: 14px 0 0; font-size: var(--pf-fs-ui); color: var(--pf-secondary); }
+.ef-setup-summary b { color: var(--pf-ink); font-weight: 600; }
+/* 备份卡：上次备份状态与预检清单。 */
+.ef-backup-status,
+.ef-backup-precheck {
+  margin: 0 0 14px;
+  font-size: var(--pf-fs-ui);
+  color: var(--pf-secondary);
+}
+.ef-backup-status.is-warn { color: var(--pf-danger); font-weight: 500; }
+.ef-backup-precheck b { color: var(--pf-ink); font-weight: 600; }
+/* 未保存标记与草稿提示（离开守卫三选的行内对应物）。 */
+.ef-block-head { position: relative; }
+.ef-dirty-badge {
+  position: absolute;
+  top: 0;
+  right: 0;
+  padding: 2px 8px;
+  font-size: var(--pf-fs-tag);
+  font-weight: 500;
+  color: var(--pf-danger);
+  border: 1px solid var(--pf-tint-danger);
+  background: var(--pf-danger-bg);
+}
+.ef-draft-note {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 0 0 14px;
+  padding: 8px 12px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+  background: var(--pf-panel);
+  border: 1px dashed var(--pf-divider);
+}
+/* 软件更新：版本预览 + 说明 + 下载/稍后。 */
+.ef-update-version { margin: 0 0 10px; font-size: var(--pf-fs-ui); color: var(--pf-secondary); }
+.ef-update-version b { color: var(--pf-ink); font-weight: 600; }
+.ef-update-warn {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-danger);
+  background: var(--pf-danger-bg);
+  border: 1px solid var(--pf-tint-danger);
+}
+.ef-update-notes {
+  margin: 0 0 14px;
+  border: 1px solid var(--pf-divider);
+  background: var(--pf-panel);
+  padding: 10px 12px;
+}
+.ef-update-notes b {
+  display: block;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
+  margin-bottom: 6px;
+}
+.ef-update-notes pre {
+  margin: 0;
+  max-height: 200px;
+  overflow: auto;
+  font-family: var(--pf-font-ui);
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-body);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.ef-update-install-msg { margin: 12px 0 0; font-size: var(--pf-fs-ui); color: var(--pf-secondary); }
+/* 浏览器预览说明条：桌面专属能力提前标注 + 替代动作。 */
+.ef-browser-note {
+  margin: 0 0 24px;
+  padding: 14px 18px;
+  background: var(--pf-panel);
+  border: 1px solid var(--pf-divider);
+  border-left: 3px solid var(--pf-ink);
+}
+.ef-browser-note b {
+  display: block;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
+  letter-spacing: 0.04em;
+  margin-bottom: 6px;
+}
+.ef-browser-note p {
+  margin: 0 0 8px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+  line-height: 1.7;
+}
+.ef-browser-note p:last-child { margin-bottom: 0; }
 .ef-llm-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -2494,6 +3291,201 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   transition: width var(--pf-t-settle);
 }
 
+/* ---- 草稿入口与清单 ----
+   有未保存草稿时状态条常驻一格（与列表行的小标记同色系：淡红提醒）；
+   点击上拉跨论文清单（与作业面板同族的浮层）。信号黄不用于此。 */
+.ef-status > .ef-status-drafts { padding: 0; }
+.ef-status-drafts button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--pf-status-height);
+  margin: calc((var(--pf-status-height) - 14px) / -2) 0;
+  padding: 0 12px 0 14px;
+  border: 0;
+  background: transparent;
+  color: var(--pf-tint-danger);
+  font-size: var(--pf-fs-caption);
+  white-space: nowrap;
+  transition: background-color var(--pf-motion), color var(--pf-motion), box-shadow var(--pf-motion);
+}
+.ef-status-drafts button b { color: inherit; }
+.ef-status-drafts button:hover { background: var(--pf-ink-2); color: #ffd9d5; }
+.ef-status-drafts.is-open button {
+  background: var(--pf-ink-3);
+  color: #ffd9d5;
+  box-shadow: inset 0 2px 0 var(--pf-tint-danger);
+}
+.ef-status-drafts button:focus-visible { outline-offset: -2px; }
+.ef-status-drafts .ef-ico { width: 12px; height: 12px; opacity: 0.75; }
+/* 清单浮层：白纸面 + 4px 墨顶线（作业面板同族，右下角锚定，避开左上的作业面板）。 */
+.ef-drafts {
+  position: fixed;
+  z-index: var(--pf-z-jobs);
+  right: 12px;
+  bottom: calc(var(--pf-status-height) + 10px);
+  width: min(440px, calc(100vw - 24px));
+  max-height: min(64vh, 620px);
+  display: flex;
+  flex-direction: column;
+  background: var(--pf-surface);
+  color: var(--pf-ink);
+  border: 1px solid var(--pf-ink);
+  border-top-width: 4px;
+  box-shadow: var(--pf-elev-2);
+  animation: pf-unfold-up var(--pf-t-unfold) backwards;
+}
+.ef-drafts:focus,
+.ef-drafts:focus-visible { outline: none; box-shadow: var(--pf-elev-2); }
+.ef-drafts-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 8px 10px 18px;
+  border-bottom: 1px solid var(--pf-divider);
+}
+.ef-drafts-head h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: var(--pf-fs-title);
+  line-height: 1.3;
+  font-weight: 700;
+}
+.ef-drafts-count {
+  padding: 0 6px;
+  border: 1px solid var(--pf-divider);
+  color: var(--pf-danger);
+  font-size: var(--pf-fs-tag);
+  font-weight: 700;
+}
+.ef-drafts-spacer { flex: 1; }
+.ef-drafts-save-all {
+  min-height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--pf-ink);
+  background: var(--pf-ink);
+  color: var(--pf-on-dark);
+  font-size: var(--pf-fs-caption);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color var(--pf-motion);
+}
+.ef-drafts-save-all:hover { background: var(--pf-ink-2); }
+.ef-drafts-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  background: transparent;
+  color: var(--pf-secondary);
+  cursor: pointer;
+}
+.ef-drafts-close .ef-ico { width: 14px; height: 14px; }
+.ef-drafts-close:hover { color: var(--pf-ink); }
+.ef-drafts-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px 16px 16px;
+  background-color: var(--pf-canvas);
+  background-image: var(--pf-dot-grid);
+  background-size: 24px 24px;
+  background-attachment: local;
+  scrollbar-width: thin;
+  scrollbar-color: #b1b5a9 transparent;
+}
+.ef-drafts-group {
+  background: var(--pf-surface);
+  border: 1px solid var(--pf-divider);
+  border-left: var(--pf-marker) solid var(--pf-danger);
+  padding: 10px 12px;
+}
+.ef-drafts-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.ef-drafts-paper {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--pf-ink);
+  font-size: var(--pf-fs-ui);
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ef-drafts-paper:hover { text-decoration: underline; text-underline-offset: 3px; }
+.ef-drafts-paper.is-missing { color: var(--pf-muted); font-weight: 500; cursor: default; }
+.ef-drafts-block-count {
+  flex: none;
+  color: var(--pf-muted);
+  font-size: var(--pf-fs-tag);
+}
+.ef-drafts-group-save,
+.ef-drafts-row-actions button {
+  flex: none;
+  min-height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--pf-control-border);
+  background: var(--pf-surface);
+  color: var(--pf-secondary);
+  font-size: var(--pf-fs-caption);
+  cursor: pointer;
+  transition: border-color var(--pf-motion), color var(--pf-motion), background-color var(--pf-motion);
+}
+.ef-drafts-group-save:hover,
+.ef-drafts-row-actions button:hover {
+  border-color: var(--pf-ink);
+  color: var(--pf-ink);
+  background: var(--pf-hover-flat);
+}
+.ef-drafts-rows {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+}
+.ef-drafts-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  border-top: 1px dashed var(--pf-divider);
+}
+.ef-drafts-row:first-child { border-top: 0; }
+.ef-drafts-kind {
+  flex: none;
+  min-width: 34px;
+  font-size: var(--pf-fs-caption);
+  font-weight: 600;
+  color: var(--pf-secondary);
+}
+.ef-drafts-preview {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ef-drafts-row-actions { display: inline-flex; gap: 4px; }
+
 /* ---- Dialog ---- */
 .ef-backdrop {
   position: fixed;
@@ -2858,6 +3850,33 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 /* ---- 运行日志面板（设置页）：只读列表 + 级别过滤 ----
    级别色全复用既有变量：error → danger、info/debug → muted、warn 行左缘
    signal 黄条（与 .ef-toast 的 warn tone 同一语义），不新增色板。 */
+/* 日志筛选行：关键词 + 模块 + 命中计数（与级别 chips 叠加）。 */
+.ef-log-filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.ef-log-filters input {
+  flex: 1;
+  min-width: 180px;
+  height: var(--pf-control-height-sm);
+  padding: 0 10px;
+  font-size: var(--pf-fs-ui);
+  color: var(--pf-body);
+  background: var(--pf-surface);
+  border: 1px solid var(--pf-line-strong);
+}
+.ef-log-filters select {
+  flex: none;
+  height: var(--pf-control-height-sm);
+  padding: 0 8px;
+  font-size: var(--pf-fs-ui);
+  color: var(--pf-body);
+  background: var(--pf-surface);
+  border: 1px solid var(--pf-line-strong);
+}
+.ef-log-count { flex: none; font-size: var(--pf-fs-caption); color: var(--pf-muted); }
 .ef-log-toolbar {
   display: flex;
   align-items: center;
@@ -3150,6 +4169,89 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 /* 逐篇色块：一篇一格。完成 = 墨、失败 = 红、取消 / 跳过 = 斜线、处理中 = 信号黄 + 爬行斜纹、
    排队 = 空格、熔断后未处理 = 虚线空格。悬停看标题与状态（title）。 */
 .ef-segments {
+  /* 色块改为可点的按钮：每格铺满 li，悬停 / 聚焦亮边。 */
+  position: relative;
+}
+.ef-segment-btn {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+.ef-segment-btn:focus-visible {
+  outline: 2px solid var(--pf-ink);
+  outline-offset: 1px;
+}
+.ef-segment-btn:hover { filter: brightness(1.08); }
+
+/* 视图切换（色块 / 文字列表）：右对齐的小切换组。 */
+.ef-batchcard-views {
+  display: flex;
+  justify-content: flex-end;
+  gap: 2px;
+  margin: -6px 0 6px;
+}
+.ef-batchcard-views .ef-btn { min-height: 22px; padding: 0 6px; font-size: var(--pf-fs-tag); }
+.ef-batchcard-views .ef-btn[aria-pressed="true"] {
+  border: 1px solid var(--pf-ink);
+  background: var(--pf-ink);
+  color: var(--pf-on-dark);
+}
+
+/* 逐篇文字列表：编号 + 标题 + 状态（失败原因另起一行），整行可点跳转。 */
+.ef-seglist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--pf-divider);
+  background: var(--pf-surface);
+  max-height: 280px;
+  overflow: auto;
+  scrollbar-width: thin;
+}
+.ef-seglist li { border-bottom: 1px solid var(--pf-divider); }
+.ef-seglist li:last-child { border-bottom: 0; }
+.ef-seglist-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 0;
+  background: none;
+  text-align: left;
+  font-size: var(--pf-fs-caption);
+  cursor: pointer;
+}
+.ef-seglist-row:hover { background: var(--pf-hover-flat); }
+.ef-seglist-row:focus-visible { outline: 2px solid var(--pf-ink); outline-offset: -2px; }
+.ef-seglist-row .mono { flex: none; color: var(--pf-muted); font-size: var(--pf-fs-tag); }
+.ef-seglist-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--pf-ink);
+}
+.ef-seglist-state { flex: none; color: var(--pf-muted); font-size: var(--pf-fs-tag); }
+.ef-seglist li.is-ok .ef-seglist-state { color: var(--pf-success); }
+.ef-seglist li.is-fail .ef-seglist-state { color: var(--pf-danger); }
+.ef-seglist li.is-current .ef-seglist-state { color: var(--pf-ink); font-weight: 600; }
+.ef-seglist-note {
+  display: block;
+  padding: 0 10px 6px 34px;
+  overflow-wrap: anywhere;
+  font-size: var(--pf-fs-tag);
+  line-height: 1.5;
+  color: var(--pf-danger);
+}
+.ef-segments {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -3410,15 +4512,16 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   border: 1px solid var(--pf-divider);
 }
 .ef-queue-row {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   min-height: 36px;
   padding: 0 6px 0 12px;
   border-bottom: 1px solid var(--pf-divider);
   font-size: var(--pf-fs-caption);
 }
+/* 标题占满剩余宽度，把类型 / 调序 / 移出控件推到行尾（有无调序控件都对齐）。 */
+.ef-queue-row .ef-queue-title { flex: 1; }
 .ef-queue-row:last-child,
 .ef-hist-row:last-child { border-bottom: 0; }
 .ef-queue-index { font-size: var(--pf-fs-tag); color: var(--pf-muted); }
@@ -3431,6 +4534,44 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 }
 .ef-queue-meta { color: var(--pf-muted); white-space: nowrap; }
 .ef-queue-row.is-next .ef-queue-meta { color: var(--pf-ink); }
+/* 调序控件：置顶 / 上移 / 下移，只在同批排队 ≥ 2 篇时出现；text 按钮缩到行高内。 */
+.ef-queue-move { display: inline-flex; align-items: center; gap: 1px; }
+.ef-queue-move .ef-btn { min-height: 24px; padding: 0 4px; font-size: var(--pf-fs-tag); }
+.ef-queue-move .ef-ico { width: 12px; height: 12px; }
+/* 队列工具行：搜索 + 类型 / 领域筛选 + 命中计数；与日志筛选条同一套写法。 */
+.ef-queue-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ef-queue-tools input[type="search"] {
+  flex: 1;
+  min-width: 0;
+}
+.ef-queue-tools select { flex: none; }
+.ef-queue-match {
+  flex: none;
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-muted);
+  font-variant-numeric: tabular-nums;
+}
+.ef-queue-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.ef-queue-domains {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-muted);
+}
+.ef-queue-clear-note { flex: 1; min-width: 120px; font-size: var(--pf-fs-caption); color: var(--pf-secondary); }
+.ef-queue-clear { margin-left: auto; }
+.ef-queue-clear-note + .ef-btn-danger { flex: none; }
 .ef-queue-remove {
   display: inline-grid;
   place-items: center;
@@ -3452,6 +4593,27 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 .ef-queue-more .ef-ico { width: 14px; height: 14px; }
 
 /* 最近结束：结果方格（完成绿勾 / 失败红叉 / 取消灰杠）+ 类型与标题 + 用时与时刻。 */
+/* 筛选行：级别 chips 复用日志面板的 .ef-log-chip，加标题 / 失败原因搜索与「清除已完成」。 */
+.ef-hist-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.ef-hist-tools .ef-log-chip { min-height: 24px; padding: 0 8px; }
+.ef-hist-tools input[type="search"] {
+  flex: 1;
+  min-width: 110px;
+  height: 24px;
+  padding: 0 8px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-body);
+  background: var(--pf-surface);
+  border: 1px solid var(--pf-line-strong);
+}
+.ef-hist-clear { margin-left: auto; min-height: 24px; font-size: var(--pf-fs-tag); }
+/* 批量重试行：失败解析 / 失败补全分开给入口（各按类型成批，单篇的就地按钮已够用）。 */
+.ef-hist-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .ef-hist-row {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
@@ -3524,8 +4686,74 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   font-size: var(--pf-fs-caption);
   color: var(--pf-secondary);
 }
-.ef-hist-retry { grid-column: 2 / 4; justify-self: start; margin-top: 2px; }
+.ef-hist-actions {
+  grid-column: 2 / 4;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 2px;
+}
+.ef-hist-actions .ef-btn .ef-ico { width: 12px; height: 12px; }
 .ef-jobs-link { align-self: flex-start; min-height: 28px; font-size: var(--pf-fs-caption); }
+
+/* 完成提醒偏好条：面板底部常驻（本机 localStorage，批次收尾即时生效）。 */
+.ef-jobs-notify {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 8px 16px 10px;
+  border-top: 1px solid var(--pf-divider);
+  background: var(--pf-surface);
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-secondary);
+}
+.ef-notify-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ef-notify-toggle input { margin: 0; accent-color: var(--pf-ink); }
+.ef-jobs-notify select {
+  min-height: 22px;
+  padding: 0 4px;
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-body);
+  background: var(--pf-surface);
+  border: 1px solid var(--pf-line-strong);
+}
+.ef-jobs-notify select:disabled,
+.ef-notify-toggle input:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* 本机批次记录：跨会话的批次清单（localStorage journal），行内给计数与状态。 */
+.ef-journal {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  background: var(--pf-surface);
+  border: 1px solid var(--pf-divider);
+}
+.ef-journal-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--pf-divider);
+  font-size: var(--pf-fs-caption);
+}
+.ef-journal-row:last-child { border-bottom: 0; }
+.ef-journal-row > b { flex: none; font-weight: 600; color: var(--pf-secondary); }
+.ef-journal-row > .mono { flex: none; color: var(--pf-muted); font-variant-numeric: tabular-nums; }
+.ef-journal-row > span { color: var(--pf-secondary); white-space: nowrap; }
+.ef-journal-state { margin-left: auto; }
+.ef-journal-state.is-done { color: var(--pf-success); }
+.ef-journal-state.is-halted { color: var(--pf-danger); }
+.ef-journal-state.is-interrupted { color: var(--pf-muted); }
+.ef-journal-export { align-self: flex-start; min-height: 26px; font-size: var(--pf-fs-caption); }
 
 /* ---- Keyframes ---- */
 /* Entrance keyframes: opacity + ≤8px shift only, mount-played, exit is instant. */
@@ -3606,6 +4834,24 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 @keyframes pf-mode-fade {
   from { opacity: 0.88; }
   to { opacity: 1; }
+}
+/* 标已读微反馈：成功色闪光淡出（挂在进度填充上）与计数上跳回落。 */
+@keyframes pf-flash-out {
+  from { opacity: 0.85; }
+  to { opacity: 0; }
+}
+@keyframes pf-count-bump {
+  0% { transform: translateY(0); }
+  35% { transform: translateY(-3px); }
+  100% { transform: translateY(0); }
+}
+/* 五块笔记写满的轻庆祝：胶囊一次性弹跳。 */
+@keyframes pf-celebrate-pop {
+  0% { transform: scale(1); }
+  30% { transform: scale(1.22); }
+  55% { transform: scale(0.94); }
+  75% { transform: scale(1.06); }
+  100% { transform: scale(1); }
 }
 .ef-shell .ef-nav,
 .ef-shell .ef-read,
@@ -3714,8 +4960,8 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
       "scroll";
   }
   /* 资料栏收起后不要把行长拉回去。1400px 三栏时正文大约只有 650px，
-     这里把上限钉在同一数值，收窄窗口时行长只减不增。 */
-  .ef-read { --pf-document-max-width: 650px; }
+     这里把基础行长钉在同一数值，收窄窗口时行长只减不增（外观行宽档位仍在此基础上缩放）。 */
+  .ef-read { --pf-read-width-base: 650px; }
   .ef-context { display: none; }
   .ef-context-toggle { display: inline-flex; }
   .ef-toolbar { padding: 0 24px; }
@@ -3752,16 +4998,18 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   .ef-toolbar-label { display: none; }
   .ef-toolbar { gap: 7px; }
   /* 列表收进抽屉后，行长不超过收起前（1101px）那一档。 */
-  .ef-read { --pf-document-max-width: 620px; --pf-stage-pad-x: 28px; }
+  .ef-read { --pf-read-width-base: 620px; --pf-stage-pad-x: 28px; }
   .ef-reading-grid { padding: 28px; }
+  /* 插入草稿入口（第 4 格）后：窄屏仍只留 已读 / 开源 / 作业 / 搜索提示。 */
   .ef-status > span:nth-child(4),
-  .ef-status > span:nth-child(5) { display: none; }
+  .ef-status > span:nth-child(5),
+  .ef-status > span:nth-child(6) { display: none; }
 }
 
 @media (max-width: 700px) {
   :root { --pf-rail-width: 0px; }
   /* 底栏出现、侧轨消失时，行长不超过 701px 那一档。 */
-  .ef-read { --pf-document-max-width: 490px; --pf-document-pad: 19px; }
+  .ef-read { --pf-read-width-base: 490px; --pf-document-pad: 19px; }
   .ef-shell,
   .ef-shell.is-focus,
   .ef-shell[data-mode="system"] {
@@ -3993,6 +5241,295 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 .ef-fulltext[open] summary .ef-ico { transform: rotate(90deg); }
 .ef-fulltext .ef-note-text { margin-top: 6px; animation: pf-fade var(--pf-t-enter); }
 .ef-fulltext .ef-empty-note { margin: 6px 0 0; }
+
+/* ---- 全文并读（半高分屏面板）----
+   阅读滚动区改为上下两行：上=解析全文面板（自带小节目录、独立滚动），
+   下=摘要与笔记（原 .ef-reading-grid，独立滚动）；工具条「全文并读」一键折回单栏。 */
+.ef-read.is-fulltext-split .ef-read-scroll {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+  overflow: hidden;
+}
+.ef-read.is-fulltext-split .ef-reading-grid {
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #b1b5a9 transparent;
+}
+.ef-fulltext-panel {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  background: var(--pf-surface);
+  border-bottom: 1px solid var(--pf-ink);
+}
+.ef-fulltext-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 8px 20px;
+  background: #f9faf6;
+  border-bottom: 1px solid var(--pf-divider);
+}
+.ef-fulltext-panel-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-size: var(--pf-fs-title);
+  line-height: 1.3;
+  font-weight: 700;
+  color: var(--pf-ink);
+}
+.ef-fulltext-panel-title::before {
+  content: "";
+  flex: none;
+  width: 5px;
+  height: 0.9em;
+  background: var(--pf-heading-marker);
+}
+.ef-fulltext-panel-head small {
+  flex: none;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
+}
+.ef-fulltext-panel-spacer { flex: 1; min-width: 8px; }
+.ef-fulltext-panel-toc {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+}
+.ef-fulltext-panel-toc select {
+  max-width: 260px;
+  min-height: 30px;
+  border: 1px solid var(--pf-control-border);
+  border-radius: var(--pf-radius);
+  background: var(--pf-surface);
+  padding: 0 8px;
+  color: var(--pf-ink);
+  font-size: var(--pf-fs-caption);
+}
+.ef-fulltext-panel-toc select:hover { border-color: var(--pf-ink); }
+.ef-fulltext-panel-body {
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #b1b5a9 transparent;
+  padding: 18px 20px 30px;
+}
+/* 面板正文行宽与文档一致，居中；长文的标题/段落沿用 .ef-md 排版。 */
+.ef-fulltext-panel-body .ef-md {
+  max-width: calc(var(--pf-document-max-width) + 2 * var(--pf-document-pad));
+  margin-inline: auto;
+}
+
+/* ---- 解析全文内检索 ----
+   全文区顶部的检索行：输入即高亮（mark），命中计数 + 上一处/下一处跳转；
+   信号黄只用于当前命中与命中底色（选中提示语义）。 */
+.ef-ft-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 480px;
+  margin: 0 0 12px;
+  padding: 3px 6px;
+  border: 1px solid var(--pf-control-border);
+  border-radius: var(--pf-radius);
+  background: var(--pf-surface);
+  transition: border-color var(--pf-motion);
+}
+.ef-ft-search:focus-within { border-color: var(--pf-ink); }
+.ef-ft-search .ef-ico { width: 14px; height: 14px; color: var(--pf-muted); flex: none; }
+.ef-ft-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  padding: 4px 0;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-ink);
+}
+.ef-ft-search input:focus { outline: none; }
+.ef-ft-search-count { flex: none; font-size: var(--pf-fs-tag); color: var(--pf-muted); white-space: nowrap; }
+.ef-ft-search > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--pf-muted);
+  border-radius: var(--pf-radius);
+  transition: background-color var(--pf-motion), color var(--pf-motion);
+}
+.ef-ft-search > button .ef-ico { width: 13px; height: 13px; }
+.ef-ft-search > button:hover:not(:disabled) { background: var(--pf-hover-flat); color: var(--pf-ink); }
+.ef-ft-search > button:disabled { opacity: 0.35; cursor: default; }
+mark.ef-ft-hit {
+  background: color-mix(in srgb, var(--pf-signal) 45%, transparent);
+  color: var(--pf-ink);
+  padding: 0 1px;
+  border-radius: 2px;
+}
+mark.ef-ft-hit.is-current { background: var(--pf-signal); }
+
+/* ---- 解析全文选中浮出的「摘到笔记」条 ----
+   跟随选区上方浮出（fixed 定位，随滚动收起）；信号黄只作为选中提示的顶线。 */
+.ef-excerpt-bar {
+  position: fixed;
+  z-index: 20;
+  transform: translate(-50%, calc(-100% - 10px));
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px;
+  background: var(--pf-surface);
+  border: 1px solid var(--pf-ink);
+  border-top: 3px solid var(--pf-signal);
+  box-shadow: var(--pf-elev-1);
+  border-radius: var(--pf-radius);
+  animation: pf-unfold var(--pf-t-unfold) backwards;
+}
+.ef-excerpt-bar button {
+  border: 0;
+  background: transparent;
+  padding: 5px 8px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+  border-radius: 3px;
+  white-space: nowrap;
+  transition: background-color var(--pf-motion), color var(--pf-motion);
+}
+.ef-excerpt-bar button:hover {
+  background: var(--pf-hover-flat);
+  color: var(--pf-ink);
+}
+.ef-excerpt-bar .ef-excerpt-copy {
+  border-left: 1px solid var(--pf-divider);
+  margin-left: 2px;
+  padding-left: 10px;
+}
+
+/* ---- 无障碍：跳转链接 ----
+   平时视觉隐藏（读屏照常可及），键盘聚焦时在工具条下方展开成墨底胶囊。 */
+.ef-skip {
+  position: absolute;
+  left: 16px;
+  top: calc(60px + 8px);
+  z-index: 20;
+  display: flex;
+  gap: 6px;
+}
+.ef-skip a {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  color: var(--pf-on-dark);
+  font-size: var(--pf-fs-caption);
+  font-weight: 600;
+  text-decoration: none;
+}
+.ef-skip a:focus-visible {
+  width: auto;
+  height: auto;
+  clip-path: none;
+  padding: 6px 12px;
+  background: var(--pf-ink);
+  border: 1px solid var(--pf-signal);
+}
+.ef-skip a:focus-visible:nth-of-type(2) {
+  margin-left: 88px;
+}
+
+/* ---- 专注模式极简翻页条 ----
+   列表与资料栏收起后，底部中央浮一条「上一篇 / 位置 / 标已读 / 下一篇」；
+   不挡正文两侧，仅在专注模式渲染。 */
+.ef-focus-pager {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 5px 8px;
+  background: var(--pf-surface);
+  border: 1px solid var(--pf-ink);
+  border-radius: 999px;
+  box-shadow: var(--pf-elev-1);
+  z-index: 12;
+  max-width: min(92%, 420px);
+}
+.ef-focus-pager .ef-btn { min-height: 30px; padding: 0 10px; }
+.ef-focus-pager .ef-ico { width: 14px; height: 14px; }
+.ef-focus-pager-pos {
+  flex: none;
+  min-width: 44px;
+  text-align: center;
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-muted);
+}
+
+/* ---- 「已回到上次阅读位置」浮标 ----
+   打开论文恢复滚动现场后短暂出现（8 秒自动收起）：一行说明 + 回到顶部 + 关闭。
+   与翻页条同族的胶囊浮层，不挡正文，motion 由全局 reduced-motion 兜底接管。 */
+.ef-read-spot {
+  position: absolute;
+  left: 50%;
+  top: 72px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px 4px 12px;
+  background: var(--pf-surface);
+  border: 1px solid var(--pf-ink);
+  border-radius: 999px;
+  box-shadow: var(--pf-elev-1);
+  z-index: 12;
+  max-width: min(92%, 480px);
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+  animation: pf-pop var(--pf-t-enter) backwards;
+}
+.ef-read-spot span {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ef-read-spot button {
+  flex: none;
+  min-height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--pf-control-border);
+  background: var(--pf-surface);
+  color: var(--pf-secondary);
+  font-size: var(--pf-fs-caption);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: border-color var(--pf-motion), color var(--pf-motion), background-color var(--pf-motion);
+}
+.ef-read-spot button:hover { border-color: var(--pf-ink); color: var(--pf-ink); background: var(--pf-hover-flat); }
+.ef-read-spot-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  padding: 0;
+}
+.ef-read-spot-close .ef-ico { width: 12px; height: 12px; }
 
 /* Model id combobox (replaces <datalist>, see ModelCombobox.tsx). */
 .ef-combobox { position: relative; display: flex; }

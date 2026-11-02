@@ -14,6 +14,7 @@ vi.mock("./lib/repo", () => ({
     listIntake: vi.fn(async () => []),
     listFailedMineru: vi.fn(async () => [] as string[]),
     createDomain: vi.fn(),
+    setReadingStatus: vi.fn(async () => undefined),
     setMineruState: vi.fn(async () => undefined),
     resetMineru: vi.fn(async () => undefined),
     activeJobIds: vi.fn(async () => []),
@@ -77,9 +78,84 @@ beforeEach(() => {
   vi.mocked(repo.listIntake).mockClear();
   vi.mocked(repo.listPapers).mockClear();
   vi.mocked(repo.listFailedMineru).mockReset();
+  vi.mocked(repo.setReadingStatus).mockReset();
   vi.mocked(repo.setMineruState).mockReset();
   vi.mocked(repo.createDomain).mockReset();
   vi.mocked(repo.deletePapers).mockReset();
+});
+
+describe("setReadingStatus 轻量撤销（含已读时间戳恢复）", () => {
+  function statusDetail(id: string, readingStatus: PaperDetail["readingStatus"], readAt: string | null): PaperDetail {
+    return { ...detailOf(id), readingStatus, readAt };
+  }
+
+  it("状态变化后提示带「撤销」：点击恢复上一个状态并写回归档的已读时间戳", async () => {
+    const historic = "2020-01-01T00:00:00.000Z";
+    vi.mocked(repo.getPaper).mockImplementation(async () => statusDetail("p-1", "read", historic));
+    useField.setState({ mode: "field" });
+    await useField.getState().setReadingStatus("unread", "p-1");
+    expect(repo.setReadingStatus).toHaveBeenCalledWith("p-1", "unread");
+    const flash = useField.getState().flash;
+    expect(flash?.text).toBe("阅读状态已更新为未读。");
+    expect(flash?.action?.label).toBe("撤销");
+    flash!.action!.run();
+    await vi.waitFor(() =>
+      expect(repo.setReadingStatus).toHaveBeenCalledWith("p-1", "read", historic),
+    );
+  });
+
+  it("撤销回「在读」时把 read_at 恢复为归档的 null，不沿用已读时间", async () => {
+    // 场景：在读（read_at 为 null）被误改成未读，撤销应原样回到「在读 + null」。
+    vi.mocked(repo.getPaper).mockImplementation(async () => statusDetail("p-1", "reading", null));
+    useField.setState({ mode: "field" });
+    await useField.getState().setReadingStatus("unread", "p-1");
+    useField.getState().flash!.action!.run();
+    await vi.waitFor(() => expect(repo.setReadingStatus).toHaveBeenCalledWith("p-1", "reading", null));
+  });
+
+  it("状态没变（重选同一项）或读不到当前论文时不提供撤销", async () => {
+    vi.mocked(repo.getPaper).mockImplementation(async () => statusDetail("p-1", "reading", null));
+    useField.setState({ mode: "field" });
+    await useField.getState().setReadingStatus("reading", "p-1");
+    expect(useField.getState().flash?.text).toBe("阅读状态已更新为在读。");
+    expect(useField.getState().flash?.action).toBeUndefined();
+
+    vi.mocked(repo.getPaper).mockImplementation(async () => null);
+    await useField.getState().setReadingStatus("read", "p-missing");
+    expect(useField.getState().flash?.action).toBeUndefined();
+  });
+
+  it("改为在读时本机记下「在读起点」（在读第 N 天的数据源）", async () => {
+    localStorage.removeItem("paper-field.reading-since");
+    vi.mocked(repo.getPaper).mockImplementation(async () => statusDetail("p-1", "unread", null));
+    useField.setState({ mode: "field" });
+    await useField.getState().setReadingStatus("reading", "p-1");
+    const records = JSON.parse(localStorage.getItem("paper-field.reading-since") ?? "{}") as Record<string, string>;
+    expect(records["p-1"]).toBeTypeOf("string");
+    // 再改已读：起点保留；改未读：清除
+    vi.mocked(repo.getPaper).mockImplementation(async () => statusDetail("p-1", "reading", null));
+    await useField.getState().setReadingStatus("read", "p-1");
+    expect(JSON.parse(localStorage.getItem("paper-field.reading-since")!)["p-1"]).toBe(records["p-1"]);
+    vi.mocked(repo.getPaper).mockImplementation(async () => statusDetail("p-1", "read", records["p-1"]));
+    await useField.getState().setReadingStatus("unread", "p-1");
+    expect(JSON.parse(localStorage.getItem("paper-field.reading-since") ?? "{}")["p-1"]).toBeUndefined();
+    localStorage.removeItem("paper-field.reading-since");
+  });
+
+  it("真正转入已读时 readPulse +1；重复标已读不再脉冲", async () => {
+    useField.setState({ mode: "field", readPulse: 0 });
+    vi.mocked(repo.getPaper).mockImplementation(async () => statusDetail("p-1", "reading", null));
+    await useField.getState().setReadingStatus("read", "p-1");
+    expect(useField.getState().readPulse).toBe(1);
+    // 已读再选一次已读：没有状态变化，不脉冲
+    vi.mocked(repo.getPaper).mockImplementation(async () => statusDetail("p-1", "read", "2026-01-01T00:00:00.000Z"));
+    await useField.getState().setReadingStatus("read", "p-1");
+    expect(useField.getState().readPulse).toBe(1);
+    // 已读改在读再标回已读：又一次真正的转入，再脉冲
+    vi.mocked(repo.getPaper).mockImplementation(async () => statusDetail("p-1", "reading", "2026-01-01T00:00:00.000Z"));
+    await useField.getState().setReadingStatus("read", "p-1");
+    expect(useField.getState().readPulse).toBe(2);
+  });
 });
 
 describe("navigatePapers（缺陷 9：未选中时的首末落点）", () => {
@@ -261,6 +337,69 @@ describe("retryFailedMineru（INTAKE 批量重试）", () => {
 
     expect(repo.setMineruState).not.toHaveBeenCalled();
     expect(useField.getState().flash?.text).toContain("尚未启用任何 MinerU 解析源");
+  });
+});
+
+describe("作业面板批量与分型重试", () => {
+  const configuredMineru = {
+    ...DEFAULT_MINERU,
+    ssh: { ...DEFAULT_MINERU.ssh, enabled: true },
+    configured: true,
+  };
+  const usableSettings = {
+    version: 2 as const,
+    usage: {},
+    providers: [
+      {
+        id: "a",
+        presetId: "deepseek",
+        label: "DeepSeek",
+        baseUrl: "https://api.deepseek.com/v1",
+        model: "deepseek-chat",
+        enabled: true,
+        hasKey: true,
+        requiresKey: true,
+      },
+    ],
+  };
+
+  it("retryMineruPapers：去重后一次事务重置并整批重新排队", async () => {
+    useField.setState({ mineru: configuredMineru });
+
+    await useField.getState().retryMineruPapers(["e1", "e2", "e2"]);
+
+    expect(repo.resetMineru).toHaveBeenCalledWith(["e1", "e2"]);
+    expect(useField.getState().flash?.tone).toBe("ok");
+    expect(useField.getState().flash?.text).toContain("已将 2 篇重新发送到 MinerU 解析");
+  });
+
+  it("retryHistoryJob：补全重试不覆盖手改，起草笔记先打开确认", async () => {
+    const draft = vi.fn(async () => undefined);
+    const prepare = vi.fn(async () => undefined);
+    useField.setState({ runDraftNotes: draft, runPrepareMeta: prepare });
+
+    await useField.getState().retryHistoryJob("p1", "draftNotes");
+    await useField.getState().retryHistoryJob("p2", "prepareMeta");
+    await useField.getState().retryHistoryJob("p3", "mineruParse");
+
+    expect(draft).toHaveBeenCalledWith("p1");
+    expect(prepare).toHaveBeenCalledWith("p2", false, false);
+  });
+
+  it("retryFailedMetaJobs：无可用 AI 时给设置页指引，不排队", async () => {
+    await useField.getState().retryFailedMetaJobs(["p1"]);
+
+    expect(useField.getState().flash?.tone).toBe("warn");
+    expect(useField.getState().flash?.text).toContain("尚未配置可用的 AI 服务");
+  });
+
+  it("retryFailedMetaJobs：有可用提供商时排队静默重跑并提示", async () => {
+    useField.setState({ settings: usableSettings });
+
+    await useField.getState().retryFailedMetaJobs(["p1", "p2"]);
+
+    expect(useField.getState().flash?.tone).toBe("ok");
+    expect(useField.getState().flash?.text).toBe("已重新提交 2 篇补全（进度见作业面板）。");
   });
 });
 

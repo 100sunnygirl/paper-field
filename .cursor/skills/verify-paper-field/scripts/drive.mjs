@@ -282,9 +282,10 @@ async function readingHolds(page) {
 
   await clickMode(page, "设置");
   await page.getByRole("heading", { name: "备份与恢复", exact: true }).scrollIntoViewIfNeeded();
-  await page.getByRole("button", { name: "恢复", exact: true }).click();
-  await page.getByRole("button", { name: "确认恢复" }).click();
-  await page.getByRole("status").filter({ hasText: "备份与恢复仅在桌面版可用。" }).waitFor();
+  const restore = page.getByRole("button", { name: "恢复", exact: true });
+  await restore.waitFor();
+  if (await restore.isEnabled()) throw new Error("browser preview left restore enabled");
+  await page.getByText("浏览器预览不能备份 / 恢复").waitFor();
   if (await page.getByRole("dialog", { name: "恢复前的文献" }).count()) {
     throw new Error("browser restore opened a title diff");
   }

@@ -8,6 +8,7 @@ import {
   formatEta,
   formatSpan,
   stepsFor,
+  summarizeDomains,
 } from "./jobsView";
 import type { LlmJob, PaperBrief } from "./types";
 
@@ -135,6 +136,24 @@ describe("deriveJobsView · 进行中", () => {
     expect(view.active.find((a) => a.id === "m")?.stageHint).toBe("按回退顺序选择解析源并上传 PDF");
     expect(view.active.find((a) => a.id === "n")?.stageHint).toBe("写入阅读笔记");
   });
+
+  it("进行中作业带所属批次关联（本批第几篇 / 共几篇）", () => {
+    const view = deriveJobsView({
+      jobs: [job({ id: "m", paperId: "p2", status: "running" })],
+      activity: activity({
+        batches: [batch({ id: 1, paperIds: ["p1", "p2", "p3"], currentPaperId: "p2" })],
+      }),
+      now: NOW,
+    });
+    expect(view.active[0].batch).toEqual({ index: 2, total: 3 });
+    // 不在任何批次里的作业（如手动单篇操作）没有关联。
+    const lone = deriveJobsView({
+      jobs: [job({ id: "x", paperId: "p9", status: "running" })],
+      activity: activity(),
+      now: NOW,
+    });
+    expect(lone.active[0].batch).toBeNull();
+  });
 });
 
 describe("deriveJobsView · 批次与排队", () => {
@@ -160,9 +179,56 @@ describe("deriveJobsView · 批次与排队", () => {
       // 平均 50s：当前篇还剩 30s + 2 篇排队 × 50s。
       etaMs: 130_000,
     });
+    // 区间按最快 / 最慢各篇推（40s / 60s），样本 2 篇、无 caveat。
+    expect(view.batch?.etaInfo).toEqual({
+      samples: 2,
+      lowMs: 100_000,
+      highMs: 160_000,
+      caveat: null,
+    });
     expect(view.batch?.segments.map((s) => s.state)).toEqual(["ok", "fail", "current", "pending", "pending"]);
     expect(view.queue.map((q) => q.paperId)).toEqual(["p4", "p5"]);
     expect(view.counts.queued).toBe(2);
+  });
+
+  it("剩余时间估算的置信提示：当前篇远超均值 / 各篇耗时差异大（可能切换过解析源）", () => {
+    // 当前篇已跑 120s（均值的 2 倍以上）→ 估算更新中。
+    const current = deriveJobsView({
+      jobs: [],
+      activity: activity({
+        batches: [
+          batch({
+            id: 1,
+            paperIds: ["p1", "p2", "p3", "p4"],
+            results: { p1: "ok" },
+            durations: [50_000],
+            currentPaperId: "p2",
+            currentStartedAt: NOW - 120_000,
+          }),
+        ],
+      }),
+      now: NOW,
+    });
+    expect(current.batch?.etaInfo).toMatchObject({ samples: 1, caveat: "current" });
+
+    // 两篇耗时差 10 倍 → 速度差异大（可能切换过解析源），估算仅供参考。
+    const spread = deriveJobsView({
+      jobs: [],
+      activity: activity({
+        batches: [
+          batch({
+            id: 1,
+            paperIds: ["p1", "p2", "p3", "p4"],
+            results: { p1: "ok", p2: "ok" },
+            durations: [10_000, 100_000],
+            currentPaperId: "p3",
+            currentStartedAt: NOW - 5_000,
+          }),
+        ],
+      }),
+      now: NOW,
+    });
+    expect(spread.batch?.etaInfo).toMatchObject({ samples: 2, caveat: "spread", lowMs: 15_000, highMs: 195_000 });
   });
 
   it("等待中的批次论文接在运行批次之后排队；同一篇不重复、已有进行中作业的不列入", () => {
@@ -205,6 +271,21 @@ describe("deriveJobsView · 批次与排队", () => {
     expect(view.batch?.segments.map((s) => s.state)).toEqual(["fail", "paused", "paused"]);
     expect(view.queue).toEqual([]);
     expect(view.busy).toBe(false);
+  });
+
+  it("失败色块带失败原因：取该篇最近一次失败作业的 error", () => {
+    const view = deriveJobsView({
+      jobs: [
+        job({ id: "old", paperId: "p1", status: "error", error: "旧错误", createdAt: iso(300_000), finishedAt: iso(290_000) }),
+        job({ id: "new", paperId: "p1", status: "error", error: "新错误", createdAt: iso(50_000), finishedAt: iso(40_000) }),
+      ],
+      activity: activity({
+        batches: [batch({ id: 1, paperIds: ["p1", "p2"], results: { p1: "fail" }, currentPaperId: "p2" })],
+      }),
+      now: NOW,
+    });
+    expect(view.batch?.segments[0]).toMatchObject({ state: "fail", note: "新错误" });
+    expect(view.batch?.segments[1]).toMatchObject({ state: "current", note: null });
   });
 
   it("标题优先取轻量书目（中文标题优先），其次作业行，最后用短编号兜底", () => {
@@ -258,8 +339,13 @@ describe("deriveJobsView · 最近结束", () => {
       job({ id: "p4", paperId: "p4", status: "error", finishedAt: iso(20_000) }),
       // p5：用户取消 → 可重新解析。
       job({ id: "p5", paperId: "p5", status: "cancelled", error: "cancelled", finishedAt: iso(10_000) }),
-      // p6：AI 作业失败不在这里重试（可能覆盖手改字段，交给资料栏的确认流程）。
+      // p6：AI 作业失败不进解析重试（retryable），但提供 AI 类的就地重试。
       job({ id: "p6", paperId: "p6", type: "prepareMeta", status: "error", finishedAt: iso(5_000) }),
+      // p7：起草被用户取消 → 可重新起草。
+      job({ id: "p7", paperId: "p7", type: "draftNotes", status: "cancelled", error: "cancelled", finishedAt: iso(6_000) }),
+      // p8：旧的补全失败已被后来的成功覆盖 → 不可重试。
+      job({ id: "p8-old", paperId: "p8", type: "prepareMeta", status: "error", createdAt: iso(400_000), finishedAt: iso(350_000) }),
+      job({ id: "p8-new", paperId: "p8", type: "prepareMeta", status: "done", createdAt: iso(90_000), finishedAt: iso(80_000) }),
     ];
     const view = deriveJobsView({
       jobs,
@@ -268,6 +354,24 @@ describe("deriveJobsView · 最近结束", () => {
     });
     const retryable = view.history.filter((h) => h.retryable).map((h) => h.id);
     expect(retryable.sort()).toEqual(["p2", "p5"]);
+    // AI 类：该篇该类型最近一次失败 / 取消即可就地重试（overwrite=false 不覆盖手改）；
+    // 被后来的成功覆盖（p8）不再提供。
+    expect(view.history.filter((h) => h.aiRetry).map((h) => [h.id, h.aiRetry])).toEqual([
+      ["p6", "prepareMeta"],
+      ["p7", "draftNotes"],
+    ]);
+  });
+
+  it("AI 作业有进行中的同篇作业时不给就地重试；被替换的取消同样不给", () => {
+    const jobs = [
+      job({ id: "run", paperId: "p1", type: "draftNotes", status: "running" }),
+      job({ id: "old-fail", paperId: "p1", type: "draftNotes", status: "error", finishedAt: iso(10_000) }),
+      job({ id: "replaced", paperId: "p2", type: "prepareMeta", status: "cancelled", error: "replaced", finishedAt: iso(5_000) }),
+    ];
+    const view = deriveJobsView({ jobs, activity: activity(), now: NOW });
+    const byId = new Map(view.history.map((h) => [h.id, h]));
+    expect(byId.get("old-fail")?.aiRetry).toBeNull();
+    expect(byId.get("replaced")?.aiRetry).toBeNull();
   });
 
   it("会话计数直接取实况 tally", () => {
@@ -285,6 +389,18 @@ describe("格式化", () => {
     expect(formatElapsed(0)).toBe("00:00");
     expect(formatElapsed(65_400)).toBe("01:05");
     expect(formatElapsed(3_725_000)).toBe("1:02:05");
+  });
+
+  it("summarizeDomains：按领域计数、取前三、其余合并；空列表返回 null", () => {
+    const items = [
+      ...Array.from({ length: 4 }, () => ({ domainName: "多模态" })),
+      ...Array.from({ length: 3 }, () => ({ domainName: "指令对齐" })),
+      ...Array.from({ length: 2 }, () => ({ domainName: "长文本" })),
+      { domainName: null },
+    ];
+    expect(summarizeDomains(items)).toBe("多模态 4 · 指令对齐 3 · 长文本 2 · 其他 1");
+    expect(summarizeDomains([{ domainName: "多模态" }, { domainName: "多模态" }])).toBe("多模态 2");
+    expect(summarizeDomains([])).toBe(null);
   });
 
   it("formatSpan：口语化用时", () => {

@@ -136,6 +136,28 @@ export function startBatch(id: number): void {
   mapBatch(id, (batch) => ({ ...batch, state: "running", startedAt: batch.startedAt ?? Date.now() }));
 }
 
+/**
+ * 调整一篇排队论文在批次里的顺序（top = 排到下一篇；up / down = 与相邻排队项交换）。
+ * 只动还没有结果的论文：已处理与正在处理的保持原位，排队项按新顺序填进剩余空位。
+ * 处理循环按批次当前的 paperIds 顺序取下一篇，因此这里改完顺序立即生效（含等待中的批次）。
+ */
+export function reorderBatch(id: number, paperId: string, to: "top" | "up" | "down"): void {
+  const batch = state.batches.find((item) => item.id === id);
+  if (!batch || batch.results[paperId] || batch.currentPaperId === paperId) return;
+  const pending = batch.paperIds.filter((pid) => !batch.results[pid] && pid !== batch.currentPaperId);
+  const from = pending.indexOf(paperId);
+  if (from === -1) return;
+  const target = to === "top" ? 0 : to === "up" ? Math.max(0, from - 1) : Math.min(pending.length - 1, from + 1);
+  if (target === from) return;
+  pending.splice(target, 0, ...pending.splice(from, 1));
+  const order = pending.values();
+  const paperIds = batch.paperIds.map((pid) =>
+    !batch.results[pid] && pid !== batch.currentPaperId ? order.next().value! : pid,
+  );
+  if (paperIds.join(",") === batch.paperIds.join(",")) return;
+  commit({ ...state, batches: state.batches.map((item) => (item.id === id ? { ...batch, paperIds } : item)) });
+}
+
 export function beginBatchItem(id: number, paperId: string): void {
   mapBatch(id, (batch) => ({ ...batch, currentPaperId: paperId, currentStartedAt: Date.now() }));
 }

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { renderMarkdown } from "./markdown";
+import { onMarkdownClick, renderMarkdown } from "./markdown";
 
 /**
  * 缺陷 2 回归：消毒层是 XSS 的主防线（README 安全小节同源）。
@@ -169,5 +169,40 @@ describe("renderMarkdown 加固（SEC-017）", () => {
     const container = mount(renderMarkdown('![图](https://example.com/a.png "t")'));
     const btn = container.querySelector(".ef-md-remote-img > .ef-md-remote-open");
     expect(btn?.getAttribute("data-remote-src")).toBe("https://example.com/a.png");
+  });
+});
+
+describe("onMarkdownClick · 摘录引用跳回解析全文小节", () => {
+  afterEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  it("点击 #ft-sec- 链接：先展开解析全文折叠区，再滚动到锚点", () => {
+    const details = document.createElement("details");
+    details.id = "fulltext";
+    details.innerHTML = '<h2 id="ft-sec-1">方法</h2>';
+    const note = document.createElement("div");
+    note.innerHTML = '<p><a href="#ft-sec-1">§1.1 方法</a></p>';
+    document.body.append(details, note);
+    const link = note.querySelector("a")!;
+    let scrolled = 0;
+    details.querySelector("h2")!.scrollIntoView = () => {
+      scrolled += 1;
+    };
+    let prevented = false;
+    onMarkdownClick({ target: link, preventDefault: () => (prevented = true) });
+    expect(prevented).toBe(true);
+    expect(details.getAttribute("open")).toBe("");
+    expect(scrolled).toBe(1);
+  });
+
+  it("普通 # 锚点保持默认行为，不拦截不滚动", () => {
+    const note = document.createElement("div");
+    note.innerHTML = '<p><a href="#abstract">摘要</a></p>';
+    document.body.appendChild(note);
+    const link = note.querySelector("a")!;
+    let prevented = false;
+    onMarkdownClick({ target: link, preventDefault: () => (prevented = true) });
+    expect(prevented).toBe(false);
   });
 });

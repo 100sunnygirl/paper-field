@@ -1,11 +1,24 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+// 只桩掉桌面专属的备份执行函数，其余（记录读写 / 文案）保持真实实现，
+// 组件与 store 动作走真路径，可断言「备份成功后写入本机记录」。
+vi.mock("../lib/backup", async (orig) => ({
+  ...(await orig<object>()),
+  backupLibrary: vi.fn(async () => "/mock/backup/paper-field.zip"),
+}));
+// jsdom 没有 SQLite 引擎：pdfCount 直接拒绝，预检行与备份记录都走「读取失败降级」路径。
+vi.mock("../lib/repo", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/repo")>();
+  return { repo: { ...actual.repo, pdfCount: vi.fn(async () => { throw new Error("no engine in jsdom"); }) } };
+});
 import { SystemView } from "./SystemView";
+import * as mineruModule from "../lib/mineru";
+import * as updater from "../lib/updater";
 import { useField } from "../store";
 import { DEFAULT_MINERU, type MineruSaveInput, type MineruSettingsV2 } from "../lib/mineru";
 import { clear as clearLog, log } from "../lib/logger";
 import type { ProviderHealth } from "../lib/mineru";
-import type { LlmProviderView, LlmSettings } from "../lib/types";
+import type { LlmProviderView, LlmSettings, PaperListItem } from "../lib/types";
 import type { LlmSaveInput } from "../lib/settings";
 
 function mineruState(overrides: Partial<MineruSettingsV2> = {}): MineruSettingsV2 {
@@ -21,6 +34,48 @@ function mineruState(overrides: Partial<MineruSettingsV2> = {}): MineruSettingsV
 
 function healths(list: Array<[ProviderHealth["provider"], boolean, string]>): ProviderHealth[] {
   return list.map(([provider, ok, message]) => ({ provider, ok, latencyMs: ok ? 15 : 0, message }));
+}
+
+/** 最小可用的论文列表项（PaperListItem）。 */
+function baseListItem(overrides: Partial<PaperListItem> = {}): PaperListItem {
+  return {
+    id: "p-1",
+    domainId: "d-1",
+    title: "Sample Paper",
+    titleZh: null,
+    abstract: "",
+    year: 2023,
+    venue: null,
+    doi: null,
+    arxivId: null,
+    pdfUrl: null,
+    pdfPath: null,
+    codeUrl: null,
+    codeOpenSource: "unknown",
+    projectPage: null,
+    readingStatus: "unread",
+    readAt: null,
+    llmPreparedAt: null,
+    notesDraftedByLlm: false,
+    userNotesTouched: false,
+    userMetaTouched: false,
+    mineruStatus: null,
+    mineruParseId: null,
+    mineruDocRef: null,
+    mineruError: null,
+    mineruParseIds: [],
+    mineruProvider: null,
+    mineruCredFingerprint: null,
+    tags: [],
+    labs: [],
+    createdAt: "2024-01-01T00:00:00.000Z",
+    updatedAt: "2024-01-01T00:00:00.000Z",
+    firstAuthor: "A",
+    authorCount: 1,
+    domainName: "多模态",
+    domainCode: "MM-01",
+    ...overrides,
+  };
 }
 
 describe("SystemView · MinerU 三源卡片", () => {
@@ -167,7 +222,7 @@ describe("SystemView · 回退顺序调整", () => {
     const saveMineruSettings = vi.fn(async (_input: MineruSaveInput) => undefined);
     useField.setState({ mineru: mineruState(), effectiveProvider: "local", saveMineruSettings });
     render(<SystemView />);
-    const mineruBlock = screen.getByText("MinerU 解析源").closest("article") as HTMLElement;
+    const mineruBlock = screen.getByRole("heading", { level: 3, name: "MinerU 解析源" }).closest("article") as HTMLElement;
     fireEvent.click(within(mineruBlock).getByRole("button", { name: "保存设置" }));
     await waitFor(() => expect(saveMineruSettings).toHaveBeenCalledTimes(1));
     expect(await screen.findByText(/MinerU 设置已保存（已启用 3 个解析源）/)).toBeInTheDocument();
@@ -235,7 +290,7 @@ function primeLlmBrowser() {
 }
 
 function llmBlock(): HTMLElement {
-  return screen.getByText("AI 服务设置").closest("article") as HTMLElement;
+  return screen.getByRole("heading", { level: 3, name: "AI 服务设置" }).closest("article") as HTMLElement;
 }
 
 function jsonResponse(status: number, body: unknown): Response {
@@ -505,7 +560,7 @@ describe("SystemView · 运行日志面板", () => {
     await waitFor(() => expect(screen.getByText("暂无日志。")).toBeInTheDocument());
   });
 
-  it("「复制」把日志文本写入剪贴板（最新在上、一行一条）", async () => {
+  it("「复制当前结果」把日志文本写入剪贴板（最新在上、一行一条）", async () => {
     log.info("app", "COPY-ROW");
     const writeText = vi.fn(async (_text: string) => undefined);
     Object.defineProperty(navigator, "clipboard", {
@@ -513,10 +568,74 @@ describe("SystemView · 运行日志面板", () => {
       configurable: true,
     });
     render(<SystemView />);
-    fireEvent.click(screen.getByRole("button", { name: "复制" }));
+    fireEvent.click(screen.getByRole("button", { name: "复制当前结果" }));
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
     expect(writeText.mock.calls[0]![0]).toContain("COPY-ROW");
     expect(writeText.mock.calls[0]![0]).toContain("INFO app COPY-ROW");
+  });
+
+  it("关键词筛选：只保留命中的行，计数同步；复制只复制筛选结果", async () => {
+    log.info("mineru", "解析批次开始：共 3 篇");
+    log.error("ui", "导入失败：文件损坏");
+    const writeText = vi.fn(async (_text: string) => undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    render(<SystemView />);
+    fireEvent.change(screen.getByLabelText("日志关键词筛选"), { target: { value: "导入失败" } });
+    const list = screen.getByRole("log", { name: "运行日志" });
+    expect(within(list).getByText(/导入失败：文件损坏/)).toBeInTheDocument();
+    expect(within(list).queryByText(/解析批次开始/)).not.toBeInTheDocument();
+    expect(screen.getByText("1/2 条")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "复制当前结果" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    expect(writeText.mock.calls[0]![0]).toContain("导入失败");
+    expect(writeText.mock.calls[0]![0]).not.toContain("解析批次开始");
+  });
+
+  it("模块筛选：只保留所选 scope 的行，无匹配给空态提示", () => {
+    log.info("mineru", "MINERU-SCOPE-ROW");
+    log.info("ui", "UI-SCOPE-ROW");
+    render(<SystemView />);
+    fireEvent.change(screen.getByLabelText("日志模块筛选"), { target: { value: "ui" } });
+    const list = screen.getByRole("log", { name: "运行日志" });
+    expect(within(list).getByText(/UI-SCOPE-ROW/)).toBeInTheDocument();
+    expect(within(list).queryByText(/MINERU-SCOPE-ROW/)).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("日志模块筛选"), { target: { value: "engine" } });
+    expect(within(screen.getByRole("log", { name: "运行日志" })).getByText("没有符合筛选条件的日志。")).toBeInTheDocument();
+  });
+
+  it("保存为文件：浏览器预览下载 txt 并提示文件名", async () => {
+    log.info("app", "SAVE-FILE-ROW");
+    const createObjectURL = vi.fn(() => "blob:log");
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal("URL", { ...URL, createObjectURL, revokeObjectURL });
+    render(<SystemView />);
+    fireEvent.click(screen.getByRole("button", { name: "保存为文件" }));
+    await waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(revokeObjectURL).toHaveBeenCalledTimes(1));
+    vi.unstubAllGlobals();
+  });
+
+  it("「复制诊断包」：版本 + 去密钥设置摘要 + 日志一次复制", async () => {
+    log.info("app", "DIAG-LOG-ROW");
+    useField.setState({ settings: llmSettings() });
+    const writeText = vi.fn(async (_text: string) => undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    render(<SystemView />);
+    fireEvent.click(screen.getByRole("button", { name: "复制诊断包" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    const text = writeText.mock.calls[0]![0];
+    expect(text).toContain("# Paper Field 诊断信息");
+    expect(text).toContain("DeepSeek");
+    expect(text).toContain("Key 已保存");
+    expect(text).toContain("DIAG-LOG-ROW");
+    expect(text).toContain("浏览器预览");
+    expect(text).not.toMatch(/sk-[A-Za-z0-9]/);
   });
 });
 
@@ -531,8 +650,10 @@ describe("SystemView · 设置页顺序与 MinerU 高级项", () => {
     render(<SystemView />);
     const headings = screen.getAllByRole("heading", { level: 3 }).map((node) => node.textContent);
     const at = (title: string) => headings.indexOf(title);
-    expect(at("AI 服务设置")).toBeGreaterThanOrEqual(0);
-    expect(at("数据导出")).toBeGreaterThan(at("AI 服务设置"));
+    expect(at("上手清单")).toBeGreaterThanOrEqual(0);
+    expect(at("AI 服务设置")).toBeGreaterThan(at("上手清单"));
+    expect(at("密钥与令牌")).toBeGreaterThan(at("AI 服务设置"));
+    expect(at("数据导出")).toBeGreaterThan(at("密钥与令牌"));
     expect(at("备份与恢复")).toBeGreaterThan(at("数据导出"));
     expect(at("快捷键")).toBeGreaterThan(at("备份与恢复"));
     expect(at("软件更新")).toBeGreaterThan(at("快捷键"));
@@ -560,6 +681,694 @@ describe("SystemView · 设置页顺序与 MinerU 高级项", () => {
     render(<SystemView />);
     fireEvent.click(screen.getByRole("button", { name: "检查更新" }));
     expect(await screen.findByText(/检查更新只在桌面应用里可用/)).toBeInTheDocument();
+  });
+});
+
+describe("SystemView · 锚点目录、查找设置与深链", () => {
+  beforeEach(() => {
+    useField.setState(useField.getInitialState(), true);
+    localStorage.clear();
+  });
+
+  it("锚点目录列出全部卡片，点击滚动到对应卡片并高亮为当前项", () => {
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    try {
+      render(<SystemView />);
+      const nav = screen.getByRole("navigation", { name: "设置目录" });
+      const titles = Array.from(nav.querySelectorAll("a")).map((a) => a.textContent);
+      expect(titles).toEqual([
+        "上手清单",
+        "AI 服务设置",
+        "密钥与令牌",
+        "数据导出",
+        "备份与恢复",
+        "快捷键",
+        "软件更新",
+        "MinerU 解析源",
+        "文献库",
+        "运行日志",
+      ]);
+      // 每张卡片都带锚点 id
+      for (const id of ["setup", "llm", "secrets", "export", "backup", "shortcuts", "update", "mineru", "biblio", "logs"]) {
+        expect(document.getElementById(`settings-${id}`)).not.toBeNull();
+      }
+      fireEvent.click(within(nav).getByRole("link", { name: "备份与恢复" }));
+      expect(scrollIntoView).toHaveBeenCalled();
+      expect(within(nav).getByRole("link", { name: "备份与恢复" }).className).toContain("is-active");
+    } finally {
+      delete (Element.prototype as Partial<Element>).scrollIntoView;
+    }
+  });
+
+  it("查找设置：输入「备份」只保留备份卡片，其他卡片隐藏", () => {
+    render(<SystemView />);
+    fireEvent.change(screen.getByLabelText("查找设置"), { target: { value: "备份" } });
+    expect(document.getElementById("settings-backup")).not.toBeNull();
+    expect(document.getElementById("settings-shortcuts")).toBeNull();
+    expect(document.getElementById("settings-llm")).toBeNull();
+    // 清空恢复全部卡片
+    fireEvent.change(screen.getByLabelText("查找设置"), { target: { value: "" } });
+    expect(document.getElementById("settings-llm")).not.toBeNull();
+    expect(document.getElementById("settings-shortcuts")).not.toBeNull();
+  });
+
+  it("查找设置：按关键词命中（「key」同时命中 AI 与文献库），无命中给出提示", () => {
+    render(<SystemView />);
+    fireEvent.change(screen.getByLabelText("查找设置"), { target: { value: "key" } });
+    expect(document.getElementById("settings-llm")).not.toBeNull();
+    expect(document.getElementById("settings-biblio")).not.toBeNull();
+    expect(document.getElementById("settings-logs")).toBeNull();
+    fireEvent.change(screen.getByLabelText("查找设置"), { target: { value: "不存在的词" } });
+    expect(screen.getByText(/没有找到与「不存在的词」相关的设置项/)).toBeInTheDocument();
+  });
+
+  it("深链：systemFocus 滚动定位并高亮卡片，提供「返回原论文」入口", async () => {
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    const setMode = vi.fn(async () => undefined);
+    const selectPaper = vi.fn(async () => undefined);
+    useField.setState({
+      mode: "system",
+      systemFocus: { anchor: "mineru", returnTo: { mode: "field", paperId: "p-1" } },
+      setMode,
+      selectPaper,
+    });
+    try {
+      render(<SystemView />);
+      expect(scrollIntoView).toHaveBeenCalled();
+      const card = document.getElementById("settings-mineru");
+      expect(card?.className).toContain("is-focused");
+      fireEvent.click(screen.getByRole("button", { name: /返回原论文/ }));
+      await waitFor(() => expect(setMode).toHaveBeenCalledWith("field"));
+      expect(selectPaper).toHaveBeenCalledWith("p-1");
+      expect(useField.getState().systemFocus).toBeNull();
+    } finally {
+      delete (Element.prototype as Partial<Element>).scrollIntoView;
+    }
+  });
+
+  it("openSystemCard：从阅读模式跳设置页指定卡片，并记录返回位置", () => {
+    const refresh = vi.fn(async () => undefined);
+    useField.setState({ mode: "field", selectedPaperId: "p-9", refresh });
+    useField.getState().openSystemCard("mineru");
+    const state = useField.getState();
+    expect(state.mode).toBe("system");
+    expect(state.systemFocus).toEqual({ anchor: "mineru", returnTo: { mode: "field", paperId: "p-9" } });
+  });
+
+  it("快捷键说明卡：「试用」可直接触发动作（作业面板开合）", () => {
+    render(<SystemView />);
+    expect(useField.getState().jobsOpen).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "试用：作业面板" }));
+    expect(useField.getState().jobsOpen).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "试用：作业面板" }));
+    expect(useField.getState().jobsOpen).toBe(false);
+  });
+
+  it("快捷键说明卡：「试用添加论文」打开论文对话框", () => {
+    render(<SystemView />);
+    fireEvent.click(screen.getByRole("button", { name: "试用：添加论文（导入 PDF / 手动录入）" }));
+    expect(useField.getState().dialog).toBe("paper");
+  });
+
+  it("快捷键卡列出全部快捷键并可按动作名过滤", () => {
+    render(<SystemView />);
+    const block = screen.getByRole("heading", { level: 3, name: "快捷键" }).closest("article") as HTMLElement;
+    for (const label of [
+      "在论文列表中移动",
+      "标记已读",
+      "搜索",
+      "作业面板",
+      "保存当前笔记块（在笔记编辑框内）",
+      "保存当前笔记块并写下一空块（笔记编辑框内）",
+      "关闭对话框 / 抽屉 / 收起笔记编辑器（保留草稿）",
+    ]) {
+      expect(within(block).getByText(label)).toBeInTheDocument();
+    }
+    for (const label of ["改键：标记已读", "改键：搜索", "改键：作业面板", "改键：添加论文（导入 PDF / 手动录入）", "改键：保存当前笔记块（在笔记编辑框内）"]) {
+      expect(within(block).getByRole("button", { name: label })).toBeInTheDocument();
+    }
+    fireEvent.change(within(block).getByLabelText("查找快捷键"), { target: { value: "已读" } });
+    expect(within(block).getByText("标记已读")).toBeInTheDocument();
+    expect(within(block).queryByText("作业面板")).not.toBeInTheDocument();
+    expect(within(block).queryByText("在论文列表中移动")).not.toBeInTheDocument();
+  });
+
+  it("改键：捕获新组合立即生效，冲突时拒绝并指明占用者", () => {
+    render(<SystemView />);
+    const block = screen.getByRole("heading", { level: 3, name: "快捷键" }).closest("article") as HTMLElement;
+    fireEvent.click(within(block).getByRole("button", { name: "改键：标记已读" }));
+    expect(within(block).getByText(/正在为「标记已读」改键/)).toBeInTheDocument();
+    // 冲突：⌘N 已被「添加论文」占用
+    fireEvent.keyDown(document.body, { key: "n", metaKey: true, bubbles: true, cancelable: true });
+    expect(within(block).getByText(/「添加论文（导入 PDF \/ 手动录入）」已占用这个组合/)).toBeInTheDocument();
+    expect(within(block).getByText(/正在为「标记已读」改键/)).toBeInTheDocument();
+    // 合法组合：⌘M 保存成功，行内键位更新并出现「恢复默认」
+    fireEvent.keyDown(document.body, { key: "m", metaKey: true, bubbles: true, cancelable: true });
+    expect(within(block).queryByText(/正在为「标记已读」改键/)).not.toBeInTheDocument();
+    expect(within(block).getByText("恢复默认")).toBeInTheDocument();
+    const markReadRow = within(block).getByText("标记已读").closest("li")!;
+    expect(markReadRow.textContent).toContain("M");
+    // 恢复默认回到 R
+    fireEvent.click(within(block).getByRole("button", { name: "恢复默认" }));
+    const restored = within(block).getByText("标记已读").closest("li")!;
+    expect(restored.textContent).toContain("R");
+  });
+
+  it("改键捕获期间 Esc 取消，纯字母提示需组合键", () => {
+    render(<SystemView />);
+    const block = screen.getByRole("heading", { level: 3, name: "快捷键" }).closest("article") as HTMLElement;
+    fireEvent.click(within(block).getByRole("button", { name: "改键：搜索" }));
+    fireEvent.keyDown(document.body, { key: "f", metaKey: false, ctrlKey: false, bubbles: true, cancelable: true });
+    expect(within(block).getByText(/请按住 ⌘\/Ctrl/)).toBeInTheDocument();
+    fireEvent.keyDown(document.body, { key: "Escape", bubbles: true, cancelable: true });
+    expect(within(block).queryByText(/正在为「搜索」改键/)).not.toBeInTheDocument();
+    expect(within(block).queryByText(/请按住/)).not.toBeInTheDocument();
+  });
+});
+
+describe("SystemView · 数据导出（范围与内容选择）", () => {
+  beforeEach(() => {
+    useField.setState(useField.getInitialState(), true);
+    localStorage.clear();
+  });
+
+  function exportBlock(): HTMLElement {
+    return screen.getByRole("heading", { level: 3, name: "数据导出" }).closest("article") as HTMLElement;
+  }
+
+  it("默认当前领域 + 笔记摘要，预览显示当前领域论文数", () => {
+    useField.setState({
+      domains: [{ id: "d-1", name: "多模态", code: "MM-01", summary: null, sortOrder: 1, createdAt: "2024-01-01T00:00:00.000Z" }],
+      selectedDomainId: "d-1",
+      papers: [
+        { ...baseListItem(), id: "p-1" },
+        { ...baseListItem(), id: "p-2" },
+      ],
+      stats: { read: 5, total: 9, openSource: 0, queued: 0, running: 0 },
+    });
+    render(<SystemView />);
+    const block = exportBlock();
+    expect(within(block).getByLabelText("导出范围")).toHaveValue("current");
+    expect(within(block).getByText(/将导出/).textContent).toContain("2");
+    expect(within(block).getByText(/将导出/).textContent).toContain("现场笔记、摘要");
+    expect(within(block).getByRole("button", { name: /导出 多模态/ })).toBeEnabled();
+  });
+
+  it("切换范围到仅已读：预览改用已读数，按钮禁用当计数为 0", () => {
+    const exportPapers = vi.fn(async () => undefined);
+    useField.setState({ stats: { read: 3, total: 9, openSource: 0, queued: 0, running: 0 }, exportPapers });
+    render(<SystemView />);
+    const block = exportBlock();
+    fireEvent.change(within(block).getByLabelText("导出范围"), { target: { value: "read" } });
+    expect(within(block).getByText(/将导出/).textContent).toContain("3");
+    // 关掉笔记与摘要后点导出：提交的范围与内容选择完整传给 store
+    fireEvent.click(within(block).getByRole("checkbox", { name: "现场笔记" }));
+    fireEvent.click(within(block).getByRole("checkbox", { name: "摘要" }));
+    fireEvent.click(within(block).getByRole("button", { name: /^导出$/ }));
+    expect(exportPapers).toHaveBeenCalledWith({
+      scope: "read",
+      format: "folders",
+      include: { notes: false, abstract: false, parsedText: false },
+    });
+    // 勾选集为空时预览为 0，按钮禁用
+    fireEvent.change(within(block).getByLabelText("导出范围"), { target: { value: "checked" } });
+    expect(within(block).getByText(/将导出/).textContent).toContain("0");
+    expect(within(block).getByRole("button", { name: /^导出$/ })).toBeDisabled();
+  });
+
+  it("勾选集范围使用勾选数并随勾选变化", () => {
+    useField.setState({ checkedPaperIds: ["p-1", "p-2", "p-3"], exportPapers: vi.fn(async () => undefined) });
+    render(<SystemView />);
+    const block = exportBlock();
+    fireEvent.change(within(block).getByLabelText("导出范围"), { target: { value: "checked" } });
+    expect(within(block).getByText(/将导出/).textContent).toContain("3");
+  });
+
+  it("格式选择：BibTeX 隐藏内容选择并说明只含著录信息，随导出提交格式", () => {
+    const exportPapers = vi.fn(async () => undefined);
+    useField.setState({ stats: { read: 2, total: 5, openSource: 0, queued: 0, running: 0 }, exportPapers });
+    render(<SystemView />);
+    const block = exportBlock();
+    expect(within(block).getByLabelText("导出格式")).toHaveValue("folders");
+    expect(within(block).getByRole("checkbox", { name: "现场笔记" })).toBeInTheDocument();
+    fireEvent.change(within(block).getByLabelText("导出格式"), { target: { value: "bibtex" } });
+    expect(within(block).queryByRole("checkbox", { name: "现场笔记" })).not.toBeInTheDocument();
+    expect(within(block).getByText(/只包含著录信息/)).toBeInTheDocument();
+    fireEvent.change(within(block).getByLabelText("导出范围"), { target: { value: "read" } });
+    expect(within(block).getByText(/将导出/).textContent).toContain("条 BibTeX 条目");
+    fireEvent.click(within(block).getByRole("button", { name: /^导出$/ }));
+    expect(exportPapers).toHaveBeenCalledWith({
+      scope: "read",
+      format: "bibtex",
+      include: { notes: true, abstract: true, parsedText: false },
+    });
+  });
+
+  it("格式选择：合并版随导出提交 merged", () => {
+    const exportPapers = vi.fn(async () => undefined);
+    useField.setState({ stats: { read: 0, total: 4, openSource: 0, queued: 0, running: 0 }, exportPapers });
+    render(<SystemView />);
+    const block = exportBlock();
+    fireEvent.change(within(block).getByLabelText("导出格式"), { target: { value: "merged" } });
+    fireEvent.change(within(block).getByLabelText("导出范围"), { target: { value: "all" } });
+    fireEvent.click(within(block).getByRole("button", { name: /^导出$/ }));
+    expect(exportPapers).toHaveBeenCalledWith({
+      scope: "all",
+      format: "merged",
+      include: { notes: true, abstract: true, parsedText: false },
+    });
+  });
+});
+
+describe("SystemView · 上手清单（最小可用配置）", () => {
+  beforeEach(() => {
+    useField.setState(useField.getInitialState(), true);
+    localStorage.clear();
+  });
+
+  it("全新空库：核心两项待完成并给出去配置入口，可选项标注可选", () => {
+    render(<SystemView />);
+    const block = screen.getByRole("article", { name: "上手清单" });
+    expect(within(block).getByText("研究领域")).toBeInTheDocument();
+    expect(within(block).getByText(/先建一个领域/)).toBeInTheDocument();
+    expect(within(block).getByText(/导入 PDF 或手动录入第一篇论文/)).toBeInTheDocument();
+    expect(within(block).getAllByText("待完成")).toHaveLength(2);
+    expect(within(block).getAllByText("可选")).toHaveLength(3);
+    expect(within(block).getByText(/进度：/).textContent).toContain("0");
+    expect(within(block).getByText(/没有配置的部分不影响手动录入与阅读/)).toBeInTheDocument();
+  });
+
+  it("已配置解析源与 AI：状态显示生效来源，进度按实际计数", () => {
+    useField.setState({
+      mineru: mineruState(),
+      effectiveProvider: "local",
+      settings: llmSettings(),
+    });
+    render(<SystemView />);
+    const block = screen.getByRole("article", { name: "上手清单" });
+    expect(within(block).getByText(/已启用，生效来源：本地 CLI/)).toBeInTheDocument();
+    expect(within(block).getByText(/已配置，可补全论文信息与起草笔记/)).toBeInTheDocument();
+    expect(within(block).getByText(/进度：/).textContent).toContain("2");
+  });
+
+  it("「去配置」跳到对应卡片，「去创建领域」打开领域对话框", () => {
+    const openSystemCard = vi.fn();
+    const openDialog = vi.fn();
+    useField.setState({ openSystemCard, openDialog });
+    render(<SystemView />);
+    const block = screen.getByRole("article", { name: "上手清单" });
+    fireEvent.click(within(block).getByRole("button", { name: "去创建领域" }));
+    expect(openDialog).toHaveBeenCalledWith("domain");
+    // 解析源 / AI / 文献库三项的「去配置」都经 openSystemCard 跳卡
+    const goButtons = within(block).getAllByRole("button", { name: "去配置" });
+    for (const button of goButtons) fireEvent.click(button);
+    expect(openSystemCard).toHaveBeenCalledWith("mineru");
+    expect(openSystemCard).toHaveBeenCalledWith("llm");
+    expect(openSystemCard).toHaveBeenCalledWith("biblio");
+  });
+
+  it("「去导入论文」先切回阅读模式再打开论文对话框", async () => {
+    const setMode = vi.fn(async () => undefined);
+    const openDialog = vi.fn();
+    useField.setState({ setMode, openDialog });
+    render(<SystemView />);
+    fireEvent.click(screen.getByRole("button", { name: "去导入论文" }));
+    await waitFor(() => expect(setMode).toHaveBeenCalledWith("field"));
+    expect(openDialog).toHaveBeenCalledWith("paper");
+  });
+});
+
+describe("SystemView · 备份状态与预检", () => {
+  beforeEach(() => {
+    useField.setState(useField.getInitialState(), true);
+    localStorage.clear();
+  });
+
+  function backupBlock(): HTMLElement {
+    return screen.getByRole("heading", { level: 3, name: "备份与恢复" }).closest("article") as HTMLElement;
+  }
+
+  it("无记录时提示从未备份，并显示预检清单（论文数来自统计）", () => {
+    useField.setState({ stats: { read: 1, total: 6, openSource: 0, queued: 0, running: 0 } });
+    render(<SystemView />);
+    const block = backupBlock();
+    expect(within(block).getByText(/本机还没有成功备份的记录/)).toBeInTheDocument();
+    expect(within(block).getByText(/本次将打包/).textContent).toContain("6");
+    expect(within(block).getByText(/本次将打包/).textContent).toContain("—");
+  });
+
+  it("有记录时显示上次备份时间、规模、位置与距今天数；超过 7 天给过期提醒", () => {
+    const at = Date.now() - 10 * 86400_000;
+    localStorage.setItem(
+      "paper-field.last-backup",
+      JSON.stringify({ at, where: "/Volumes/bak/paper-field.zip", papers: 5, pdfs: 4 }),
+    );
+    render(<SystemView />);
+    const block = backupBlock();
+    const status = within(block).getByText(/上次备份/);
+    expect(status.textContent).toContain("共 5 篇");
+    expect(status.textContent).toContain("/Volumes/bak/paper-field.zip");
+    expect(status.textContent).toContain("10 天");
+    expect(status.textContent).toContain("已超过 7 天，建议再备份一次");
+  });
+
+  it("备份成功后写入本机记录（桌面端路径；状态行下次进入设置页可见）", async () => {
+    useField.setState({ stats: { read: 0, total: 2, openSource: 0, queued: 0, running: 0 } });
+    // 备份按钮在浏览器预览禁用；这里直接走 store 动作验证「成功后写记录」。
+    await useField.getState().backupLibrary();
+    const raw = localStorage.getItem("paper-field.last-backup");
+    expect(raw).toBeTruthy();
+    const record = JSON.parse(raw!) as { where: string; papers: number };
+    expect(record.where).toBe("/mock/backup/paper-field.zip");
+    expect(record.papers).toBe(2);
+  });
+});
+
+describe("SystemView · 未保存修改拦截与草稿保留", () => {
+  beforeEach(() => {
+    useField.setState(useField.getInitialState(), true);
+    localStorage.clear();
+  });
+
+  /** 把某块表单改脏（改自定义服务的 Base URL）。 */
+  function dirtyLlmForm() {
+    fireEvent.change(within(screen.getByRole("region", { name: "自定义服务" })).getByLabelText("Base URL"), {
+      target: { value: "https://changed.example/v1" },
+    });
+  }
+
+  it("修改表单出现「未保存」标记", () => {
+    useField.setState({ settings: llmSettings() });
+    render(<SystemView />);
+    const block = llmBlock();
+    expect(within(block).queryByText("未保存")).not.toBeInTheDocument();
+    dirtyLlmForm();
+    expect(within(block).getByText("未保存")).toBeInTheDocument();
+  });
+
+  it("有未保存修改时 setMode 被拦下并弹三选；「留在此页」取消切换", async () => {
+    useField.setState({
+      mode: "system",
+      refresh: vi.fn(async () => undefined),
+      settings: llmSettings(),
+      saveLlmSettings: vi.fn(async () => undefined),
+    });
+    render(<SystemView />);
+    dirtyLlmForm();
+    await act(async () => {
+      await useField.getState().setMode("field");
+    });
+    // 未切换：记录目标模式，弹三选
+    expect(useField.getState().mode).toBe("system");
+    expect(useField.getState().pendingMode).toBe("field");
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("设置页有未保存的修改")).toBeInTheDocument();
+    expect(within(dialog).getByText("AI 服务设置")).toBeInTheDocument();
+    for (const label of ["保存修改并离开", "放弃修改并离开", "留在此页"]) {
+      expect(within(dialog).getByRole("button", { name: label })).toBeInTheDocument();
+    }
+    fireEvent.click(within(dialog).getByRole("button", { name: "留在此页" }));
+    expect(useField.getState().pendingMode).toBeNull();
+    expect(useField.getState().mode).toBe("system");
+  });
+
+  it("「保存修改并离开」先保存再切换；「放弃修改并离开」清草稿并切换", async () => {
+    const saveLlmSettings = vi.fn(async () => undefined);
+    useField.setState({
+      mode: "system",
+      refresh: vi.fn(async () => undefined),
+      settings: llmSettings(),
+      saveLlmSettings,
+    });
+    const { unmount } = render(<SystemView />);
+    dirtyLlmForm();
+    // dirty 时草稿已写盘（不含 Key）
+    expect(localStorage.getItem("paper-field.settings-draft.llm")).not.toContain("sk-");
+    await act(async () => {
+      await useField.getState().setMode("archive");
+    });
+    let dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "保存修改并离开" }));
+    await waitFor(() => expect(saveLlmSettings).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(useField.getState().mode).toBe("archive"));
+    unmount();
+
+    // 放弃路径：改脏 → 拦下 → 放弃 → 模式切换且草稿键被清
+    useField.setState({ mode: "system", pendingMode: null, settings: llmSettings() });
+    render(<SystemView />);
+    dirtyLlmForm();
+    await act(async () => {
+      await useField.getState().setMode("intake");
+    });
+    dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "放弃修改并离开" }));
+    await waitFor(() => expect(useField.getState().mode).toBe("intake"));
+    expect(localStorage.getItem("paper-field.settings-draft.llm")).toBeNull();
+  });
+
+  it("未保存的非敏感草稿在本机保留，回到设置页可恢复或丢弃", () => {
+    useField.setState({ settings: llmSettings() });
+    const { unmount } = render(<SystemView />);
+    fireEvent.change(within(screen.getByRole("region", { name: "自定义服务" })).getByLabelText("Base URL"), {
+      target: { value: "https://draft.example/v1" },
+    });
+    unmount();
+    // 重新进入设置页：草稿恢复（不含 Key），可一键丢弃
+    render(<SystemView />);
+    expect(screen.getByText(/已恢复上次未保存的草稿（不含 API Key）/)).toBeInTheDocument();
+    const row = screen.getByRole("region", { name: "自定义服务" });
+    expect(within(row).getByLabelText("Base URL")).toHaveValue("https://draft.example/v1");
+    fireEvent.click(screen.getByRole("button", { name: "丢弃草稿" }));
+    expect(within(screen.getByRole("region", { name: "自定义服务" })).getByLabelText("Base URL")).toHaveValue(
+      "https://my-proxy.example/v1",
+    );
+    expect(localStorage.getItem("paper-field.settings-draft.llm")).toBeNull();
+  });
+
+  it("MinerU 与文献库表单也注册守卫：改脏后离开被拦下", async () => {
+    useField.setState({
+      mode: "system",
+      refresh: vi.fn(async () => undefined),
+      mineru: mineruState(),
+      saveMineruSettings: vi.fn(async () => undefined),
+    });
+    render(<SystemView />);
+    // 改 SSH 主机 → 脏
+    const ssh = screen.getByRole("region", { name: "SSH 远程" });
+    fireEvent.click(within(ssh).getByRole("button", { name: "高级" }));
+    fireEvent.change(within(ssh).getByLabelText("主机"), { target: { value: "new-host" } });
+    await act(async () => {
+      await useField.getState().setMode("field");
+    });
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("MinerU 解析源")).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "留在此页" }));
+    expect(useField.getState().mode).toBe("system");
+  });
+
+  it("已保存 Token 但输入框留空时不算脏（不误报未保存）", () => {
+    useField.setState({ mineru: mineruState() });
+    render(<SystemView />);
+    const block = screen.getByRole("heading", { level: 3, name: "MinerU 解析源" }).closest("article") as HTMLElement;
+    expect(within(block).queryByText("未保存")).not.toBeInTheDocument();
+  });
+});
+
+describe("SystemView · 软件更新（版本预览 / 下载 / 稍后）", () => {
+  beforeEach(() => {
+    useField.setState(useField.getInitialState(), true);
+    localStorage.clear();
+  });
+
+  it("已是最新版本时只显示提示，不出现下载按钮", async () => {
+    render(<SystemView />);
+    fireEvent.click(screen.getByRole("button", { name: "检查更新" }));
+    expect(await screen.findByText(/检查更新只在桌面应用里可用/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "立即下载并重启" })).not.toBeInTheDocument();
+  });
+
+  it("发现新版本：预览版本与说明、提示运行中作业与草稿，稍后可关闭", async () => {
+    const downloadAndInstall = vi.fn(async () => undefined);
+    vi.spyOn(updater, "checkAppUpdateInfo").mockResolvedValue({
+      status: "available",
+      message: "发现新版本 0.3.0。",
+      version: "0.3.0",
+      date: "2026-10-20T00:00:00Z",
+      notes: "## 更新内容\n- 修复了若干问题",
+      update: { downloadAndInstall },
+    });
+    useField.setState({
+      jobs: [
+        { id: "j-1", paperId: "p-1", type: "mineruParse", status: "running", prompt: null, resultJson: null, error: null, createdAt: "", startedAt: "", finishedAt: null },
+      ],
+      drafts: { "p-1": { summary: "草稿" } },
+    });
+    render(<SystemView />);
+    fireEvent.click(screen.getByRole("button", { name: "检查更新" }));
+    expect(await screen.findByText(/发现新版本/)).toBeInTheDocument();
+    expect(screen.getByText("0.3.0")).toBeInTheDocument();
+    expect(screen.getByText(/有 1 个作业正在运行/)).toBeInTheDocument();
+    expect(screen.getByText(/1 篇论文的笔记草稿尚未保存/)).toBeInTheDocument();
+    const notes = screen.getByText("版本说明").parentElement as HTMLElement;
+    expect(notes.textContent).toContain("修复了若干问题");
+    expect(downloadAndInstall).not.toHaveBeenCalled();
+    // 稍后再说：收起预览，回到检查按钮，不下载
+    fireEvent.click(screen.getByRole("button", { name: "稍后再说" }));
+    expect(screen.getByRole("button", { name: "检查更新" })).toBeInTheDocument();
+    expect(downloadAndInstall).not.toHaveBeenCalled();
+  });
+
+  it("「立即下载并重启」才真正下载安装", async () => {
+    const downloadAndInstall = vi.fn(async () => undefined);
+    vi.spyOn(updater, "checkAppUpdateInfo").mockResolvedValue({
+      status: "available",
+      message: "发现新版本 0.3.0。",
+      version: "0.3.0",
+      notes: "说明",
+      update: { downloadAndInstall },
+    });
+    render(<SystemView />);
+    fireEvent.click(screen.getByRole("button", { name: "检查更新" }));
+    await screen.findByText(/发现新版本/);
+    fireEvent.click(screen.getByRole("button", { name: "立即下载并重启" }));
+    await waitFor(() => expect(downloadAndInstall).toHaveBeenCalledTimes(1));
+  });
+
+  it("安装失败给出中文提示且不丢数据说明", async () => {
+    vi.spyOn(updater, "checkAppUpdateInfo").mockResolvedValue({
+      status: "available",
+      message: "发现新版本 0.3.0。",
+      version: "0.3.0",
+      update: {
+        downloadAndInstall: async () => {
+          throw new Error("signature invalid");
+        },
+      },
+    });
+    render(<SystemView />);
+    fireEvent.click(screen.getByRole("button", { name: "检查更新" }));
+    await screen.findByText(/发现新版本/);
+    fireEvent.click(screen.getByRole("button", { name: "立即下载并重启" }));
+    expect(await screen.findByText(/安装更新失败：signature invalid。笔记数据不受影响/)).toBeInTheDocument();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+});
+
+describe("SystemView · 测试连接与启用自动处理分离", () => {
+  beforeEach(() => {
+    useField.setState(useField.getInitialState(), true);
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("AI 测试连接：脏表单按 deferBackfill 落盘，成功后提供显式「启用自动补全」", async () => {
+    const saveLlmSettings = vi.fn(async (_input: LlmSaveInput, _options?: { deferBackfill?: boolean }) => undefined);
+    const startMetaBackfill = vi.fn(async () => 3);
+    useField.setState({ settings: llmSettings(), saveLlmSettings, startMetaBackfill });
+    primeLlmBrowser();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse(200, { choices: [{ message: { content: "ok" } }] })),
+    );
+    render(<SystemView />);
+    const first = screen.getByRole("region", { name: "DeepSeek" });
+    fireEvent.change(within(first).getByLabelText("Base URL"), { target: { value: "https://api2.deepseek.com/v1" } });
+    fireEvent.click(within(first).getByRole("button", { name: "测试连接" }));
+    await waitFor(() => expect(saveLlmSettings).toHaveBeenCalledTimes(1));
+    expect(saveLlmSettings.mock.calls[0]![1]).toEqual({ deferBackfill: true });
+    expect(await within(llmBlock()).findByText(/自动补全暂未启动/)).toBeInTheDocument();
+    fireEvent.click(within(llmBlock()).getByRole("button", { name: "启用自动补全" }));
+    await waitFor(() => expect(startMetaBackfill).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(within(llmBlock()).queryByText(/自动补全暂未启动/)).not.toBeInTheDocument());
+  });
+
+  it("AI 测试连接：表单不脏时不保存也不出现启用入口", async () => {
+    const saveLlmSettings = vi.fn(async () => undefined);
+    useField.setState({ settings: llmSettings(), saveLlmSettings });
+    primeLlmBrowser();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => jsonResponse(200, { choices: [{ message: { content: "ok" } }] })),
+    );
+    render(<SystemView />);
+    fireEvent.click(within(screen.getByRole("region", { name: "DeepSeek" })).getByRole("button", { name: "测试连接" }));
+    await waitFor(() =>
+      expect(within(screen.getByRole("region", { name: "DeepSeek" })).getByText(/连接正常/)).toBeInTheDocument(),
+    );
+    expect(saveLlmSettings).not.toHaveBeenCalled();
+    expect(within(llmBlock()).queryByText(/自动补全暂未启动/)).not.toBeInTheDocument();
+  });
+
+  it("MinerU 测试连接：脏表单按 deferJobs 落盘，成功后提供显式「继续未完成的解析」", async () => {
+    const saveMineruSettings = vi.fn(async (_input: MineruSaveInput, _options?: { deferJobs?: boolean }) => undefined);
+    const resumeMineruParses = vi.fn(async () => 2);
+    useField.setState({ mineru: mineruState(), effectiveProvider: null, saveMineruSettings, resumeMineruParses });
+    vi.spyOn(mineruModule, "testMineru").mockResolvedValue("连接正常");
+    render(<SystemView />);
+    const ssh = screen.getByRole("region", { name: "SSH 远程" });
+    fireEvent.click(within(ssh).getByRole("button", { name: "高级" }));
+    fireEvent.change(within(ssh).getByLabelText("主机"), { target: { value: "new-imac" } });
+    fireEvent.click(within(ssh).getByRole("button", { name: "测试连接" }));
+    await waitFor(() => expect(saveMineruSettings).toHaveBeenCalledTimes(1));
+    expect(saveMineruSettings.mock.calls[0]![1]).toEqual({ deferJobs: true });
+    const block = screen.getByRole("heading", { level: 3, name: "MinerU 解析源" }).closest("article") as HTMLElement;
+    expect(await within(block).findByText(/未自动续跑解析/)).toBeInTheDocument();
+    fireEvent.click(within(block).getByRole("button", { name: "继续未完成的解析" }));
+    await waitFor(() => expect(resumeMineruParses).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(within(block).queryByText(/未自动续跑解析/)).not.toBeInTheDocument());
+  });
+});
+
+describe("SystemView · 浏览器预览的桌面专属能力标注", () => {
+  beforeEach(() => {
+    useField.setState(useField.getInitialState(), true);
+    localStorage.clear();
+  });
+
+  it("顶部显示浏览器预览说明，指明桌面专属能力与替代动作", () => {
+    render(<SystemView />);
+    const note = screen.getByRole("note");
+    expect(note.textContent).toContain("浏览器预览模式");
+    expect(note.textContent).toContain("备份 / 恢复、检查更新、MinerU 连接");
+    expect(note.textContent).toContain("数据导出");
+    expect(note.textContent).toContain("GitHub Releases");
+  });
+
+  it("备份 / 恢复按钮禁用并给出可见原因（不再点了才弹警告）", () => {
+    render(<SystemView />);
+    const block = screen.getByRole("heading", { level: 3, name: "备份与恢复" }).closest("article") as HTMLElement;
+    expect(within(block).getByRole("button", { name: "备份" })).toBeDisabled();
+    expect(within(block).getByRole("button", { name: "恢复" })).toBeDisabled();
+    expect(within(block).getByText(/浏览器预览不能备份 \/ 恢复/)).toBeInTheDocument();
+  });
+});
+
+describe("SystemView · 统一保存规则标注", () => {
+  beforeEach(() => {
+    useField.setState(useField.getInitialState(), true);
+    localStorage.clear();
+  });
+
+  it("三块表单与导出卡都标注了生效规则（立即生效项 vs 等保存）", () => {
+    render(<SystemView />);
+    const llm = llmBlock();
+    expect(within(llm).getByText(/字段修改需点「保存设置」；提供商排序 ↑↓、测试连接、获取模型列表与清除 Key 立即生效/)).toBeInTheDocument();
+    const mineru = screen.getByRole("heading", { level: 3, name: "MinerU 解析源" }).closest("article") as HTMLElement;
+    expect(within(mineru).getByText(/字段修改需点「保存设置」；回退顺序调整、测试连接与清除 Token 立即生效/)).toBeInTheDocument();
+    const biblio = screen.getByRole("heading", { level: 3, name: "文献库" }).closest("article") as HTMLElement;
+    expect(within(biblio).getByText(/邮箱与 Key 的修改均需点「保存文献库设置」后生效/)).toBeInTheDocument();
+    const exportCard = screen.getByRole("heading", { level: 3, name: "数据导出" }).closest("article") as HTMLElement;
+    expect(within(exportCard).getByText(/导出立即执行，只读不改动库内数据/)).toBeInTheDocument();
+    const secrets = screen.getByRole("article", { name: "密钥与令牌" });
+    expect(within(secrets).getByText(/清除立即生效/)).toBeInTheDocument();
   });
 });
 

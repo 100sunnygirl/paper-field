@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PaperListItem } from "../lib/types";
+import { resetActivity, trackJob } from "../lib/activity";
 import { useField } from "../store";
 import { PaperNav } from "./FieldView";
 
@@ -46,6 +47,7 @@ function intakeItem(id: string, mineruStatus: PaperListItem["mineruStatus"]): Pa
 
 beforeEach(() => {
   useField.setState(useField.getInitialState(), true);
+  resetActivity();
 });
 
 describe("PaperNav · 入库文案", () => {
@@ -129,6 +131,37 @@ describe("PaperNav · INTAKE 任务列表只显示进行中的作业", () => {
     useField.setState({ mode: "intake", intake: [], jobs: [job("j1", "done")] });
     render(<PaperNav />);
     expect(screen.getByText("当前没有进行中的 AI 作业。")).toBeInTheDocument();
+  });
+
+  it("作业行带论文标题与阶段一句话（与面板同口径），点击在面板高亮对应卡", () => {
+    const highlightJob = vi.fn();
+    trackJob("j1", "p-1", "parse", { provider: "api", pages: { done: 3, total: 10 } });
+    useField.setState({
+      mode: "intake",
+      intake: [],
+      highlightJob,
+      jobs: [{ ...job("j1", "running"), paperTitle: "Attention Is All You Need", paperTitleZh: null }],
+    });
+
+    render(<PaperNav />);
+    expect(screen.getByText("Attention Is All You Need")).toBeInTheDocument();
+    // 阶段一句话与作业面板同一来源（含解析源与页进度）。
+    expect(screen.getByText("已解析 3 / 10 页")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Attention Is All You Need/ }));
+    expect(highlightJob).toHaveBeenCalledWith("j1");
+  });
+
+  it("进行中作业超过 6 条时提示其余在作业面板查看", () => {
+    useField.setState({
+      mode: "intake",
+      intake: [],
+      jobs: Array.from({ length: 8 }, (_, i) => job(`j${i}`, "running")),
+    });
+
+    render(<PaperNav />);
+    expect(screen.getByText(/另有 2 条进行中作业/)).toBeInTheDocument();
+    expect(document.querySelectorAll(".ef-job-row-main")).toHaveLength(6);
   });
 });
 
@@ -295,5 +328,20 @@ describe("PaperNav · 搜索与添加论文住在列表栏", () => {
     useField.setState({ mode: "archive" });
     render(<PaperNav />);
     expect(screen.queryByRole("button", { name: /添加论文/ })).toBeNull();
+  });
+});
+
+describe("PaperNav · 标已读的 +1 微反馈", () => {
+  it("readPulse 置位时：领域进度条与已读计数挂上脉冲类", () => {
+    useField.setState({ mode: "field", papers: [intakeItem("p1", null), intakeItem("p2", null)], readPulse: 1 });
+    render(<PaperNav />);
+    expect(document.querySelector(".ef-progress")).toHaveClass("is-read-pulse");
+    expect(document.querySelector(".ef-progress-value b")).toHaveClass("is-read-pulse");
+  });
+
+  it("无脉冲时进度条不带脉冲类", () => {
+    useField.setState({ mode: "field", papers: [intakeItem("p1", null)] });
+    render(<PaperNav />);
+    expect(document.querySelector(".ef-progress")).not.toHaveClass("is-read-pulse");
   });
 });

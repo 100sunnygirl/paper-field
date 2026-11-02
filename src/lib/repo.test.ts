@@ -154,6 +154,28 @@ describe("setReadingStatus（缺陷 11：read_at 往返）", () => {
     expect(row.readingStatus).toBe("unread");
     expect(row.readAt).toBeNull();
   });
+
+  it("撤销路径 restoreReadAt 精确写回归档时间戳（含 null），不重新起算", async () => {
+    const domainId = await makeDomain();
+    const paper = await repo.createPaper({ domainId });
+    const historic = "2020-01-01T00:00:00.000Z";
+    await repo.setReadingStatus(paper.id, "read");
+    await holder.engine!.execute("UPDATE papers SET read_at = ? WHERE id = ?", [historic, paper.id]);
+
+    // read → unread 误触清空了 read_at；撤销恢复 read 时带回归档值。
+    await repo.setReadingStatus(paper.id, "unread");
+    expect((await repo.getPaper(paper.id))!.readAt).toBeNull();
+    await repo.setReadingStatus(paper.id, "read", historic);
+    const restored = (await repo.getPaper(paper.id))!;
+    expect(restored.readingStatus).toBe("read");
+    expect(restored.readAt).toBe(historic);
+
+    // 撤销回「在读」时同样按传入值（null）落库。
+    await repo.setReadingStatus(paper.id, "reading", null);
+    const backToReading = (await repo.getPaper(paper.id))!;
+    expect(backToReading.readingStatus).toBe("reading");
+    expect(backToReading.readAt).toBeNull();
+  });
 });
 
 describe("replaceAuthors（缺陷 10：同名作者隔离）", () => {

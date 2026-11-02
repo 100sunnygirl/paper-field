@@ -17,8 +17,16 @@ vi.mock("./lib/settings", async (importOriginal) => ({
   cancelChat: vi.fn(async () => undefined),
 }));
 
-import { beginBatchItem, getActivity, queueBatch, resetActivity, startBatch } from "./lib/activity";
+vi.mock("./lib/mineru", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./lib/mineru")>()),
+  // 「继续本批」会真正入链解析：挂起提交，让断言只看 resetMineru 的落库效果。
+  mineruSubmit: vi.fn((): Promise<MineruSubmitResult> => new Promise(() => {})),
+}));
+
+import { beginBatchItem, endBatchItem, finishBatch, getActivity, queueBatch, resetActivity, startBatch } from "./lib/activity";
 import { runTracked } from "./lib/jobs";
+import { dequeueFromBatch } from "./lib/mineruRun";
+import { DEFAULT_MINERU, type MineruSubmitResult } from "./lib/mineru";
 import { repo } from "./lib/repo";
 import { cancelChat, completeChat } from "./lib/settings";
 import { allowEveryNote } from "./lib/readingHolds";
@@ -209,6 +217,102 @@ describe("作业面板的队列操作", () => {
     await useField.getState().stopMineruBatch(batchId);
     expect(getActivity().batches[0].results).toEqual({ p2: "cancelled" });
     expect(useField.getState().flash?.text).toBe("已停止补全，2 篇不再写入。");
+  });
+
+  it("清空其余：保留下一篇排队论文，其余移出并落库为已取消", async () => {
+    const [p1, p2, p3, p4] = [
+      await makePaper(true),
+      await makePaper(true),
+      await makePaper(true),
+      await makePaper(true),
+    ];
+    await repo.resetMineru([p1, p2, p3, p4]);
+    const batchId = queueBatch("mineru", [p1, p2, p3, p4]);
+    startBatch(batchId);
+    beginBatchItem(batchId, p1); // p1 处理中，p2 是下一篇
+    await useField.getState().clearQueueRest(batchId);
+    expect(getActivity().batches[0].results).toEqual({ [p3]: "cancelled", [p4]: "cancelled" });
+    expect(getActivity().batches[0].paperIds).toEqual([p1, p2, p3, p4]);
+    for (const id of [p3, p4]) expect((await repo.getPaper(id))!.mineruStatus).toBe("cancelled");
+    expect(useField.getState().flash?.text).toBe("已移出 2 篇，保留下一篇继续解析。");
+  });
+
+  it("reorderQueue 调整批次内排队顺序（置顶后 p3 排在 p2 前面）", () => {
+    const batchId = queueBatch("mineru", ["p1", "p2", "p3"]);
+    startBatch(batchId);
+    beginBatchItem(batchId, "p1");
+    useField.getState().reorderQueue(batchId, "p3", "top");
+    expect(getActivity().batches[0].paperIds).toEqual(["p1", "p3", "p2"]);
+  });
+
+  it("继续本批：解析源测试通过后只恢复未完成篇（已完成与移出的不动）", async () => {
+    const [p1, p2, p3] = [await makePaper(true), await makePaper(true), await makePaper(true)];
+    await repo.resetMineru([p1, p2, p3]);
+    const batchId = queueBatch("mineru", [p1, p2, p3]);
+    startBatch(batchId);
+    endBatchItem(batchId, p1, "ok");
+    await dequeueFromBatch(batchId, p3); // 被用户移出的：库里也写 cancelled
+    finishBatch(batchId, "halted");
+    useField.setState({
+      mineru: { ...DEFAULT_MINERU, ssh: { ...DEFAULT_MINERU.ssh, enabled: true }, configured: true },
+      effectiveProvider: "ssh",
+    });
+
+    await useField.getState().resumeHaltedBatch(batchId);
+
+    expect(useField.getState().flash?.tone).toBe("ok");
+    expect(useField.getState().flash?.text).toContain("已恢复本批剩余 1 篇");
+    expect((await repo.getPaper(p2))!.mineruStatus).toBe("queued");
+    expect((await repo.getPaper(p3))!.mineruStatus).toBe("cancelled");
+    // 恢复只带未完成的那一篇，作为新批次入链。
+    const resumed = getActivity().batches.find((batch) => batch.paperIds.includes(p2) && batch.id !== batchId);
+    expect(resumed?.paperIds).toEqual([p2]);
+  });
+
+  it("继续本批：解析源全部不可用时不恢复，论文状态不动", async () => {
+    const p1 = await makePaper(true);
+    const batchId = queueBatch("mineru", [p1]);
+    startBatch(batchId);
+    finishBatch(batchId, "halted");
+    useField.setState({
+      mineru: { ...DEFAULT_MINERU, ssh: { ...DEFAULT_MINERU.ssh, enabled: true }, configured: true },
+    });
+
+    await useField.getState().resumeHaltedBatch(batchId);
+
+    expect(useField.getState().flash?.tone).toBe("warn");
+    expect(useField.getState().flash?.text).toContain("解析源测试未通过");
+    expect((await repo.getPaper(p1))!.mineruStatus).toBe("pending");
+  });
+
+  it("当前篇完成后暂停：给批次打标记并提示稍后可继续", () => {
+    const batchId = queueBatch("mineru", ["p1", "p2"]);
+    startBatch(batchId);
+    useField.getState().pauseBatchAfterCurrent(batchId);
+    expect(useField.getState().flash?.text).toContain("当前一篇完成后暂停本批");
+  });
+
+  it("openPaperFulltext：跳到该论文并自动展开「解析全文」折叠区", async () => {
+    const id = await makePaper(true);
+    await repo.saveParsedMarkdown(id, "# 全文");
+    // 阅读页的全文折叠区：挂一个同 id 的 details 模拟挂载后的 DOM。
+    const fulltext = document.createElement("details");
+    fulltext.id = "fulltext";
+    document.body.appendChild(fulltext);
+    try {
+      await useField.getState().openPaperFulltext(id);
+      await vi.waitFor(() => expect(fulltext.hasAttribute("open")).toBe(true));
+    } finally {
+      fulltext.remove();
+    }
+    expect(useField.getState().selectedPaperId).toBe(id);
+    expect(useField.getState().mode).toBe("field");
+  });
+
+  it("openPaperFulltext：论文已删除时静默返回，不切换", async () => {
+    useField.setState({ selectedPaperId: "keep" });
+    await useField.getState().openPaperFulltext("gone");
+    expect(useField.getState().selectedPaperId).toBe("keep");
   });
 
   it("删除论文先取消它的在途作业", async () => {

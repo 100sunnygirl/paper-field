@@ -14,6 +14,7 @@ import {
   formatElapsed,
   formatEta,
   formatSpan,
+  summarizeDomains,
   type ActiveJobView,
   type BatchView,
   type HistoryItemView,
@@ -21,6 +22,20 @@ import {
   type SegmentState,
 } from "../lib/jobsView";
 import { repo } from "../lib/repo";
+import {
+  JOURNAL_STATE_LABELS,
+  exportJobJournal,
+  listJobBatches,
+} from "../lib/jobJournal";
+import { exportStamp } from "../lib/export";
+import { isTauri } from "../lib/util";
+import {
+  loadJobNotifyPrefs,
+  requestSystemNotifyPermission,
+  saveJobNotifyPrefs,
+  type JobNotifyMode,
+  type JobNotifyPrefs,
+} from "../lib/notifyPrefs";
 import type { LlmProviderView, PaperBrief } from "../lib/types";
 import { pad2, shortcut } from "../lib/util";
 import { useField } from "../store";
@@ -98,11 +113,21 @@ function JobsPanelBody() {
   const jobs = useField((s) => s.jobs);
   const settings = useField((s) => s.settings);
   const setJobsOpen = useField((s) => s.setJobsOpen);
+  const jobsPinned = useField((s) => s.jobsPinned);
+  const setJobsPinned = useField((s) => s.setJobsPinned);
+  const highlightJobId = useField((s) => s.highlightJobId);
   const selectDomain = useField((s) => s.selectDomain);
   const selectPaper = useField((s) => s.selectPaper);
   const activity = useSyncExternalStore(subscribeActivity, getActivity);
   const titleId = useId();
   const panelRef = useRef<HTMLElement>(null);
+
+  // 入库页作业行的互跳高亮：几秒后自动淡出，不留永久状态。
+  useEffect(() => {
+    if (!highlightJobId) return;
+    const timer = window.setTimeout(() => useField.setState({ highlightJobId: null }), 4000);
+    return () => window.clearTimeout(timer);
+  }, [highlightJobId]);
 
   const batchPaperIds = useMemo(() => activity.batches.flatMap((batch) => batch.paperIds), [activity.batches]);
   const briefs = usePaperBriefs(batchPaperIds, jobs);
@@ -136,7 +161,7 @@ function JobsPanelBody() {
     <section
       ref={panelRef}
       id="jobs-panel"
-      className="ef-jobs"
+      className={`ef-jobs${jobsPinned ? " is-pinned" : ""}`}
       role="dialog"
       aria-modal="false"
       aria-labelledby={titleId}
@@ -155,6 +180,17 @@ function JobsPanelBody() {
         <span className="kbd" aria-hidden="true">
           {shortcut("J")}
         </span>
+        <Button
+          type="button"
+          variant="text"
+          className="ef-icon-btn"
+          aria-pressed={jobsPinned}
+          aria-label={jobsPinned ? "取消钉住（回到浮动面板）" : "钉住为右侧常驻栏"}
+          title={jobsPinned ? "取消钉住（回到浮动面板）" : "钉住为右侧常驻栏：不挡正文，Esc 不再收起"}
+          onClick={() => setJobsPinned(!jobsPinned)}
+        >
+          <Icon name="pin" />
+        </Button>
         <Button
           type="button"
           variant="text"
@@ -186,7 +222,7 @@ function JobsPanelBody() {
       </dl>
 
       <div className="ef-jobs-scroll">
-        {view.batch ? <BatchCard batch={view.batch} /> : null}
+        {view.batch ? <BatchCard batch={view.batch} onJump={jump} /> : null}
         {view.waitingBatches.count ? (
           <p className="ef-jobs-note">
             另有 {view.waitingBatches.count} 个批次（{view.waitingBatches.papers} 篇）在后面排队，当前批次结束后依次开始。
@@ -200,7 +236,14 @@ function JobsPanelBody() {
           </h3>
           {view.active.length ? (
             view.active.map((job, index) => (
-              <JobCard key={job.id} job={job} index={index} llmChain={llmChain} onJump={jump} />
+              <JobCard
+                key={job.id}
+                job={job}
+                index={index}
+                llmChain={llmChain}
+                onJump={jump}
+                highlighted={job.id === highlightJobId}
+              />
             ))
           ) : (
             <div className="ef-jobs-idle">
@@ -213,14 +256,196 @@ function JobsPanelBody() {
         {view.queue.length ? <QueueList queue={view.queue} onJump={jump} /> : null}
 
         <HistoryList history={view.history} now={now} onJump={jump} />
+
+        <JournalSection />
+
+        <NotifyPrefsBar />
       </div>
     </section>
   );
 }
 
-function BatchCard({ batch }: { batch: BatchView }) {
+/** 本机批次记录的时间列：MM-DD HH:mm（最近 7 天，跨天才有意义）。 */
+function journalWhen(at: number): string {
+  const d = new Date(at);
+  return `${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
+/**
+ * 本机批次记录：重启也能回看的批次清单与逐篇结果计数（localStorage，不随备份走——
+ * 口径说明见 jobJournal.ts）。逐篇作业明细以「最近结束」（llm_jobs）为准。
+ */
+function JournalSection() {
+  const setFlash = useField((s) => s.setFlash);
+  const activity = useSyncExternalStore(subscribeActivity, getActivity);
+  const entries = useMemo(() => listJobBatches(7), [activity]);
+  if (!entries.length) return null;
+  const interrupted = entries.some((entry) => entry.state === "interrupted");
+
+  async function exportJournal() {
+    const name = `paper-field-jobs-${exportStamp(new Date())}.txt`;
+    const content = exportJobJournal(entries);
+    try {
+      if (isTauri()) {
+        const { invoke } = await import("@tauri-apps/api/core");
+        // 保存目录由系统对话框弹出；取消返回 null。
+        const dir = await invoke<string | null>("export_files", {
+          files: [{ relativePath: name, content }],
+        });
+        if (!dir) return;
+        setFlash({ tone: "ok", text: `批次记录已保存到 ${dir}` });
+        return;
+      }
+      if (typeof URL.createObjectURL !== "function") {
+        setFlash({ tone: "warn", text: "当前环境不支持下载文件，可展开面板逐条查看。" });
+        return;
+      }
+      const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name;
+      a.click();
+      URL.revokeObjectURL(url);
+      setFlash({ tone: "ok", text: `批次记录已下载为 ${name}` });
+    } catch (err) {
+      setFlash({ tone: "warn", text: `保存批次记录失败：${err instanceof Error ? err.message : String(err)}` });
+    }
+  }
+
+  return (
+    <section className="ef-jobs-section" aria-label="本机批次记录">
+      <h3 className="ef-jobs-sub">
+        本机批次记录
+        <span className="ef-count mono">{pad2(entries.length)}</span>
+      </h3>
+      <p className="ef-jobs-note">最近 7 天的批次（含重启前的会话），存在本机、不随备份走；逐篇明细见「最近结束」。</p>
+      {interrupted ? (
+        <p className="ef-jobs-note">
+          「应用退出中断」的批次：远端任务可能仍在解析，本机续跑时同源恢复或重新提交（与启动清扫口径一致）。
+        </p>
+      ) : null}
+      <ol className="ef-journal">
+        {entries.map((entry) => {
+          const ok = Object.values(entry.results).filter((result) => result === "ok").length;
+          const fail = Object.values(entry.results).filter((result) => result === "fail").length;
+          const elapsed =
+            entry.startedAt !== null && entry.finishedAt !== null
+              ? formatSpan(entry.finishedAt - entry.startedAt)
+              : "未收尾";
+          return (
+            <li key={entry.id} className={`ef-journal-row is-${entry.state}`}>
+              <b>{entry.kind === "mineru" ? "MinerU 解析" : "AI 补全"}</b>
+              <span className="mono">{journalWhen(entry.queuedAt)}</span>
+              <span>
+                {entry.paperIds.length} 篇 · 成功 {ok}
+                {fail ? ` · 失败 ${fail}` : ""}
+              </span>
+              <span>用时 {elapsed}</span>
+              <span className={`ef-journal-state is-${entry.state}`}>{JOURNAL_STATE_LABELS[entry.state]}</span>
+            </li>
+          );
+        })}
+      </ol>
+      <Button type="button" size="sm" variant="text" className="ef-journal-export" onClick={() => void exportJournal()}>
+        导出本机记录
+      </Button>
+    </section>
+  );
+}
+
+const NOTIFY_MODES: Array<{ value: JobNotifyMode; label: string }> = [
+  { value: "summary", label: "批次汇总" },
+  { value: "failures", label: "仅失败" },
+  { value: "perItem", label: "逐篇" },
+];
+
+/** 完成提醒偏好：本机 localStorage 保存，批次收尾时即时生效（mineruRun 每次收尾现读）。 */
+function NotifyPrefsBar() {
+  const setFlash = useField((s) => s.setFlash);
+  const [prefs, setPrefs] = useState(loadJobNotifyPrefs);
+
+  function update(next: Partial<JobNotifyPrefs>) {
+    setPrefs((prev) => {
+      const merged = { ...prev, ...next };
+      saveJobNotifyPrefs(merged);
+      return merged;
+    });
+  }
+
+  async function toggleSystem(on: boolean) {
+    if (!on) {
+      update({ system: false });
+      return;
+    }
+    const permission = await requestSystemNotifyPermission();
+    if (permission === "granted") {
+      update({ system: true });
+      return;
+    }
+    if (permission === "unsupported") {
+      setFlash({ tone: "warn", text: "当前环境不支持系统通知（浏览器预览受限），完成提醒将只在面板内弹出。" });
+      return;
+    }
+    setFlash({ tone: "warn", text: "系统通知权限被拒绝，无法在窗口失焦时提醒。可在浏览器设置里允许后重试。" });
+  }
+
+  return (
+    <footer className="ef-jobs-notify" aria-label="完成提醒偏好">
+      <label className="ef-notify-toggle">
+        <input
+          type="checkbox"
+          checked={prefs.enabled}
+          onChange={(e) => update({ enabled: e.target.checked })}
+        />
+        完成时提醒我
+      </label>
+      <select
+        aria-label="完成提醒口径"
+        value={prefs.mode}
+        disabled={!prefs.enabled}
+        onChange={(e) => update({ mode: e.target.value as JobNotifyMode })}
+      >
+        {NOTIFY_MODES.map((item) => (
+          <option key={item.value} value={item.value}>
+            {item.label}
+          </option>
+        ))}
+      </select>
+      <label className="ef-notify-toggle" title="窗口失焦时发系统级通知（需通知权限）">
+        <input
+          type="checkbox"
+          checked={prefs.system}
+          disabled={!prefs.enabled}
+          onChange={(e) => void toggleSystem(e.target.checked)}
+        />
+        失焦系统通知
+      </label>
+    </footer>
+  );
+}
+
+function BatchCard({
+  batch,
+  onJump,
+}: {
+  batch: BatchView;
+  onJump: (paperId: string, domainId: string | null) => Promise<void>;
+}) {
   const stopMineruBatch = useField((s) => s.stopMineruBatch);
+  const pauseBatchAfterCurrent = useField((s) => s.pauseBatchAfterCurrent);
+  const resumeHaltedBatch = useField((s) => s.resumeHaltedBatch);
   const [confirmStop, setConfirmStop] = useState(false);
+  /** 逐篇进度视图：色块（默认）/ 可键盘聚焦的文字列表。 */
+  const [view, setView] = useState<"blocks" | "list">("blocks");
+  // 关键阶段变化用文字播报（ polite live region）：处理到第几篇。
+  const [announce, setAnnounce] = useState("");
+  const prevProcessed = useRef(batch.processed);
+  useEffect(() => {
+    if (batch.processed === prevProcessed.current) return;
+    prevProcessed.current = batch.processed;
+    setAnnounce(`${batch.label}：已处理 ${batch.processed} / ${batch.total} 篇`);
+  }, [batch.processed, batch.label, batch.total]);
   const running = batch.state === "running";
   const summary = [
     `成功 ${batch.ok}`,
@@ -231,6 +456,9 @@ function BatchCard({ batch }: { batch: BatchView }) {
     .filter(Boolean)
     .join(" · ");
   const unfinished = batch.total - batch.processed;
+  const hasWork = Boolean(batch.pending || batch.currentPaperId);
+  const segmentLabel = (segment: BatchView["segments"][number], index: number) =>
+    `${pad2(index + 1)} · ${segment.title} — ${SEGMENT_LABELS[segment.state]}${segment.note ? `：${segment.note}` : ""}`;
   return (
     <article className={`ef-batchcard is-${batch.state}`} aria-label={`${batch.label}批次`}>
       <header className="ef-batchcard-head">
@@ -242,26 +470,68 @@ function BatchCard({ batch }: { batch: BatchView }) {
         </span>
       </header>
 
-      {batch.total <= SEGMENT_LIMIT ? (
+      <div className="ef-batchcard-views" role="group" aria-label="逐篇进度视图">
+        <Button
+          type="button"
+          size="sm"
+          variant="text"
+          aria-pressed={view === "blocks"}
+          onClick={() => setView("blocks")}
+        >
+          色块
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          variant="text"
+          aria-pressed={view === "list"}
+          onClick={() => setView("list")}
+        >
+          文字列表
+        </Button>
+      </div>
+
+      {view === "list" ? (
+        <ol className="ef-seglist" aria-label={`逐篇列表：已处理 ${batch.processed} / ${batch.total} 篇，${summary}`}>
+          {batch.segments.map((segment, index) => (
+            <li key={segment.paperId} className={`is-${segment.state}`}>
+              <button
+                type="button"
+                className="ef-seglist-row"
+                title="在阅读页打开这篇论文"
+                onClick={() => void onJump(segment.paperId, null)}
+              >
+                <span className="mono">{pad2(index + 1)}</span>
+                <span className="ef-seglist-title">{segment.title}</span>
+                <span className="ef-seglist-state">{SEGMENT_LABELS[segment.state]}</span>
+              </button>
+              {segment.note ? <span className="ef-seglist-note">{segment.note}</span> : null}
+            </li>
+          ))}
+        </ol>
+      ) : batch.total <= SEGMENT_LIMIT ? (
         <ol
           className="ef-segments"
           style={{ "--pf-seg-count": batch.total } as CSSProperties}
-          role="img"
           aria-label={`逐篇进度：已处理 ${batch.processed} / ${batch.total} 篇，${summary}`}
         >
           {batch.segments.map((segment, index) => (
-            <li
-              key={segment.paperId}
-              className={`is-${segment.state}`}
-              title={`${pad2(index + 1)} · ${segment.title} — ${SEGMENT_LABELS[segment.state]}`}
-            />
+            <li key={segment.paperId} className={`is-${segment.state}`}>
+              <button
+                type="button"
+                className="ef-segment-btn"
+                aria-label={segmentLabel(segment, index)}
+                title={segmentLabel(segment, index)}
+                onClick={() => void onJump(segment.paperId, null)}
+              />
+            </li>
           ))}
         </ol>
       ) : (
         <div
           className="ef-segbar"
           role="img"
-          aria-label={`逐篇进度：已处理 ${batch.processed} / ${batch.total} 篇，${summary}`}
+          aria-label={`逐篇进度：已处理 ${batch.processed} / ${batch.total} 篇，${summary}。逐篇标题与失败原因可切到「文字列表」查看`}
         >
           {(["ok", "fail", "cancelled", "skip"] as const).map((key) => {
             const count = batch.segments.filter((segment) => segment.state === key).length;
@@ -272,27 +542,59 @@ function BatchCard({ batch }: { batch: BatchView }) {
           {batch.currentPaperId ? <i className="is-current" style={{ width: `${100 / batch.total}%` }} /> : null}
         </div>
       )}
+      {/* 读屏播报：处理到第几篇（色块本身只有颜色，关键变化用文字补）。 */}
+      <p className="sr-only" aria-live="polite">
+        {announce}
+      </p>
 
       <p className="ef-batchcard-stats">
         <span>{summary}</span>
         {running && batch.pending ? <span>排队 {batch.pending}</span> : null}
         <span className="mono">用时 {formatElapsed(batch.elapsedMs)}</span>
         {running ? (
-          <span>{batch.etaMs !== null ? `预计还需 ${formatEta(batch.etaMs)}` : "完成首篇后估算剩余时间"}</span>
+          batch.etaMs !== null ? (
+            <span>
+              {batch.etaInfo?.caveat === "current"
+                ? `当前篇耗时远超均值，估算更新中（按 ${batch.etaInfo.samples} 篇约 ${formatEta(batch.etaMs)}）`
+                : batch.etaInfo?.caveat === "spread"
+                  ? `各篇耗时差异大（可能切换过解析源），估算仅供参考：约 ${formatEta(batch.etaMs)}`
+                  : `预计还需 ${formatEta(batch.etaMs)}（按 ${batch.etaInfo?.samples ?? 0} 篇 · 区间 ${formatEta(
+                      batch.etaInfo?.lowMs ?? batch.etaMs,
+                    )}–${formatEta(batch.etaInfo?.highMs ?? batch.etaMs)}）`}
+            </span>
+          ) : (
+            <span>完成首篇后估算剩余时间</span>
+          )
         ) : null}
       </p>
 
       {batch.state === "halted" && unfinished > 0 ? (
-        <p className="ef-batchcard-alert">
-          已暂停，剩余 {unfinished} 篇未处理。解析源可能繁忙或不可用，可在设置页测试连接后到入库页重试。
-        </p>
+        <>
+          <p className="ef-batchcard-alert">
+            {batch.kind === "mineru"
+              ? `已暂停，剩余 ${unfinished} 篇未处理。继续前会先测试解析源，通过后只恢复这批未完成的论文。`
+              : `已暂停，剩余 ${unfinished} 篇未处理。可继续本批，未完成的论文会重新排队补全。`}
+          </p>
+          <div className="ef-batchcard-actions">
+            <Button type="button" size="sm" onClick={() => void resumeHaltedBatch(batch.id)}>
+              继续本批
+            </Button>
+          </div>
+        </>
       ) : null}
 
-      {running && batch.kind === "mineru" && (batch.pending || batch.currentPaperId) ? (
+      {running && hasWork ? (
         <div className="ef-batchcard-actions">
           {confirmStop ? (
             <>
-              <span>停止后，正在解析的一篇会取消，其余排队论文不再提交。</span>
+              <span>
+                {batch.currentPaperId
+                  ? `正在${batch.kind === "mineru" ? "解析" : "补全"}「${
+                      batch.segments.find((segment) => segment.paperId === batch.currentPaperId)?.title ?? "当前一篇"
+                    }」会取消`
+                  : "正在处理的一篇会取消"}
+                {batch.pending ? `，其余 ${batch.pending} 篇排队论文不再提交` : ""}。
+              </span>
               <Button
                 type="button"
                 size="sm"
@@ -305,13 +607,24 @@ function BatchCard({ batch }: { batch: BatchView }) {
                 确认停止
               </Button>
               <Button type="button" size="sm" variant="text" onClick={() => setConfirmStop(false)}>
-                继续解析
+                {batch.kind === "mineru" ? "继续解析" : "继续补全"}
               </Button>
             </>
           ) : (
-            <Button type="button" size="sm" variant="danger" onClick={() => setConfirmStop(true)}>
-              停止本批…
-            </Button>
+            <>
+              <Button
+                type="button"
+                size="sm"
+                variant="text"
+                title="当前一篇处理完后暂停，剩余论文保留，可稍后继续"
+                onClick={() => pauseBatchAfterCurrent(batch.id)}
+              >
+                当前篇完成后暂停
+              </Button>
+              <Button type="button" size="sm" variant="danger" onClick={() => setConfirmStop(true)}>
+                停止本批…
+              </Button>
+            </>
           )}
         </div>
       ) : null}
@@ -324,13 +637,23 @@ function JobCard({
   index,
   llmChain,
   onJump,
+  highlighted,
 }: {
   job: ActiveJobView;
   index: number;
   llmChain: LlmProviderView[];
   onJump: (paperId: string, domainId: string | null) => Promise<void>;
+  /** 入库页作业行点击后的互跳高亮（数秒自动清除）。 */
+  highlighted: boolean;
 }) {
   const cancelJob = useField((s) => s.cancelJob);
+  const cardRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    // jsdom 等环境没有实现 scrollIntoView：能滚才滚，高亮描边不依赖它。
+    if (highlighted && typeof cardRef.current?.scrollIntoView === "function") {
+      cardRef.current.scrollIntoView({ block: "nearest" });
+    }
+  }, [highlighted]);
   const isMineru = job.type === "mineruParse";
   // AI 作业的去向：可用提供商的首选（失败时按设置页顺序回退）。
   const via = isMineru
@@ -343,7 +666,8 @@ function JobCard({
   const pagePct = job.pages ? Math.round((job.pages.done / job.pages.total) * 100) : null;
   return (
     <article
-      className={`ef-jobcard is-${job.status} pf-stagger`}
+      ref={cardRef}
+      className={`ef-jobcard is-${job.status}${highlighted ? " is-highlight" : ""} pf-stagger`}
       style={{ "--pf-i": index } as CSSProperties}
       aria-label={`${job.typeLabel}：${job.title}`}
     >
@@ -368,8 +692,12 @@ function JobCard({
       >
         {job.title}
       </button>
-      {job.domainName || via ? (
-        <p className="ef-jobcard-meta">{[job.domainName, via].filter(Boolean).join(" · ")}</p>
+      {job.domainName || job.batch || via ? (
+        <p className="ef-jobcard-meta">
+          {[job.domainName, job.batch ? `本批第 ${job.batch.index}/${job.batch.total} 篇` : null, via]
+            .filter(Boolean)
+            .join(" · ")}
+        </p>
       ) : null}
 
       <ol className="ef-steps" aria-label="作业阶段">
@@ -415,6 +743,32 @@ function JobCard({
   );
 }
 
+/** 展开偏好存本机（localStorage）：下次打开面板仍然记住。读写失败（隐私模式等）静默忽略。 */
+const QUEUE_EXPANDED_KEY = "paper-field.jobs-queue-expanded";
+
+function readQueueExpanded(): boolean {
+  try {
+    return localStorage.getItem(QUEUE_EXPANDED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeQueueExpanded(value: boolean): void {
+  try {
+    if (value) localStorage.setItem(QUEUE_EXPANDED_KEY, "1");
+    else localStorage.removeItem(QUEUE_EXPANDED_KEY);
+  } catch {
+    // 存不下不影响功能：本次会话内仍然展开。
+  }
+}
+
+const QUEUE_KIND_FILTERS: Array<{ value: "all" | "mineru" | "meta"; label: string }> = [
+  { value: "all", label: "全部类型" },
+  { value: "mineru", label: "待解析" },
+  { value: "meta", label: "待补全" },
+];
+
 function QueueList({
   queue,
   onJump,
@@ -423,56 +777,216 @@ function QueueList({
   onJump: (paperId: string, domainId: string | null) => Promise<void>;
 }) {
   const dequeueMineruPaper = useField((s) => s.dequeueMineruPaper);
-  const [expanded, setExpanded] = useState(false);
-  const shown = expanded ? queue : queue.slice(0, QUEUE_PREVIEW);
-  const hidden = queue.length - shown.length;
+  const reorderQueue = useField((s) => s.reorderQueue);
+  const clearQueueRest = useField((s) => s.clearQueueRest);
+  const [expanded, setExpanded] = useState(readQueueExpanded);
+  const [query, setQuery] = useState("");
+  const [kind, setKind] = useState<"all" | "mineru" | "meta">("all");
+  const [domain, setDomain] = useState("all");
+  const [confirmClear, setConfirmClear] = useState(false);
+
+  const q = query.trim().toLowerCase();
+  const filtering = Boolean(q) || kind !== "all" || domain !== "all";
+  const domains = useMemo(() => {
+    const names = [...new Set(queue.map((item) => item.domainName?.trim()).filter(Boolean))] as string[];
+    return names.sort((a, b) => a.localeCompare(b, "zh"));
+  }, [queue]);
+  const matched = queue.filter(
+    (item) =>
+      (kind === "all" || item.kind === kind) &&
+      (domain === "all" || item.domainName === domain) &&
+      (!q || item.title.toLowerCase().includes(q)),
+  );
+  // 筛选中直接列出全部命中（不受预览条数限制）；平时仍按偏好折叠。
+  const shown = expanded || filtering ? matched : matched.slice(0, QUEUE_PREVIEW);
+  const hidden = matched.length - shown.length;
+  // 折叠的「还有 N 篇」带领域分布，先看全貌再决定要不要展开。
+  const hiddenSummary = hidden > 0 && !filtering ? summarizeDomains(queue.slice(QUEUE_PREVIEW)) : null;
+  // 各批次内排队项的实时位置：置顶 / 上移 / 下移按这个顺序换位（与本批处理顺序同一口径）。
+  const pendingIndexOf = useMemo(() => {
+    const index = new Map<string, number>();
+    const size = new Map<number, number>();
+    // queue 顺序 = 各批次 paperIds 的顺序：给每批的排队项按出现顺序编号。
+    for (const item of queue) {
+      const key = `${item.batchId}:${item.paperId}`;
+      if (index.has(key)) continue;
+      const next = size.get(item.batchId) ?? 0;
+      index.set(key, next);
+      size.set(item.batchId, next + 1);
+    }
+    return { index, size };
+  }, [queue]);
+  const firstBatchId = queue.find((item) => !item.waiting)?.batchId ?? queue[0]?.batchId;
+
+  function toggleExpanded() {
+    setExpanded((value) => {
+      writeQueueExpanded(!value);
+      return !value;
+    });
+  }
+
   return (
     <section className="ef-jobs-section" aria-label="排队中的论文">
       <h3 className="ef-jobs-sub">
         排队
         <span className="ef-count mono">{pad2(queue.length)}</span>
       </h3>
-      <ol className="ef-queue">
-        {shown.map((item, index) => (
-          <li key={item.paperId} className={`ef-queue-row${index === 0 && !item.waiting ? " is-next" : ""}`}>
-            <span className="ef-queue-index mono">{pad2(index + 1)}</span>
-            <button
-              type="button"
-              className="ef-queue-title"
-              title="在阅读页打开这篇论文"
-              onClick={() => void onJump(item.paperId, item.domainId)}
-            >
-              {item.title}
-            </button>
-            <span className="ef-queue-meta">
-              {index === 0 && !item.waiting ? "下一篇" : item.waiting ? "下一批" : "排队"}
-              {item.kind === "mineru" ? " · 待解析" : " · 待补全"}
+      {queue.length > 1 ? (
+        <div className="ef-queue-tools">
+          <input
+            type="search"
+            value={query}
+            placeholder="搜索排队论文标题"
+            aria-label="搜索排队论文标题"
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") setQuery("");
+            }}
+          />
+          <select aria-label="排队类型筛选" value={kind} onChange={(e) => setKind(e.target.value as typeof kind)}>
+            {QUEUE_KIND_FILTERS.map((item) => (
+              <option key={item.value} value={item.value}>
+                {item.label}
+              </option>
+            ))}
+          </select>
+          {domains.length > 1 ? (
+            <select aria-label="排队领域筛选" value={domain} onChange={(e) => setDomain(e.target.value)}>
+              <option value="all">全部领域</option>
+              {domains.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          ) : null}
+          {filtering ? (
+            <span className="ef-queue-match">
+              {matched.length} / {queue.length} 篇
             </span>
-            {item.kind === "mineru" ? (
-              <button
+          ) : null}
+        </div>
+      ) : null}
+      {matched.length ? (
+        <ol className="ef-queue">
+          {shown.map((item, index) => {
+            const position = pendingIndexOf.index.get(`${item.batchId}:${item.paperId}`) ?? index;
+            const batchPending = pendingIndexOf.size.get(item.batchId) ?? 1;
+            const movable = batchPending > 1;
+            return (
+              <li key={item.paperId} className={`ef-queue-row${index === 0 && !item.waiting ? " is-next" : ""}`}>
+                <span className="ef-queue-index mono">{pad2(index + 1)}</span>
+                <button
+                  type="button"
+                  className="ef-queue-title"
+                  title="在阅读页打开这篇论文"
+                  onClick={() => void onJump(item.paperId, item.domainId)}
+                >
+                  {item.title}
+                </button>
+                <span className="ef-queue-meta">
+                  {index === 0 && !item.waiting ? "下一篇" : item.waiting ? "下一批" : "排队"}
+                  {item.kind === "mineru" ? " · 待解析" : " · 待补全"}
+                </span>
+                {movable ? (
+                  <span className="ef-queue-move">
+                    {position > 0 ? (
+                      <>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="text"
+                          aria-label={`置顶到下一篇：${item.title}`}
+                          title="置顶到下一篇（本批先解析它）"
+                          onClick={() => reorderQueue(item.batchId, item.paperId, "top")}
+                        >
+                          置顶
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="text"
+                          aria-label={`上移一位：${item.title}`}
+                          title="上移一位"
+                          onClick={() => reorderQueue(item.batchId, item.paperId, "up")}
+                        >
+                          <Icon name="up" />
+                        </Button>
+                      </>
+                    ) : null}
+                    {position < batchPending - 1 ? (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="text"
+                        aria-label={`下移一位：${item.title}`}
+                        title="下移一位"
+                        onClick={() => reorderQueue(item.batchId, item.paperId, "down")}
+                      >
+                        <Icon name="down" />
+                      </Button>
+                    ) : null}
+                  </span>
+                ) : null}
+                {item.kind === "mineru" ? (
+                  <button
+                    type="button"
+                    className="ef-queue-remove"
+                    aria-label={`移出队列：${item.title}`}
+                    title="移出队列（不提交解析）"
+                    onClick={() => dequeueMineruPaper(item.batchId, item.paperId)}
+                  >
+                    <Icon name="close" />
+                  </button>
+                ) : null}
+              </li>
+            );
+          })}
+        </ol>
+      ) : (
+        <p className="ef-jobs-empty">没有符合条件的排队论文。</p>
+      )}
+      {hidden > 0 || expanded || queue.length > 1 ? (
+        <div className="ef-queue-foot">
+          {hidden > 0 || expanded ? (
+            <Button type="button" size="sm" variant="text" className="ef-queue-more" onClick={toggleExpanded}>
+              {expanded ? "收起" : `还有 ${hidden} 篇`}
+              <Icon name={expanded ? "up" : "down"} />
+            </Button>
+          ) : null}
+          {hiddenSummary && !expanded ? <span className="ef-queue-domains">{hiddenSummary}</span> : null}
+          {queue.length > 1 && firstBatchId !== undefined ? (
+            confirmClear ? (
+              <>
+                <span className="ef-queue-clear-note">只保留下一篇，其余移出本批。</span>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="danger"
+                  onClick={() => {
+                    setConfirmClear(false);
+                    void clearQueueRest(firstBatchId);
+                  }}
+                >
+                  确认清空
+                </Button>
+                <Button type="button" size="sm" variant="text" onClick={() => setConfirmClear(false)}>
+                  取消
+                </Button>
+              </>
+            ) : (
+              <Button
                 type="button"
-                className="ef-queue-remove"
-                aria-label={`移出队列：${item.title}`}
-                title="移出队列（不提交解析）"
-                onClick={() => dequeueMineruPaper(item.batchId, item.paperId)}
+                size="sm"
+                variant="text"
+                className="ef-queue-clear"
+                onClick={() => setConfirmClear(true)}
               >
-                <Icon name="close" />
-              </button>
-            ) : null}
-          </li>
-        ))}
-      </ol>
-      {hidden > 0 || expanded ? (
-        <Button
-          type="button"
-          size="sm"
-          variant="text"
-          className="ef-queue-more"
-          onClick={() => setExpanded((value) => !value)}
-        >
-          {expanded ? "收起" : `还有 ${hidden} 篇`}
-          <Icon name={expanded ? "up" : "down"} />
-        </Button>
+                清空其余…
+              </Button>
+            )
+          ) : null}
+        </div>
       ) : null}
     </section>
   );
@@ -490,6 +1004,38 @@ const HISTORY_STATUS: Record<HistoryItemView["status"], string> = {
   cancelled: "取消",
 };
 
+type HistoryFilter = "all" | "mineru" | "ai" | "failed";
+
+const HISTORY_FILTERS: Array<{ value: HistoryFilter; label: string }> = [
+  { value: "all", label: "全部" },
+  { value: "mineru", label: "解析" },
+  { value: "ai", label: "AI" },
+  { value: "failed", label: "失败" },
+];
+
+/** AI 类失败 / 取消的就地重试文案（解析类沿用「重新解析」）。 */
+const AI_RETRY_LABELS: Record<NonNullable<HistoryItemView["aiRetry"]>, string> = {
+  prepareMeta: "重新补全",
+  draftNotes: "重新起草",
+  refreshLinks: "重新刷新链接",
+};
+
+/** 完成作业的结果直达入口：解析 → 自动展开全文；补全 → 字段编辑；起草 → 阅读页笔记区。 */
+const RESULT_ENTRIES: Partial<Record<HistoryItemView["type"], { label: string; kind: "fulltext" | "fields" | "notes" }>> = {
+  mineruParse: { label: "阅读全文", kind: "fulltext" },
+  prepareMeta: { label: "查看字段", kind: "fields" },
+  draftNotes: { label: "查看笔记", kind: "notes" },
+};
+
+function historyMatches(item: HistoryItemView, filter: HistoryFilter, query: string): boolean {
+  if (filter === "mineru" && item.type !== "mineruParse") return false;
+  if (filter === "ai" && item.type === "mineruParse") return false;
+  if (filter === "failed" && item.status !== "error") return false;
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return `${item.typeLabel} ${item.title} ${item.note ?? ""}`.toLowerCase().includes(q);
+}
+
 function HistoryList({
   history,
   now,
@@ -500,58 +1046,194 @@ function HistoryList({
   onJump: (paperId: string, domainId: string | null) => Promise<void>;
 }) {
   const retryMineru = useField((s) => s.retryMineru);
+  const retryHistoryJob = useField((s) => s.retryHistoryJob);
+  const retryMineruPapers = useField((s) => s.retryMineruPapers);
+  const retryFailedMetaJobs = useField((s) => s.retryFailedMetaJobs);
+  const openPaperFulltext = useField((s) => s.openPaperFulltext);
+  const openDialog = useField((s) => s.openDialog);
+  const [filter, setFilter] = useState<HistoryFilter>("all");
+  const [query, setQuery] = useState("");
+  /** 「清除已完成」隐藏的作业 id（本次会话有效，重启后恢复全部）。 */
+  const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
+
+  const visible = history.filter((item) => !dismissed.has(item.id));
+  const matched = visible.filter((item) => historyMatches(item, filter, query));
+  const filtering = filter !== "all" || Boolean(query.trim());
+  const dismissable = visible.filter((item) => item.status === "done").map((item) => item.id);
+  const parseRetryIds = matched.filter((item) => item.retryable).map((item) => item.paperId);
+  const metaRetryIds = matched.filter((item) => item.aiRetry === "prepareMeta").map((item) => item.paperId);
+  const setFlash = useField((s) => s.setFlash);
+
+  /** 一键复制失败原因与作业 id：反馈求助时不用对着浮层手抄。 */
+  async function copyFailure(item: HistoryItemView) {
+    const text = [
+      `作业类型：${item.typeLabel}`,
+      `作业 ID：${item.id}`,
+      `论文：${item.title}`,
+      `失败原因：${item.note ?? "（无详细信息）"}`,
+    ].join("\n");
+    try {
+      await navigator.clipboard.writeText(text);
+      setFlash({ tone: "ok", text: "已复制失败原因与作业 ID 到剪贴板。" });
+    } catch {
+      // 非安全上下文 / 无剪贴板权限时降级提示（与日志复制同口径）。
+      setFlash({ tone: "warn", text: "复制失败：当前环境无法访问剪贴板。" });
+    }
+  }
+
   return (
     <section className="ef-jobs-section" aria-label="最近结束的作业">
       <h3 className="ef-jobs-sub">
         最近结束
-        <span className="ef-count mono">{pad2(history.length)}</span>
+        <span className="ef-count mono">{pad2(visible.length)}</span>
       </h3>
       {history.length ? (
-        <ol className="ef-history">
-          {history.map((item) => (
-            <li key={item.id} className={`ef-hist-row is-${item.status}`}>
-              <span className="ef-hist-mark" aria-hidden="true">
-                <Icon name={HISTORY_MARKS[item.status]} />
-              </span>
-              <div className="ef-hist-main">
-                <p className="ef-hist-line">
-                  <span className="sr-only">{HISTORY_STATUS[item.status]}：</span>
-                  <b>{item.typeLabel}</b>
-                  <button
-                    type="button"
-                    className="ef-hist-title"
-                    title="在阅读页打开这篇论文"
-                    onClick={() => void onJump(item.paperId, item.domainId)}
-                  >
-                    {item.title}
-                  </button>
-                </p>
-                {item.note ? (
-                  <p className="ef-hist-note" title={item.note}>
-                    {item.note}
+        <div className="ef-hist-tools">
+          <div className="ef-hist-chips" role="group" aria-label="结束作业类型过滤">
+            {HISTORY_FILTERS.map((item) => (
+              <button
+                key={item.value}
+                type="button"
+                className={`ef-log-chip${filter === item.value ? " is-on" : ""}`}
+                aria-pressed={filter === item.value}
+                onClick={() => setFilter(item.value)}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+          <input
+            type="search"
+            value={query}
+            placeholder="搜索标题 / 失败原因"
+            aria-label="搜索结束作业"
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") setQuery("");
+            }}
+          />
+          {filtering ? (
+            <span className="ef-queue-match">
+              {matched.length} / {visible.length} 条
+            </span>
+          ) : null}
+          {dismissable.length ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="text"
+              className="ef-hist-clear"
+              title="隐藏已完成的结束作业（失败与可重试项保留）；本次会话有效，重启后恢复"
+              onClick={() => setDismissed((prev) => new Set([...prev, ...dismissable]))}
+            >
+              清除已完成
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+      {history.length ? (
+        matched.length ? (
+          <ol className="ef-history">
+            {matched.map((item) => (
+              <li key={item.id} className={`ef-hist-row is-${item.status}`}>
+                <span className="ef-hist-mark" aria-hidden="true">
+                  <Icon name={HISTORY_MARKS[item.status]} />
+                </span>
+                <div className="ef-hist-main">
+                  <p className="ef-hist-line">
+                    <span className="sr-only">{HISTORY_STATUS[item.status]}：</span>
+                    <b>{item.typeLabel}</b>
+                    <button
+                      type="button"
+                      className="ef-hist-title"
+                      title="在阅读页打开这篇论文"
+                      onClick={() => void onJump(item.paperId, item.domainId)}
+                    >
+                      {item.title}
+                    </button>
                   </p>
-                ) : null}
-              </div>
-              <span className="ef-hist-side">
-                <span title="结束时间">{formatClock(item.finishedAt, now)}</span>
-                <span title="用时">{item.durationMs !== null ? `用时 ${formatSpan(item.durationMs)}` : "—"}</span>
-              </span>
-              {item.retryable ? (
-                <Button
-                  type="button"
-                  size="sm"
-                  className="ef-hist-retry"
-                  onClick={() => void retryMineru(item.paperId)}
-                >
-                  重新解析
-                </Button>
-              ) : null}
-            </li>
-          ))}
-        </ol>
+                  {item.note ? (
+                    <p className="ef-hist-note" title={item.note}>
+                      {item.note}
+                    </p>
+                  ) : null}
+                </div>
+                <span className="ef-hist-side">
+                  <span title="结束时间">{formatClock(item.finishedAt, now)}</span>
+                  <span title="用时">{item.durationMs !== null ? `用时 ${formatSpan(item.durationMs)}` : "—"}</span>
+                </span>
+                <div className="ef-hist-actions">
+                  {item.retryable ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="ef-hist-retry"
+                      onClick={() => void retryMineru(item.paperId)}
+                    >
+                      重新解析
+                    </Button>
+                  ) : item.aiRetry ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="ef-hist-retry"
+                      title="不覆盖手动改过的字段 / 笔记"
+                      onClick={() => void retryHistoryJob(item.paperId, item.aiRetry!)}
+                    >
+                      {AI_RETRY_LABELS[item.aiRetry]}
+                    </Button>
+                  ) : item.status === "done" && RESULT_ENTRIES[item.type] ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="text"
+                      className="ef-hist-retry"
+                      onClick={() => {
+                        const entry = RESULT_ENTRIES[item.type]!;
+                        if (entry.kind === "fulltext") void openPaperFulltext(item.paperId);
+                        else if (entry.kind === "fields") openDialog("edit-paper", item.paperId);
+                        else void onJump(item.paperId, item.domainId);
+                      }}
+                    >
+                      {RESULT_ENTRIES[item.type]!.label}
+                    </Button>
+                  ) : null}
+                  {item.status === "error" ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="text"
+                      title="复制失败原因与作业 ID，便于反馈求助"
+                      onClick={() => void copyFailure(item)}
+                    >
+                      <Icon name="copy" />
+                      复制错误信息
+                    </Button>
+                  ) : null}
+                </div>
+              </li>
+            ))}
+          </ol>
+        ) : (
+          <p className="ef-jobs-empty">没有符合条件的结束作业。</p>
+        )
       ) : (
         <p className="ef-jobs-empty">还没有结束的作业。</p>
       )}
+      {parseRetryIds.length > 1 || metaRetryIds.length > 1 ? (
+        <div className="ef-hist-foot">
+          {parseRetryIds.length > 1 ? (
+            <Button type="button" size="sm" onClick={() => void retryMineruPapers(parseRetryIds)}>
+              重试失败解析（{parseRetryIds.length} 篇）
+            </Button>
+          ) : null}
+          {metaRetryIds.length > 1 ? (
+            <Button type="button" size="sm" onClick={() => void retryFailedMetaJobs(metaRetryIds)}>
+              重试失败补全（{metaRetryIds.length} 篇）
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
     </section>
   );
 }

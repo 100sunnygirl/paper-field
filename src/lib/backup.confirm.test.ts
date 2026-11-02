@@ -23,10 +23,18 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 vi.mock("@tauri-apps/plugin-process", () => ({ relaunch: vi.fn(async () => calls.push("relaunch")) }));
 
-import { restoreConfirmText, restoreLibrary } from "./backup";
+import {
+  BACKUP_STALE_DAYS,
+  daysSinceBackup,
+  readLastBackup,
+  restoreConfirmText,
+  restoreLibrary,
+  writeLastBackup,
+} from "./backup";
 
 beforeEach(() => {
   calls.length = 0;
+  localStorage.clear();
 });
 
 describe("restore confirmation", () => {
@@ -72,5 +80,28 @@ describe("restore cancelled in the file dialog", () => {
     });
     expect(await restoreLibrary()).toBe(false);
     expect(calls).toEqual(["restore_library_backup"]);
+  });
+});
+
+describe("上次备份记录（localStorage）", () => {
+  it("readLastBackup 在无记录或坏数据时返回 null", () => {
+    expect(readLastBackup()).toBeNull();
+    localStorage.setItem("paper-field.last-backup", "not-json{{");
+    expect(readLastBackup()).toBeNull();
+    localStorage.setItem("paper-field.last-backup", JSON.stringify({ at: "x" }));
+    expect(readLastBackup()).toBeNull();
+  });
+
+  it("writeLastBackup 后可完整读回（时间 / 位置 / 规模）", () => {
+    const record = { at: 1770000000000, where: "/Volumes/backup/paper-field-20261026.zip", papers: 12, pdfs: 9 };
+    writeLastBackup(record);
+    expect(readLastBackup()).toEqual(record);
+  });
+
+  it("daysSinceBackup 按整天计，不足一天为 0", () => {
+    const now = Date.UTC(2026, 9, 27, 12, 0, 0);
+    expect(daysSinceBackup(now - 3600_000, now)).toBe(0);
+    expect(daysSinceBackup(now - 3 * 86400_000, now)).toBe(3);
+    expect(BACKUP_STALE_DAYS).toBeGreaterThanOrEqual(1);
   });
 });

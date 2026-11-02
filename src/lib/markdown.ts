@@ -129,7 +129,8 @@ export function renderMarkdown(source: string): string {
  * Delegated click handler for rendered markdown containers. Every link click is
  * kept out of the main webview (relative, `//host`, `<area>` and odd schemes
  * included); only http(s) goes on to the system browser, and in-page `#` anchors
- * keep their default.
+ * keep their default — except our own fulltext-section anchors (`#ft-sec-*`),
+ * which first expand the 解析全文 section so the target element is visible.
  */
 export function onMarkdownClick(event: { target: EventTarget | null; preventDefault(): void }): void {
   const target = event.target instanceof Element ? event.target : null;
@@ -143,7 +144,18 @@ export function onMarkdownClick(event: { target: EventTarget | null; preventDefa
   const link = target.closest("a, area");
   if (!link) return;
   const href = (link.getAttribute("href") ?? "").trim();
-  if (href.startsWith("#")) return;
+  if (href.startsWith("#")) {
+    if (href.startsWith("#ft-sec-")) {
+      // 笔记里的摘录引用跳回解析全文对应小节：折叠时先展开，再滚动到锚点。
+      event.preventDefault();
+      document.getElementById("fulltext")?.setAttribute("open", "");
+      const anchor = document.getElementById(href.slice(1));
+      if (anchor && typeof anchor.scrollIntoView === "function") {
+        anchor.scrollIntoView({ block: "start", behavior: "smooth" });
+      }
+    }
+    return;
+  }
   event.preventDefault();
   if (/^https?:/i.test(href)) void openExternal(href);
 }

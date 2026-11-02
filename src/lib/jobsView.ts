@@ -1,6 +1,6 @@
 // 作业面板的视图模型：把 llm_jobs（持久状态）与 activity（运行时实况）合成为
 // 「进行中 / 本批进度 / 排队 / 最近完成」四块。纯函数、不读时钟（now 由调用方传入），便于测试。
-import type { ActivityBatch, ActivityState, BatchItemResult, BatchKind, JobStage, PageProgress } from "./activity";
+import type { ActivityBatch, ActivityState, BatchItemResult, BatchKind, JobLive, JobStage, PageProgress } from "./activity";
 import { JOB_TYPE_LABELS, MINERU_PROVIDER_LABELS, type JobType, type LlmJob, type PaperBrief } from "./types";
 import { pad2 } from "./util";
 
@@ -32,6 +32,8 @@ export interface ActiveJobView {
   provider: string | null;
   pages: PageProgress | null;
   auto: boolean;
+  /** 所属批次关联（本批第几篇 / 共几篇）：面板进行中卡与入库页作业行同一口径。 */
+  batch: { index: number; total: number } | null;
 }
 
 export type SegmentState = BatchItemResult | "current" | "pending" | "paused";
@@ -40,6 +42,8 @@ export interface BatchSegment {
   paperId: string;
   title: string;
   state: SegmentState;
+  /** 失败原因（该篇最近一次失败作业的 error）；其余状态为 null。 */
+  note: string | null;
 }
 
 export interface BatchView {
@@ -62,6 +66,11 @@ export interface BatchView {
   elapsedMs: number;
   /** 按已完成各篇平均耗时估算的剩余时间；无样本或已结束时为 null。 */
   etaMs: number | null;
+  /**
+   * 剩余时间估算的置信信息：样本篇数、按最快 / 最慢各篇推得的区间，
+   * 以及估算偏不确定的原因（当前篇远超均值 / 各篇耗时差异大，可能切换过解析源）。
+   */
+  etaInfo: { samples: number; lowMs: number; highMs: number; caveat: "current" | "spread" | null } | null;
   finishedAt: number | null;
 }
 
@@ -91,6 +100,11 @@ export interface HistoryItemView {
   note: string | null;
   /** 可在面板里直接重新解析：该篇最近一次 MinerU 作业失败或被取消，且当前没有进行中的作业。 */
   retryable: boolean;
+  /**
+   * 可在面板里直接重试的 AI 作业类型（该篇该类型最近一次失败 / 被取消，且没有进行中的作业）。
+   * 重试入口一律 overwrite=false：手改字段与笔记由 meta_rev / user_edited 锁保护，不覆盖。
+   */
+  aiRetry: "prepareMeta" | "draftNotes" | "refreshLinks" | null;
 }
 
 export interface JobsView {
@@ -159,9 +173,21 @@ function stageHint(type: JobType, stage: JobStage, provider: string | null, page
   }
 }
 
-function inferStage(job: LlmJob): JobStage {
+function inferStage(job: Pick<LlmJob, "type" | "status">): JobStage {
   if (job.type === "mineruParse") return "submit";
   return job.status === "queued" ? "queue" : "request";
+}
+
+/**
+ * 入库页作业行与作业面板共用的阶段一句话（同一口径）：实况补阶段 / 解析源 / 页进度，
+ * 无实况时按作业类型与状态推断。
+ */
+export function jobStageLine(
+  type: JobType,
+  status: LlmJob["status"],
+  live?: Pick<JobLive, "stage" | "provider" | "pages"> | null,
+): string {
+  return stageHint(type, live?.stage ?? inferStage({ type, status }), providerName(live?.provider), live?.pages ?? null);
 }
 
 function ms(iso: string | null | undefined): number | null {
@@ -208,7 +234,12 @@ function historyNote(job: LlmJob): string | null {
   return job.error?.trim() || "未知错误";
 }
 
-function batchView(batch: ActivityBatch, lookup: (id: string) => Lookup, now: number): BatchView {
+function batchView(
+  batch: ActivityBatch,
+  lookup: (id: string) => Lookup,
+  now: number,
+  errorByPaper: Map<string, string>,
+): BatchView {
   let ok = 0;
   let fail = 0;
   let cancelled = 0;
@@ -227,7 +258,12 @@ function batchView(batch: ActivityBatch, lookup: (id: string) => Lookup, now: nu
         : finished
           ? "paused"
           : "pending";
-    return { paperId, title: lookup(paperId).title, state };
+    return {
+      paperId,
+      title: lookup(paperId).title,
+      state,
+      note: result === "fail" ? errorByPaper.get(paperId) ?? null : null,
+    };
   });
   const total = batch.paperIds.length;
   const processed = ok + fail + cancelled + skipped;
@@ -235,11 +271,27 @@ function batchView(batch: ActivityBatch, lookup: (id: string) => Lookup, now: nu
   const started = batch.startedAt ?? batch.queuedAt;
   const elapsedMs = Math.max(0, (batch.finishedAt ?? now) - started);
   let etaMs: number | null = null;
+  let etaInfo: BatchView["etaInfo"] = null;
   if (!finished && batch.durations.length) {
     const avg = batch.durations.reduce((sum, value) => sum + value, 0) / batch.durations.length;
+    const fastest = Math.min(...batch.durations);
+    const slowest = Math.max(...batch.durations);
     const currentElapsed = batch.currentStartedAt !== null ? now - batch.currentStartedAt : 0;
     const currentLeft = batch.currentPaperId ? Math.max(0, avg - currentElapsed) : 0;
     etaMs = Math.round(currentLeft + avg * pending);
+    // 区间按最快 / 最慢各篇推：少量样本时均值显得过度确定，区间更诚实。
+    const leftBy = (per: number) => Math.max(0, per - currentElapsed) + per * pending;
+    etaInfo = {
+      samples: batch.durations.length,
+      lowMs: Math.round(batch.currentPaperId ? leftBy(fastest) : fastest * pending),
+      highMs: Math.round(batch.currentPaperId ? leftBy(slowest) : slowest * pending),
+      caveat:
+        batch.currentPaperId && currentElapsed > avg * 2
+          ? "current"
+          : batch.durations.length >= 2 && slowest > fastest * 3
+            ? "spread"
+            : null,
+    };
   }
   return {
     id: batch.id,
@@ -258,6 +310,7 @@ function batchView(batch: ActivityBatch, lookup: (id: string) => Lookup, now: nu
     currentPaperId: batch.currentPaperId,
     elapsedMs,
     etaMs,
+    etaInfo,
     finishedAt: batch.finishedAt,
   };
 }
@@ -285,6 +338,14 @@ export function deriveJobsView(input: {
     const pages = live?.pages ?? null;
     const info = lookup(job.paperId);
     const since = job.status === "running" ? ms(job.startedAt) ?? ms(job.createdAt) : ms(job.createdAt);
+    // 所属批次：正在处理这篇、或这篇还没轮到的批次（运行中的优先）。
+    const ownBatch = activity.batches.find(
+      (batch) =>
+        (batch.state === "running" || batch.state === "waiting") &&
+        batch.paperIds.includes(job.paperId) &&
+        (batch.currentPaperId === job.paperId || !batch.results[job.paperId]),
+    );
+    const index = ownBatch ? ownBatch.paperIds.indexOf(job.paperId) : -1;
     return {
       id: job.id,
       type: job.type,
@@ -302,6 +363,7 @@ export function deriveJobsView(input: {
       provider,
       pages,
       auto: live?.auto ?? false,
+      batch: index >= 0 ? { index: index + 1, total: ownBatch!.paperIds.length } : null,
     };
   });
   const activePaperIds = new Set(active.map((job) => job.paperId));
@@ -338,10 +400,26 @@ export function deriveJobsView(input: {
 
   // 每篇论文最近一次 MinerU 作业（按创建时间）：只有它失败 / 被取消时才提供「重新解析」。
   const latestMineru = new Map<string, LlmJob>();
+  // 每篇论文每个类型的最近一次作业：AI 类（补全 / 起草 / 刷新链接）失败或被取消时可就地重试。
+  const latestOfType = new Map<string, LlmJob>();
+  // 逐篇失败原因（该篇最近一次失败作业的 error）：批次色块 / 列表视图展示用。
+  const errorByPaper = new Map<string, string>();
+  const errorAt = new Map<string, number>();
   for (const job of jobs) {
-    if (job.type !== "mineruParse") continue;
-    const prev = latestMineru.get(job.paperId);
-    if (!prev || (ms(job.createdAt) ?? 0) > (ms(prev.createdAt) ?? 0)) latestMineru.set(job.paperId, job);
+    if (job.status === "error" && job.error) {
+      const at = ms(job.createdAt) ?? 0;
+      if (at >= (errorAt.get(job.paperId) ?? -1)) {
+        errorAt.set(job.paperId, at);
+        errorByPaper.set(job.paperId, job.error);
+      }
+    }
+    if (job.type === "mineruParse") {
+      const prev = latestMineru.get(job.paperId);
+      if (!prev || (ms(job.createdAt) ?? 0) > (ms(prev.createdAt) ?? 0)) latestMineru.set(job.paperId, job);
+    }
+    const key = `${job.paperId}:${job.type}`;
+    const prev = latestOfType.get(key);
+    if (!prev || (ms(job.createdAt) ?? 0) > (ms(prev.createdAt) ?? 0)) latestOfType.set(key, job);
   }
 
   const history: HistoryItemView[] = jobs
@@ -352,6 +430,7 @@ export function deriveJobsView(input: {
       const info = lookup(job.paperId);
       const start = ms(job.startedAt) ?? ms(job.createdAt);
       const end = ms(job.finishedAt);
+      const latestOfKind = latestOfType.get(`${job.paperId}:${job.type}`);
       return {
         id: job.id,
         type: job.type,
@@ -371,6 +450,13 @@ export function deriveJobsView(input: {
           !activePaperIds.has(job.paperId) &&
           !seen.has(job.paperId) &&
           running?.currentPaperId !== job.paperId,
+        aiRetry:
+          job.type !== "mineruParse" &&
+          (job.status === "error" || (job.status === "cancelled" && job.error !== "replaced")) &&
+          latestOfKind?.id === job.id &&
+          !activePaperIds.has(job.paperId)
+            ? (job.type as HistoryItemView["aiRetry"])
+            : null,
       };
     });
 
@@ -378,7 +464,7 @@ export function deriveJobsView(input: {
   const queuedCount = active.filter((job) => job.status === "queued").length + queue.length;
   return {
     active,
-    batch: shown ? batchView(shown, lookup, now) : null,
+    batch: shown ? batchView(shown, lookup, now, errorByPaper) : null,
     waitingBatches: {
       count: waiting.length,
       papers: waiting.reduce((sum, batch) => sum + batch.paperIds.length, 0),
@@ -403,6 +489,25 @@ export function formatElapsed(msValue: number): string {
   const minutes = Math.floor((total % 3600) / 60);
   const seconds = total % 60;
   return hours ? `${hours}:${pad2(minutes)}:${pad2(seconds)}` : `${pad2(minutes)}:${pad2(seconds)}`;
+}
+
+/**
+ * 排队论文的领域分布（折叠处的一句话概览）：按领域计数、取前 max 个，
+ * 形如「多模态 18 · 指令对齐 5 · 其他 2」。没有论文时返回 null。
+ */
+export function summarizeDomains(items: Array<{ domainName: string | null }>, max = 3): string | null {
+  if (!items.length) return null;
+  const counts = new Map<string, number>();
+  for (const item of items) {
+    const key = item.domainName?.trim() || "未分领域";
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], "zh"));
+  const shown = ranked.slice(0, max);
+  const rest = ranked.slice(max).reduce((sum, [, count]) => sum + count, 0);
+  const parts = shown.map(([name, count]) => `${name} ${count}`);
+  if (rest > 0) parts.push(`其他 ${rest}`);
+  return parts.join(" · ");
 }
 
 /** 已结束作业的用时：口语化写法，避免与「结束时刻」的时:分混淆。 */

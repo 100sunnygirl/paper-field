@@ -9,11 +9,11 @@ Six holds on the open paper. The browser can show five of them. It cannot swap a
 - 更多操作 → 移动到其他领域. The dialog stays 移动到其他领域. 新领域名称 plus 创建并移入 creates the domain, moves the locked paper, and the switcher follows it.
 - A Ctrl R keydown flashes 已将「visual-instruction-tuning.pdf」标为已读。 with 撤销. 撤销 flashes 已撤销标记已读。 and the 修改阅读状态 value is `unread` again. The footer stays 已读 1 / 4.
 - 设置 can add Ollama 本地（免 Key） and 保存设置. Back on 阅读, 起草阅读笔记 opens 起草哪些笔记. The five blocks are 总结, 亮点, 不足, 启示, 备注. 取消 closes it. 起草所选 is not clicked, so no model call runs.
-- 设置 → 恢复 → 确认恢复 flashes 备份与恢复仅在桌面版可用。 The dialog 恢复前的文献 does not open.
+- 设置 shows 恢复 disabled, with 浏览器预览不能备份 / 恢复. The dialog 恢复前的文献 does not open.
 
 ## How to get to it (user POV)
 
-Open the filename row in 论文列表. Claim the title. Save the empty 总结 without typing. Move the paper into a new domain named 对齐验收. Press Ctrl R and undo. Add the keyless Ollama preset, return, open the note checklist, and cancel. Confirm restore from 设置 and read the desktop-only toast.
+Open the filename row in 论文列表. Claim the title. Save the empty 总结 without typing. Move the paper into a new domain named 对齐验收. Press Ctrl R and undo. Add the keyless Ollama preset, return, open the note checklist, and cancel. Open 设置 and read that 恢复 is disabled.
 
 ## Driving it with Playwright
 
@@ -25,7 +25,7 @@ Viewport 1600×1000. Fresh context so the fourth seed paper exists.
 - 更多操作, 移动到其他领域, fill 新领域名称 with 对齐验收, 创建并移入. Wait for 切换研究领域：对齐验收.
 - Dispatch Ctrl R on `window` (a real browser accelerator may reload). Click 撤销 inside that status toast.
 - Select 提供商预设 `Ollama 本地（免 Key）`, 添加提供商, 保存设置, then 阅读 and 起草阅读笔记. Cancel the dialog.
-- 恢复, then 确认恢复. Wait for the desktop-only status. Do not expect 恢复前的文献.
+- Wait until 恢复 is disabled and the page shows 浏览器预览不能备份 / 恢复. Do not expect 恢复前的文献.
 
 ## Gotchas
 

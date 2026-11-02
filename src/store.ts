@@ -1,5 +1,14 @@
 import { create } from "zustand";
-import { exportDomain } from "./lib/export";
+import {
+  browserExportFilename,
+  browserMultiExportFilename,
+  buildBibtexExport,
+  buildDomainExport,
+  buildMergedMarkdownExport,
+  exportDomain,
+  writeExportFiles,
+  type ExportContentOptions,
+} from "./lib/export";
 import {
   DEFAULT_MINERU,
   loadMineruSettings,
@@ -12,18 +21,21 @@ import {
 } from "./lib/mineru";
 import {
   cancelParses,
+  clearBatchRest,
   dequeueFromBatch,
   enqueueBackfill,
+  enqueueMeta,
   enqueueMineru,
   enqueueMineruBatch,
   forgetPapers,
+  markPauseAfterCurrent,
   resumeMineru,
   stopBatch,
 } from "./lib/mineruRun";
-import { getActivity } from "./lib/activity";
+import { getActivity, reorderBatch } from "./lib/activity";
 import { cancelJob as cancelTrackedJob, jobDoneStep, runTracked } from "./lib/jobs";
 import { pickProviderFromHealths, providerLabel, summarizeHealths } from "./lib/mineruPlan";
-import { backupLibrary } from "./lib/backup";
+import { backupLibrary, writeLastBackup } from "./lib/backup";
 import { resetEngine } from "./lib/engine";
 import {
   adoptProse,
@@ -44,6 +56,7 @@ import { filledFrom, lookupPaper, type LookupResult, verifyReachable } from "./l
 import { normalizeArxivId, normalizeDoi, safeHttpUrl, withDefaultScheme } from "./lib/urls";
 import { DRAFT_NOTES_SYSTEM, PREPARE_META_SYSTEM, draftNotesUserPrompt, normalizeMeta, normalizeNotes, prepareMetaUserPrompt } from "./lib/prompts";
 import { redactSecrets } from "./lib/redact";
+import { noteReadingStatus } from "./lib/readingSince";
 import { repo } from "./lib/repo";
 import { cancelChat, completeChat, hasUsableProvider, loadSettings, readLlmSettings, saveSettings, type LlmSaveInput } from "./lib/settings";
 import { log } from "./lib/logger";
@@ -52,6 +65,7 @@ import type {
   AppMode,
   Domain,
   FieldStats,
+  JobType,
   LlmJob,
   LlmSettings,
   NoteKind,
@@ -59,7 +73,7 @@ import type {
   PaperDetail,
   PaperListItem,
 } from "./lib/types";
-import { NOTE_KINDS } from "./lib/types";
+import { NOTE_DISPLAY_ORDER, NOTE_KINDS, NOTE_LABELS } from "./lib/types";
 import { extractJson, isTauri } from "./lib/util";
 
 
@@ -67,6 +81,19 @@ interface Flash {
   tone: "ok" | "warn" | "error";
   text: string;
   action?: ToastAction;
+}
+
+/** 数据导出的可选范围。 */
+export type ExportScope = "current" | "all" | "read" | "checked" | "paper";
+
+/** 导出格式：按领域分文件夹的 Markdown / 单文件合并版 / BibTeX。 */
+export type ExportFormat = "folders" | "merged" | "bibtex";
+
+/** 一次导出的完整计划：范围 + 格式 + 内容选择。 */
+export interface ExportPlan {
+  scope: ExportScope;
+  format?: ExportFormat;
+  include: ExportContentOptions;
 }
 
 interface FieldState {
@@ -129,6 +156,39 @@ interface FieldState {
   loadError: string | null;
   /** 作业面板（状态条「作业」入口 / ⌘J）：非模态浮层，不拦截阅读区操作。 */
   jobsOpen: boolean;
+  /** 面板钉住为右侧常驻栏：不再随 Esc / ⌘J 收起为浮层，占一列布局。 */
+  jobsPinned: boolean;
+  setJobsPinned: (on: boolean) => void;
+  /** 入库页作业行点击后在面板里高亮的作业卡 id（数秒后自动清除）。 */
+  highlightJobId: string | null;
+  /**
+   * 标已读微反馈的序号：每次从未读/在读真正转入「已读」时 +1。
+   * 领域进度条与状态条已读计数据此做一次轻量 +1 动画（prefers-reduced-motion 下静态）。
+   */
+  readPulse: number;
+  /** 打开作业面板并高亮指定作业卡（入库页作业行入口）。 */
+  highlightJob: (jobId: string) => void;
+  /**
+   * 深链：跳到设置页某张卡片（anchor = 卡片 id，见 SystemView 的 SYSTEM_CARDS）。
+   * returnTo 记录跳转前的位置，设置页据此提供「返回原论文」入口；null 表示自然进入。
+   */
+  systemFocus: { anchor: string; returnTo: { mode: AppMode; paperId: string | null } | null } | null;
+  /** 从任意模式跳到设置页指定卡片（通知里的「去设置」等入口）。 */
+  openSystemCard: (anchor: string) => void;
+  clearSystemFocus: () => void;
+  /**
+   * 设置页离开守卫：由 SystemView 挂载时注册、卸载时清空。setMode 离开设置页前
+   * 先询问它；返回 true（有未保存修改）时不切换，改记 pendingMode 由设置页弹三选。
+   */
+  settingsLeaveGuard: (() => boolean) | null;
+  setSettingsLeaveGuard: (guard: (() => boolean) | null) => void;
+  /** 被离开守卫拦下的目标模式；设置页弹「保存/放弃/留在此页」三选后处理。 */
+  pendingMode: AppMode | null;
+  /** 三选后的一次性放行：用户已明确处理未保存修改，setMode 不再二次拦截。 */
+  leaveGuardBypass: boolean;
+  /** 三选后继续被拦下的切换（保存或放弃后守卫不再拦截）。 */
+  continuePendingMode: () => Promise<void>;
+  cancelPendingMode: () => void;
   init: () => Promise<void>;
   setMode: (mode: AppMode) => Promise<void>;
   selectDomain: (id: string | null) => Promise<void>;
@@ -158,15 +218,32 @@ interface FieldState {
   retryMineru: (paperId: string) => Promise<void>;
   /** INTAKE 页批量重试：把全部解析失败（error）论文重新提交给 MinerU。 */
   retryFailedMineru: () => Promise<void>;
+  /** 作业面板批量重试：把指定论文重新提交给 MinerU（一次事务重置、一个批次入链）。 */
+  retryMineruPapers: (paperIds: string[]) => Promise<void>;
+  /**
+   * 作业面板单条重试：按作业类型分派到对应重跑入口。AI 类一律 overwrite=false：
+   * 字段由 meta_rev + fieldSources 锁保护、笔记由 user_edited / 确认对话框保护，不覆盖手改。
+   */
+  retryHistoryJob: (paperId: string, type: JobType) => Promise<void>;
+  /** 作业面板批量重试失败的补全：排到 AI 串行链上逐篇静默重跑（与回填同一队列）。 */
+  retryFailedMetaJobs: (paperIds: string[]) => Promise<void>;
   savePaperPatch: (paperId: string, patch: Parameters<typeof repo.updatePaper>[1]) => Promise<void>;
   saveAuthors: (paperId: string, authors: PaperDetail["authors"]) => Promise<void>;
   saveNote: (paperId: string, kind: NoteKind, content: string) => Promise<void>;
+  /** 一键保存这篇论文当前全部笔记草稿：逐块落库，失败的块保留草稿并汇总提示。 */
+  saveAllNoteDrafts: (paperId?: string) => Promise<void>;
+  /** 跨论文一键保存：把当前全部草稿逐块落库（状态条「N 处草稿未保存」的统一出口）。 */
+  saveAllDrafts: () => Promise<void>;
   /** 写入 / 清除（null）一块笔记草稿。 */
   setNoteDraft: (paperId: string, kind: NoteKind, value: string | null) => void;
   markRead: (paperId?: string) => Promise<void>;
   markReading: (paperId?: string) => Promise<void>;
   markUnread: (paperId?: string) => Promise<void>;
-  setReadingStatus: (status: "unread" | "reading" | "read", paperId?: string) => Promise<void>;
+  /**
+   * 修改阅读状态（只有用户入口会调用）。restoreReadAt 为撤销路径专用：
+   * 精确写回撤销前库里的已读时间戳（含 null），不重新起算。
+   */
+  setReadingStatus: (status: "unread" | "reading" | "read", paperId?: string, restoreReadAt?: string | null) => Promise<void>;
   movePaper: (domainId: string, paperId?: string) => Promise<void>;
   deletePaper: (paperId?: string) => Promise<void>;
   setBatchMode: (on: boolean) => void;
@@ -177,8 +254,21 @@ interface FieldState {
   setJobsOpen: (open: boolean) => void;
   /** 作业面板「移出队列」：该篇轮到时直接跳过（不提交 MinerU），解析状态保持不变。 */
   dequeueMineruPaper: (batchId: number, paperId: string) => void;
+  /** 跳到该论文的阅读页并自动展开「解析全文」折叠区（解析完成的直达入口）。 */
+  openPaperFulltext: (paperId: string) => Promise<void>;
   /** 作业面板「停止批次」：取消正在解析的一篇，并把本批其余排队论文移出队列。 */
   stopMineruBatch: (batchId: number) => Promise<void>;
+  /** 作业面板「当前篇完成后暂停」：当前篇正常收尾，剩余论文写为暂停（可「继续本批」恢复）。 */
+  pauseBatchAfterCurrent: (batchId: number) => void;
+  /**
+   * 作业面板「继续本批」：只恢复该批未完成的论文（跳过已完成 / 移出的）。
+   * 解析批次恢复前先测试解析源，全部不可用就不空跑一轮失败；AI 批次重新排队补全。
+   */
+  resumeHaltedBatch: (batchId: number) => Promise<void>;
+  /** 作业面板排队调整：置顶 / 上移 / 下移该篇在本批的处理顺序（对等待中的批次同样生效）。 */
+  reorderQueue: (batchId: number, paperId: string, to: "top" | "up" | "down") => void;
+  /** 作业面板「清空其余」：保留下一篇，其余排队论文移出本批。 */
+  clearQueueRest: (batchId: number) => Promise<void>;
   runPrepareMeta: (paperId?: string, overwrite?: boolean, quiet?: boolean, options?: { llm?: boolean }) => Promise<void>;
   runRefreshLinks: (paperId?: string) => Promise<void>;
   runDraftNotes: (paperId?: string, permit?: NotePermit) => Promise<void>;
@@ -188,11 +278,22 @@ interface FieldState {
   confirmRestore: () => Promise<void>;
   cancelRestore: () => Promise<void>;
   cancelJob: (jobId: string, options?: { silent?: boolean }) => Promise<void>;
-  saveLlmSettings: (input: LlmSaveInput) => Promise<void>;
-  saveMineruSettings: (input: MineruSaveInput) => Promise<void>;
+  /**
+   * deferBackfill：测试连接 / 拉模型等“只查不启动”的保存暂不排自动补全，
+   * 由用户在测试通过后点「启用自动补全」显式启动（startMetaBackfill）。
+   */
+  saveLlmSettings: (input: LlmSaveInput, options?: { deferBackfill?: boolean }) => Promise<void>;
+  /** deferJobs：同上，测试类保存不自动续跑解析（resumeMineruParses 显式启动）。 */
+  saveMineruSettings: (input: MineruSaveInput, options?: { deferJobs?: boolean }) => Promise<void>;
   saveBiblioSettings: (input: BiblioSaveInput) => Promise<void>;
   probeMineru: () => Promise<ProviderHealth[]>;
+  /** 显式启动被暂存的自动补全；返回待补全篇数（读不到为 null）。 */
+  startMetaBackfill: () => Promise<number | null>;
+  /** 显式续跑被暂存的解析；返回待解析篇数（读不到为 null）。 */
+  resumeMineruParses: () => Promise<number | null>;
   exportCurrentDomain: () => Promise<void>;
+  /** 导出范围与内容选择（全库 / 仅已读 / 勾选集 / 单篇 / 当前领域）。 */
+  exportPapers: (plan: ExportPlan) => Promise<void>;
   backupLibrary: () => Promise<void>;
   restoreLibrary: () => Promise<void>;
   navigatePapers: (delta: number) => Promise<void>;
@@ -324,6 +425,13 @@ export const useField = create<FieldState>((set, get) => ({
   restorePreview: { phase: "idle" },
   loadError: null,
   jobsOpen: false,
+  jobsPinned: false,
+  highlightJobId: null,
+  readPulse: 0,
+  systemFocus: null,
+  settingsLeaveGuard: null,
+  pendingMode: null,
+  leaveGuardBypass: false,
 
   // 【通知唯一入口 / 日志唯一收口】flash 字段的唯一写入口就是本函数：写入镜像的同时
   // 桥接 toasts 层（评审裁定的收口层）——非 null 走 notify（emit / refresh 等事件与
@@ -354,12 +462,64 @@ export const useField = create<FieldState>((set, get) => ({
     persistDrafts(drafts);
   },
   setJobsOpen: (open) => set({ jobsOpen: open }),
+  setJobsPinned: (on) => set({ jobsPinned: on }),
+  highlightJob: (jobId) => {
+    set({ jobsOpen: true, highlightJobId: jobId });
+  },
+
+  openSystemCard: (anchor) => {
+    const state = get();
+    // 已在设置页时保留上一次的 returnTo（连续跳转不丢失「返回原论文」的锚点）。
+    const returnTo =
+      state.mode !== "system"
+        ? { mode: state.mode, paperId: state.selectedPaperId }
+        : (state.systemFocus?.returnTo ?? null);
+    set({ mode: "system", systemFocus: { anchor, returnTo } });
+    // 列表数据与设置页无关，刷新失败不影响跳转（测试环境无引擎）。
+    get().refresh().catch(() => {});
+  },
+
+  clearSystemFocus: () => set({ systemFocus: null }),
+
+  setSettingsLeaveGuard: (guard) => set({ settingsLeaveGuard: guard }),
+
+  continuePendingMode: async () => {
+    const target = get().pendingMode;
+    // 一次性放行：保存 / 放弃由本动作负责，setMode 不再因表单仍标脏而二次拦截
+    //（保存后 React 尚未重渲染，守卫读到的还是旧状态）。
+    set({ pendingMode: null, leaveGuardBypass: true });
+    try {
+      if (target) await get().setMode(target);
+    } finally {
+      set({ leaveGuardBypass: false });
+    }
+  },
+
+  cancelPendingMode: () => set({ pendingMode: null }),
 
   dequeueMineruPaper: (batchId, paperId) => {
     // 只移出这一批；库里状态写成 cancelled，重启或保存 MinerU 设置后不会被重新提交。
     void dequeueFromBatch(batchId, paperId)
       .then(() => get().refresh())
       .catch((err) => log.error("mineru", "移出队列写库失败", err));
+  },
+
+  openPaperFulltext: async (paperId) => {
+    const paper = await repo.getPaper(paperId);
+    if (!paper) return;
+    try {
+      if (paper.domainId) await get().selectDomain(paper.domainId);
+      await get().selectPaper(paperId);
+    } catch (err) {
+      log.error("store", "打开论文全文失败", err);
+      return;
+    }
+    // 等两帧让阅读页挂载后再展开「解析全文」折叠区（与 App.focusSearch 同一双 rAF 手法）。
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        document.getElementById("fulltext")?.setAttribute("open", "");
+      }),
+    );
   },
 
   stopMineruBatch: async (batchId) => {
@@ -374,6 +534,90 @@ export const useField = create<FieldState>((set, get) => ({
       log.info("llm", `作业面板停止 AI 补全批次：${stopped} 篇`);
       get().setFlash({ tone: "ok", text: `已停止补全，${stopped} 篇不再写入。` });
     }
+  },
+
+  reorderQueue: (batchId, paperId, to) => {
+    reorderBatch(batchId, paperId, to);
+  },
+
+  clearQueueRest: async (batchId) => {
+    const kind = getActivity().batches.find((item) => item.id === batchId)?.kind;
+    const removed = await clearBatchRest(batchId);
+    await get().refresh();
+    if (!removed) return;
+    if (kind === "mineru") {
+      log.info("mineru", `作业面板清空其余：${removed} 篇移出解析队列`);
+      get().setFlash({ tone: "ok", text: `已移出 ${removed} 篇，保留下一篇继续解析。` });
+    } else {
+      log.info("llm", `作业面板清空其余：${removed} 篇移出补全队列`);
+      get().setFlash({ tone: "ok", text: `已移出 ${removed} 篇，保留下一篇继续补全。` });
+    }
+  },
+
+  pauseBatchAfterCurrent: (batchId) => {
+    markPauseAfterCurrent(batchId);
+    log.info("mineru", "作业面板：当前篇完成后暂停批次");
+    get().setFlash({ tone: "ok", text: "将在当前一篇完成后暂停本批，剩余论文可稍后「继续本批」。" });
+  },
+
+  resumeHaltedBatch: async (batchId) => {
+    const batch = getActivity().batches.find((item) => item.id === batchId);
+    if (!batch || batch.state !== "halted") return;
+    // 只恢复这批没跑完的：跳过已完成 / 已跳过 / 被用户移出的，失败与暂停的都续上。
+    const unfinished = batch.paperIds.filter((id) => !batch.results[id] || batch.results[id] === "fail");
+    if (!unfinished.length) {
+      get().setFlash({ tone: "warn", text: "这一批没有待恢复的论文。" });
+      return;
+    }
+    if (batch.kind === "mineru") {
+      // 恢复前先测试解析源（「测试源后续跑」）：全部不可用就不空跑一轮失败。
+      if (!get().mineru.configured) {
+        get().setFlash({
+          tone: "warn",
+          text: "尚未启用任何 MinerU 解析源，无法恢复。可到设置页配置本地 / SSH / 官方 API。",
+          action: { label: "去设置", run: () => get().openSystemCard("mineru") },
+        });
+        return;
+      }
+      const effective =
+        get().effectiveProvider ?? pickProviderFromHealths(get().mineru.order, await get().probeMineru());
+      if (!effective) {
+        const detail = summarizeHealths(get().mineru.order, get().mineruHealth);
+        get().setFlash({
+          tone: "warn",
+          text: detail
+            ? `解析源测试未通过（${detail}），暂不恢复。可到设置页查看失败原因。`
+            : "解析源测试未通过（本地 / SSH / 官方 API 均不可用），暂不恢复。可到设置页查看失败原因。",
+          action: { label: "去设置", run: () => get().openSystemCard("mineru") },
+        });
+        return;
+      }
+      try {
+        await cancelParses(unfinished);
+        await repo.resetMineru(unfinished);
+        await get().refresh();
+        get().setFlash({
+          tone: "ok",
+          text: `解析源测试通过（${providerLabel(effective)}），已恢复本批剩余 ${unfinished.length} 篇。`,
+        });
+        enqueueMineruBatch(mineruHost(), unfinished, true);
+      } catch (err) {
+        get().setFlash({ tone: "error", text: `恢复批次失败：${errText(err)}，数据未改动。` });
+        throw err;
+      }
+      return;
+    }
+    // AI 补全批次：未完成的论文仍是「待补全」，重新排队（与回填同一队列）。
+    if (!hasUsableProvider(get().settings)) {
+      get().setFlash({
+        tone: "warn",
+        text: "尚未配置可用的 AI 服务，无法恢复补全。可到设置页添加提供商。",
+        action: { label: "去设置", run: () => get().openSystemCard("llm") },
+      });
+      return;
+    }
+    enqueueBackfill(mineruHost());
+    get().setFlash({ tone: "ok", text: `已恢复补全，剩余论文重新排队（进度见作业面板）。` });
   },
   openDialog: (dialog, target) => {
     const state = get();
@@ -492,6 +736,19 @@ export const useField = create<FieldState>((set, get) => ({
   },
 
   setMode: async (mode) => {
+    // 设置页有未保存修改时先拦下：记录目标模式，由设置页的「保存/放弃/留在此页」三选处理。
+    // continuePendingMode 会先清掉 pendingMode 再回调本函数，不会被这里二次拦截。
+    const state = get();
+    if (
+      state.mode === "system" &&
+      mode !== "system" &&
+      state.pendingMode === null &&
+      !state.leaveGuardBypass &&
+      state.settingsLeaveGuard?.()
+    ) {
+      set({ pendingMode: mode });
+      return;
+    }
     set({ mode });
     await get().refresh({ reselect: true });
   },
@@ -646,6 +903,7 @@ export const useField = create<FieldState>((set, get) => ({
         get().setFlash({
           tone: "warn",
           text: `已导入 ${created.length} 篇${skippedText}。当前没有可用的 MinerU 解析源，论文已入库但未解析，可到设置页启用解析源。`,
+          action: { label: "去设置", run: () => get().openSystemCard("mineru") },
         });
         return;
       }
@@ -698,7 +956,11 @@ export const useField = create<FieldState>((set, get) => ({
 
   retryMineru: async (paperId) => {
     if (!get().mineru.configured) {
-      get().setFlash({ tone: "warn", text: "尚未启用任何 MinerU 解析源。可到设置页配置本地 / SSH / 官方 API。" });
+      get().setFlash({
+        tone: "warn",
+        text: "尚未启用任何 MinerU 解析源。可到设置页配置本地 / SSH / 官方 API。",
+        action: { label: "去设置", run: () => get().openSystemCard("mineru") },
+      });
       return;
     }
     // 探测结果可能过期：无生效源时先重探一次再下结论。
@@ -710,6 +972,7 @@ export const useField = create<FieldState>((set, get) => ({
         text: detail
           ? `当前没有可用的 MinerU 解析源（${detail}）。可到设置页查看失败原因。`
           : "当前没有可用的 MinerU 解析源（本地 / SSH / 官方 API 均未通过探测），可到设置页配置或查看失败原因。",
+        action: { label: "去设置", run: () => get().openSystemCard("mineru") },
       });
       return;
     }
@@ -739,21 +1002,67 @@ export const useField = create<FieldState>((set, get) => ({
       get().setFlash({ tone: "warn", text: "没有解析失败的论文。" });
       return;
     }
+    await get().retryMineruPapers(failedIds);
+  },
+
+  retryMineruPapers: async (paperIds) => {
+    const ids = [...new Set(paperIds)].filter(Boolean);
+    if (!ids.length) return;
     if (!get().mineru.configured) {
-      get().setFlash({ tone: "warn", text: "尚未启用任何 MinerU 解析源。可到设置页配置本地 / SSH / 官方 API。" });
+      get().setFlash({
+        tone: "warn",
+        text: "尚未启用任何 MinerU 解析源。可到设置页配置本地 / SSH / 官方 API。",
+        action: { label: "去设置", run: () => get().openSystemCard("mineru") },
+      });
       return;
     }
     try {
       // 与单篇重试同构：重置解析状态后重新提交；连续失败由批次熔断兜底提示。
-      await cancelParses(failedIds);
-      await repo.resetMineru(failedIds);
+      await cancelParses(ids);
+      await repo.resetMineru(ids);
       await get().refresh();
-      get().setFlash({ tone: "ok", text: `已将 ${failedIds.length} 篇重新发送到 MinerU 解析。` });
-      enqueueMineruBatch(mineruHost(), failedIds, true);
+      get().setFlash({ tone: "ok", text: `已将 ${ids.length} 篇重新发送到 MinerU 解析。` });
+      enqueueMineruBatch(mineruHost(), ids, true);
     } catch (err) {
       get().setFlash({ tone: "error", text: `批量重试失败：${errText(err)}，数据未改动。` });
       throw err;
     }
+  },
+
+  retryHistoryJob: async (paperId, type) => {
+    if (type === "mineruParse") {
+      await get().retryMineru(paperId);
+      return;
+    }
+    // 补全重试不覆盖手改。起草笔记不带许可，打开「起草哪些笔记」，不静默写入。
+    if (type === "draftNotes") {
+      await get().runDraftNotes(paperId);
+      return;
+    }
+    if (type === "refreshLinks") {
+      await get().runRefreshLinks(paperId);
+      return;
+    }
+    await get().runPrepareMeta(paperId, false, false);
+  },
+
+  retryFailedMetaJobs: async (paperIds) => {
+    const ids = [...new Set(paperIds)].filter(Boolean);
+    if (!ids.length) return;
+    if (!hasUsableProvider(get().settings)) {
+      get().setFlash({
+        tone: "warn",
+        text: "尚未配置可用的 AI 服务。可到设置页添加提供商后再重试补全。",
+        action: { label: "去设置", run: () => get().openSystemCard("llm") },
+      });
+      return;
+    }
+    // 排到 AI 串行链上逐篇重跑（与自动回填同一队列，不会并发打满提供商）；
+    // quiet=true：单篇不再逐条弹通知，失败会重新出现在「最近结束」里。
+    enqueueMeta(async () => {
+      for (const id of ids) await get().runPrepareMeta(id, false, true);
+    });
+    get().setFlash({ tone: "ok", text: `已重新提交 ${ids.length} 篇补全（进度见作业面板）。` });
   },
 
   savePaperPatch: async (paperId, patch) => {
@@ -796,31 +1105,78 @@ export const useField = create<FieldState>((set, get) => ({
     }
   },
 
-  saveNote: async (paperId, kind, content) => {
-    try {
-      const row = await repo.getPaper(paperId);
-      if (!row) throw new Error("论文不存在");
-      if (!noteWriteNeeded(row.notes[kind].content, content)) {
+  saveNote: (paperId, kind, content) =>
+    joinInFlightNoteSave(paperId, kind, async () => {
+      try {
+        const row = await repo.getPaper(paperId);
+        if (!row) throw new Error("论文不存在");
+        if (!noteWriteNeeded(row.notes[kind].content, content)) {
+          get().setNoteDraft(paperId, kind, null);
+          get().setFlash({ tone: "ok", text: "笔记已保存。" });
+          return;
+        }
+        await repo.updateNote(paperId, kind, content, "manual", true);
+        const fresh = await repo.getPaper(paperId);
+        const hold = get().stageHold;
+        if (fresh && hold?.paperId === paperId) {
+          set({ stageHold: { paperId, prose: adoptProse(hold.prose, fresh, [kind]) } });
+        }
         get().setNoteDraft(paperId, kind, null);
+        await get().refresh();
         get().setFlash({ tone: "ok", text: "笔记已保存。" });
-        return;
+      } catch (err) {
+        get().setFlash({
+          tone: "error",
+          text: err instanceof Error ? `笔记保存失败：${err.message}` : "笔记保存失败，输入已保留，请重试。",
+        });
+        throw err;
       }
-      await repo.updateNote(paperId, kind, content, "manual", true);
-      const fresh = await repo.getPaper(paperId);
-      const hold = get().stageHold;
-      if (fresh && hold?.paperId === paperId) {
-        set({ stageHold: { paperId, prose: adoptProse(hold.prose, fresh, [kind]) } });
-      }
-      get().setNoteDraft(paperId, kind, null);
-      await get().refresh();
-      get().setFlash({ tone: "ok", text: "笔记已保存。" });
-    } catch (err) {
-      get().setFlash({
-        tone: "error",
-        text: err instanceof Error ? `笔记保存失败：${err.message}` : "笔记保存失败，输入已保留，请重试。",
-      });
-      throw err;
+    }),
+
+  saveAllNoteDrafts: async (paperId) => {
+    const id = paperId ?? get().paper?.id ?? get().selectedPaperId;
+    if (!id) return;
+    const kinds = NOTE_DISPLAY_ORDER.filter((kind) => get().drafts[id]?.[kind] !== undefined);
+    if (!kinds.length) {
+      get().setFlash({ tone: "warn", text: "这篇论文没有未保存的笔记草稿。" });
+      return;
     }
+    const { saved, failed } = await persistPaperDrafts(id);
+    await get().refresh().catch(() => {});
+    if (failed.length) {
+      get().setFlash({
+        tone: "warn",
+        text: `已保存 ${saved} 块笔记；${failed.length} 块保存失败（${failed.map((kind) => NOTE_LABELS[kind].zh).join("、")}），草稿已保留可重试。`,
+      });
+      return;
+    }
+    get().setFlash({ tone: "ok", text: `已保存本篇全部笔记（${saved} 块）。` });
+  },
+
+  saveAllDrafts: async () => {
+    // 跨论文的全局草稿出口：先冻结论文 id 快照，逐篇逐块落库；
+    // 单块失败不打断其余，最后按总数汇总（草稿清单面板由此驱动）。
+    const ids = Object.keys(get().drafts);
+    if (!ids.length) {
+      get().setFlash({ tone: "warn", text: "没有未保存的笔记草稿。" });
+      return;
+    }
+    let saved = 0;
+    let failedCount = 0;
+    for (const id of ids) {
+      const result = await persistPaperDrafts(id);
+      saved += result.saved;
+      failedCount += result.failed.length;
+    }
+    await get().refresh().catch(() => {});
+    if (failedCount) {
+      get().setFlash({
+        tone: "warn",
+        text: `已保存 ${saved} 块笔记；${failedCount} 块保存失败，草稿已保留可重试。`,
+      });
+      return;
+    }
+    get().setFlash({ tone: "ok", text: `已保存全部未保存草稿（${saved} 块，${ids.length} 篇论文）。` });
   },
 
   markRead: async (paperId) => {
@@ -876,15 +1232,38 @@ export const useField = create<FieldState>((set, get) => ({
     await get().setReadingStatus("unread", paperId);
   },
 
-  setReadingStatus: async (status, paperId) => {
+  setReadingStatus: async (status, paperId, restoreReadAt) => {
     const id = paperId ?? get().paper?.id ?? null;
     if (!id) return;
     set({ pendingReadingUndo: null });
     try {
-      await repo.setReadingStatus(id, status);
+      // 撤销要恢复的是「改之前」的状态与已读时间戳：写库前先取一次当前值。
+      const current = await repo.getPaper(id);
+      const prevStatus = current?.readingStatus ?? null;
+      const prevReadAt = current?.readAt ?? null;
+      // 常规路径保持两参调用（既有测试与语义不变）；撤销路径显式带回归档时间戳。
+      if (restoreReadAt === undefined) await repo.setReadingStatus(id, status);
+      else await repo.setReadingStatus(id, status, restoreReadAt);
+      // 「在读起点」本机记账（在读第 N 天用；库里没有状态变更时间戳）。
+      noteReadingStatus(id, status);
+      // 标已读的核心仪式：真正转入已读时发一次 +1 微反馈脉冲。
+      if (status === "read" && prevStatus !== "read") {
+        set({ readPulse: get().readPulse + 1 });
+      }
       await get().refresh();
       const labels = { unread: "未读", reading: "在读", read: "已读" };
-      get().setFlash({ tone: "ok", text: `阅读状态已更新为${labels[status]}。` });
+      const flash: Flash = { tone: "ok", text: `阅读状态已更新为${labels[status]}。` };
+      // 误触挽回：真的发生了状态变化时，提示里带「撤销」——恢复上一个状态，
+      // 且已读时间戳沿用撤销前的值（read→unread→撤销 不会把首次已读时间改成现在）。
+      if (prevStatus && prevStatus !== status) {
+        flash.action = {
+          label: "撤销",
+          run: () => {
+            void get().setReadingStatus(prevStatus, id, prevReadAt);
+          },
+        };
+      }
+      get().setFlash(flash);
     } catch (err) {
       get().setFlash({ tone: "error", text: `更新阅读状态失败：${errText(err)}，数据未改动。` });
       throw err;
@@ -1076,7 +1455,11 @@ export const useField = create<FieldState>((set, get) => ({
       } else if (result.outcome === "done" && !quiet) {
         if (useLlm) get().setFlash({ tone: "ok", text: "AI 作业完成。阅读状态未改动。" });
         else if (!foundMeta) {
-          get().setFlash({ tone: "warn", text: "尚未配置可用的 AI 服务。可到设置页添加提供商，或继续手动录入。" });
+          get().setFlash({
+            tone: "warn",
+            text: "尚未配置可用的 AI 服务。可到设置页添加提供商，或继续手动录入。",
+            action: { label: "去设置", run: () => get().openSystemCard("llm") },
+          });
         }
       }
     } catch (err) {
@@ -1139,7 +1522,11 @@ export const useField = create<FieldState>((set, get) => ({
     const id = paperId ?? get().pendingDraftJob ?? get().selectedPaperId;
     if (!id || draftInflight.has(id)) return;
     if (!hasUsableProvider(get().settings)) {
-      get().setFlash({ tone: "warn", text: "尚未配置可用的 AI 服务。可到设置页添加提供商后再起草阅读笔记。" });
+      get().setFlash({
+        tone: "warn",
+        text: "尚未配置可用的 AI 服务。可到设置页添加提供商后再起草阅读笔记。",
+        action: { label: "去设置", run: () => get().openSystemCard("llm") },
+      });
       return;
     }
     if (!permit) {
@@ -1207,7 +1594,7 @@ export const useField = create<FieldState>((set, get) => ({
     await get().refresh();
   },
 
-  saveLlmSettings: async (input) => {
+  saveLlmSettings: async (input, options) => {
     try {
       await saveSettings(input);
       const settings = await loadSettings();
@@ -1216,10 +1603,12 @@ export const useField = create<FieldState>((set, get) => ({
       get().setFlash({
         tone: usable ? "ok" : "warn",
         text: usable
-          ? "AI 服务设置已保存。"
+          ? options?.deferBackfill
+            ? "AI 服务设置已保存。自动补全暂未启动，可在测试通过后启用。"
+            : "AI 服务设置已保存。"
           : "已保存提供商列表，但当前没有可用的 AI 服务：请启用并填写 API Key，或使用免 Key 的本地服务。",
       });
-      if (usable) enqueueBackfill(mineruHost());
+      if (usable && !options?.deferBackfill) enqueueBackfill(mineruHost());
     } catch (err) {
       get().setFlash({ tone: "error", text: `保存 AI 服务设置失败：${errText(err)}，数据未改动。` });
       throw err;
@@ -1244,7 +1633,7 @@ export const useField = create<FieldState>((set, get) => ({
     }
   },
 
-  saveMineruSettings: async (input) => {
+  saveMineruSettings: async (input, options) => {
     try {
       const mineru = await saveMineruSettings(input);
       set({ mineru });
@@ -1254,7 +1643,8 @@ export const useField = create<FieldState>((set, get) => ({
       });
       // 保存成功后重探（异步，不阻塞返回）；浏览器预览 resolve [] 不抛错。
       void get().probeMineru();
-      if (mineru.configured) enqueueMineru(() => resumeMineru(mineruHost()));
+      // 测试连接类的保存（deferJobs）不静默续跑解析：由「继续未完成的解析」显式启动。
+      if (mineru.configured && !options?.deferJobs) enqueueMineru(() => resumeMineru(mineruHost()));
     } catch (err) {
       get().setFlash({ tone: "error", text: `保存 MinerU 设置失败：${errText(err)}，数据未改动。` });
       throw err;
@@ -1271,10 +1661,48 @@ export const useField = create<FieldState>((set, get) => ({
     return healths;
   },
 
+  startMetaBackfill: async () => {
+    let count: number | null = null;
+    try {
+      count = (await repo.listReadyForMeta()).length;
+    } catch {
+      count = null;
+    }
+    enqueueBackfill(mineruHost());
+    get().setFlash({
+      tone: "ok",
+      text: count ? `已开始自动补全，共 ${count} 篇待处理（进度见作业面板）。` : "已开始自动补全（进度见作业面板）。",
+    });
+    return count;
+  },
+
+  resumeMineruParses: async () => {
+    let count: number | null = null;
+    try {
+      count = (await repo.listPendingMineru()).length;
+    } catch {
+      count = null;
+    }
+    enqueueMineru(() => resumeMineru(mineruHost()));
+    get().setFlash({
+      tone: count ? "ok" : "warn",
+      text: count ? `已继续未完成的解析，共 ${count} 篇（进度见作业面板）。` : "没有待解析的论文。",
+    });
+    return count;
+  },
+
   backupLibrary: async () => {
     try {
       const where = await backupLibrary();
       if (!where) return;
+      // 记录上次成功备份（本机 localStorage）：设置页据此显示「距上次备份 N 天」与过期提醒。
+      let pdfs: number | null = null;
+      try {
+        pdfs = await repo.pdfCount();
+      } catch {
+        pdfs = null;
+      }
+      writeLastBackup({ at: Date.now(), where, papers: get().stats.total, pdfs });
       get().setFlash({ tone: "ok", text: `已备份到 ${where}` });
     } catch (err) {
       if (String(err).includes("DESKTOP_ONLY")) {
@@ -1367,6 +1795,87 @@ export const useField = create<FieldState>((set, get) => ({
     }
   },
 
+  exportPapers: async (plan) => {
+    const state = get();
+    const now = new Date();
+    const sections: Array<{ domain: Domain; papers: PaperDetail[] }> = [];
+    let browserName = "paper-field-export.md";
+    try {
+      if (plan.scope === "current") {
+        const domainId = state.selectedDomainId;
+        if (!domainId) {
+          get().setFlash({ tone: "warn", text: "请先选择一个领域，再导出。" });
+          return;
+        }
+        const domain = await repo.getDomain(domainId);
+        if (!domain) return;
+        sections.push({ domain, papers: await repo.papersForExport(domainId) });
+        browserName = browserExportFilename(domain);
+      } else if (plan.scope === "all" || plan.scope === "read") {
+        // 全库 / 仅已读按领域分文件夹；同一时间戳让这批文件夹在磁盘上排在一起。
+        for (const domain of await repo.listDomains()) {
+          const papers = await repo.papersForExport(domain.id);
+          const kept = plan.scope === "read" ? papers.filter((p) => p.readingStatus === "read") : papers;
+          if (kept.length) sections.push({ domain, papers: kept });
+        }
+        browserName = browserMultiExportFilename(plan.scope === "read" ? "read" : "export", now);
+      } else if (plan.scope === "checked") {
+        const ids = state.checkedPaperIds;
+        if (!ids.length) {
+          get().setFlash({
+            tone: "warn",
+            text: "尚未勾选任何论文。先在论文列表进入批量模式勾选，再回到这里导出。",
+          });
+          return;
+        }
+        // 勾选集可能跨领域：按所属领域分组，各自落进对应文件夹。
+        const byDomain = new Map<string, PaperDetail[]>();
+        for (const id of ids) {
+          const detail = await repo.getPaper(id);
+          if (!detail) continue;
+          const list = byDomain.get(detail.domainId) ?? [];
+          list.push(detail);
+          byDomain.set(detail.domainId, list);
+        }
+        for (const [domainId, papers] of byDomain) {
+          const domain = await repo.getDomain(domainId);
+          if (domain) sections.push({ domain, papers });
+        }
+        browserName = browserMultiExportFilename("checked", now);
+      } else if (plan.scope === "paper") {
+        const paperId = state.paper?.id ?? state.selectedPaperId;
+        if (!paperId) {
+          get().setFlash({ tone: "warn", text: "当前没有打开的论文，无法导出单篇。" });
+          return;
+        }
+        const detail = await repo.getPaper(paperId);
+        if (!detail) return;
+        sections.push({ domain: detail.domain, papers: [detail] });
+        browserName = browserMultiExportFilename("paper", now);
+      }
+      const count = sections.reduce((total, section) => total + section.papers.length, 0);
+      if (!count) {
+        get().setFlash({ tone: "warn", text: "所选范围内没有可导出的论文。" });
+        return;
+      }
+      // 格式：默认按领域分文件夹；BibTeX 只含著录信息，合并版把全部内容写进一个 .md。
+      const format = plan.format ?? "folders";
+      const files =
+        format === "bibtex"
+          ? buildBibtexExport(sections, now)
+          : format === "merged"
+            ? buildMergedMarkdownExport(sections, now, plan.include)
+            : sections.flatMap((section) => buildDomainExport(section.domain, section.papers, now, plan.include));
+      if (format !== "folders") browserName = files[0]?.relativePath ?? browserName;
+      const where = await writeExportFiles(files, browserName);
+      const noun = format === "bibtex" ? "条 BibTeX 条目" : "篇";
+      get().setFlash({ tone: "ok", text: `已导出 ${count} ${noun} · ${where}` });
+    } catch (err) {
+      if (String(err).includes("EXPORT_CANCELLED")) return;
+      get().setFlash({ tone: "error", text: err instanceof Error ? err.message : String(err) });
+    }
+  },
+
   navigatePapers: async (delta) => {
     if (get().mode === "system") return;
     const list = currentList(get());
@@ -1408,15 +1917,58 @@ function rememberLookup(
   });
 }
 
+const noteSaveFlight = new Map<string, Promise<void>>();
+
+function joinInFlightNoteSave(paperId: string, kind: NoteKind, work: () => Promise<void>): Promise<void> {
+  const key = `${paperId}:${kind}`;
+  const existing = noteSaveFlight.get(key);
+  if (existing) return existing;
+  const job = work().finally(() => {
+    if (noteSaveFlight.get(key) === job) noteSaveFlight.delete(key);
+  });
+  noteSaveFlight.set(key, job);
+  return job;
+}
+
+/**
+ * 把一篇论文当前的全部笔记草稿逐块落库：成功的清掉草稿，失败的保留并计数。
+ * 「保存本篇全部」与跨论文的「保存全部草稿」共用（同一套失败语义）。
+ */
+async function persistPaperDrafts(paperId: string): Promise<{ saved: number; failed: NoteKind[] }> {
+  const drafts = useField.getState().drafts[paperId];
+  const kinds = NOTE_DISPLAY_ORDER.filter((kind) => drafts?.[kind] !== undefined);
+  const failed: NoteKind[] = [];
+  let saved = 0;
+  for (const kind of kinds) {
+    try {
+      await useField.getState().saveNote(paperId, kind, drafts![kind]!);
+      if (useField.getState().drafts[paperId]?.[kind] === undefined) saved += 1;
+      else failed.push(kind);
+    } catch (err) {
+      log.error("store", "保存笔记草稿：单块失败", err);
+      failed.push(kind);
+    }
+  }
+  return { saved, failed };
+}
+
 function mineruHost() {
   return {
     mineru: () => useField.getState().mineru,
     // 门禁派生口径：任一 enabled 且（requiresKey ? 已存 Key : 免 Key）的提供商。
     hasKey: () => hasUsableProvider(useField.getState().settings),
     refresh: () => useField.getState().refresh(),
-    flash: (tone: "ok" | "warn" | "error", text: string) => useField.getState().setFlash({ tone, text }),
+    flash: (tone: "ok" | "warn" | "error", text: string, action?: { label: string; run: () => void }) =>
+      useField.getState().setFlash({ tone, text, ...(action ? { action } : {}) }),
     prepare: (paperId: string, overwrite: boolean, quiet: boolean) =>
       useField.getState().runPrepareMeta(paperId, overwrite, quiet),
+    reveal: (what: "fulltext" | "fields", paperId: string) => {
+      if (what === "fulltext") void useField.getState().openPaperFulltext(paperId);
+      else useField.getState().openDialog("edit-paper", paperId);
+    },
+    showFailures: () => {
+      void useField.getState().setMode("intake");
+    },
   };
 }
 

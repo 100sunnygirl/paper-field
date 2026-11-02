@@ -19,6 +19,9 @@ import {
   type BatchItemResult,
 } from "./activity";
 import { cancelJob, cancelJobsForPapers, JobCancelled, liveJobsFor, runTracked, type JobCtx } from "./jobs";
+import { loadJobNotifyPrefs, systemNotify, type JobNotifyPrefs } from "./notifyPrefs";
+import { journalBegin, journalFinish, journalItem } from "./jobJournal";
+import { formatSpan } from "./jobsView";
 import { log } from "./logger";
 import { repo } from "./repo";
 import { nowIso } from "./util";
@@ -27,8 +30,13 @@ interface Host {
   mineru: () => MineruSettingsV2;
   hasKey: () => boolean;
   refresh: () => Promise<void>;
-  flash: (tone: "ok" | "warn" | "error", text: string) => void;
+  /** 结束通知可带一个直达入口（如「查看全文」）；实现方负责跳转。 */
+  flash: (tone: "ok" | "warn" | "error", text: string, action?: { label: string; run: () => void }) => void;
   prepare: (paperId: string, overwrite: boolean, quiet: boolean) => Promise<void>;
+  /** 通知里的结果直达：打开该论文的解析全文（自动展开）或字段编辑。 */
+  reveal?: (what: "fulltext" | "fields", paperId: string) => void;
+  /** 「去看失败的那几篇」：跳到能看到解析失败论文的页面（入库页）。 */
+  showFailures?: () => void;
 }
 
 /**
@@ -100,6 +108,25 @@ export async function stopBatch(batchId: number): Promise<number> {
     stopped += 1;
   }
   return stopped;
+}
+
+/**
+ * 「清空其余」：只保留下一篇还没开始的论文，其余排队论文全部移出本批（解析类写库 cancelled，
+ * AI 类只出列）。正在处理的一篇不动。返回移出的篇数。
+ */
+export async function clearBatchRest(batchId: number): Promise<number> {
+  const batch = getActivity().batches.find((item) => item.id === batchId);
+  if (!batch) return 0;
+  const pending = batch.paperIds.filter((id) => !batch.results[id] && id !== batch.currentPaperId);
+  const rest = pending.slice(1);
+  for (const id of rest) {
+    if (batch.kind === "mineru") await dequeueFromBatch(batchId, id);
+    else {
+      dequeued.add(queueKey(batchId, id));
+      endBatchItem(batchId, id, "cancelled");
+    }
+  }
+  return rest.length;
 }
 
 function enqueueOn(which: "mineru" | "meta", task: () => Promise<void>): void {
@@ -381,12 +408,22 @@ async function processOne(
 const CONSECUTIVE_FAIL_LIMIT = 3;
 
 export const PAUSED_ERROR = "连续失败已暂停，可在 INTAKE 页重试";
+/** 用户「当前篇完成后暂停」写进论文的暂停原因（「继续本批」恢复）。 */
+export const USER_PAUSED_ERROR = "已按要求暂停，可在作业面板继续本批";
+
+/** 「当前篇完成后暂停」标记：当前篇正常收尾后，剩余论文按暂停口径写库（可「继续本批」）。 */
+const pauseAfterCurrent = new Set<number>();
+
+/** 给批次打「当前篇完成后暂停」标记；批次结束（含停止）时自动清除。 */
+export function markPauseAfterCurrent(batchId: number): void {
+  pauseAfterCurrent.add(batchId);
+}
 
 /**
  * 熔断后剩余的论文写成 error（带暂停原因），让「重试解析失败」能看到它们；
  * 已移出的不计数，也不改已经结束的论文。返回真正被暂停的篇数。
  */
-async function pauseRemaining(batchId: number, paperIds: string[]): Promise<number> {
+async function pauseRemaining(batchId: number, paperIds: string[], error = PAUSED_ERROR): Promise<number> {
   let paused = 0;
   for (const paperId of paperIds) {
     if (dequeued.has(queueKey(batchId, paperId))) continue;
@@ -394,10 +431,32 @@ async function pauseRemaining(batchId: number, paperIds: string[]): Promise<numb
     if (!paper?.pdfPath) continue;
     const status = paper.mineruStatus;
     if (status !== null && status !== "pending" && status !== "queued" && status !== "submitted" && status !== "parsing") continue;
-    await repo.setMineruState(paperId, { status: "error", error: PAUSED_ERROR, jobId: null });
+    await repo.setMineruState(paperId, { status: "error", error, jobId: null });
     paused += 1;
   }
   return paused;
+}
+
+/**
+ * 窗口失焦时的系统级通知（用户开启「失焦系统通知」后）。「仅失败」口径下没有失败就不发；
+ * 权限 / 环境不满足由 systemNotify 内部静默兜底。
+ */
+function notifyAway(prefs: JobNotifyPrefs, title: string, body: string, hasFailure: boolean): void {
+  if (!prefs.enabled || !prefs.system) return;
+  if (prefs.mode === "failures" && !hasFailure) return;
+  systemNotify(title, body);
+}
+
+/** 逐篇提醒口径下的一篇收尾通知（标题优先中文）。 */
+async function perItemFlash(
+  host: Host,
+  paperId: string,
+  verb: string,
+  outcome: "ok" | "fail",
+): Promise<void> {
+  const paper = await repo.getPaper(paperId);
+  const title = paper?.titleZh?.trim() || paper?.title.trim() || "这一篇";
+  host.flash(outcome === "ok" ? "ok" : "error", `「${title}」${verb}${outcome === "ok" ? "完成" : "失败"}。`);
 }
 
 export async function runMineruBatch(
@@ -414,6 +473,10 @@ export async function runMineruBatch(
   }
   const id = batchId ?? queueBatch("mineru", paperIds);
   startBatch(id);
+  // 本机批次记录：清单、逐篇结果与起止时间（localStorage，重启可回看；见 jobJournal.ts 的口径说明）。
+  const journalId = journalBegin("mineru", paperIds);
+  const startedAtMs = Date.now();
+  const prefs = loadJobNotifyPrefs();
   // 正常走完记 done；熔断提前返回或意外抛错记 halted（剩余论文在面板上显示为已暂停）。
   let state: "done" | "halted" = "halted";
   try {
@@ -422,20 +485,41 @@ export async function runMineruBatch(
     let fail = 0;
     let consecutiveFails = 0;
     let pausedCount = 0;
-    for (const [index, paperId] of paperIds.entries()) {
-      if (consecutiveFails >= CONSECUTIVE_FAIL_LIMIT) {
-        pausedCount = await pauseRemaining(id, paperIds.slice(index));
+    // 「当前篇完成后暂停」：当前篇收尾后剩余按暂停口径写库，与熔断共用 halted 终态。
+    let pausedByUser = false;
+    // 每轮按批次「当前」的顺序取下一篇还没处理的论文：作业面板里的置顶 / 上移 / 下移
+    // 只改 activity 批次的 paperIds 顺序，这里跟着走，排队调整立即生效。
+    const handled = new Set<string>();
+    const remaining = (): string[] => {
+      const batch = getActivity().batches.find((item) => item.id === id);
+      const order = batch ? batch.paperIds : paperIds;
+      return order.filter((pid) => !handled.has(pid) && !batch?.results[pid]);
+    };
+    for (;;) {
+      const next = remaining();
+      if (!next.length) break;
+      if (pauseAfterCurrent.has(id)) {
+        pausedCount = await pauseRemaining(id, next, USER_PAUSED_ERROR);
+        pausedByUser = true;
         break;
       }
+      if (consecutiveFails >= CONSECUTIVE_FAIL_LIMIT) {
+        pausedCount = await pauseRemaining(id, next);
+        break;
+      }
+      const paperId = next[0];
+      handled.add(paperId);
       // 作业面板「移出队列」的论文：轮到时直接出列，不在面板上闪一下「处理中」；
       // 库里状态在出列时已写成 cancelled，重启或保存设置后不会被自动重新提交。
       if (dequeued.has(queueKey(id, paperId))) {
         endBatchItem(id, paperId, "cancelled");
+        journalItem(journalId, paperId, "cancelled");
         continue;
       }
       beginBatchItem(id, paperId);
       const result = await processOne(host, paperId, force, id);
       endBatchItem(id, paperId, result);
+      journalItem(journalId, paperId, result);
       if (result === "ok") {
         ok += 1;
         consecutiveFails = 0;
@@ -444,27 +528,68 @@ export async function runMineruBatch(
         consecutiveFails += 1;
       }
       // cancelled / skip 不计入连续失败，也不打断计数。
+      // 「逐篇」提醒口径：每篇收尾即通知（成功绿 / 失败红）。
+      if (prefs.enabled && prefs.mode === "perItem" && (result === "ok" || result === "fail")) {
+        await perItemFlash(host, paperId, "解析", result);
+      }
     }
     if (pausedCount) {
+      if (pausedByUser) {
+        log.info("mineru", `按要求暂停批次：剩余 ${pausedCount} 篇`);
+        host.flash("ok", `已按要求暂停，剩余 ${pausedCount} 篇未处理。稍后可在作业面板「继续本批」。`);
+        return;
+      }
       log.warn("mineru", `连续失败 ${consecutiveFails} 篇，熔断暂停剩余 ${pausedCount} 篇`);
       host.flash(
         "error",
         `MinerU 解析连续失败 ${consecutiveFails} 篇，已暂停剩余 ${pausedCount} 篇。解析源可能繁忙或不可用，可在设置页测试连接，稍后在 INTAKE 页重试。`,
       );
+      notifyAway(prefs, "MinerU 解析已暂停", `连续失败 ${consecutiveFails} 篇，剩余 ${pausedCount} 篇未处理`, true);
       return;
     }
     state = "done";
     log.info("mineru", `解析批次结束：成功 ${ok} 篇，失败 ${fail} 篇`);
+    // 批次收尾反馈：大批次（≥3 篇）的完成通知带总数与用时，并附直达入口；
+    // 「仅失败」口径下成功批次不弹通知（结果仍在面板批次卡里）。
+    const elapsedText = formatSpan(Date.now() - startedAtMs);
+    const big = paperIds.length >= 3;
+    const finished = getActivity().batches.find((item) => item.id === id);
+    const firstOk = finished?.paperIds.find((pid) => finished.results[pid] === "ok") ?? null;
     if (fail) {
-      host.flash("error", `MinerU 解析失败 ${fail} 篇，可在资料栏重试。`);
+      const action =
+        big && host.showFailures ? { label: "去看失败的那几篇", run: () => host.showFailures!() } : undefined;
+      host.flash(
+        "error",
+        big
+          ? `MinerU 解析失败 ${fail} 篇（成功 ${ok} · 用时 ${elapsedText}），可在资料栏重试。`
+          : `MinerU 解析失败 ${fail} 篇，可在资料栏重试。`,
+        ...(action ? [action] : []),
+      );
     } else if (ok && !host.hasKey()) {
       host.flash("warn", "解析完成。尚未配置 AI，书目仍使用文件名，可稍后补全。");
-    } else if (ok) {
-      host.flash("ok", `MinerU 解析完成 ${ok} 篇。阅读状态未改动。`);
+    } else if (ok && !(prefs.enabled && prefs.mode === "failures")) {
+      if (big) {
+        const action =
+          host.reveal && firstOk ? { label: "去读第一篇", run: () => host.reveal!("fulltext", firstOk) } : undefined;
+        host.flash(
+          "ok",
+          `MinerU 解析完成 ${ok} 篇 · 用时 ${elapsedText}。阅读状态未改动。`,
+          ...(action ? [action] : []),
+        );
+      } else {
+        // 单篇完成的通知直接给「查看全文」直达（大批次的汇总入口见批次小结）。
+        const single = ok === 1 && paperIds.length === 1 ? paperIds[0] : null;
+        const action =
+          host.reveal && single ? { label: "查看全文", run: () => host.reveal!("fulltext", single) } : undefined;
+        host.flash("ok", `MinerU 解析完成 ${ok} 篇。阅读状态未改动。`, ...(action ? [action] : []));
+      }
     }
+    notifyAway(prefs, "MinerU 解析批次结束", `成功 ${ok} · 失败 ${fail} · 用时 ${elapsedText}`, fail > 0);
   } finally {
     for (const paperId of paperIds) dequeued.delete(queueKey(id, paperId));
+    pauseAfterCurrent.delete(id);
     finishBatch(id, state);
+    journalFinish(journalId, state);
   }
 }
 
@@ -504,14 +629,29 @@ export async function backfillMeta(host: Host): Promise<void> {
   if (!ids.length) return;
   const batchId = queueBatch("meta", ids);
   startBatch(batchId);
+  const journalId = journalBegin("meta", ids);
+  const startedAtMs = Date.now();
+  const prefs = loadJobNotifyPrefs();
   let state: "done" | "halted" = "halted";
   let filled = 0;
+  let failed = 0;
   let consecutiveFails = 0;
+  // 「当前篇完成后暂停」：剩余论文保持待补全（不写任何状态），下一轮「继续本批」再续。
+  let pausedByUser = false;
+  // 与解析批次同构：每轮按批次当前顺序取下一篇（面板里的置顶 / 上移 / 下移立即生效）。
+  const handled = new Set<string>();
+  const remaining = (): string[] => {
+    const batch = getActivity().batches.find((item) => item.id === batchId);
+    const order = batch ? batch.paperIds : ids;
+    return order.filter((pid) => !handled.has(pid) && !batch?.results[pid]);
+  };
   try {
-    for (const id of ids) {
-      if (dequeued.has(queueKey(batchId, id))) {
-        endBatchItem(batchId, id, "cancelled");
-        continue;
+    for (;;) {
+      const next = remaining();
+      if (!next.length) break;
+      if (pauseAfterCurrent.has(batchId)) {
+        pausedByUser = next.length > 0;
+        break;
       }
       if (consecutiveFails >= META_FAIL_LIMIT) {
         host.flash(
@@ -520,22 +660,64 @@ export async function backfillMeta(host: Host): Promise<void> {
         );
         return;
       }
+      const id = next[0];
+      handled.add(id);
+      if (dequeued.has(queueKey(batchId, id))) {
+        endBatchItem(batchId, id, "cancelled");
+        journalItem(journalId, id, "cancelled");
+        continue;
+      }
       beginBatchItem(batchId, id);
       const result = await autoPrepare(host, id);
       endBatchItem(batchId, id, result);
+      journalItem(journalId, id, result);
       if (result === "ok") {
         filled += 1;
         consecutiveFails = 0;
       } else if (result === "fail") {
+        failed += 1;
         consecutiveFails += 1;
       }
+      // 「逐篇」提醒口径：每篇收尾即通知。
+      if (prefs.enabled && prefs.mode === "perItem" && (result === "ok" || result === "fail")) {
+        await perItemFlash(host, id, "补全", result);
+      }
     }
-    state = "done";
+    // 用户暂停（break 出循环）保持 halted；正常跑完才记 done。
+    if (!pausedByUser) state = "done";
   } finally {
     for (const id of ids) dequeued.delete(queueKey(batchId, id));
+    pauseAfterCurrent.delete(batchId);
     finishBatch(batchId, state);
+    journalFinish(journalId, state);
   }
-  if (filled) host.flash("ok", `已为 ${filled} 篇论文补全信息。阅读状态未改动。`);
+  if (pausedByUser) {
+    host.flash("ok", "已按要求暂停补全，剩余论文可稍后在作业面板「继续本批」。");
+    return;
+  }
+  const elapsedText = formatSpan(Date.now() - startedAtMs);
+  const big = ids.length >= 3;
+  if (filled && !(prefs.enabled && prefs.mode === "failures")) {
+    if (big) {
+      // 大批次收尾：带用时与「去读第一篇」直达；「仅失败」口径下成功不打扰。
+      const finished = getActivity().batches.find((item) => item.id === batchId);
+      const firstOk = finished?.paperIds.find((pid) => finished.results[pid] === "ok") ?? null;
+      const action =
+        host.reveal && firstOk ? { label: "去读第一篇", run: () => host.reveal!("fulltext", firstOk) } : undefined;
+      host.flash(
+        "ok",
+        `已为 ${filled} 篇论文补全信息 · 用时 ${elapsedText}。阅读状态未改动。`,
+        ...(action ? [action] : []),
+      );
+    } else {
+      // 单篇补全完成的通知给「查看字段」直达。
+      const single = filled === 1 && ids.length === 1 ? ids[0] : null;
+      const action =
+        host.reveal && single ? { label: "查看字段", run: () => host.reveal!("fields", single) } : undefined;
+      host.flash("ok", `已为 ${filled} 篇论文补全信息。阅读状态未改动。`, ...(action ? [action] : []));
+    }
+  }
+  notifyAway(prefs, "AI 补全批次结束", `已补全 ${filled} · 失败 ${failed} · 用时 ${elapsedText}`, failed > 0);
 }
 
 /** 删除论文前调用：取消它们的在途作业并从所有等待中的批次里移出。 */

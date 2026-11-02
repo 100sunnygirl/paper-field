@@ -27,21 +27,27 @@ vi.mock("./mineru", async (importOriginal) => {
 
 import { mineruCurrentFingerprint, mineruMarkdown, mineruParseStatuses, mineruSubmit } from "./mineru";
 import {
+  backfillMeta,
+  clearBatchRest,
   dequeueFromBatch,
   enqueueBackfill,
   enqueueMeta,
   enqueueMineru,
   enqueueMineruBatch,
   forgetPapers,
+  markPauseAfterCurrent,
   PAUSED_ERROR,
   resumeMineru,
   runMineruBatch,
   setMineruTiming,
   STALE_CRED_ERROR,
   stopBatch,
+  USER_PAUSED_ERROR,
 } from "./mineruRun";
 import { cancelJob, liveJobsFor, resetLiveJobs } from "./jobs";
-import { getActivity, queueBatch, resetActivity, subscribeActivity } from "./activity";
+import { getActivity, queueBatch, reorderBatch, resetActivity, subscribeActivity } from "./activity";
+import { resetJobNotifyPrefs, saveJobNotifyPrefs } from "./notifyPrefs";
+import { journalBegin, listJobBatches, resetJobJournal } from "./jobJournal";
 import { repo } from "./repo";
 
 const FP = "pf-cred-v1:match";
@@ -95,6 +101,8 @@ beforeEach(async () => {
   holder.engine = handle.engine;
   resetActivity();
   resetLiveJobs();
+  resetJobNotifyPrefs();
+  resetJobJournal();
   setMineruTiming({ pollMs: 1, retryMs: 1 });
   vi.mocked(mineruSubmit).mockReset();
   vi.mocked(mineruParseStatuses).mockReset();
@@ -153,6 +161,8 @@ function makeHost(
     hasKey?: boolean;
     configured?: boolean;
     prepare?: (paperId: string, overwrite: boolean, quiet: boolean) => Promise<void>;
+    reveal?: (what: "fulltext" | "fields", paperId: string) => void;
+    showFailures?: () => void;
   } = {},
 ) {
   return {
@@ -161,6 +171,8 @@ function makeHost(
     refresh: vi.fn(async () => undefined),
     flash: vi.fn(),
     prepare: vi.fn(options.prepare ?? (async (paperId: string) => markPrepared(paperId))),
+    reveal: options.reveal,
+    showFailures: options.showFailures,
   };
 }
 
@@ -928,6 +940,253 @@ describe("移出队列与停止批次", () => {
     await settle();
     expect(mineruParseStatuses).not.toHaveBeenCalled();
     expect(mineruSubmit).not.toHaveBeenCalled();
+  });
+});
+
+describe("排队调度：置顶 / 上移 / 下移 / 清空其余", () => {
+  it("处理循环按批次当前顺序取下一篇：中途置顶后，被置顶的论文先解析", async () => {
+    const ids = [await makePaper(), await makePaper(), await makePaper()];
+    const host = makeHost({ hasKey: false });
+    const aSubmit = hang<MineruSubmitResult>();
+    vi.mocked(mineruSubmit).mockImplementation(async (paperId) =>
+      paperId === ids[0] ? aSubmit.promise : submitResult({ status: "done", shortId: `doc-${paperId}` }),
+    );
+    markdownByDoc();
+
+    const batchId = queueBatch("mineru", ids);
+    const run = runMineruBatch(host, ids, true, batchId);
+    await vi.waitFor(() => expect(mineruSubmit).toHaveBeenCalledTimes(1));
+    // 第一篇解析中把第三篇置顶：后面的处理顺序跟着改。
+    reorderBatch(batchId, ids[2], "top");
+    aSubmit.release(submitResult({ status: "done", shortId: `doc-${ids[0]}` }));
+    await run;
+
+    expect(getActivity().batches[0].paperIds).toEqual([ids[0], ids[2], ids[1]]);
+    expect(vi.mocked(mineruSubmit).mock.calls.map(([paperId]) => paperId)).toEqual([ids[0], ids[2], ids[1]]);
+    expect(getActivity().batches[0].results).toEqual({ [ids[0]]: "ok", [ids[2]]: "ok", [ids[1]]: "ok" });
+  });
+
+  it("清空其余：保留下一篇，其余排队论文移出并落库为已取消", async () => {
+    const ids = [await makePaper(), await makePaper(), await makePaper()];
+    const host = makeHost({ hasKey: false });
+    const aSubmit = hang<MineruSubmitResult>();
+    vi.mocked(mineruSubmit).mockImplementation(async (paperId) =>
+      paperId === ids[0] ? aSubmit.promise : submitResult({ status: "done", shortId: `doc-${paperId}` }),
+    );
+    markdownByDoc();
+
+    const batchId = queueBatch("mineru", ids);
+    const run = runMineruBatch(host, ids, true, batchId);
+    await vi.waitFor(() => expect(mineruSubmit).toHaveBeenCalledTimes(1));
+    expect(await clearBatchRest(batchId)).toBe(1);
+    expect((await paperOf(ids[2])).mineruStatus).toBe("cancelled");
+    aSubmit.release(submitResult({ status: "done", shortId: `doc-${ids[0]}` }));
+    await run;
+
+    expect(getActivity().batches[0].results).toEqual({ [ids[0]]: "ok", [ids[2]]: "cancelled", [ids[1]]: "ok" });
+    expect(vi.mocked(mineruSubmit).mock.calls.map(([paperId]) => paperId)).toEqual([ids[0], ids[1]]);
+    expect((await paperOf(ids[1])).mineruStatus).toBe("done");
+  });
+
+  it("单篇解析完成的通知带「查看全文」直达，触发时调用 reveal", async () => {
+    const id = await makePaper();
+    const reveal = vi.fn();
+    const host = makeHost({ reveal });
+    vi.mocked(mineruSubmit).mockResolvedValue(submitResult({ status: "done" }));
+    markdownByDoc();
+
+    await runMineruBatch(host, [id], true);
+
+    expect(host.flash).toHaveBeenCalledWith("ok", "MinerU 解析完成 1 篇。阅读状态未改动。", {
+      label: "查看全文",
+      run: expect.any(Function),
+    });
+    const action = vi.mocked(host.flash).mock.calls.at(-1)![2]!;
+    action.run();
+    expect(reveal).toHaveBeenCalledWith("fulltext", id);
+  });
+
+  it("多篇批次完成的通知不带直达动作（汇总入口见批次小结）", async () => {
+    const ids = [await makePaper(), await makePaper()];
+    const host = makeHost({ reveal: vi.fn() });
+    vi.mocked(mineruSubmit).mockImplementation(async (paperId) => submitResult({ status: "done", shortId: `doc-${paperId}` }));
+    markdownByDoc();
+
+    await runMineruBatch(host, ids, true);
+
+    expect(host.flash).toHaveBeenCalledWith("ok", "MinerU 解析完成 2 篇。阅读状态未改动。");
+    expect(vi.mocked(host.flash).mock.calls.at(-1)).toHaveLength(2);
+  });
+
+  it("「当前篇完成后暂停」：当前篇正常收尾，剩余写为暂停并给「继续本批」指引", async () => {
+    const ids = [await makePaper(), await makePaper(), await makePaper()];
+    const host = makeHost({ hasKey: false });
+    const aSubmit = hang<MineruSubmitResult>();
+    vi.mocked(mineruSubmit).mockImplementation(async (paperId) =>
+      paperId === ids[0] ? aSubmit.promise : submitResult({ status: "done", shortId: `doc-${paperId}` }),
+    );
+    markdownByDoc();
+
+    const batchId = queueBatch("mineru", ids);
+    const run = runMineruBatch(host, ids, true, batchId);
+    await vi.waitFor(() => expect(mineruSubmit).toHaveBeenCalledTimes(1));
+    markPauseAfterCurrent(batchId);
+    aSubmit.release(submitResult({ status: "done", shortId: `doc-${ids[0]}` }));
+    await run;
+
+    expect(getActivity().batches[0]).toMatchObject({ state: "halted" });
+    expect(getActivity().batches[0].results).toEqual({ [ids[0]]: "ok" });
+    expect(mineruSubmit).toHaveBeenCalledTimes(1);
+    for (const id of ids.slice(1)) {
+      expect(await paperOf(id)).toMatchObject({ mineruStatus: "error", mineruError: USER_PAUSED_ERROR });
+    }
+    expect(host.flash).toHaveBeenCalledWith("ok", "已按要求暂停，剩余 2 篇未处理。稍后可在作业面板「继续本批」。");
+  });
+
+  it("AI 补全批次「当前篇完成后暂停」：当前篇收尾后剩余不再处理", async () => {
+    const a = await makePaper(undefined, "# 有全文");
+    const b = await makePaper(undefined, "# 有全文");
+    const first = hang<void>();
+    const host = makeHost({
+      prepare: async (paperId) => {
+        if (paperId === a) await first.promise;
+        await markPrepared(paperId);
+      },
+    });
+
+    const run = backfillMeta(host);
+    await vi.waitFor(() => expect(getActivity().batches[0]?.currentPaperId).toBe(a));
+    markPauseAfterCurrent(getActivity().batches[0].id);
+    first.release();
+    await run;
+
+    expect(getActivity().batches[0]).toMatchObject({ state: "halted" });
+    expect(getActivity().batches[0].results).toEqual({ [a]: "ok" });
+    expect(host.prepare).toHaveBeenCalledTimes(1);
+    expect(await paperOf(b)).toMatchObject({ llmPreparedAt: null });
+    expect(host.flash).toHaveBeenCalledWith("ok", "已按要求暂停补全，剩余论文可稍后在作业面板「继续本批」。");
+  });
+});
+
+describe("批次收尾反馈与通知偏好", () => {
+  /** 3 篇全部成功的大批次。 */
+  async function bigOkBatch(host = makeHost()) {
+    const ids = [await makePaper(), await makePaper(), await makePaper()];
+    vi.mocked(mineruSubmit).mockImplementation(async (paperId) => submitResult({ status: "done", shortId: `doc-${paperId}` }));
+    markdownByDoc();
+    await runMineruBatch(host, ids, true);
+    return { host, ids };
+  }
+
+  it("大批次（≥3 篇）完成：汇总带用时与「去读第一篇」直达", async () => {
+    const reveal = vi.fn();
+    const { host, ids } = await bigOkBatch(makeHost({ reveal }));
+
+    const last = vi.mocked(host.flash).mock.calls.at(-1)!;
+    expect(last[0]).toBe("ok");
+    expect(last[1]).toMatch(/^MinerU 解析完成 3 篇 · 用时 .+。阅读状态未改动。$/);
+    expect(last[2]).toMatchObject({ label: "去读第一篇" });
+    last[2]!.run();
+    expect(reveal).toHaveBeenCalledWith("fulltext", ids[0]);
+  });
+
+  it("大批次有失败：失败汇总带成功数与用时，附「去看失败的那几篇」", async () => {
+    const ids = [await makePaper(), await makePaper(), await makePaper()];
+    const host = makeHost({ hasKey: false, showFailures: vi.fn() });
+    vi.mocked(mineruSubmit)
+      .mockResolvedValueOnce(submitResult({ status: "done", shortId: "doc-a" }))
+      .mockRejectedValueOnce(new Error("busy"))
+      .mockResolvedValueOnce(submitResult({ status: "done", shortId: "doc-c" }));
+    markdownByDoc();
+    await runMineruBatch(host, ids, true);
+
+    const last = vi.mocked(host.flash).mock.calls.at(-1)!;
+    expect(last[0]).toBe("error");
+    expect(last[1]).toMatch(/解析失败 1 篇（成功 2 · 用时 .+），可在资料栏重试。/);
+    expect(last[2]).toMatchObject({ label: "去看失败的那几篇" });
+    last[2]!.run();
+    expect(host.showFailures).toHaveBeenCalled();
+  });
+
+  it("「仅失败」口径：成功的大批次不弹完成通知", async () => {
+    saveJobNotifyPrefs({ enabled: true, mode: "failures", system: false });
+    const { host } = await bigOkBatch();
+    expect(host.flash).not.toHaveBeenCalled();
+  });
+
+  it("「逐篇」口径：每篇收尾即通知（成功与失败各自成条）", async () => {
+    saveJobNotifyPrefs({ enabled: true, mode: "perItem", system: false });
+    const ids = [await makePaper(), await makePaper()];
+    const host = makeHost({ hasKey: false });
+    vi.mocked(mineruSubmit)
+      .mockResolvedValueOnce(submitResult({ status: "done", shortId: "doc-a" }))
+      .mockRejectedValueOnce(new Error("busy"));
+    markdownByDoc();
+    await runMineruBatch(host, ids, true);
+
+    const texts = vi.mocked(host.flash).mock.calls.map((call) => call[1]);
+    // 标题来自文件名（titleFromPdf）：第一篇成功、第二篇失败各播一条。
+    const t1 = (await paperOf(ids[0])).title;
+    const t2 = (await paperOf(ids[1])).title;
+    expect(texts).toContain(`「${t1}」解析完成。`);
+    expect(texts).toContain(`「${t2}」解析失败。`);
+  });
+
+  it("关闭「完成时提醒我」：回到简洁文案（小批次原样）", async () => {
+    saveJobNotifyPrefs({ enabled: false, mode: "summary", system: false });
+    const id = await makePaper();
+    const host = makeHost();
+    vi.mocked(mineruSubmit).mockResolvedValue(submitResult({ status: "done" }));
+    markdownByDoc();
+    await runMineruBatch(host, [id], true);
+    expect(host.flash).toHaveBeenCalledWith("ok", "MinerU 解析完成 1 篇。阅读状态未改动。");
+  });
+
+  it("开启失焦系统通知：批次收尾发系统级通知（仅失败口径无失败不发）", async () => {
+    saveJobNotifyPrefs({ enabled: true, mode: "summary", system: true });
+    const created: Array<{ title: string; body: string }> = [];
+    vi.stubGlobal("Notification", class {
+      static permission = "granted";
+      constructor(public title: string, public options?: { body?: string }) {
+        created.push({ title, body: options?.body ?? "" });
+      }
+      onclick: (() => void) | null = null;
+      close() {}
+    });
+    const hasFocus = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+
+    await bigOkBatch();
+    expect(created).toHaveLength(1);
+    expect(created[0]).toMatchObject({ title: "MinerU 解析批次结束" });
+    expect(created[0].body).toMatch(/成功 3 · 失败 0 · 用时 /);
+
+    created.length = 0;
+    saveJobNotifyPrefs({ enabled: true, mode: "failures", system: true });
+    await bigOkBatch();
+    expect(created).toEqual([]);
+
+    hasFocus.mockRestore();
+  });
+
+  it("批次全程写进本机记录：逐篇结果与终态可跨会话回看", async () => {
+    const ids = [await makePaper(), await makePaper()];
+    const host = makeHost({ hasKey: false });
+    vi.mocked(mineruSubmit).mockImplementation(async (paperId) => submitResult({ status: "done", shortId: `doc-${paperId}` }));
+    markdownByDoc();
+    await runMineruBatch(host, ids, true);
+
+    const entries = listJobBatches();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ kind: "mineru", state: "done", paperIds: ids });
+    expect(entries[0].results).toEqual({ [ids[0]]: "ok", [ids[1]]: "ok" });
+    expect(entries[0].finishedAt).not.toBeNull();
+  });
+
+  it("应用退出时未收尾的批次在记录里显示为中断", () => {
+    // 只 begin 不 finish：模拟进程退出（重启后读取侧会标成 interrupted）。
+    journalBegin("meta", ["a", "b"]);
+    const entries = listJobBatches();
+    expect(entries[0].state).toBe("interrupted");
   });
 });
 

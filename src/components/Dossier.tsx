@@ -1,5 +1,43 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactNode } from "react";
+import { bindingLabel, currentKeymap, eventMatchesBinding } from "../lib/keymap";
+import {
+  FONT_STEPS,
+  FONT_STEP_LABELS,
+  WIDTH_SCALES,
+  WIDTH_STEP_LABELS,
+  clearPaperAppearance,
+  getAppearance,
+  hasPaperAppearance,
+  loadAppearanceStore,
+  setDefaultAppearance,
+  setPaperAppearance,
+  type AppearanceStore,
+  type ReadWidthStep,
+  type ReadingAppearance,
+} from "../lib/readingAppearance";
+import {
+  setContextFolded,
+  subscribeContextFold,
+  getContextFold,
+  type ContextBlockId,
+} from "../lib/contextFold";
+import {
+  appendExcerpt,
+  assignFulltextAnchors,
+  buildExcerptMarkdown,
+  buildSectionCitation,
+  extractFulltextHeadings,
+  headingForSelection,
+  highlightFulltextMatches,
+  insertQuoteAtCursor,
+  selectionInRoot,
+  type FulltextSelection,
+} from "../lib/fulltext";
 import { onMarkdownClick, renderMarkdown } from "../lib/markdown";
+import { isNoteHintDismissed, NOTE_HINT_QUESTIONS, setNoteHintDismissed } from "../lib/noteHints";
+import { loadNoteLayout, moveNoteKind as moveNoteKindInOrder, saveNoteLayout, type NoteLayout } from "../lib/noteLayout";
+import { loadReadingSpots, saveReadingSpot } from "../lib/readingSpot";
+import { daysInto, readingSinceFor } from "../lib/readingSince";
 import { openLocalPdf } from "../lib/mineru";
 import {
   JOB_STATUS_LABELS,
@@ -17,10 +55,40 @@ import {
 } from "../lib/types";
 import { hasUsableProvider } from "../lib/settings";
 import { arxivAbsUrl, arxivPdfUrl, doiUrl, openExternal, safeHttpUrl } from "../lib/urls";
-import { formatDate, pad2 } from "../lib/util";
+import { formatDate, modLabel, pad2 } from "../lib/util";
 import { diffStage, type StageField } from "../lib/readingHolds";
 import { useField } from "../store";
-import { Button, Dialog, Empty, ExternalResource, Icon, SourceBadge } from "./ui";
+import { Button, Dialog, Empty, ExternalResource, Icon, SourceBadge, type IconName } from "./ui";
+
+/** 本页目录里解析全文章节二级项的显示上限：更长的全文只列前若干节并注明其余节数。 */
+const TOC_SECTION_LIMIT = 30;
+
+/** 把区段锚点 id 转成浮标 / 提示里可读的中文标签。 */
+function spotSectionLabel(section: string, headings: ReturnType<typeof extractFulltextHeadings>): string {
+  if (section === "abstract") return "摘要";
+  if (section === "fulltext") return "解析全文";
+  if (section.startsWith("note-")) {
+    const kind = section.slice(5) as NoteKind;
+    return NOTE_LABELS[kind]?.zh ?? section;
+  }
+  if (section.startsWith("ft-sec-")) {
+    const heading = headings.find((item) => item.id === section);
+    return heading ? `§${heading.number} ${heading.text}` : "解析全文";
+  }
+  return section;
+}
+
+/**
+ * 「在读第 N 天」的文案：优先本机记录的在读起点；没有记录（功能上线前就在读、
+ * 或换机器）诚实回落入库时间——措辞用「入库第 N 天」，不冒充在读时长。
+ */
+function readingDayLine(paperId: string, createdAt: string): string {
+  const since = readingSinceFor(paperId);
+  const days = daysInto(since);
+  if (since && days) return `在读第 ${days} 天`;
+  const fromCreated = daysInto(createdAt);
+  return fromCreated ? `入库第 ${fromCreated} 天` : "阅读状态由你手动标记";
+}
 
 function NoteEditor({
   kind,
@@ -29,6 +97,13 @@ function NoteEditor({
   proseText,
   changed,
   onStart,
+  onSavedNext,
+  fulltextPick,
+  collapsed,
+  onToggleCollapsed,
+  onMove,
+  canMoveUp,
+  canMoveDown,
 }: {
   kind: NoteKind;
   index: number;
@@ -36,41 +111,128 @@ function NoteEditor({
   proseText: string;
   changed: boolean;
   onStart: () => void;
+  /** ⌘Enter 保存成功后跳到下一块空笔记继续写。 */
+  onSavedNext: () => void;
+  /** 解析全文里最近一次选中的片段：供「引用解析全文」插入光标处。 */
+  fulltextPick: FulltextSelection | null;
+  /** 本机记住的折叠偏好；编辑中不可折叠（折叠开关隐藏）。 */
+  collapsed: boolean;
+  onToggleCollapsed: () => void;
+  /** 上移 / 下移这块笔记的显示顺序（本机记住）。 */
+  onMove: (direction: "up" | "down") => void;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
 }) {
   const saveNote = useField((s) => s.saveNote);
   const setNoteDraft = useField((s) => s.setNoteDraft);
+  const setFlash = useField((s) => s.setFlash);
   // 草稿存在 store 里（按论文、按块）：切换论文、搜索、后台刷新都不会丢，切回来编辑框还在。
   const draft = useField((s) => s.drafts[paper.id]?.[kind]);
-  const editing = draft !== undefined;
+  const hasDraft = draft !== undefined;
+  // Esc 只收起编辑器：草稿原样保留（本地 + store），再点「继续编辑」可接着写。
+  const [dismissed, setDismissed] = useState(false);
+  const editing = hasDraft && !dismissed;
   const block = paper.notes[kind];
   const value = editing ? draft : proseText;
   const [saving, setSaving] = useState(false);
   const [failed, setFailed] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // 空块的研究问题提示：可关闭（本机记住，按块独立）。
+  const [hintDismissed, setHintDismissed] = useState(() => isNoteHintDismissed(kind));
 
   useEffect(() => {
     if (editing) textareaRef.current?.focus();
     else setFailed(false);
   }, [editing]);
 
-  const label = NOTE_LABELS[kind];
+  useEffect(() => {
+    // 草稿落库（保存 / 放弃）后收起状态复位，下次进入编辑从干净状态开始。
+    if (!hasDraft) setDismissed(false);
+  }, [hasDraft]);
 
-  async function commit() {
-    if (saving) return;
+  const label = NOTE_LABELS[kind];
+  const saveHint = `${bindingLabel(currentKeymap().saveNote)} 保存 · ${modLabel()}+Enter 写下一块 · 失焦自动保存 · Esc 收起`;
+
+  async function commit(): Promise<boolean> {
+    if (saving) return false;
     setSaving(true);
     setFailed(false);
     try {
       await saveNote(paper.id, kind, value);
+      return true;
     } catch {
       setFailed(true);
+      return false;
     } finally {
       setSaving(false);
+    }
+  }
+
+  /**
+   * 失焦自动落库（快捷键保存的兜底而非替代）：点出块外 / 切换块时自动保存；
+   * 一个字没改的草稿安静收起（不写库、不弹提示）；失败则草稿保留可重试。
+   * 编辑框内自己的按钮（放弃修改 / 引用解析全文 / 保存笔记）先按住焦点再动作，
+   * 不触发这次自动保存。
+   */
+  async function autosaveOnBlur() {
+    const current = useField.getState().drafts[paper.id]?.[kind];
+    if (saving || current === undefined) return;
+    if (current === block.content) {
+      setNoteDraft(paper.id, kind, null);
+      return;
+    }
+    try {
+      await saveNote(paper.id, kind, current);
+    } catch {
+      // saveNote 已弹失败提示；草稿保留，编辑框仍在，行内给出可重试状态。
+      setFailed(true);
     }
   }
 
   function cancel() {
     setFailed(false);
     setNoteDraft(paper.id, kind, null);
+  }
+
+  /** 把解析全文里当前选中的段落作为引用插入光标处（无选中时给出指引）。 */
+  function quoteFromFulltext() {
+    if (!fulltextPick) {
+      setFlash({ tone: "warn", text: "先在解析全文中选中要引用的段落，再点「引用解析全文」。" });
+      return;
+    }
+    const quote = buildExcerptMarkdown(fulltextPick.text, fulltextPick.heading);
+    const position = textareaRef.current?.selectionStart ?? value.length;
+    setNoteDraft(paper.id, kind, insertQuoteAtCursor(value, position, quote));
+    setFlash({
+      tone: "ok",
+      text: fulltextPick.heading
+        ? `已插入引用（§${fulltextPick.heading.number} ${fulltextPick.heading.text}），锚点可跳回原文。`
+        : "已插入原文引用。",
+    });
+  }
+
+  function onEditorKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === "Escape") {
+      // 首次 Esc 只收起编辑器：草稿留在 store 与本地，不丢弃。
+      event.preventDefault();
+      event.stopPropagation();
+      setDismissed(true);
+      setFlash({ tone: "ok", text: `已收起${label.zh}编辑器，草稿已保留。` });
+      return;
+    }
+    if (eventMatchesBinding(event.nativeEvent, currentKeymap().saveNote)) {
+      event.preventDefault();
+      event.stopPropagation();
+      void commit();
+      return;
+    }
+    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+      event.preventDefault();
+      event.stopPropagation();
+      void commit().then((ok) => {
+        if (ok) onSavedNext();
+      });
+    }
   }
 
   return (
@@ -80,18 +242,65 @@ function NoteEditor({
       data-saved-change={changed ? "true" : undefined}
     >
       <div className="ef-note-head">
+        {editing ? null : (
+          <button
+            type="button"
+            className="ef-note-fold"
+            aria-expanded={!collapsed}
+            aria-label={collapsed ? `展开${label.zh}` : `折叠${label.zh}`}
+            title={collapsed ? `展开${label.zh}` : `折叠${label.zh}`}
+            onClick={onToggleCollapsed}
+          >
+            <Icon name="down" />
+          </button>
+        )}
         <span className="ef-note-number" aria-hidden="true">
           {pad2(index + 1)}
         </span>
         <h3>{label.zh}</h3>
+        {/* Esc 收起后草稿仍在：块头常驻一枚提示，避免忘掉没写完的内容。 */}
+        {hasDraft && !editing ? <span className="ef-note-draft-chip">草稿保留中</span> : null}
         {/* 来源标签只对写了内容的块有意义；空块不标「手动笔记」。 */}
         {value.trim() ? <span className={`ef-note-source is-${block.source}`}>{noteSourceLabel(block)}</span> : null}
-        {editing || !value.trim() ? null : (
+        {editing ? null : hasDraft ? (
+          <button
+            type="button"
+            className="ef-note-edit"
+            aria-label={`继续编辑${label.zh}`}
+            onClick={() => {
+              setDismissed(false);
+              onStart();
+            }}
+          >
+            <Icon name="edit" />
+            继续编辑
+          </button>
+        ) : value.trim() ? (
           <button type="button" className="ef-note-edit" onClick={onStart} aria-label={`编辑${label.zh}`}>
             <Icon name="edit" />
             编辑
           </button>
-        )}
+        ) : null}
+        <span className="ef-note-move">
+          <button
+            type="button"
+            aria-label={`上移${label.zh}`}
+            title={`上移${label.zh}`}
+            disabled={!canMoveUp}
+            onClick={() => onMove("up")}
+          >
+            <Icon name="up" />
+          </button>
+          <button
+            type="button"
+            aria-label={`下移${label.zh}`}
+            title={`下移${label.zh}`}
+            disabled={!canMoveDown}
+            onClick={() => onMove("down")}
+          >
+            <Icon name="down" />
+          </button>
+        </span>
       </div>
       {editing ? (
         <>
@@ -99,29 +308,297 @@ function NoteEditor({
             ref={textareaRef}
             value={value}
             onChange={(e) => setNoteDraft(paper.id, kind, e.target.value)}
+            onKeyDown={onEditorKeyDown}
+            onBlur={() => void autosaveOnBlur()}
             aria-label={`${label.zh}内容`}
           />
           <div className="ef-edit-actions">
             <span className="ef-edit-hint">
-              {saving ? "保存中…" : failed ? "保存失败，输入已保留，可重试。" : "编辑中 · 尚未保存"}
+              {saving
+                ? "保存中…"
+                : failed
+                  ? "保存失败，输入已保留，可重试。"
+                  : `编辑中 · 尚未保存 · ${saveHint}`}
             </span>
-            <Button type="button" size="sm" onClick={cancel} disabled={saving}>
-              取消
+            {/* 按住焦点再动作（onMouseDown preventDefault）：这三个按钮不触发失焦自动保存，
+                「放弃修改」才能真正丢掉未保存的内容，插入引用也不会被自动保存清掉。 */}
+            <Button
+              type="button"
+              size="sm"
+              title="放弃这次未保存的修改，恢复原内容"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={cancel}
+              disabled={saving}
+            >
+              放弃修改
             </Button>
-            <Button type="button" size="sm" variant="primary" onClick={() => void commit()} disabled={saving}>
+            {paper.parsedMarkdown.trim() ? (
+              <Button type="button" size="sm" onMouseDown={(e) => e.preventDefault()} onClick={quoteFromFulltext} disabled={saving}>
+                引用解析全文
+              </Button>
+            ) : null}
+            <Button
+              type="button"
+              size="sm"
+              variant="primary"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => void commit()}
+              disabled={saving}
+            >
               {saving ? "保存中…" : "保存笔记"}
             </Button>
           </div>
         </>
+      ) : collapsed ? (
+        // 折叠态只留块头：一行字数提示，点折叠开关展开。
+        <p className="ef-note-collapsed-hint">
+          {value.trim() ? `${[...value.trim()].length} 字 · 已折叠` : "未写 · 已折叠"}
+        </p>
       ) : value.trim() ? (
         <div className="ef-note-text ef-md" onClick={onMarkdownClick} dangerouslySetInnerHTML={{ __html: renderMarkdown(value) }} />
       ) : (
         // 空块本身就是入口：点这里就地开写，不必去工具条或右上角找按钮。
-        <button type="button" className="ef-note-start" onClick={onStart}>
-          <Icon name="plus" />
-          写{label.zh}
-        </button>
+        // 上方一行可关闭的研究问题，给「不知从哪下笔」一个切入点。
+        <div className="ef-note-empty">
+          {!hintDismissed && !hasDraft ? (
+            <p className="ef-note-question">
+              <span>{NOTE_HINT_QUESTIONS[kind]}</span>
+              <button
+                type="button"
+                aria-label={`收起${label.zh}的提示问题`}
+                title="收起这条提示（之后不再显示）"
+                onClick={() => {
+                  setHintDismissed(true);
+                  setNoteHintDismissed(kind, true);
+                }}
+              >
+                <Icon name="close" />
+              </button>
+            </p>
+          ) : null}
+          <button type="button" className="ef-note-start" onClick={onStart}>
+            <Icon name="plus" />
+            写{label.zh}
+          </button>
+        </div>
       )}
+    </section>
+  );
+}
+
+/**
+ * 解析全文的渲染容器：渲染后按小节补锚点（消毒层剥掉了外部 id），
+ * 选中文字后浮出「摘到笔记」条，一键把引用写入对应笔记块并保留跳回锚点。
+ */
+function FulltextDoc({
+  paper,
+  onPick,
+}: {
+  paper: PaperDetail;
+  /** 选中变化时上报（笔记编辑器的「引用解析全文」用最后一次选中）；选区收起不上报，保留最近一次。 */
+  onPick: (pick: FulltextSelection) => void;
+}) {
+  const setNoteDraft = useField((s) => s.setNoteDraft);
+  const setFlash = useField((s) => s.setFlash);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const headings = useMemo(() => extractFulltextHeadings(paper.parsedMarkdown), [paper.parsedMarkdown]);
+  const [bar, setBar] = useState<{ pick: FulltextSelection; top: number; left: number } | null>(null);
+  // 全文内检索：输入即高亮 + 命中计数 + 上一处/下一处跳转。
+  const [searchQuery, setSearchQuery] = useState("");
+  const [hitIndex, setHitIndex] = useState(-1);
+  const [hitCount, setHitCount] = useState(0);
+  const scrollNextHit = useRef(false);
+
+  // innerHTML 每次更新后重新挂锚点；无依赖（幂等），渲染多少次都安全。
+  useEffect(() => {
+    assignFulltextAnchors(rootRef.current, headings);
+  });
+
+  // 输入或跳转后重新高亮；导航（上一处/下一处）时才滚动到当前命中。
+  useEffect(() => {
+    const scroll = scrollNextHit.current;
+    scrollNextHit.current = false;
+    const count = highlightFulltextMatches(rootRef.current, searchQuery, hitIndex, { scroll });
+    setHitCount(count);
+    if (hitIndex >= count) setHitIndex(count ? count - 1 : -1);
+  }, [searchQuery, hitIndex, paper.parsedMarkdown]);
+
+  function searchNext(direction: 1 | -1) {
+    if (!hitCount) return;
+    scrollNextHit.current = true;
+    setHitIndex((index) => (index + direction + hitCount) % hitCount);
+  }
+
+  useEffect(() => {
+    const report = () => {
+      const found = selectionInRoot(rootRef.current);
+      if (!found) {
+        setBar(null);
+        return;
+      }
+      const heading = headingForSelection(rootRef.current!, headings, found.node);
+      const pick: FulltextSelection = { text: found.text, heading };
+      onPick(pick);
+      const selection = document.getSelection();
+      const rect = selection && selection.rangeCount ? selection.getRangeAt(0).getBoundingClientRect() : null;
+      setBar({ pick, top: rect?.top ?? 0, left: (rect?.left ?? 0) + (rect?.width ?? 0) / 2 });
+    };
+    // 容器滚动后浮条会漂离选中位置：跟随收起（选区本身不受影响）。
+    const hide = () => setBar(null);
+    // 单栏时滚的是 .ef-read-scroll；并读时滚的是面板正文，两处都听。
+    const scrollers = [
+      rootRef.current?.closest(".ef-read-scroll"),
+      rootRef.current?.closest(".ef-fulltext-panel-body"),
+    ].filter((node): node is Element => Boolean(node));
+    document.addEventListener("selectionchange", report);
+    scrollers.forEach((node) => node.addEventListener("scroll", hide, { passive: true }));
+    return () => {
+      document.removeEventListener("selectionchange", report);
+      scrollers.forEach((node) => node.removeEventListener("scroll", hide));
+    };
+  }, [headings, onPick]);
+
+  function excerptTo(kind: NoteKind) {
+    if (!bar) return;
+    // 追加而非覆盖：块里已有的内容保留，引用另起一段。
+    const base = useField.getState().drafts[paper.id]?.[kind] ?? paper.notes[kind].content;
+    setNoteDraft(paper.id, kind, appendExcerpt(base, buildExcerptMarkdown(bar.pick.text, bar.pick.heading)));
+    setFlash({
+      tone: "ok",
+      text: bar.pick.heading
+        ? `已摘录到「${NOTE_LABELS[kind].zh}」（§${bar.pick.heading.number}），引用锚点可跳回原文。`
+        : `已摘录到「${NOTE_LABELS[kind].zh}」。`,
+    });
+    setBar(null);
+  }
+
+  async function copyCitation() {
+    if (!bar) return;
+    const title = paper.titleZh || paper.title;
+    const quote = bar.pick.text.replace(/\s+/g, " ").trim();
+    const text = bar.pick.heading
+      ? `${buildSectionCitation(title, bar.pick.heading)}：${quote}`
+      : `《${title}》：${quote}`;
+    try {
+      await navigator.clipboard.writeText(text);
+      setFlash({ tone: "ok", text: "已复制「论文+小节」引用。" });
+    } catch {
+      // 非安全上下文 / 无剪贴板权限时降级提示（与作业面板复制失败同口径）。
+      setFlash({ tone: "warn", text: "复制失败：当前环境无法访问剪贴板。" });
+    }
+    setBar(null);
+  }
+
+  return (
+    <>
+      <div className="ef-ft-search" role="search">
+        <Icon name="search" />
+        <input
+          type="search"
+          value={searchQuery}
+          placeholder="检索全文…"
+          aria-label="检索解析全文"
+          onChange={(e) => {
+            setSearchQuery(e.target.value);
+            setHitIndex(e.target.value.trim() ? 0 : -1);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              searchNext(1);
+            }
+          }}
+        />
+        {searchQuery.trim() ? (
+          <>
+            <span className="ef-ft-search-count mono" aria-live="polite">
+              {hitCount ? `第 ${hitIndex < 0 ? 0 : hitIndex + 1} / ${hitCount} 处` : "0 处"}
+            </span>
+            <button
+              type="button"
+              aria-label="上一处命中"
+              title="上一处命中"
+              disabled={!hitCount}
+              onClick={() => searchNext(-1)}
+            >
+              <Icon name="up" />
+            </button>
+            <button
+              type="button"
+              aria-label="下一处命中"
+              title="下一处命中"
+              disabled={!hitCount}
+              onClick={() => searchNext(1)}
+            >
+              <Icon name="down" />
+            </button>
+          </>
+        ) : null}
+      </div>
+      <div
+        ref={rootRef}
+        className="ef-note-text ef-md"
+        onClick={onMarkdownClick}
+        dangerouslySetInnerHTML={{ __html: renderMarkdown(paper.parsedMarkdown) }}
+      />
+      {bar ? (
+        <div
+          className="ef-excerpt-bar"
+          role="toolbar"
+          aria-label="摘录到笔记"
+          style={{ top: bar.top, left: bar.left }}
+        >
+          {NOTE_DISPLAY_ORDER.map((kind) => (
+            <button key={kind} type="button" onClick={() => excerptTo(kind)}>
+              摘到{NOTE_LABELS[kind].zh}
+            </button>
+          ))}
+          <button type="button" className="ef-excerpt-copy" onClick={() => void copyCitation()}>
+            复制引用
+          </button>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+/**
+ * 资料栏的可折叠区块：右栏与窄屏抽屉可能同时挂两份实例，折叠状态走外部
+ * store（contextFold，localStorage 记忆本机偏好）保证两处同步。
+ */
+function ContextBlock({
+  id,
+  title,
+  icon,
+  className = "",
+  children,
+}: {
+  id: ContextBlockId;
+  title: string;
+  icon?: IconName;
+  className?: string;
+  children: ReactNode;
+}) {
+  const folded = useSyncExternalStore(subscribeContextFold, getContextFold).folded[id] ?? false;
+  return (
+    <section className={`ef-context-block${folded ? " is-folded" : ""}${className ? ` ${className}` : ""}`.trim()}>
+      <div className="ef-context-block-head">
+        <h2 className="ef-context-title">
+          {icon ? <Icon name={icon} /> : null}
+          {title}
+        </h2>
+        <button
+          type="button"
+          className="ef-context-fold"
+          aria-expanded={!folded}
+          aria-label={folded ? `展开${title}` : `折叠${title}`}
+          title={folded ? `展开${title}` : `折叠${title}`}
+          onClick={() => setContextFolded(id, !folded)}
+        >
+          <Icon name="down" />
+        </button>
+      </div>
+      {folded ? null : children}
     </section>
   );
 }
@@ -130,10 +607,25 @@ function ContextPanel({
   paper,
   activeSection,
   onJump,
+  noteOrder,
+  appearance,
+  appearanceOverride,
+  onChangeAppearance,
+  onResetAppearance,
+  onApplyAppearanceDefault,
 }: {
   paper: PaperDetail;
   activeSection: string;
   onJump: (id: string) => void;
+  /** 笔记块的自定义显示顺序（本页目录与正文保持一致）。 */
+  noteOrder: NoteKind[];
+  /** 本篇生效的阅读外观（字号/行宽档位）。 */
+  appearance: ReadingAppearance;
+  /** 本篇是否有覆盖档位（「恢复默认」的可见依据）。 */
+  appearanceOverride: boolean;
+  onChangeAppearance: (next: ReadingAppearance) => void;
+  onResetAppearance: () => void;
+  onApplyAppearanceDefault: () => void;
 }) {
   const settings = useField((s) => s.settings);
   const jobs = useField((s) => s.jobs);
@@ -149,9 +641,107 @@ function ContextPanel({
   const setMode = useField((s) => s.setMode);
   const lookupHint = useField((s) => s.lookupHint);
   const openDialog = useField((s) => s.openDialog);
+  const setFlash = useField((s) => s.setFlash);
+  const markRead = useField((s) => s.markRead);
+  const setJobsOpen = useField((s) => s.setJobsOpen);
   const active = jobs.filter(
     (job) => job.paperId === paper.id && (job.status === "running" || job.status === "queued"),
   );
+  // 解析全文的小节标题 → 本页目录的二级导航；过长时截断显示并注明其余节数。
+  const fulltextHeadings = useMemo(() => extractFulltextHeadings(paper.parsedMarkdown), [paper.parsedMarkdown]);
+  const visibleHeadings = fulltextHeadings.slice(0, TOC_SECTION_LIMIT);
+
+  // ---- 本篇状态卡：解析 / 著录 / 笔记三条进度 + 推荐的下一步 ----
+  const parseDone = paper.parsedMarkdown.trim().length > 0;
+  const parseRunning =
+    paper.mineruStatus === "queued" || paper.mineruStatus === "submitted" || paper.mineruStatus === "parsing";
+  const parseFailed = paper.mineruStatus === "error" || paper.mineruStatus === "cancelled";
+  const metaFlags = [
+    Boolean(paper.abstract.trim()),
+    paper.year != null,
+    Boolean(paper.venue),
+    Boolean(paper.doi || paper.arxivId),
+    paper.authors.length > 0,
+  ];
+  const metaDone = metaFlags.filter(Boolean).length;
+  const notesWritten = NOTE_DISPLAY_ORDER.filter((kind) => paper.notes[kind].content.trim()).length;
+  const parseLabel = parseDone
+    ? "已完成"
+    : parseFailed
+      ? "解析失败"
+      : parseRunning
+        ? "解析中"
+        : paper.pdfPath
+          ? mineru.configured
+            ? "待解析"
+            : "未配置解析源"
+          : paper.pdfUrl
+            ? "在线 PDF"
+            : "未关联 PDF";
+  const nextEmptyKind = noteOrder.find((kind) => !paper.notes[kind].content.trim());
+  let nextAction: { label: string; run: () => void } | null;
+  let nextHint: string;
+  if (!paper.pdfPath && !paper.pdfUrl) {
+    nextAction = { label: "关联 PDF", run: () => openDialog("edit-paper", paper.id) };
+    nextHint = "先给这篇论文关联 PDF，才能解析全文。";
+  } else if (parseFailed) {
+    nextAction = { label: "重新解析", run: () => void retryMineru(paper.id) };
+    nextHint = "上一次解析没有成功，可重试。";
+  } else if (parseRunning) {
+    nextAction = { label: "查看作业进度", run: () => setJobsOpen(true) };
+    nextHint = "正在解析，稍候即可阅读全文。";
+  } else if (!parseDone && paper.pdfPath && !mineru.configured) {
+    nextAction = { label: "配置解析源", run: () => void setMode("system") };
+    nextHint = "配置 MinerU 解析源后可解析全文。";
+  } else if (!parseDone && paper.pdfPath) {
+    nextAction = { label: "发送到 MinerU 解析", run: () => void retryMineru(paper.id) };
+    nextHint = "解析出全文后，摘录与引用都更方便。";
+  } else if (metaDone < metaFlags.length) {
+    nextAction = hasUsableProvider(settings)
+      ? {
+          label: "补全论文信息",
+          run: () => {
+            // 与 AI 助手同规则：手改过的论文信息先经确认对话框，不静默覆盖。
+            if (paper.userMetaTouched) openDialog("confirm-meta", paper.id);
+            else void runPrepareMeta(paper.id, false);
+          },
+        }
+      : { label: "补著录信息", run: () => openDialog("edit-paper", paper.id) };
+    nextHint = `著录还缺 ${metaFlags.length - metaDone} 项（摘要 / 年份 / 出处 / 标识符 / 作者）。`;
+  } else if (nextEmptyKind) {
+    // 「去补…」与笔记块自身的「写…」按钮区分开。可访问名按包含匹配：
+    // 「去写总结」仍包含「写总结」，读屏和按名点击会同时命中就地编辑和只跳锚点的两个按钮。
+    nextAction = { label: `去补${NOTE_LABELS[nextEmptyKind].zh}`, run: () => onJump(`note-${nextEmptyKind}`) };
+    nextHint = `笔记已写 ${notesWritten} / ${NOTE_DISPLAY_ORDER.length} 块。`;
+  } else if (paper.readingStatus !== "read") {
+    nextAction = { label: "标记已读", run: () => void markRead(paper.id) };
+    nextHint = "五块笔记已写满，读完由你亲手标记。";
+  } else {
+    nextAction = null;
+    nextHint = "解析、著录与五块笔记都已就绪。";
+  }
+
+  async function copySectionCitation(heading: (typeof fulltextHeadings)[number]) {
+    const title = paper.titleZh || paper.title;
+    try {
+      await navigator.clipboard.writeText(buildSectionCitation(title, heading));
+      setFlash({ tone: "ok", text: `已复制章节引用：§${heading.number} ${heading.text}` });
+    } catch {
+      // 非安全上下文 / 无剪贴板权限时降级提示（与摘录条复制同口径）。
+      setFlash({ tone: "warn", text: "复制失败：当前环境无法访问剪贴板。" });
+    }
+  }
+
+  /** 标识符一键复制（arXiv / DOI / 作者名单）：与摘录条复制同一降级口径。 */
+  async function copyIdentifier(text: string, label: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      setFlash({ tone: "ok", text: `已复制${label}。` });
+    } catch {
+      setFlash({ tone: "warn", text: "复制失败：当前环境无法访问剪贴板。" });
+    }
+  }
+
   const prose = stageHold?.paperId === paper.id ? stageHold.prose : null;
   const margin = prose ? diffStage(prose, paper) : [];
   const mark = (field: StageField) => (margin.includes(field) ? "true" : undefined);
@@ -164,8 +754,62 @@ function ContextPanel({
 
   return (
     <aside className="ef-context" aria-label="论文资料与目录">
+      {/* 本篇状态卡：三条进度 + 推荐的下一步动作（低频但一眼拼出全貌）。 */}
+      <section className="ef-card" aria-label="本篇状态">
+        <h2 className="ef-card-title">本篇状态</h2>
+        <ul className="ef-card-progress">
+          <li>
+            <span>解析</span>
+            <b className={parseDone ? "is-done" : parseFailed ? "is-failed" : ""}>{parseLabel}</b>
+          </li>
+          <li>
+            <span>著录</span>
+            <span className="ef-card-bar" aria-hidden="true">
+              <i style={{ width: `${Math.round((metaDone / metaFlags.length) * 100)}%` }} />
+            </span>
+            <b>
+              {metaDone} / {metaFlags.length}
+            </b>
+          </li>
+          <li>
+            <span>笔记</span>
+            <span className="ef-card-bar" aria-hidden="true">
+              <i style={{ width: `${Math.round((notesWritten / NOTE_DISPLAY_ORDER.length) * 100)}%` }} />
+            </span>
+            <b>
+              {notesWritten} / {NOTE_DISPLAY_ORDER.length}
+            </b>
+          </li>
+        </ul>
+        <div className="ef-card-next">
+          <span className="ef-card-next-label">下一步</span>
+          {nextAction ? (
+            <button type="button" onClick={nextAction.run}>
+              {nextAction.label}
+            </button>
+          ) : (
+            <b className="is-done">本篇已完成</b>
+          )}
+          <p>{nextHint}</p>
+        </div>
+      </section>
       <section className="ef-context-block">
         <h2 className="ef-context-title">阅读状态</h2>
+        {/* 三段状态条（未读 → 在读 → 已读）：核心仪式状态一眼可见；
+            修改仍走下面的原生 select（表单语义 / 键盘 / 读屏 / 旅程契约都保持）。 */}
+        <div className="ef-read-steps" aria-hidden="true">
+          {(["unread", "reading", "read"] as const).map((status, index) => {
+            const stage = ["unread", "reading", "read"].indexOf(paper.readingStatus);
+            return (
+              <span
+                key={status}
+                className={index === stage ? "is-current" : index < stage ? "is-reached" : ""}
+              >
+                {READING_STATUS_LABELS[status]}
+              </span>
+            );
+          })}
+        </div>
         <label className="ef-status-select">
           <Icon name={paper.readingStatus === "read" ? "check" : "file"} />
           <select
@@ -183,12 +827,13 @@ function ContextPanel({
         <p className="ef-read-date">
           {paper.readingStatus === "read" && paper.readAt
             ? `标记于 ${formatDate(paper.readAt)}`
-            : "阅读状态由你手动标记"}
+            : paper.readingStatus === "reading"
+              ? readingDayLine(paper.id, paper.createdAt)
+              : "阅读状态由你手动标记"}
         </p>
       </section>
 
-      <section className="ef-context-block">
-        <h2 className="ef-context-title">资料与链接</h2>
+      <ContextBlock id="links" title="资料与链接">
         {codeUrl && safeHttpUrl(codeUrl) ? (
           <ExternalResource href={codeUrl} icon="code">
             代码仓库
@@ -208,13 +853,26 @@ function ContextPanel({
         <div className="ef-identifier" data-saved-change={mark("arxivId")}>
           arXiv
           <SourceBadge source={paper.fieldSources?.arxivId} provider={paper.fieldProviders?.arxivId} />
-          {arxivAbsUrl(arxivId) ? (
-            <button type="button" className="mono ef-id-link" onClick={() => void openExternal(arxivAbsUrl(arxivId))}>
-              {arxivId}
-            </button>
-          ) : (
-            <span className="mono">{arxivId || "未提供"}</span>
-          )}
+          <span className="ef-identifier-value">
+            {arxivAbsUrl(arxivId) ? (
+              <button type="button" className="mono ef-id-link" onClick={() => void openExternal(arxivAbsUrl(arxivId))}>
+                {arxivId}
+              </button>
+            ) : (
+              <span className="mono">{arxivId || "未提供"}</span>
+            )}
+            {arxivId ? (
+              <button
+                type="button"
+                className="ef-id-copy"
+                aria-label="复制 arXiv 编号"
+                title="复制 arXiv 编号"
+                onClick={() => void copyIdentifier(arxivId, "arXiv 编号")}
+              >
+                <Icon name="copy" />
+              </button>
+            ) : null}
+          </span>
         </div>
         <div className="ef-identifier" data-saved-change={mark("venue") || mark("year")}>
           <span>
@@ -245,16 +903,28 @@ function ContextPanel({
             {prose ? (
               <p>{prose.authors || "作者信息待补充"}</p>
             ) : paper.authors.length ? (
-              paper.authors.map((author) => (
-                <p key={author.id}>
-                  <strong>
-                    {author.name}
-                    {author.isCorresponding ? " · 通讯" : ""}
-                  </strong>
-                  <br />
-                  {[author.affiliation, author.lab].filter(Boolean).join(" · ") || "机构待补充"}
-                </p>
-              ))
+              <>
+                <div className="ef-author-copy-row">
+                  <button
+                    type="button"
+                    className="ef-id-copy ef-id-copy-text"
+                    onClick={() => void copyIdentifier(paper.authors.map((author) => author.name).join(", "), "作者名单")}
+                  >
+                    <Icon name="copy" />
+                    复制作者名单
+                  </button>
+                </div>
+                {paper.authors.map((author) => (
+                  <p key={author.id}>
+                    <strong>
+                      {author.name}
+                      {author.isCorresponding ? " · 通讯" : ""}
+                    </strong>
+                    <br />
+                    {[author.affiliation, author.lab].filter(Boolean).join(" · ") || "机构待补充"}
+                  </p>
+                ))}
+              </>
             ) : (
               <p>作者信息待补充</p>
             )}
@@ -263,13 +933,26 @@ function ContextPanel({
               DOI
               <SourceBadge source={paper.fieldSources?.doi} provider={paper.fieldProviders?.doi} />
               <br />
-              {doiUrl(doi) ? (
-                <button type="button" className="mono ef-id-link" onClick={() => void openExternal(doiUrl(doi))}>
-                  {doi}
-                </button>
-              ) : (
-                <span className="mono">{doi || "未提供"}</span>
-              )}
+              <span className="ef-identifier-value">
+                {doiUrl(doi) ? (
+                  <button type="button" className="mono ef-id-link" onClick={() => void openExternal(doiUrl(doi))}>
+                    {doi}
+                  </button>
+                ) : (
+                  <span className="mono">{doi || "未提供"}</span>
+                )}
+                {doi ? (
+                  <button
+                    type="button"
+                    className="ef-id-copy"
+                    aria-label="复制 DOI"
+                    title="复制 DOI"
+                    onClick={() => void copyIdentifier(doi, "DOI")}
+                  >
+                    <Icon name="copy" />
+                  </button>
+                ) : null}
+              </span>
             </p>
           </div>
         </details>
@@ -299,10 +982,9 @@ function ContextPanel({
             {paper.mineruStatus === "error" || paper.mineruStatus === "cancelled" ? "重新解析" : "发送到 MinerU 解析"}
           </Button>
         ) : null}
-      </section>
+      </ContextBlock>
 
-      <section className="ef-context-block">
-        <h2 className="ef-context-title">本页目录</h2>
+      <ContextBlock id="toc" title="本页目录">
         <nav className="ef-toc" aria-label="本页目录">
           <a
             href="#abstract"
@@ -324,7 +1006,39 @@ function ContextPanel({
           >
             <span className="mono">—</span>解析全文
           </a>
-          {NOTE_DISPLAY_ORDER.map((kind, i) => (
+          {visibleHeadings.length ? (
+            <div className="ef-toc-sections">
+              {visibleHeadings.map((heading) => (
+                <div className="ef-toc-section-row" key={heading.id}>
+                  <a
+                    href={`#${heading.id}`}
+                    className={activeSection === heading.id ? "is-active" : ""}
+                    title={`跳到 §${heading.number} ${heading.text}`}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      onJump(heading.id);
+                    }}
+                  >
+                    <span className="mono">{heading.number}</span>
+                    {heading.text}
+                  </a>
+                  <button
+                    type="button"
+                    className="ef-toc-copy"
+                    aria-label={`复制引用：§${heading.number} ${heading.text}`}
+                    title="复制「论文+小节」引用"
+                    onClick={() => void copySectionCitation(heading)}
+                  >
+                    <Icon name="copy" />
+                  </button>
+                </div>
+              ))}
+              {fulltextHeadings.length > TOC_SECTION_LIMIT ? (
+                <p className="ef-toc-more">另有 {fulltextHeadings.length - TOC_SECTION_LIMIT} 节，展开解析全文查看。</p>
+              ) : null}
+            </div>
+          ) : null}
+          {noteOrder.map((kind, i) => (
             <a
               key={kind}
               href={`#note-${kind}`}
@@ -339,13 +1053,68 @@ function ContextPanel({
             </a>
           ))}
         </nav>
+      </ContextBlock>
+
+      <section className="ef-context-block">
+        <h2 className="ef-context-title">阅读外观</h2>
+        <div className="ef-appearance">
+          <div className="ef-appearance-row" role="group" aria-label="正文字号">
+            <span className="ef-appearance-label">字号</span>
+            <button
+              type="button"
+              className="ef-appearance-step mono"
+              aria-label="减小正文字号"
+              title="减小正文字号"
+              disabled={appearance.fontStep <= 0}
+              onClick={() => onChangeAppearance({ ...appearance, fontStep: Math.max(0, appearance.fontStep - 1) })}
+            >
+              A−
+            </button>
+            <span className="ef-appearance-value" aria-live="polite">
+              {FONT_STEP_LABELS[appearance.fontStep]}
+            </span>
+            <button
+              type="button"
+              className="ef-appearance-step mono"
+              aria-label="增大正文字号"
+              title="增大正文字号"
+              disabled={appearance.fontStep >= FONT_STEPS.length - 1}
+              onClick={() =>
+                onChangeAppearance({ ...appearance, fontStep: Math.min(FONT_STEPS.length - 1, appearance.fontStep + 1) })
+              }
+            >
+              A+
+            </button>
+          </div>
+          <div className="ef-appearance-row" role="group" aria-label="正文行宽">
+            <span className="ef-appearance-label">行宽</span>
+            {(Object.keys(WIDTH_SCALES) as ReadWidthStep[]).map((step) => (
+              <button
+                key={step}
+                type="button"
+                className="ef-appearance-width"
+                aria-pressed={appearance.width === step}
+                onClick={() => onChangeAppearance({ ...appearance, width: step })}
+              >
+                {WIDTH_STEP_LABELS[step]}
+              </button>
+            ))}
+          </div>
+          <div className="ef-appearance-actions">
+            {appearanceOverride ? (
+              <button type="button" onClick={onResetAppearance}>
+                恢复默认
+              </button>
+            ) : null}
+            <button type="button" onClick={onApplyAppearanceDefault}>
+              应用到所有论文
+            </button>
+          </div>
+          <p className="ef-appearance-hint">本篇调过的档位只记住这一篇；「应用到所有论文」改本机默认。</p>
+        </div>
       </section>
 
-      <section className="ef-ai-context ef-dark-surface">
-        <h2 className="ef-context-title">
-          <Icon name="spark" />
-          AI 助手
-        </h2>
+      <ContextBlock id="ai" title="AI 助手" icon="spark" className="ef-ai-context ef-dark-surface">
         {hasUsableProvider(settings) ? (
           <p>用于补全论文信息或起草阅读笔记。AI 不会自动把论文标成已读。</p>
         ) : (
@@ -407,7 +1176,7 @@ function ContextPanel({
             <Icon name="right" />
           </Button>
         )}
-      </section>
+      </ContextBlock>
     </aside>
   );
 }
@@ -435,17 +1204,191 @@ export function ReadingStage({
   const openDialog = useField((s) => s.openDialog);
   const setNoteDraft = useField((s) => s.setNoteDraft);
   const setFlash = useField((s) => s.setFlash);
+  const saveAllNoteDrafts = useField((s) => s.saveAllNoteDrafts);
+  const navigatePapers = useField((s) => s.navigatePapers);
+  const markRead = useField((s) => s.markRead);
+  const drafts = useField((s) => s.drafts);
   const papers = useField((s) => s.papers);
   const archive = useField((s) => s.archive);
   const intake = useField((s) => s.intake);
   const [menuOpen, setMenuOpen] = useState(false);
   const [activeSection, setActiveSection] = useState("abstract");
+  // 解析全文里最近一次选中：供「摘到笔记」浮条与笔记编辑器的「引用解析全文」共享。
+  const [fulltextPick, setFulltextPick] = useState<FulltextSelection | null>(null);
+  // 五块笔记的显示布局（顺序 + 折叠）：本机偏好，改动即存。
+  const [noteLayout, setNoteLayout] = useState<NoteLayout>(() => loadNoteLayout());
+  // 正文阅读外观（字号/行宽）：本机默认 + 按论文覆盖，改动即存（lib 写穿 localStorage）。
+  const [appearanceStore, setAppearanceStore] = useState<AppearanceStore>(() => loadAppearanceStore());
+  // 全文并读（半高分屏）：上半屏解析全文、下半屏摘要与笔记，边读全文边写笔记。
+  const [fulltextSplit, setFulltextSplit] = useState(false);
+  const fulltextHeadings = useMemo(
+    () => (paper ? extractFulltextHeadings(paper.parsedMarkdown) : []),
+    [paper?.parsedMarkdown],
+  );
   const scrollRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    saveNoteLayout(noteLayout);
+  }, [noteLayout]);
+
+  // ---- 每篇论文的阅读现场：滚动位置 / 所在小节 / 解析全文展开状态 ----
+  // spotRef 由滚动监听与目录高亮共同维护；离开（切论文 / 卸载）时兜底存一次。
+  const spotRef = useRef<{ top: number; section: string }>({ top: 0, section: "abstract" });
+  // 恢复现场后短暂显示「已回到上次阅读位置」浮标（回到顶部 / 关闭，8 秒自动收起）。
+  const [spotChip, setSpotChip] = useState(false);
+  // 五块笔记写满的一次性轻庆祝（同篇只在 4→5 的转变时触发，重开已写满的论文不庆祝）。
+  const [noteCelebration, setNoteCelebration] = useState(false);
+  const lastNotesSeen = useRef<{ paperId: string | null; written: number }>({ paperId: null, written: -1 });
+  // ↑↓ / 点击切换论文时的读屏播报：第几篇、共几篇、标题。
+  const [paperAnnounce, setPaperAnnounce] = useState("");
+  const lastAnnouncedPaper = useRef<string | null>(null);
+
+  useEffect(() => {
+    const id = paper?.id ?? null;
+    const prev = lastAnnouncedPaper.current;
+    lastAnnouncedPaper.current = id;
+    if (!id || !paper || !prev || prev === id) return;
+    const state = useField.getState();
+    const list = state.mode === "archive" ? state.archive : state.mode === "intake" ? state.intake : state.papers;
+    const index = list.findIndex((item) => item.id === id);
+    const title = paper.titleZh || paper.title;
+    setPaperAnnounce(
+      index >= 0 ? `已切换到第 ${index + 1} 篇（共 ${list.length} 篇）：《${title}》` : `已切换论文：《${title}》`,
+    );
+  }, [paper?.id]);
+
+  /** 跳转链接的落点：移动焦点并滚动到目标（键盘与读屏共用同一路径）。 */
+  function skipTo(target: "paper-title" | "notes-heading") {
+    const el = document.getElementById(target);
+    if (!el) return;
+    el.focus();
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    el.scrollIntoView({ block: "start", behavior: reduce ? "auto" : "smooth" });
+  }
+
+  useEffect(() => {
+    spotRef.current.section = activeSection;
+  }, [activeSection]);
+
+  // 滚动时节流记现场（400ms 一次，不做逐帧写 localStorage）。
+  useEffect(() => {
+    const root = scrollRef.current;
+    if (!root || !paper) return;
+    let lastSave = 0;
+    const persist = (force: boolean) => {
+      const now = Date.now();
+      if (!force && now - lastSave < 400) return;
+      lastSave = now;
+      saveReadingSpot(paper.id, {
+        top: root.scrollTop,
+        section: spotRef.current.section,
+        fulltextOpen: Boolean(document.getElementById("fulltext")?.hasAttribute("open")),
+        at: now,
+      });
+    };
+    const onScroll = () => {
+      spotRef.current.top = root.scrollTop;
+      persist(false);
+    };
+    root.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      root.removeEventListener("scroll", onScroll);
+      // 离开这篇论文前兜底存一次（切论文 / 切模式 / 关窗前的最后一次位置）。
+      persist(true);
+    };
+  }, [paper?.id]);
+
+  // 打开论文：恢复上次的滚动位置与小节（目录高亮该节），并短暂提示可回到顶部。
+  useEffect(() => {
+    setSpotChip(false);
+    if (!paper) return;
+    const spot = loadReadingSpots()[paper.id];
+    if (!spot) return;
+    spotRef.current = { top: spot.top, section: spot.section };
+    const root = scrollRef.current;
+    const frame = requestAnimationFrame(() => {
+      if (root && spot.top > 0) root.scrollTop = spot.top;
+      if (spot.fulltextOpen) document.getElementById("fulltext")?.setAttribute("open", "");
+      setActiveSection(spot.section);
+      if (spot.top > 0) setSpotChip(true);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [paper?.id]);
+
+  // 浮标 8 秒后自动收起（不依赖 timer 的显式按钮路径见渲染处）。
+  useEffect(() => {
+    if (!spotChip) return;
+    const timer = window.setTimeout(() => setSpotChip(false), 8000);
+    return () => window.clearTimeout(timer);
+  }, [spotChip]);
+
+  // 五块笔记写满的轻庆祝：只有「同一篇论文内补上最后一块」这一次转变触发
+  // （打开一篇本来就写满的论文不算——那不是刚完成的喜悦）。
+  useEffect(() => {
+    const id = paper?.id ?? null;
+    if (!paper) {
+      lastNotesSeen.current = { paperId: null, written: -1 };
+      return;
+    }
+    const written = NOTE_DISPLAY_ORDER.filter((kind) => paper.notes[kind].content.trim()).length;
+    const last = lastNotesSeen.current;
+    const samePaper = last.paperId === id;
+    if (
+      samePaper &&
+      last.written >= 0 &&
+      last.written < NOTE_DISPLAY_ORDER.length &&
+      written === NOTE_DISPLAY_ORDER.length
+    ) {
+      setNoteCelebration(true);
+      setFlash({ tone: "ok", text: "五块阅读笔记都写满了——这一篇被你完整读过。" });
+      const timer = window.setTimeout(() => setNoteCelebration(false), 1200);
+      lastNotesSeen.current = { paperId: id, written };
+      return () => window.clearTimeout(timer);
+    }
+    lastNotesSeen.current = { paperId: id, written };
+  }, [paper]);
+
+  function backToTop() {
+    setSpotChip(false);
+    const root = scrollRef.current;
+    if (!root) return;
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    // jsdom 等无布局环境没有 Element.scrollTo：退化为直接置顶。
+    if (typeof root.scrollTo === "function") root.scrollTo({ top: 0, behavior: reduce ? "auto" : "smooth" });
+    else root.scrollTop = 0;
+    setActiveSection("abstract");
+  }
+
+  function toggleNoteCollapsed(kind: NoteKind) {
+    setNoteLayout((prev) => ({
+      ...prev,
+      collapsed: { ...prev.collapsed, [kind]: !prev.collapsed[kind] },
+    }));
+  }
+
+  function moveNoteBlock(kind: NoteKind, direction: "up" | "down") {
+    setNoteLayout((prev) => ({ ...prev, order: moveNoteKindInOrder(prev.order, kind, direction) }));
+  }
+
+  function changeAppearance(next: ReadingAppearance) {
+    if (!paper) return;
+    setAppearanceStore((prev) => setPaperAppearance(prev, paper.id, next));
+  }
+
+  function resetAppearance() {
+    if (!paper) return;
+    setAppearanceStore((prev) => clearPaperAppearance(prev, paper.id));
+  }
+
+  function applyAppearanceDefault() {
+    setAppearanceStore((prev) => setDefaultAppearance(prev, getAppearance(prev, paper?.id)));
+  }
+
+  useEffect(() => {
     setMenuOpen(false);
     setActiveSection("abstract");
+    setFulltextPick(null);
   }, [paper?.id]);
 
   useEffect(() => {
@@ -501,6 +1444,8 @@ export function ReadingStage({
   }, [paper?.id]);
 
   function jump(id: string) {
+    // 跳到解析全文的某一节：折叠着的时候先展开，锚点才可见可滚。
+    if (id.startsWith("ft-sec-")) document.getElementById("fulltext")?.setAttribute("open", "");
     const root = scrollRef.current;
     const target = root?.querySelector<HTMLElement>(`#${id}`);
     const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -517,6 +1462,21 @@ export function ReadingStage({
       setNoteDraft(paper.id, kind, fromProse ?? paper.notes[kind].content);
     }
     requestAnimationFrame(() => jump(`note-${kind}`));
+  }
+
+  /** ⌘Enter 保存成功后：跳到当前块之后的下一块空笔记（写完的块不再打扰）。 */
+  function startNextEmptyNote(fromKind: NoteKind) {
+    if (!paper) return;
+    const order = noteLayout.order;
+    const start = order.indexOf(fromKind);
+    for (let step = 1; step <= order.length; step += 1) {
+      const kind = order[(start + step) % order.length];
+      const content = useField.getState().drafts[paper.id]?.[kind] ?? paper.notes[kind].content;
+      if (!content.trim()) {
+        startEdit(kind);
+        return;
+      }
+    }
   }
 
   if (!paper) {
@@ -564,21 +1524,79 @@ export function ReadingStage({
   const outOfList = mode !== "system" && !visibleList.some((item) => item.id === paper.id);
   const readingStatusLabel = READING_STATUS_LABELS[paper.readingStatus];
   const notesWritten = NOTE_DISPLAY_ORDER.filter((kind) => paper.notes[kind].content.trim()).length;
+  const notesFull = notesWritten === NOTE_DISPLAY_ORDER.length;
+  // 下一块空笔记（草稿优先于已存内容）：进度胶囊点击的落点。
+  const nextEmptyNote = noteLayout.order.find((kind) => {
+    const content = drafts[paper.id]?.[kind] ?? paper.notes[kind].content;
+    return !content.trim();
+  });
+  const draftCount = NOTE_DISPLAY_ORDER.filter((kind) => drafts[paper.id]?.[kind] !== undefined).length;
+  // 翻页条的位置读数：当前论文在可见列表中的序号（被搜索挡在列表外时读数退化为 —）。
+  const pagerIndex = visibleList.findIndex((item) => item.id === paper.id);
+  const pagerTotal = visibleList.length;
   const fulltextStatus = paper.parsedMarkdown.trim()
     ? "MinerU 已解析"
     : paper.mineruStatus
       ? `MinerU · ${MINERU_STATUS_LABELS[paper.mineruStatus]}`
       : "尚未解析";
+  // 本篇生效的阅读外观：字号/行宽缩放变量写到舞台上（正文阶梯随动，界面控件不动）。
+  const appearance = getAppearance(appearanceStore, paper.id);
+  const appearanceOverride = hasPaperAppearance(appearanceStore, paper.id);
+  const appearanceStyle = {
+    "--pf-read-scale": String(FONT_STEPS[appearance.fontStep]),
+    "--pf-read-width-scale": String(WIDTH_SCALES[appearance.width]),
+  } as CSSProperties;
+  const appearanceProps = {
+    appearance,
+    appearanceOverride,
+    onChangeAppearance: changeAppearance,
+    onResetAppearance: resetAppearance,
+    onApplyAppearanceDefault: applyAppearanceDefault,
+  };
   const context = (
     <ContextPanel
       paper={paper}
       activeSection={activeSection}
       onJump={jump}
+      noteOrder={noteLayout.order}
+      {...appearanceProps}
     />
   );
 
   return (
-    <section className="ef-read has-context" id="stage" aria-labelledby="paper-title">
+    <section
+      className={["ef-read has-context", fulltextSplit && paper.parsedMarkdown.trim() ? "is-fulltext-split" : ""]
+        .filter(Boolean)
+        .join(" ")}
+      id="stage"
+      aria-labelledby="paper-title"
+      style={appearanceStyle}
+    >
+      {/* 无障碍：切换论文的读屏播报（第几篇 / 共几篇 / 标题）。 */}
+      <p className="sr-only" role="status">
+        {paperAnnounce}
+      </p>
+      {/* 无障碍：跳转链接——键盘用户跳过工具条直达正文 / 笔记。 */}
+      <nav className="ef-skip" aria-label="跳转链接">
+        <a
+          href="#paper-title"
+          onClick={(e) => {
+            e.preventDefault();
+            skipTo("paper-title");
+          }}
+        >
+          跳到正文
+        </a>
+        <a
+          href="#notes-heading"
+          onClick={(e) => {
+            e.preventDefault();
+            skipTo("notes-heading");
+          }}
+        >
+          跳到笔记
+        </a>
+      </nav>
       <div className="ef-toolbar">
         <Button
           type="button"
@@ -628,6 +1646,19 @@ export function ReadingStage({
           <Icon name="inbox" />
           资料
         </Button>
+        {paper.parsedMarkdown.trim() ? (
+          <Button
+            type="button"
+            variant="text"
+            className="ef-split-btn"
+            aria-pressed={fulltextSplit}
+            title={fulltextSplit ? "收起解析全文面板，回到单栏" : "上半屏解析全文、下半屏摘要与笔记，边读全文边写笔记"}
+            onClick={() => setFulltextSplit((value) => !value)}
+          >
+            <Icon name="grid" />
+            {fulltextSplit ? "退出并读" : "全文并读"}
+          </Button>
+        ) : null}
         <span className="ef-toolbar-divider" aria-hidden="true" />
         {paper.pdfPath ? (
           <Button
@@ -721,7 +1752,43 @@ export function ReadingStage({
         </div>
       </div>
 
-      <div className="ef-read-scroll" ref={scrollRef} id="read-scroll">
+      <div className="ef-read-scroll" ref={scrollRef} id="read-scroll" tabIndex={0} aria-label="正文阅读区">
+        {/* 全文并读面板：置顶半高分区（自带小节目录），与摘要/笔记同一舞台、互不遮挡。 */}
+        {fulltextSplit && paper.parsedMarkdown.trim() ? (
+          <section className="ef-fulltext-panel" aria-label="解析全文并读面板">
+            <header className="ef-fulltext-panel-head">
+              <h2 className="ef-fulltext-panel-title">解析全文</h2>
+              <small>{fulltextStatus}</small>
+              <span className="ef-fulltext-panel-spacer" aria-hidden="true" />
+              {fulltextHeadings.length ? (
+                <label className="ef-fulltext-panel-toc" title="按小节跳转">
+                  <span>小节</span>
+                  <select
+                    aria-label="跳到小节"
+                    value=""
+                    onChange={(e) => {
+                      const id = e.target.value;
+                      if (id) jump(id);
+                    }}
+                  >
+                    <option value="">跳到小节…</option>
+                    {fulltextHeadings.map((heading) => (
+                      <option key={heading.id} value={heading.id}>
+                        §{heading.number} {heading.text}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
+              <Button type="button" size="sm" variant="text" onClick={() => setFulltextSplit(false)}>
+                收起
+              </Button>
+            </header>
+            <div className="ef-fulltext-panel-body">
+              <FulltextDoc paper={paper} onPick={setFulltextPick} />
+            </div>
+          </section>
+        ) : null}
         <div className="ef-reading-grid">
           <article className="ef-document" id="document" key={paper.id}>
             <div className="ef-paper-category">
@@ -729,6 +1796,26 @@ export function ReadingStage({
               <span>{paper.domain.name}</span>
               <i className="ef-category-rule" aria-hidden="true" />
               <span>{readingStatusLabel}</span>
+              {/* 常驻笔记进度胶囊：一眼看到整体完成度；点击跳到下一块空笔记开写。
+                  写满的那一刻做一次轻量庆祝（scale 弹一下，见 is-celebrate）。 */}
+              <button
+                type="button"
+                className={`ef-note-pill${notesFull ? " is-full" : ""}${noteCelebration ? " is-celebrate" : ""}`}
+                aria-label={
+                  notesFull
+                    ? "五块笔记已写满"
+                    : `本篇已完成 ${notesWritten} / ${NOTE_DISPLAY_ORDER.length} 块笔记，跳到下一块空笔记`
+                }
+                title={notesFull ? "五块笔记已写满" : "跳到下一块空笔记"}
+                onClick={() => {
+                  if (nextEmptyNote) startEdit(nextEmptyNote);
+                  else jump(`note-${noteLayout.order[0]}`);
+                }}
+              >
+                {notesFull ? <Icon name="check" /> : null}
+                笔记 {notesWritten}
+                <span className="mono">/{NOTE_DISPLAY_ORDER.length}</span>
+              </button>
             </div>
             {outOfList ? (
               <p className="ef-out-of-list" role="note">
@@ -779,16 +1866,29 @@ export function ReadingStage({
               )}
             </section>
             <div className="ef-notes-heading">
-              <h2 className="ef-section-label">
+              <h2 className="ef-section-label" id="notes-heading" tabIndex={-1}>
                 <span>阅读笔记</span>
                 <small>
                   已写 {notesWritten} / {NOTE_DISPLAY_ORDER.length}
                 </small>
                 <i className="ef-section-rule" aria-hidden="true" />
               </h2>
+              {/* 有草稿时常驻统一出口：逐块保存不再需要挨个点。 */}
+              {draftCount ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  className="ef-save-all"
+                  title="保存这篇论文当前全部未保存的笔记草稿"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => void saveAllNoteDrafts(paper.id)}
+                >
+                  保存本篇全部（{draftCount} 处草稿）
+                </Button>
+              ) : null}
             </div>
             <p className="ef-notes-caption">每块笔记都标注来源：手动笔记或 AI 起草；AI 不会静默覆盖你改过的笔记。</p>
-            {NOTE_DISPLAY_ORDER.map((kind, index) => (
+            {noteLayout.order.map((kind, index) => (
               <NoteEditor
                 key={kind}
                 kind={kind}
@@ -797,28 +1897,88 @@ export function ReadingStage({
                 proseText={prose ? prose.notes[kind] : paper.notes[kind].content}
                 changed={margin.includes(kind)}
                 onStart={() => startEdit(kind)}
+                onSavedNext={() => startNextEmptyNote(kind)}
+                fulltextPick={fulltextPick}
+                collapsed={Boolean(noteLayout.collapsed[kind])}
+                onToggleCollapsed={() => toggleNoteCollapsed(kind)}
+                onMove={(direction) => moveNoteBlock(kind, direction)}
+                canMoveUp={index > 0}
+                canMoveDown={index < noteLayout.order.length - 1}
               />
             ))}
-            <details className="ef-fulltext" id="fulltext">
-              <summary className="ef-section-label">
-                <span>解析全文</span>
-                <small>{fulltextStatus}</small>
-                <i className="ef-section-rule" aria-hidden="true" />
-                <Icon name="right" />
-              </summary>
-              {paper.parsedMarkdown.trim() ? (
-                <div
-                  className="ef-note-text ef-md"
-                  onClick={onMarkdownClick}
-                  dangerouslySetInnerHTML={{ __html: renderMarkdown(paper.parsedMarkdown) }}
-                />
-              ) : (
-                <p className="ef-empty-note">尚未解析出全文。导入 PDF 并启用解析源后，这里会显示解析结果。</p>
-              )}
-            </details>
+            {/* 并读模式下全文在上方面板里，折叠区不重复渲染（锚点由面板提供）。 */}
+            {!fulltextSplit ? (
+              <details className="ef-fulltext" id="fulltext">
+                <summary className="ef-section-label">
+                  <span>解析全文</span>
+                  <small>{fulltextStatus}</small>
+                  <i className="ef-section-rule" aria-hidden="true" />
+                  <Icon name="right" />
+                </summary>
+                {paper.parsedMarkdown.trim() ? (
+                  <FulltextDoc paper={paper} onPick={setFulltextPick} />
+                ) : (
+                  <p className="ef-empty-note">尚未解析出全文。导入 PDF 并启用解析源后，这里会显示解析结果。</p>
+                )}
+              </details>
+            ) : null}
           </article>
         </div>
       </div>
+      {/* 恢复阅读现场后短暂出现的浮标：告知回到上次位置，并可一键回到顶部。 */}
+      {spotChip ? (
+        <div className="ef-read-spot" role="status">
+          <span>已回到上次阅读位置 · {spotSectionLabel(activeSection, fulltextHeadings)}</span>
+          <button type="button" onClick={backToTop}>
+            回到顶部
+          </button>
+          <button type="button" className="ef-read-spot-close" aria-label="收起提示" onClick={() => setSpotChip(false)}>
+            <Icon name="close" />
+          </button>
+        </div>
+      ) : null}
+      {/* 专注模式收起列表与资料栏后，正文区只靠 ↑↓ 翻页：底部保留一条极简翻页条，
+          上一篇 / 标已读 / 下一篇 + 位置读数，给出可视出口。 */}
+      {focus ? (
+        <nav className="ef-focus-pager" aria-label="专注模式翻页">
+          <Button
+            type="button"
+            variant="text"
+            size="sm"
+            onClick={() => void navigatePapers(-1)}
+            disabled={pagerIndex <= 0}
+            aria-label="上一篇论文"
+          >
+            <Icon name="up" />
+            上一篇
+          </Button>
+          <span className="ef-focus-pager-pos mono" aria-live="polite">
+            {pagerIndex < 0 ? "—" : `${pagerIndex + 1} / ${pagerTotal}`}
+          </span>
+          {paper.readingStatus === "read" ? (
+            <Button type="button" variant="text" size="sm" disabled title="这篇论文已标记为已读">
+              <Icon name="check" />
+              已读
+            </Button>
+          ) : (
+            <Button type="button" variant="text" size="sm" onClick={() => void markRead(paper.id)}>
+              <Icon name="check" />
+              标已读
+            </Button>
+          )}
+          <Button
+            type="button"
+            variant="text"
+            size="sm"
+            onClick={() => void navigatePapers(1)}
+            disabled={pagerIndex < 0 || pagerIndex >= pagerTotal - 1}
+            aria-label="下一篇论文"
+          >
+            下一篇
+            <Icon name="down" />
+          </Button>
+        </nav>
+      ) : null}
       {context}
       <Dialog
         open={contextOpen}
@@ -826,7 +1986,7 @@ export function ReadingStage({
         onClose={onToggleContext}
         className="context-drawer"
       >
-        <ContextPanel paper={paper} activeSection={activeSection} onJump={jump} />
+        <ContextPanel paper={paper} activeSection={activeSection} onJump={jump} noteOrder={noteLayout.order} {...appearanceProps} />
       </Dialog>
     </section>
   );
