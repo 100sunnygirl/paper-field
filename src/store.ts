@@ -104,7 +104,103 @@ interface Flash {
 /** 数据导出的可选范围。 */
 export type ExportScope = "current" | "all" | "read" | "checked" | "paper";
 
-/** 导出格式：按领域分文件夹的 Markdown / 单文件合并版 / BibTeX。 */
+/** 归档列表的排序口径（开源状态筛选沿用 archiveFilter，走 SQL）。 */
+export type ArchiveSort = "recent-read" | "oldest-read" | "notes-recent" | "year" | "title";
+
+/** 归档的客户端视图状态：领域 / 年份 / 笔记完整度筛选 + 排序 + 是否按领域分组。 */
+export interface ArchiveView {
+  /** null = 全部领域。 */
+  domainId: string | null;
+  /** null = 全部年份。 */
+  year: number | null;
+  /** 只看「五块笔记未写满」的已读论文（回头补笔记）。 */
+  notesIncomplete: boolean;
+  /** 搜索范围扩展：同时搜「我的笔记」内容。 */
+  searchNotes: boolean;
+  /** 搜索范围扩展：同时搜 MinerU 解析全文。 */
+  searchFulltext: boolean;
+  sort: ArchiveSort;
+  groupByDomain: boolean;
+}
+
+export const DEFAULT_ARCHIVE_VIEW: ArchiveView = {
+  domainId: null,
+  year: null,
+  notesIncomplete: false,
+  searchNotes: false,
+  searchFulltext: false,
+  sort: "recent-read",
+  groupByDomain: false,
+};
+
+/** 入库页按解析进度的分组口径（「已解析待读」含无 PDF 的手动条目）。 */
+export type IntakeStage = "error" | "parsing" | "queued" | "pending" | "ready";
+export type IntakeStageFilter = IntakeStage | "all";
+
+/** 入库页的客户端组合筛选：领域 + 入库日期 + 解析源（批次 id 未落库，诚实不做）。 */
+export interface IntakeView {
+  /** null = 全部领域。 */
+  domainId: string | null;
+  period: "all" | "today" | "week" | "month";
+  /** "" = 全部解析源；值为 mineruProvider 原值（local/ssh/api）。 */
+  provider: string;
+}
+
+export const DEFAULT_INTAKE_VIEW: IntakeView = { domainId: null, period: "all", provider: "" };
+
+/** 归档视图偏好（记住上次筛选）的本机存储：开源档 + 客户端视图一起记，坏数据整包丢弃。 */
+const ARCHIVE_PREFS_KEY = "paper-field.archive-view";
+const ARCHIVE_SORT_VALUES: ReadonlySet<string> = new Set([
+  "recent-read",
+  "oldest-read",
+  "notes-recent",
+  "year",
+  "title",
+]);
+const OPEN_SOURCE_VALUES: ReadonlySet<string> = new Set(["all", "open", "closed", "request", "unknown"]);
+
+interface ArchivePrefs {
+  openSource: OpenSource | "all";
+  view: ArchiveView;
+}
+
+function loadArchivePrefs(): ArchivePrefs | null {
+  try {
+    const raw = typeof localStorage === "undefined" ? null : localStorage.getItem(ARCHIVE_PREFS_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { openSource?: unknown; view?: Record<string, unknown> };
+    if (!parsed || typeof parsed !== "object" || !parsed.view) return null;
+    const openSource =
+      typeof parsed.openSource === "string" && OPEN_SOURCE_VALUES.has(parsed.openSource)
+        ? (parsed.openSource as OpenSource | "all")
+        : "all";
+    const v = parsed.view;
+    const view: ArchiveView = {
+      domainId: typeof v.domainId === "string" && v.domainId ? v.domainId : null,
+      year: typeof v.year === "number" ? v.year : null,
+      notesIncomplete: v.notesIncomplete === true,
+      searchNotes: v.searchNotes === true,
+      searchFulltext: v.searchFulltext === true,
+      sort: typeof v.sort === "string" && ARCHIVE_SORT_VALUES.has(v.sort) ? (v.sort as ArchiveSort) : "recent-read",
+      groupByDomain: v.groupByDomain === true,
+    };
+    return { openSource, view };
+  } catch {
+    return null;
+  }
+}
+
+function saveArchivePrefs(state: FieldState): void {
+  try {
+    if (typeof localStorage === "undefined") return;
+    localStorage.setItem(
+      ARCHIVE_PREFS_KEY,
+      JSON.stringify({ openSource: state.archiveFilter, view: state.archiveView } satisfies ArchivePrefs),
+    );
+  } catch {
+    // 存不下（隐私模式等）：本次会话内筛选仍有效，只是不再被记住。
+  }
+}/** 导出格式：按领域分文件夹的 Markdown / 单文件合并版 / BibTeX。 */
 export type ExportFormat = "folders" | "merged" | "bibtex";
 
 /** 一次导出的完整计划：范围 + 格式 + 内容选择。 */
@@ -166,6 +262,17 @@ interface FieldState {
    */
   searchCarried: boolean;
   archiveFilter: OpenSource | "all";
+  /** 归档客户端视图（领域/年份筛选、排序、分组）；与 archiveFilter 分开存放。 */
+  archiveView: ArchiveView;
+  setArchiveView: (patch: Partial<ArchiveView>) => void;
+  /** 入库页的解析进度筛选（chips；失败默认置顶展示）。 */
+  intakeStage: IntakeStageFilter;
+  setIntakeStage: (value: IntakeStageFilter) => void;
+  /** 入库页的组合筛选（领域/日期/解析源）。 */
+  intakeView: IntakeView;
+  setIntakeView: (patch: Partial<IntakeView>) => void;
+  /** 启动时恢复本机记住的上次归档筛选（init 内调用；domains 可选用于剔除已删除的领域）。 */
+  applySavedArchiveView: (domains?: Domain[]) => void;
   settings: LlmSettings;
   mineru: MineruSettingsV2;
   biblio: BiblioStatus;
@@ -187,13 +294,16 @@ interface FieldState {
     | "move-checked"
     | "tag-checked"
     | "merge-domain"
+    | "compare-notes"
+    | "export-checked"
+    | "confirm-retry"
     | "pick-domain"
     | "edit-paper"
     | "restore-diff"
     | null;
   /** 对话框打开时锁定的目标论文：之后选中怎么变，对话框都只作用于它。 */
   dialogPaperId: string | null;
-  /** delete-checked 打开时冻结的勾选集。 */
+  /** delete-checked / compare-notes / export-checked 打开时冻结的勾选集。 */
   dialogPaperIds: string[];
   pendingDraftJob: string | null;
   /** 正在编辑、尚未保存的笔记草稿，按论文分开存：切换论文不丢，切回来还在。 */
@@ -562,6 +672,9 @@ export const useField = create<FieldState>((set, get) => ({
   search: "",
   searchCarried: false,
   archiveFilter: "all",
+  archiveView: DEFAULT_ARCHIVE_VIEW,
+  intakeStage: "all",
+  intakeView: DEFAULT_INTAKE_VIEW,
   settings: { version: 2, providers: [], usage: {} },
   mineru: DEFAULT_MINERU,
   biblio: DEFAULT_BIBLIO,
@@ -791,7 +904,12 @@ export const useField = create<FieldState>((set, get) => ({
       dialog === "move-paper" ||
       dialog === "confirm-meta" ||
       dialog === "confirm-notes";
-    const checkedScoped = dialog === "delete-checked" || dialog === "move-checked" || dialog === "tag-checked";
+    const checkedScoped =
+      dialog === "delete-checked" ||
+      dialog === "move-checked" ||
+      dialog === "tag-checked" ||
+      dialog === "compare-notes" ||
+      dialog === "export-checked";
     set({
       dialog,
       dialogPaperId: paperScoped ? (typeof target === "string" ? target : state.paper?.id ?? state.selectedPaperId) : null,
@@ -831,6 +949,8 @@ export const useField = create<FieldState>((set, get) => ({
       settingsLoadError.secrets = llmLoaded.secretsError;
       const selectedDomainId = domains[0]?.id ?? null;
       set({ domains, selectedDomainId, settings, mineru, biblio, settingsLoadError, ready: true, error: null });
+      // 恢复上次归档筛选（开源档 + 领域/年份/排序视图），已删除的领域被剔除。
+      get().applySavedArchiveView(domains);
       await get().refresh();
       // 探测不阻断 ready：浏览器预览直接返回 []，桌面端最多 20s，完成后异步更新状态条。
       void get().probeMineru();
@@ -868,6 +988,10 @@ export const useField = create<FieldState>((set, get) => ({
     const archive = await repo.listArchive({
       search: state.mode === "archive" ? state.search : "",
       openSource: state.archiveFilter,
+      // 范围开关只在归档页的搜索生效（其他页 search 为空，不会触发扩展匹配）；
+      // 只在开启时才带键：默认调用的参数形状与既有语义/测试保持一致。
+      ...(state.archiveView.searchNotes ? { searchNotes: true } : {}),
+      ...(state.archiveView.searchFulltext ? { searchFulltext: true } : {}),
     });
     const intake = await repo.listIntake(state.mode === "intake" ? state.search : "");
     // 选中只随用户意图变化：以「现在」的选中为准（不是开始时的快照），论文还在库里就保持，
@@ -1042,7 +1166,28 @@ export const useField = create<FieldState>((set, get) => ({
 
   setArchiveFilter: async (value) => {
     set({ archiveFilter: value });
+    saveArchivePrefs(get());
     await get().refresh({ reselect: true });
+  },
+
+  setArchiveView: (patch) => {
+    set({ archiveView: { ...get().archiveView, ...patch } });
+    saveArchivePrefs(get());
+  },
+
+  setIntakeStage: (value) => set({ intakeStage: value }),
+
+  setIntakeView: (patch) => set({ intakeView: { ...get().intakeView, ...patch } }),
+
+  applySavedArchiveView: (domains) => {
+    const prefs = loadArchivePrefs();
+    if (!prefs) return;
+    // 记住的领域可能已被删除：对照当前领域表剔除，避免恢复出一个永远空白的筛选。
+    const domainId =
+      prefs.view.domainId && (!domains || domains.some((d) => d.id === prefs.view.domainId))
+        ? prefs.view.domainId
+        : null;
+    set({ archiveFilter: prefs.openSource, archiveView: { ...prefs.view, domainId } });
   },
 
   createDomain: async (input) => {
@@ -1239,6 +1384,8 @@ export const useField = create<FieldState>((set, get) => ({
     // 同一路径只导一次（按首次出现的目标领域）；没带领域的条目按失败记账，不静默丢弃。
     const byPath = new Map<string, ImportFileEntry>();
     const failed: ImportOutcome["failed"] = [];
+    // 从入库页发起的导入留在入库页（不自动切回领域视图丢失处理语境）。
+    const fromIntake = get().mode === "intake";
     for (const entry of entries) {
       const path = entry.path.trim();
       if (!path || byPath.has(path)) continue;
@@ -1299,19 +1446,39 @@ export const useField = create<FieldState>((set, get) => ({
       }
       // 只关导入对话框本身：长时间导入期间用户打开的其他对话框不被顺手关掉。
       if (get().dialog === "paper") set({ dialog: null });
+      // 首次导入完成标记（本机）：入库页的下一步引导卡据此出现一次。
+      if (created.length && typeof localStorage !== "undefined") {
+        try {
+          localStorage.setItem("paper-field.has-imported", "1");
+        } catch {
+          // 存不下就不显示引导卡，不影响导入。
+        }
+      }
       if (created[0]) selectionEpoch += 1;
       set({
         selectedPaperId: created[0] ?? get().selectedPaperId,
-        mode: "field",
+        // 入库发起：留在入库页并选中新批次第一篇（列表里即定位）；现场发起：维持原跳转。
+        ...(fromIntake ? {} : { mode: "field" as const }),
       });
       await get().refresh();
       const skippedText = skippedCount ? `，跳过 ${skippedCount} 篇已在库中` : "";
       for (const f of failed) log.warn("store", `PDF 导入失败：${f.name}`, f.message);
+      // 入库语境下的可选动作：直接开始读第一篇（进入所属领域的阅读页）。
+      const readFirstAction = fromIntake && created[0]
+        ? {
+            label: "开始阅读第一篇",
+            run: () => {
+              void get()
+                .openPaperFulltext(created[0]!)
+                .catch((err) => get().setFlash({ tone: "error", text: `打开论文失败：${errText(err)}` }));
+            },
+          }
+        : undefined;
       if (failed.length) {
         get().setFlash({
           tone: "error",
           text: `已导入 ${created.length} 篇${skippedText}，${failed.length} 篇失败：${importFailureList(failed)}。${failed.length > 1 ? "完整失败列表见日志。" : ""}`,
-          action: {
+          action: readFirstAction ?? {
             label: failed.length > 1 ? `重试这 ${failed.length} 篇` : "重试",
             // Only the failed entries go back in; already-imported ones are not re-sent.
             run: () => {
@@ -1344,14 +1511,17 @@ export const useField = create<FieldState>((set, get) => ({
         get().setFlash({
           tone: "warn",
           text: `已导入 ${created.length} 篇${skippedText}。当前没有可用的 MinerU 解析源，论文已入库但未解析，可到设置页启用解析源。`,
-          action: { label: "去设置", run: () => get().openSystemCard("mineru") },
+          action: readFirstAction ?? { label: "去设置", run: () => get().openSystemCard("mineru") },
         });
         return { created: created.length, skipped: skippedCount, failed };
       }
       if (!failed.length) {
         get().setFlash({
           tone: "ok",
-          text: `已导入 ${created.length} 篇${skippedText}，正在用${providerLabel(effective)}解析。`,
+          text: fromIntake
+            ? `已导入 ${created.length} 篇${skippedText}，已定位到本批第一篇，正在用${providerLabel(effective)}解析。`
+            : `已导入 ${created.length} 篇${skippedText}，正在用${providerLabel(effective)}解析。`,
+          action: readFirstAction,
         });
       }
       // 「入库并解析」：解析完不自动排队 AI 补全（host.autoMeta=false）；其余模式与既有流程一致。

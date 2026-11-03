@@ -1291,6 +1291,618 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   color: var(--pf-on-dark);
   border-color: var(--pf-ink);
 }
+/* 归档工具行：领域 / 年份 / 排序三个小号 select + 「按领域分组」开关。
+   与 filter-row 同高同字号，select 沿用既有表单控件配色。 */
+.ef-archive-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  align-items: center;
+  padding: 10px 22px 0;
+}
+.ef-tool-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
+}
+.ef-tool-select span { letter-spacing: var(--pf-tracking-tag); }
+.ef-tool-select select {
+  min-height: 28px;
+  padding: 0 6px;
+  font-size: var(--pf-fs-caption);
+  font-family: inherit;
+  color: var(--pf-ink);
+  background: var(--pf-surface);
+  border: 1px solid var(--pf-control-border);
+  border-radius: var(--pf-radius);
+}
+.ef-tool-select select:focus-visible { outline: 2px solid var(--pf-ink); outline-offset: 1px; }
+/* 按领域分组的组头：整行可点折叠，组名 + 短码 + 已读数；折叠时箭头转向。 */
+.ef-row-group { margin-bottom: 2px; }
+.ef-row-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 12px;
+  border: none;
+  border-bottom: 1px solid var(--pf-divider);
+  background: transparent;
+  font: inherit;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+  text-align: left;
+  cursor: pointer;
+}
+.ef-row-group-head:hover { background: var(--pf-hover-flat); }
+.ef-row-group-head b { color: var(--pf-ink); font-weight: 600; }
+.ef-row-group-code { color: var(--pf-muted); letter-spacing: 0.04em; }
+.ef-row-group-count { margin-left: auto; color: var(--pf-muted); }
+.ef-row-group-caret { display: inline-flex; transition: transform var(--pf-direct); }
+.ef-row-group-caret .ef-ico { width: 14px; height: 14px; }
+.ef-row-group-caret.is-collapsed { transform: rotate(-90deg); }
+/* 五块笔记对照表（勾选归档论文后打开）：横向可滚的表格，首列为论文名。
+   单元格是可点按钮（回到该论文对应笔记块）；空块显示弱化的「未写」。 */
+.ef-compare-wrap {
+  overflow: auto;
+  max-height: min(60vh, 520px);
+  border: 1px solid var(--pf-divider);
+  background: var(--pf-surface);
+}
+.ef-compare-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-ink);
+}
+.ef-compare-table th,
+.ef-compare-table td {
+  border-bottom: 1px solid var(--pf-divider);
+  border-right: 1px solid var(--pf-divider);
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+  min-width: 88px;
+  max-width: 220px;
+}
+.ef-compare-table thead th {
+  position: sticky;
+  top: 0;
+  background: var(--pf-panel);
+  color: var(--pf-secondary);
+  font-weight: 600;
+  letter-spacing: var(--pf-tracking-tag);
+  z-index: 1;
+}
+.ef-compare-table tbody th {
+  background: var(--pf-surface);
+  font-weight: 400;
+  min-width: 160px;
+}
+.ef-compare-title {
+  display: block;
+  border: none;
+  padding: 0;
+  background: transparent;
+  font: inherit;
+  font-weight: 600;
+  color: var(--pf-ink);
+  text-align: left;
+  cursor: pointer;
+}
+.ef-compare-title:hover { text-decoration: underline; }
+.ef-compare-domain {
+  display: block;
+  margin-top: 4px;
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-muted);
+}
+.ef-compare-cell {
+  display: block;
+  width: 100%;
+  border: none;
+  padding: 0;
+  background: transparent;
+  font: inherit;
+  color: var(--pf-secondary);
+  line-height: 1.6;
+  text-align: left;
+  cursor: pointer;
+}
+.ef-compare-cell:hover { color: var(--pf-ink); text-decoration: underline; }
+.ef-compare-empty { color: var(--pf-muted); }
+/* 归档行的次级操作区：挂在主行下方，含领域短码徽标（可点筛选）与「在所属领域中打开」。
+   保留主行的发丝线分隔：shell 承接 border，主行自身透明。 */
+.ef-row-shell { border-bottom: 1px solid var(--pf-divider); }
+.ef-row-shell > .ef-row { border-bottom-color: transparent; }
+.ef-row-extra {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  padding: 0 12px 10px 16px;
+}
+.ef-row-domain-badge {
+  border: 1px solid var(--pf-control-border);
+  background: var(--pf-surface);
+  color: var(--pf-secondary);
+  font: inherit;
+  font-size: var(--pf-fs-tag);
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: var(--pf-radius);
+  cursor: pointer;
+}
+.ef-row-domain-badge:hover { border-color: var(--pf-ink); color: var(--pf-ink); }
+.ef-row-domain-badge.is-active {
+  background: var(--pf-ink);
+  border-color: var(--pf-ink);
+  color: var(--pf-on-dark);
+}
+.ef-row-domain-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
+  cursor: pointer;
+}
+.ef-row-domain-open:hover { color: var(--pf-ink); text-decoration: underline; }
+.ef-row-domain-open .ef-ico { width: 12px; height: 12px; }
+/* 搜索范围命中片段（含笔记 / 含全文）：弱化的小字一行，前缀标明来自哪里。 */
+.ef-row-hit {
+  margin: 0;
+  flex: 1 1 100%;
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-muted);
+  line-height: 1.6;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+/* 阅读成果统计卡：归档头部的一块安静面板（纸面 + 发丝线），本周/本月/连续阅读
+   三格计数 + 今年已读与最常读领域、12 格逐月分布条；可一键安静关闭。 */
+.ef-archive-stats {
+  margin-top: 14px;
+  border: 1px solid var(--pf-divider);
+  background: var(--pf-surface);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ef-archive-stats-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
+}
+.ef-archive-stats-main span { display: inline-flex; align-items: baseline; gap: 4px; }
+.ef-archive-stats-main b {
+  font-size: var(--pf-fs-ui);
+  font-weight: 700;
+  color: var(--pf-ink);
+}
+.ef-stats-close {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  padding: 2px;
+  color: var(--pf-muted);
+  cursor: pointer;
+}
+.ef-stats-close:hover { color: var(--pf-ink); }
+.ef-stats-close .ef-ico { width: 12px; height: 12px; }
+.ef-archive-stats-year {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-secondary);
+}
+.ef-archive-stats-year b { color: var(--pf-ink); }
+.ef-stats-spark {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 18px;
+  flex: none;
+}
+.ef-stats-spark i {
+  width: 4px;
+  background: var(--pf-ink);
+  display: block;
+}
+.ef-stats-spark i.is-zero { background: var(--pf-divider); }
+/* 复读记录块（资料栏·阅读状态下方）：首次读完来自库内 read_at，
+   复读事件与备注是本机记录（如实标注）。 */
+.ef-reread {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--pf-divider);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ef-reread-summary {
+  margin: 0;
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-muted);
+  line-height: 1.7;
+}
+.ef-reread-hint {
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid var(--pf-divider);
+  border-radius: var(--pf-radius);
+  color: var(--pf-muted);
+  font-size: var(--pf-fs-tag);
+}
+.ef-reread-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.ef-reread-actions input {
+  flex: 1;
+  min-width: 0;
+  min-height: 28px;
+  padding: 0 8px;
+  font-size: var(--pf-fs-caption);
+  font-family: inherit;
+  color: var(--pf-ink);
+  background: var(--pf-surface);
+  border: 1px solid var(--pf-control-border);
+  border-radius: var(--pf-radius);
+}
+.ef-reread-actions input:focus-visible { outline: 2px solid var(--pf-ink); outline-offset: 1px; }
+.ef-reread-list {
+  margin: 0;
+  padding: 0 0 0 2px;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-secondary);
+}
+.ef-reread-list li {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+.ef-reread-list .mono { color: var(--pf-muted); flex: none; }
+/* 归档空态指引：三步说明 + 两个下一步入口（去读第一篇 / 去入库看看）。 */
+.ef-empty-guide { padding: 6px 12px 16px; }
+.ef-empty-guide .no-results { padding-top: 14px; }
+.ef-guide-steps {
+  margin: 0 0 12px;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+  line-height: 1.7;
+}
+.ef-guide-steps kbd {
+  font-family: inherit;
+  font-size: var(--pf-fs-tag);
+  border: 1px solid var(--pf-control-border);
+  border-radius: var(--pf-radius);
+  padding: 0 4px;
+  background: var(--pf-surface);
+}
+.ef-guide-actions { display: flex; gap: 8px; }
+/* 入库漏斗统计行：今日导入 / 解析中 / 排队 / 待读 / 失败，计数可点即筛选；
+   失败计数染危险色；「全库待处理 · 当前命中」并排说明筛选口径。 */
+.ef-intake-funnel {
+  margin-top: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
+}
+.ef-intake-funnel b {
+  font-size: var(--pf-fs-ui);
+  font-weight: 700;
+  color: var(--pf-ink);
+  margin-left: 2px;
+}
+.ef-intake-funnel > button {
+  display: inline-flex;
+  align-items: baseline;
+  border: none;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  color: var(--pf-muted);
+  cursor: pointer;
+}
+.ef-intake-funnel > button:hover { color: var(--pf-ink); text-decoration: underline; }
+.ef-intake-funnel .ef-funnel-error { color: var(--pf-danger); }
+.ef-intake-funnel .ef-funnel-error b { color: var(--pf-danger); }
+.ef-funnel-scope { margin-left: auto; color: var(--pf-muted); font-size: var(--pf-fs-tag); }
+/* 入库行组合状态标签：「解析流水线 · 补全流水线」一段弱化文本（PaperRow 附加操作区）。 */
+.ef-row-combo {
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-muted);
+  letter-spacing: 0.02em;
+}
+/* 「全部重试」影响预览清单：状态标注（失败/尚未提交）+ 标题 + 领域短码。 */
+.ef-retry-list {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+  max-height: 240px;
+  overflow: auto;
+  border: 1px solid var(--pf-divider);
+  background: var(--pf-surface);
+  display: flex;
+  flex-direction: column;
+}
+.ef-retry-list li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-ink);
+  border-bottom: 1px solid var(--pf-divider);
+}
+.ef-retry-list li:last-child { border-bottom: none; }
+.ef-retry-list em {
+  flex: none;
+  font-style: normal;
+  font-size: var(--pf-fs-tag);
+  padding: 0 5px;
+  border: 1px solid var(--pf-divider);
+  border-radius: var(--pf-radius);
+  color: var(--pf-muted);
+}
+.ef-retry-list em.is-failed { color: var(--pf-danger); border-color: var(--pf-danger); }
+.ef-retry-list .mono { margin-left: auto; color: var(--pf-muted); flex: none; }
+/* 失败行的行内原因副标题（40 字摘要 + 类别）。 */
+.ef-row-reason {
+  flex: 1 1 100%;
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-danger);
+  line-height: 1.6;
+}
+/* 失败原因聚类面板：漏斗行下方按根因分组展开。 */
+.ef-failure-panel { margin-top: 8px; display: flex; flex-direction: column; gap: 8px; }
+.ef-failure-clusters {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 1px solid var(--pf-divider);
+  border-left: var(--pf-marker) solid var(--pf-danger);
+  background: var(--pf-surface);
+  padding: 10px 12px;
+}
+.ef-failure-cluster { display: flex; flex-direction: column; gap: 6px; }
+.ef-failure-cluster + .ef-failure-cluster { padding-top: 8px; border-top: 1px dashed var(--pf-divider); }
+.ef-failure-cluster-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-ink);
+}
+.ef-failure-cluster-head b { font-weight: 600; }
+.ef-failure-advice { margin: 0; font-size: var(--pf-fs-tag); color: var(--pf-muted); line-height: 1.7; }
+.ef-failure-cluster ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-secondary);
+}
+.ef-failure-cluster li { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
+.ef-failure-cluster li > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ef-failure-reason { margin-left: auto; color: var(--pf-muted); flex: none; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 入库作业行「就地展开」开关：弱化文本按钮，与面板入口同区。 */
+.ef-jobs-expand { align-self: flex-start; min-height: 24px; padding: 0 4px; color: var(--pf-muted); }
+.ef-jobs-expand:hover:not(:disabled) { color: var(--pf-ink); }
+/* 「接下来读」：下一篇建议 + 个人短队列（与技术解析队列分开展示）。 */
+.ef-readnext {
+  padding: 12px 16px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ef-readnext-label {
+  font-size: var(--pf-fs-tag);
+  font-weight: 600;
+  letter-spacing: var(--pf-tracking-tag);
+  color: var(--pf-muted);
+}
+.ef-readnext-suggest {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--pf-divider);
+  border-left: var(--pf-marker) solid var(--pf-ink);
+  background: var(--pf-surface);
+}
+.ef-readnext-suggest .ef-readnext-title { flex: 1 1 auto; min-width: 0; }
+.ef-readnext-queue ol {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ef-readnext-queue li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-ink);
+  padding: 2px 0;
+}
+.ef-readnext-index { color: var(--pf-muted); flex: none; }
+.ef-readnext-title {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  font-weight: 600;
+  color: var(--pf-ink);
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ef-readnext-title:hover { text-decoration: underline; }
+.ef-readnext-actions { display: inline-flex; gap: 2px; flex: none; }
+.ef-readnext-actions button {
+  border: none;
+  background: transparent;
+  padding: 2px 4px;
+  font: inherit;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+}
+.ef-readnext-actions button:hover:not(:disabled) { color: var(--pf-ink); }
+.ef-readnext-actions button:disabled { opacity: 0.4; cursor: default; }
+.ef-readnext-actions .ef-ico { width: 11px; height: 11px; }
+.ef-row-inqueue {
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-muted);
+}
+/* 「暂缓处理」折叠区：失败论文放一放的次要区。 */
+.ef-deferred {
+  margin: 10px 16px 0;
+  border: 1px dashed var(--pf-divider);
+  background: transparent;
+  font-size: var(--pf-fs-caption);
+}
+.ef-deferred summary {
+  padding: 8px 10px;
+  color: var(--pf-muted);
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ef-deferred summary::before {
+  content: "▸";
+  transition: transform var(--pf-direct);
+}
+.ef-deferred[open] summary::before { transform: rotate(90deg); }
+.ef-deferred summary:hover { color: var(--pf-ink); }
+.ef-deferred ul {
+  margin: 0;
+  padding: 0 10px 10px;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ef-deferred li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.ef-deferred-title {
+  color: var(--pf-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1;
+}
+/* 首次导入引导卡与「队列已清空」完结时刻。 */
+.ef-intake-guide {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--pf-divider);
+  background: var(--pf-surface);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ef-intake-guide p {
+  margin: 0;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+  line-height: 1.7;
+}
+.ef-intake-cleared .no-results { padding-bottom: 4px; }
+.ef-intake-cleared::before {
+  content: "";
+  display: block;
+  width: 56px;
+  height: 6px;
+  margin: 8px 0 4px;
+  background: var(--pf-hazard);
+}
+/* 入库空闲区的能力配置状态：解析 / 文献库 / 模型各自一行，未配置直链设置卡。 */
+.ef-idle-capabilities {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px dashed var(--pf-divider);
+}
+.ef-idle-capability {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+}
+.ef-idle-capability b { font-weight: 600; color: var(--pf-ink); }
+.ef-idle-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  border: 1px solid var(--pf-control-border);
+  background: transparent;
+  flex: none;
+}
+.ef-idle-dot.is-ok { background: var(--pf-success); border-color: var(--pf-success); }
+.ef-idle-detail { color: var(--pf-muted); flex: 1 1 auto; min-width: 0; }
+.ef-idle-capability button {
+  border: none;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-muted);
+  text-decoration: underline;
+  cursor: pointer;
+  flex: none;
+}
+.ef-idle-capability button:hover { color: var(--pf-ink); }
 .ef-job-list { padding: 14px 16px 0; display: flex; flex-direction: column; gap: 8px; }
 .ef-job-list .ef-nav-sum { margin: 0; }
 .ef-job-row {

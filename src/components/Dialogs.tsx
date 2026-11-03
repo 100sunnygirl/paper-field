@@ -9,11 +9,21 @@ import { providerLabel } from "../lib/mineruPlan";
 import { parsePastedRef, type ParsedRef } from "../lib/pasteRef";
 import { repo } from "../lib/repo";
 import { defaultNotePermit, type NotePermit, type PartitionedTitles } from "../lib/readingHolds";
-import { NOTE_DISPLAY_ORDER, NOTE_KINDS, NOTE_LABELS, type NoteKind, type Author, type DomainCensus, type PaperDetail } from "../lib/types";
+import {
+  NOTE_DISPLAY_ORDER,
+  NOTE_KINDS,
+  NOTE_LABELS,
+  OPEN_SOURCE_LABELS,
+  type Author,
+  type DomainCensus,
+  type NoteKind,
+  type PaperDetail,
+} from "../lib/types";
 import { formatDate, isTauri } from "../lib/util";
-import { useField, type ImportMode } from "../store";
+import { useField, type ExportFormat, type ImportMode } from "../store";
 import { ImportTarget } from "./ImportTarget";
 import { Button, Dialog, Field, Icon } from "./ui";
+import { DEFAULT_EXPORT_CONTENT, type ExportContentOptions } from "../lib/export";
 
 /** 导入模式：导入即自动解析是默认流程，但不是每次收集都想立刻烧解析/补全额度。 */
 const IMPORT_MODES: Array<{ value: ImportMode; label: string; hint: string }> = [
@@ -1653,6 +1663,332 @@ export function TagCheckedPapersDialog() {
         <p className="ef-tag-batch-hint">这批论文还没有标签。</p>
       )}
       {error ? <p className="ef-error">{error}</p> : null}
+    </Dialog>
+  );
+}
+
+/** 对照表单元格的摘录长度（换行折平，超长截断加省略号）。 */
+const COMPARE_EXCERPT = 80;
+
+function compareExcerpt(text: string): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > COMPARE_EXCERPT ? `${flat.slice(0, COMPARE_EXCERPT - 1)}…` : flat;
+}
+
+/**
+ * 勾选归档论文后的五块笔记对照表：行 = 论文，列 = 年份 / 开源 / 五块笔记。
+ * 单元格可点击：回到该论文的阅读页并滚到对应笔记块（跨论文比较不用来回切换）。
+ */
+export function CompareNotesDialog() {
+  const dialog = useField((s) => s.dialog);
+  const closeDialog = useField((s) => s.closeDialog);
+  // 打开时冻结的勾选集：加载期间后台刷新改动勾选不影响本表。
+  const ids = useField((s) => s.dialogPaperIds);
+  const selectDomain = useField((s) => s.selectDomain);
+  const selectPaper = useField((s) => s.selectPaper);
+  const [papers, setPapers] = useState<PaperDetail[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const open = dialog === "compare-notes" && ids.length > 0;
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setPapers(null);
+    setError(null);
+    Promise.all(ids.map((id) => repo.getPaper(id)))
+      .then((rows) => {
+        if (cancelled) return;
+        const found = rows.filter((row): row is PaperDetail => Boolean(row));
+        if (!found.length) setError("选中的论文已不存在。");
+        else setPapers(found);
+      })
+      .catch(() => {
+        if (!cancelled) setError("读取笔记失败，请稍后重试。");
+      });
+    return () => {
+      cancelled = true;
+    };
+    // ids 来自冻结的勾选集，打开期间不会变；以引用为依赖足够。
+  }, [open, ids]);
+
+  /** 点标题回到论文本身；点笔记格再滚到对应笔记块（与 openPaperFulltext 同一双 rAF 手法）。 */
+  async function jumpTo(paper: PaperDetail, kind: NoteKind | null) {
+    closeDialog();
+    await selectDomain(paper.domainId);
+    await selectPaper(paper.id);
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        const target = kind ? document.getElementById(`note-${kind}`) : null;
+        target?.scrollIntoView({ block: "start" });
+      }),
+    );
+  }
+
+  return (
+    <Dialog open={open} title={`五块笔记对照表 · ${ids.length} 篇`} className="is-wide" onClose={closeDialog}>
+      {error ? (
+        <p className="ef-error">{error}</p>
+      ) : !papers ? (
+        <p aria-live="polite">正在读取选中的论文与笔记…</p>
+      ) : (
+        <div className="ef-compare-wrap">
+          <table className="ef-compare-table">
+            <thead>
+              <tr>
+                <th scope="col">论文</th>
+                <th scope="col">年份</th>
+                <th scope="col">开源</th>
+                {NOTE_DISPLAY_ORDER.map((kind) => (
+                  <th key={kind} scope="col">
+                    {NOTE_LABELS[kind].zh}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {papers.map((paper) => (
+                <tr key={paper.id}>
+                  <th scope="row">
+                    <button
+                      type="button"
+                      className="ef-compare-title"
+                      title="打开这篇论文"
+                      onClick={() => void jumpTo(paper, null)}
+                    >
+                      {paper.titleZh || paper.title}
+                    </button>
+                    <span className="ef-compare-domain">
+                      {paper.domain.name}
+                      {paper.domain.code ? ` · ${paper.domain.code}` : ""}
+                    </span>
+                  </th>
+                  <td className="mono">{paper.year ?? "—"}</td>
+                  <td>{OPEN_SOURCE_LABELS[paper.codeOpenSource]}</td>
+                  {NOTE_DISPLAY_ORDER.map((kind) => {
+                    const content = paper.notes[kind]?.content?.trim();
+                    return (
+                      <td key={kind}>
+                        {content ? (
+                          <button
+                            type="button"
+                            className="ef-compare-cell"
+                            title={`回到${NOTE_LABELS[kind].zh}`}
+                            aria-label={`回到「${paper.titleZh || paper.title}」的${NOTE_LABELS[kind].zh}`}
+                            onClick={() => void jumpTo(paper, kind)}
+                          >
+                            {compareExcerpt(content)}
+                          </button>
+                        ) : (
+                          <span className="ef-compare-empty">未写</span>
+                        )}
+                      </td>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Dialog>
+  );
+}
+
+/**
+ * 批量勾选后的导出对话框：格式（合并 Markdown / BibTeX 书目 / 按领域分文件夹）+
+ * 内容选择（笔记 / 摘要 / 解析全文，仅 Markdown 类格式）。走 store.exportPapers 的
+ * scope="checked" 通道（勾选集可能跨领域，桌面端按领域分文件夹、浏览器下载单文件）。
+ */
+export function ExportCheckedDialog() {
+  const dialog = useField((s) => s.dialog);
+  const closeDialog = useField((s) => s.closeDialog);
+  // 打开时冻结的勾选集。
+  const ids = useField((s) => s.dialogPaperIds);
+  const exportPapers = useField((s) => s.exportPapers);
+  const [format, setFormat] = useState<ExportFormat>("merged");
+  const [include, setInclude] = useState<ExportContentOptions>(DEFAULT_EXPORT_CONTENT);
+  const [busy, setBusy] = useState(false);
+  const open = dialog === "export-checked" && ids.length > 0;
+
+  useEffect(() => {
+    if (open) {
+      setFormat("merged");
+      setInclude(DEFAULT_EXPORT_CONTENT);
+      setBusy(false);
+    }
+  }, [open]);
+
+  async function run() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await exportPapers({ scope: "checked", format, include });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog
+      open={open}
+      title={`导出所选 ${ids.length} 篇`}
+      onClose={closeDialog}
+      footer={
+        <>
+          <Button type="button" onClick={closeDialog}>
+            取消
+          </Button>
+          <Button type="button" variant="primary" disabled={busy} onClick={() => void run()}>
+            {busy ? "导出中…" : "导出"}
+          </Button>
+        </>
+      }
+    >
+      <p>
+        只导出勾选的 <strong>{ids.length}</strong> 篇论文；勾选集可能跨领域，桌面端选择目标文件夹后写入，浏览器预览下载单个文件。
+      </p>
+      <Field label="导出格式">
+        <select
+          aria-label="导出格式"
+          value={format}
+          onChange={(e) => setFormat(e.target.value as ExportFormat)}
+          disabled={busy}
+        >
+          <option value="merged">合并 Markdown（单文件，含所选内容）</option>
+          <option value="bibtex">BibTeX 书目（仅著录信息）</option>
+          <option value="folders">按领域分文件夹（每篇一个 Markdown）</option>
+        </select>
+      </Field>
+      {format === "bibtex" ? (
+        <p className="ef-save-rules">BibTeX 只含著录信息（标题 / 作者 / 年份 / 出处 / DOI 等），不含笔记与全文。</p>
+      ) : (
+        <fieldset className="ef-export-content">
+          <legend>导出内容</legend>
+          <label>
+            <input
+              type="checkbox"
+              checked={include.notes}
+              onChange={(e) => setInclude((cur) => ({ ...cur, notes: e.target.checked }))}
+              disabled={busy}
+            />
+            五块现场笔记
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={include.abstract}
+              onChange={(e) => setInclude((cur) => ({ ...cur, abstract: e.target.checked }))}
+              disabled={busy}
+            />
+            摘要
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={include.parsedText}
+              onChange={(e) => setInclude((cur) => ({ ...cur, parsedText: e.target.checked }))}
+              disabled={busy}
+            />
+            解析全文（可能很长）
+          </label>
+        </fieldset>
+      )}
+      <p className="ef-save-rules">导出立即执行，只读不改动库内数据；密钥与令牌永不写入导出文件。</p>
+    </Dialog>
+  );
+}
+
+/**
+ * 「全部重试」的影响预览：列出全部解析失败（error）与尚未提交（pending）的论文，
+ * 跨领域、标注各自状态；确认后按这份冻结清单批量重试——预览什么就重试什么，
+ * 不受当前筛选影响。
+ */
+export function ConfirmRetryFailedDialog() {
+  const dialog = useField((s) => s.dialog);
+  const closeDialog = useField((s) => s.closeDialog);
+  const retryMineruPapers = useField((s) => s.retryMineruPapers);
+  const [targets, setTargets] = useState<Array<PaperDetail & { failed: boolean }> | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const open = dialog === "confirm-retry";
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setTargets(null);
+    setLoadError(null);
+    setBusy(false);
+    repo
+      .listFailedMineru()
+      .then(async (ids) => {
+        const details = await Promise.all(ids.map((id) => repo.getPaper(id)));
+        if (cancelled) return;
+        const found = details
+          .filter((row): row is PaperDetail => Boolean(row))
+          .map((row) => ({ ...row, failed: row.mineruStatus === "error" }));
+        setTargets(found);
+      })
+      .catch(() => {
+        if (!cancelled) setLoadError("读取失败清单出错，请稍后重试。");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+
+  const failedCount = targets?.filter((row) => row.failed).length ?? 0;
+  const pendingCount = (targets?.length ?? 0) - failedCount;
+
+  async function run() {
+    if (busy || !targets?.length) return;
+    setBusy(true);
+    try {
+      await retryMineruPapers(targets.map((row) => row.id));
+      closeDialog();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog
+      open={open}
+      title="全部重试解析？"
+      onClose={closeDialog}
+      footer={
+        <>
+          <Button type="button" onClick={closeDialog}>
+            取消
+          </Button>
+          <Button type="button" variant="primary" disabled={busy || !targets?.length} onClick={() => void run()}>
+            {busy ? "正在重试…" : `重试这 ${targets?.length ?? 0} 篇`}
+          </Button>
+        </>
+      }
+    >
+      {loadError ? (
+        <p className="ef-error">{loadError}</p>
+      ) : !targets ? (
+        <p aria-live="polite">正在统计受影响的论文…</p>
+      ) : targets.length === 0 ? (
+        <p>没有解析失败或尚未提交解析的论文。</p>
+      ) : (
+        <>
+          <p>
+            将影响 <strong>{targets.length}</strong> 篇（解析失败 {failedCount} 篇 · 尚未提交 {pendingCount} 篇），覆盖全部领域——
+            不只是当前筛选结果。会重置这些论文的解析状态并按回退顺序重新提交给 MinerU。
+          </p>
+          <ul className="ef-retry-list">
+            {targets.map((row) => (
+              <li key={row.id}>
+                <em className={row.failed ? "is-failed" : "is-pending"}>{row.failed ? "失败" : "尚未提交"}</em>
+                <span>{row.titleZh || row.title}</span>
+                <span className="mono">{row.domain.code || row.domain.name}</span>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
     </Dialog>
   );
 }

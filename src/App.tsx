@@ -3,11 +3,14 @@ import { isTauri } from "./lib/util";
 import {
   ConfirmMetaDialog,
   ConfirmNotesDialog,
+  CompareNotesDialog,
+  ConfirmRetryFailedDialog,
   DeleteCheckedPapersDialog,
   DeletePaperDialog,
   DomainDialog,
   DomainPickerDialog,
   EditPaperDialog,
+  ExportCheckedDialog,
   PaperDialog,
   RestoreDiffDialog,
   TagCheckedPapersDialog,
@@ -292,6 +295,9 @@ export default function App() {
       <DeleteCheckedPapersDialog />
       <TagCheckedPapersDialog />
       <MergeDomainDialog />
+      <CompareNotesDialog />
+      <ExportCheckedDialog />
+      <ConfirmRetryFailedDialog />
       <EditPaperDialog />
       <ConfirmNotesDialog />
       <ConfirmMetaDialog />

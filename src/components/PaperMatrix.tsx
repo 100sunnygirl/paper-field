@@ -1,4 +1,4 @@
-import type { CSSProperties } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { MINERU_STATUS_LABELS, READING_STATUS_LABELS, type FieldSource, type PaperListItem } from "../lib/types";
 import { pad2 } from "../lib/util";
 import { hasDraft as paperHasDraft, useField } from "../store";
@@ -46,6 +46,7 @@ export function PaperRow({
   batch = false,
   checked = false,
   onToggleCheck,
+  extra,
 }: {
   paper: PaperListItem;
   index: number;
@@ -55,6 +56,8 @@ export function PaperRow({
   batch?: boolean;
   checked?: boolean;
   onToggleCheck?: () => void;
+  /** 行下方附着的次级操作区（如归档行的领域徽标与直达入口）；批量模式不渲染。 */
+  extra?: ReactNode;
   compact?: boolean;
 }) {
   const title = paper.titleZh || paper.title;
@@ -69,7 +72,7 @@ export function PaperRow({
   ]
     .filter(Boolean)
     .join(" ");
-  return (
+  const row = (
     <button
       type="button"
       className={className}
@@ -101,9 +104,19 @@ export function PaperRow({
         {paper.mineruStatus && paper.mineruStatus !== "done" ? (
           <span>{MINERU_STATUS_LABELS[paper.mineruStatus]}</span>
         ) : null}
+        {paper.notesFilled != null && paper.notesFilled < 5 ? (
+          <span className="ef-row-notes-count">笔记 {paper.notesFilled}/5</span>
+        ) : null}
         {hasDraft ? <span className="ef-row-draft">笔记草稿未保存</span> : null}
       </div>
     </button>
+  );
+  if (!extra || batch) return row;
+  return (
+    <div className="ef-row-shell">
+      {row}
+      {extra}
+    </div>
   );
 }
 
@@ -114,6 +127,7 @@ export function PaperMatrix({
   batch = false,
   checkedIds = [],
   onToggleCheck,
+  rowExtra,
 }: {
   papers: PaperListItem[];
   selectedId: string | null;
@@ -121,6 +135,8 @@ export function PaperMatrix({
   batch?: boolean;
   checkedIds?: string[];
   onToggleCheck?: (id: string) => void;
+  /** 每行的次级操作区（归档模式用）；批量模式自动忽略。 */
+  rowExtra?: (paper: PaperListItem) => ReactNode;
   compact?: boolean;
 }) {
   return (
@@ -135,6 +151,7 @@ export function PaperMatrix({
           batch={batch}
           checked={checkedIds.includes(paper.id)}
           onToggleCheck={() => onToggleCheck?.(paper.id)}
+          extra={rowExtra?.(paper)}
         />
       ))}
     </div>

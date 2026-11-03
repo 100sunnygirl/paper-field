@@ -144,6 +144,10 @@ export interface PaperListItem extends Paper {
   authorCount: number;
   domainName: string;
   domainCode: string;
+  /** 最近一次修改笔记的时间（列表 SQL 附带；归档「最近改笔记」排序用）。 */
+  notesRevisedAt?: string | null;
+  /** 已写内容（非空）的笔记块数（归档查询附带；「笔记未写满」筛选用，0–5）。 */
+  notesFilled?: number;
 }
 
 export interface PaperDetail extends Paper {
