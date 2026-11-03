@@ -5,6 +5,7 @@ import {
   ConfirmNotesDialog,
   CompareNotesDialog,
   ConfirmRetryFailedDialog,
+  ConfirmReparseDialog,
   DeleteCheckedPapersDialog,
   DeletePaperDialog,
   DomainDialog,
@@ -305,6 +306,7 @@ export default function App() {
       <AiDiffDialog />
       <MetaPreviewDialog />
       <NotePreviewDialog />
+      <ConfirmReparseDialog />
       {/* 通知弹窗：右上角堆叠、各自自动消失（错误类停留更久）、可手动关闭；
           挂在各 Dialog 之后，层叠由 z-index 变量控制（toast 120 > dialog 30）。 */}
       <Toasts />

@@ -42,12 +42,15 @@ import {
   setMineruTiming,
   STALE_CRED_ERROR,
   stopBatch,
+  stopBatchUnsubmitted,
+  stopBatchWithIds,
   USER_PAUSED_ERROR,
 } from "./mineruRun";
 import { cancelJob, liveJobsFor, resetLiveJobs } from "./jobs";
 import { getActivity, queueBatch, reorderBatch, resetActivity, subscribeActivity } from "./activity";
 import { resetJobNotifyPrefs, saveJobNotifyPrefs } from "./notifyPrefs";
 import { journalBegin, listJobBatches, resetJobJournal } from "./jobJournal";
+import { getReparseRecord, resetReparseSnapshots } from "./reparse";
 import { repo } from "./repo";
 
 const FP = "pf-cred-v1:match";
@@ -103,6 +106,7 @@ beforeEach(async () => {
   resetLiveJobs();
   resetJobNotifyPrefs();
   resetJobJournal();
+  resetReparseSnapshots();
   setMineruTiming({ pollMs: 1, retryMs: 1 });
   vi.mocked(mineruSubmit).mockReset();
   vi.mocked(mineruParseStatuses).mockReset();
@@ -176,6 +180,7 @@ function makeHost(
     prepare?: (paperId: string, overwrite: boolean, quiet: boolean) => Promise<void>;
     reveal?: (what: "fulltext" | "fields", paperId: string) => void;
     showFailures?: () => void;
+    openSettings?: () => void;
   } = {},
 ) {
   return {
@@ -187,6 +192,7 @@ function makeHost(
     reveal: options.reveal,
     showFailures: options.showFailures,
     autoMeta: options.autoMeta,
+    openSettings: options.openSettings,
   };
 }
 
@@ -417,7 +423,10 @@ describe("提交与轮询", () => {
 
     await runMineruBatch(host, [id], false);
 
-    expect(host.flash).toHaveBeenCalledWith("error", "MinerU 解析失败 1 篇，可在资料栏重试。");
+    expect(host.flash).toHaveBeenCalledWith(
+      "error",
+      expect.stringMatching(/MinerU 解析失败 1 篇，可在资料栏重试；反复失败可.+。/),
+    );
     expect(mineruMarkdown).not.toHaveBeenCalled();
     expect(await paperOf(id)).toMatchObject({ mineruStatus: "error", mineruError: "页数超限", parsedMarkdown: "" });
     const [job] = await jobsOf(id);
@@ -492,7 +501,7 @@ describe("恢复仅同源（I4d）", () => {
     await runMineruBatch(host, [id], true);
 
     expect(mineruSubmit).toHaveBeenCalledTimes(1);
-    expect(mineruSubmit).toHaveBeenCalledWith(id, expect.stringContaining(".pdf"), true);
+    expect(mineruSubmit).toHaveBeenCalledWith(id, expect.stringContaining(".pdf"), true, undefined);
     expect(mineruParseStatuses).toHaveBeenCalledTimes(1);
     expect(mineruParseStatuses).toHaveBeenCalledWith("api", "batch-2", [], id, FP);
     expect(await paperOf(id)).toMatchObject({
@@ -502,6 +511,45 @@ describe("恢复仅同源（I4d）", () => {
       mineruParseIds: [],
       parsedMarkdown: "# forced",
     });
+  });
+
+  it("force 重解析已有全文：完成前快照旧版，完成后补新版权重，供界面两版对照", async () => {
+    // 状态 queued 模拟「重新解析」重置后的论文（resetMineru 置 queued、清 provider；
+    // 这里保留 provider 以验证快照记录它）。
+    const id = await makePaper({ status: "queued", provider: "ssh" }, "# 旧版全文\n\n## 方法\n\n一段。");
+    const host = makeHost({ hasKey: false });
+    vi.mocked(mineruSubmit).mockResolvedValue(submitResult({ provider: "local", shortId: "doc-9", parseIds: [] }));
+    vi.mocked(mineruParseStatuses).mockResolvedValue([poll("done", { id: "9" })]);
+    vi.mocked(mineruMarkdown).mockResolvedValue("# 新版全文\n\n## 方法\n\n## 实验\n\n另一段。");
+
+    await runMineruBatch(host, [id], true);
+
+    const record = getReparseRecord(id);
+    expect(record).not.toBeNull();
+    expect(record?.prev).toMatchObject({ markdown: expect.stringContaining("旧版全文"), provider: "ssh" });
+    expect(record?.next).toMatchObject({ provider: "local", sections: 3 });
+  });
+
+  it("force 重解析失败：旧版全文原样保留，对照快照作废", async () => {
+    const id = await makePaper({ status: "queued", provider: "local" }, "# 旧版全文");
+    const host = makeHost({ hasKey: false });
+    vi.mocked(mineruSubmit).mockRejectedValue(new Error("本地 doclib 未启动"));
+
+    await runMineruBatch(host, [id], true);
+
+    expect(await paperOf(id)).toMatchObject({ mineruStatus: "error", parsedMarkdown: "# 旧版全文" });
+    expect(getReparseRecord(id)).toBeNull();
+  });
+
+  it("非 force 的普通批次不为已有全文的论文建对照快照", async () => {
+    const id = await makePaper(undefined, "# 已有全文但状态待解析");
+    const host = makeHost({ hasKey: false });
+    vi.mocked(mineruSubmit).mockResolvedValue(submitResult({ status: "done" }));
+    vi.mocked(mineruMarkdown).mockResolvedValue("# 新解析");
+
+    await runMineruBatch(host, [id], false);
+
+    expect(getReparseRecord(id)).toBeNull();
   });
 });
 
@@ -577,7 +625,7 @@ describe("凭据指纹续跑（M6）", () => {
 
     // queued 没有提交记录，只能重新提交（不带 force）；在途的两篇同源续轮询。
     expect(mineruSubmit).toHaveBeenCalledTimes(1);
-    expect(mineruSubmit).toHaveBeenCalledWith(queued, expect.any(String), false);
+    expect(mineruSubmit).toHaveBeenCalledWith(queued, expect.any(String), false, undefined);
     expect(mineruParseStatuses).toHaveBeenCalledWith("ssh", "doc-s", ["1"], submitted, FP);
     expect(mineruParseStatuses).toHaveBeenCalledWith("api", "doc-p", [], parsing, FP);
     expect(await paperOf(queued)).toMatchObject({ mineruStatus: "done", parsedMarkdown: "# doc-q" });
@@ -992,6 +1040,98 @@ describe("移出队列与停止批次", () => {
     expect(mineruParseStatuses).not.toHaveBeenCalled();
     expect(mineruSubmit).not.toHaveBeenCalled();
   });
+
+  it("仅停止未提交：排队论文移出并写 cancelled，正在处理的一篇继续收尾", async () => {
+    const ids = [await makePaper(), await makePaper(), await makePaper()];
+    await repo.resetMineru(ids);
+    const host = makeHost({ hasKey: false });
+    // 第一篇提交后挂起（正在解析），后两篇还在排队。
+    const firstSubmit = hang<MineruSubmitResult>();
+    vi.mocked(mineruSubmit).mockImplementation(async (paperId) =>
+      paperId === ids[0] ? firstSubmit.promise : submitResult({ status: "done", shortId: `doc-${paperId}` }),
+    );
+    markdownByDoc();
+
+    const batchId = queueBatch("mineru", ids);
+    const run = runMineruBatch(host, ids, true, batchId);
+    await vi.waitFor(() => expect(mineruSubmit).toHaveBeenCalledTimes(1));
+
+    const { stopped, paperIds } = await stopBatchUnsubmitted(batchId);
+    expect(stopped).toBe(2);
+    expect(paperIds).toEqual([ids[1], ids[2]]);
+    expect(getActivity().batches[0].results).toEqual({ [ids[1]]: "cancelled", [ids[2]]: "cancelled" });
+    expect(getActivity().batches[0].currentPaperId).toBe(ids[0]);
+    for (const id of [ids[1], ids[2]]) expect((await paperOf(id)).mineruStatus).toBe("cancelled");
+
+    // 放行第一篇：照常完成，不受「仅停止未提交」影响。
+    firstSubmit.release(submitResult({ status: "done", shortId: "doc-first" }));
+    await run;
+    expect((await paperOf(ids[0])).mineruStatus).toBe("done");
+    expect(getActivity().batches[0].results[ids[0]]).toBe("ok");
+  });
+
+  it("stopBatchWithIds：连同受影响论文 id 一起返回（含正在处理的一篇）", async () => {
+    const ids = [await makePaper(), await makePaper()];
+    await repo.resetMineru(ids);
+    const host = makeHost({ hasKey: false });
+    const firstSubmit = hang<MineruSubmitResult>();
+    vi.mocked(mineruSubmit).mockImplementation(async (paperId) =>
+      paperId === ids[0] ? firstSubmit.promise : submitResult(),
+    );
+    const batchId = queueBatch("mineru", ids);
+    const run = runMineruBatch(host, ids, true, batchId);
+    await vi.waitFor(() => expect(mineruSubmit).toHaveBeenCalledTimes(1));
+
+    const detail = await stopBatchWithIds(batchId);
+    expect(detail.stopped).toBe(2);
+    expect(new Set(detail.paperIds)).toEqual(new Set(ids));
+    firstSubmit.release(submitResult());
+    await run;
+  });
+});
+
+describe("熔断 / 失败后的降档建议", () => {
+  it("连续失败熔断：通知给出按当前设置定制的降档建议与设置直达", async () => {
+    const ids = [await makePaper(), await makePaper(), await makePaper(), await makePaper()];
+    const host = makeHost({ hasKey: false, openSettings: () => {} });
+    vi.mocked(mineruSubmit).mockRejectedValue(new Error("本地 doclib 未启动"));
+
+    await runMineruBatch(host, ids, false);
+
+    const call = host.flash.mock.calls.find(([tone]) => tone === "error");
+    expect(call).toBeTruthy();
+    const text = call![1] as string;
+    // 设置里档位 standard（非 flash）：建议降档；页码 all：建议缩页。
+    expect(text).toContain("把解析档位降到 flash 再试");
+    expect(text).toContain("缩小页码范围");
+  });
+
+  it("已经是最低档 + 缩页：建议换成查看 Token / 分批", async () => {
+    // 修改模块内 settings 的快照：tier=flash、pageRange=1-20、只开官方 API。
+    const apiOnly = { ...settings, tier: "flash" as const, pageRange: "1-20", local: { ...settings.local, enabled: false }, ssh: { ...settings.ssh, enabled: false }, api: { ...settings.api, hasToken: true } };
+    const ids = [await makePaper(), await makePaper(), await makePaper(), await makePaper()];
+    const host = makeHost({ hasKey: false });
+    host.mineru = () => ({ ...apiOnly, configured: true });
+    vi.mocked(mineruSubmit).mockRejectedValue(new Error("quota"));
+
+    await runMineruBatch(host, ids, false);
+
+    const call = host.flash.mock.calls.find(([tone]) => tone === "error");
+    const text = call![1] as string;
+    expect(text).not.toContain("降到 flash");
+    expect(text).toContain("分批解析");
+  });
+
+  it("普通批次失败小结也带下一步建议", async () => {
+    const ids = [await makePaper()];
+    const host = makeHost({ hasKey: false });
+    vi.mocked(mineruSubmit).mockRejectedValue(new Error("boom"));
+
+    await runMineruBatch(host, ids, false);
+
+    const call = host.flash.mock.calls.find(([tone]) => tone === "error");
+    expect(call![1] as string).toContain("反复失败可");
+  });
 });
 
 describe("排队调度：置顶 / 上移 / 下移 / 清空其余", () => {
@@ -1153,7 +1293,7 @@ describe("批次收尾反馈与通知偏好", () => {
 
     const last = vi.mocked(host.flash).mock.calls.at(-1)!;
     expect(last[0]).toBe("error");
-    expect(last[1]).toMatch(/解析失败 1 篇（成功 2 · 用时 .+），可在资料栏重试。/);
+    expect(last[1]).toMatch(/解析失败 1 篇（成功 2 · 用时 .+）。可先.+再在资料栏逐篇重试。/);
     expect(last[2]).toMatchObject({ label: "去看失败的那几篇" });
     last[2]!.run();
     expect(host.showFailures).toHaveBeenCalled();

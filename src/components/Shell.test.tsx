@@ -86,6 +86,46 @@ describe("StatusStrip · 作业入口", () => {
   });
 });
 
+describe("StatusStrip · MinerU 五态", () => {
+  const configured = {
+    mineru: { ...useField.getState().mineru, local: { enabled: true, socketPath: "~/.mineru/doclib.sock" }, configured: true },
+  };
+
+  it("探测中显示「正在检测解析源…」，不再误显未配置/不可用", () => {
+    useField.setState({ ...configured, mineruProbing: true, effectiveProvider: null, mineruHealth: [] });
+    render(<StatusStrip />);
+    expect(screen.getByText("MinerU：正在检测解析源…")).toBeInTheDocument();
+  });
+
+  it("已启用但从未探测：显示「尚未探测」而非「不可用」", () => {
+    useField.setState({ ...configured, mineruProbing: false, effectiveProvider: null, mineruHealth: [] });
+    render(<StatusStrip />);
+    expect(screen.getByText("MinerU：尚未探测")).toBeInTheDocument();
+  });
+
+  it("探测完成且有可用源：显示生效源；全部失败才显示不可用", () => {
+    useField.setState({
+      ...configured,
+      effectiveProvider: "local",
+      mineruHealth: [{ provider: "local", ok: true, latencyMs: 12, message: "doclib 可达" }],
+    });
+    const { rerender } = render(<StatusStrip />);
+    expect(screen.getByText(/MinerU：本地 CLI/)).toBeInTheDocument();
+    useField.setState({
+      ...configured,
+      effectiveProvider: null,
+      mineruHealth: [{ provider: "local", ok: false, latencyMs: 0, message: "socket 不存在" }],
+    });
+    rerender(<StatusStrip />);
+    expect(screen.getByText("MinerU 不可用，可到设置页查看原因")).toBeInTheDocument();
+  });
+
+  it("未配置仍如实显示「未配置」", () => {
+    render(<StatusStrip />);
+    expect(screen.getByText("MinerU 未配置")).toBeInTheDocument();
+  });
+});
+
 describe("StatusStrip · 未保存草稿集中入口", () => {
   function draftPaper(id: string, title: string): PaperDetail {
     const notes = Object.fromEntries(

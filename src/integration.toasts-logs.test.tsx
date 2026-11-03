@@ -412,13 +412,16 @@ describe("导入 × MinerU 解析联动的通知触达", () => {
       expect(getToasts().some((t) => t.text.includes("MinerU 解析失败 1 篇"))).toBe(true),
     );
 
-    expect(getToasts().at(-1)).toMatchObject({ tone: "error", text: "MinerU 解析失败 1 篇，可在资料栏重试。" });
+    expect(getToasts().at(-1)).toMatchObject({
+      tone: "error",
+      text: expect.stringMatching(/MinerU 解析失败 1 篇，可在资料栏重试；反复失败可.+。/),
+    });
     const entries = getEntries();
     const mineruError = entries.find((e) => e.level === "error" && e.scope === "mineru");
     const uiError = entries.find((e) => e.level === "error" && e.scope === "ui");
     expect(mineruError?.message).toBe("论文解析失败（p-1）");
     expect(mineruError?.detail).toContain("Operation timed out");
-    expect(uiError?.message).toBe("MinerU 解析失败 1 篇，可在资料栏重试。");
+    expect(uiError?.message).toMatch(/MinerU 解析失败 1 篇，可在资料栏重试；反复失败可.+。/);
     // 作业失败与论文解析状态同一个事务落库
     const failed = vi.mocked(repo.finishJob).mock.calls.find(([, status]) => status === "error");
     expect(failed?.[2]).toMatchObject({ error: "SSH 远程：curl: (28) Operation timed out" });
