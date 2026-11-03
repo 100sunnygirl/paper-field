@@ -160,6 +160,7 @@ function makeHost(
   options: {
     hasKey?: boolean;
     configured?: boolean;
+    autoMeta?: boolean;
     prepare?: (paperId: string, overwrite: boolean, quiet: boolean) => Promise<void>;
     reveal?: (what: "fulltext" | "fields", paperId: string) => void;
     showFailures?: () => void;
@@ -173,6 +174,7 @@ function makeHost(
     prepare: vi.fn(options.prepare ?? (async (paperId: string) => markPrepared(paperId))),
     reveal: options.reveal,
     showFailures: options.showFailures,
+    autoMeta: options.autoMeta,
   };
 }
 
@@ -277,6 +279,27 @@ describe("autoPrepare（防覆盖语义）", () => {
     expect(host.prepare).toHaveBeenCalledTimes(2);
     expect(host.prepare).toHaveBeenLastCalledWith(b, false, true);
     expect((await paperOf(b)).llmPreparedAt).not.toBeNull();
+  });
+});
+
+describe("autoMeta（导入模式：入库并解析不自动补全）", () => {
+  it("host.autoMeta=false 时解析完成不排队 AI 补全；缺省（undefined）保持自动补全", async () => {
+    const a = await makePaper();
+    const b = await makePaper();
+    vi.mocked(mineruSubmit).mockImplementation(async (paperId) => submitResult({ status: "done", shortId: `doc-${paperId}` }));
+    markdownByDoc();
+
+    const off = makeHost({ autoMeta: false });
+    await runMineruBatch(off, [a], false);
+    await settle();
+    expect(off.prepare).not.toHaveBeenCalled();
+    expect((await paperOf(a)).mineruStatus).toBe("done");
+
+    const on = makeHost();
+    await runMineruBatch(on, [b], false);
+    await settle();
+    expect(on.prepare).toHaveBeenCalledTimes(1);
+    expect(on.prepare).toHaveBeenCalledWith(b, false, true);
   });
 });
 

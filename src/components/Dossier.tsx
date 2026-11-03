@@ -58,6 +58,7 @@ import { arxivAbsUrl, arxivPdfUrl, doiUrl, openExternal, safeHttpUrl } from "../
 import { formatDate, isTauri, modLabel, pad2 } from "../lib/util";
 import { diffStage, type StageField } from "../lib/readingHolds";
 import { useField } from "../store";
+import { TitlePendingBadge, titleStillFromFile } from "./PaperMatrix";
 import { Button, Dialog, Empty, ExternalResource, Icon, SourceBadge, type IconName } from "./ui";
 
 /** 本页目录里解析全文章节二级项的显示上限：更长的全文只列前若干节并注明其余节数。 */
@@ -1972,7 +1973,7 @@ export function ReadingStage({
                 这篇论文不在当前列表中（搜索或筛选条件不匹配），仍可继续阅读与编辑。
               </p>
             ) : null}
-            <div className="ef-title-row">
+            <div className="ef-read-title-line ef-title-row">
               <h1
                 id="paper-title"
                 className="ef-read-title"
@@ -1981,6 +1982,9 @@ export function ReadingStage({
               >
                 {title}
               </h1>
+              {titleStillFromFile(paper.fieldSources) ? (
+                <TitlePendingBadge onEdit={() => openDialog("edit-paper", paper.id)} />
+              ) : null}
               {fileTitle ? <SourceBadge source="file" /> : null}
             </div>
             {fileTitle ? (

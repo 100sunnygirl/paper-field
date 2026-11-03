@@ -37,6 +37,11 @@ interface Host {
   reveal?: (what: "fulltext" | "fields", paperId: string) => void;
   /** 「去看失败的那几篇」：跳到能看到解析失败论文的页面（入库页）。 */
   showFailures?: () => void;
+  /**
+   * 解析完成后的自动 AI 补全开关（导入模式「入库并解析」置 false：只解析不烧补全额度；
+   * 缺省 true 与既有行为一致）。仅影响本 host 的批次，回填与显式补全入口不受它管。
+   */
+  autoMeta?: boolean;
 }
 
 /**
@@ -300,7 +305,7 @@ async function processOne(
   if (!paper?.pdfPath) return "skip";
   if (batchId !== undefined && dequeued.has(queueKey(batchId, paperId))) return "cancelled";
   if (paper.mineruStatus === "done" && paper.parsedMarkdown.trim()) {
-    enqueueMeta(async () => void (await autoPrepare(host, paperId)));
+    if (host.autoMeta !== false) enqueueMeta(async () => void (await autoPrepare(host, paperId)));
     return "ok";
   }
   const settings = host.mineru();
@@ -396,7 +401,8 @@ async function processOne(
   );
   await host.refresh();
   if (result.outcome === "done") {
-    enqueueMeta(async () => void (await autoPrepare(host, paperId)));
+    // 「入库并解析」模式：解析完不自动排队 AI 补全（用户明说这次只要解析）。
+    if (host.autoMeta !== false) enqueueMeta(async () => void (await autoPrepare(host, paperId)));
     return "ok";
   }
   if (result.outcome === "cancelled") return "cancelled";

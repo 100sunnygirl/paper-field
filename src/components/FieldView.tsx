@@ -12,7 +12,8 @@ import { repo } from "../lib/repo";
 import { pad2, shortcut } from "../lib/util";
 import { useField } from "../store";
 import { useReadPulse } from "./useReadPulse";
-import { CheckSquare, PaperMatrix } from "./PaperMatrix";
+import { CheckSquare, PaperMatrix, titleStillFromFile } from "./PaperMatrix";
+import { ImportTarget } from "./ImportTarget";
 import { PaperSearch } from "./PaperSearch";
 import { Button, Icon } from "./ui";
 
@@ -42,6 +43,12 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
   const setArchiveFilter = useField((s) => s.setArchiveFilter);
   const cancelJob = useField((s) => s.cancelJob);
   const retryFailedMineru = useField((s) => s.retryFailedMineru);
+  const runRefreshLinks = useField((s) => s.runRefreshLinks);
+  const importFailures = useField((s) => s.importFailures);
+  const removeImportFailure = useField((s) => s.removeImportFailure);
+  const retryImportFailures = useField((s) => s.retryImportFailures);
+  const importSummary = useField((s) => s.importSummary);
+  const dismissImportSummary = useField((s) => s.dismissImportSummary);
   const setJobsOpen = useField((s) => s.setJobsOpen);
   const highlightJob = useField((s) => s.highlightJob);
   // 阶段一句话与作业面板同一口径：入库页行内直接看到「已解析 n/N 页」等实况。
@@ -83,6 +90,8 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
     mode === "field" && domainCensus?.domainId === selectedDomainId ? domainCensus.items : papers;
   void censusEpoch;
   const failedParseCount = intake.filter((p) => p.mineruStatus === "error").length;
+  // 标题来源仍是文件名的论文：导入完成后集中列出供批量校对（文献库没查到时标题不会永远停在文件名）。
+  const titlePending = intake.filter((p) => titleStillFromFile(p.fieldSources));
   const domainRead = domainPapers.filter((p) => p.readingStatus === "read").length;
   const fill = domainPapers.length ? domainRead / domainPapers.length : 0;
   const allChecked = list.length > 0 && checkedPaperIds.length === list.length;
@@ -153,6 +162,37 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
             <h2>入库</h2>
           </div>
           <p className="ef-nav-sum">未手动标为已读的论文，以及 MinerU 解析和 AI 补全作业。</p>
+          {/* 从入库页发起的导入默认落进当前选中领域却不可见：常驻「将导入到」可就地更换或新建。 */}
+          <ImportTarget />
+          {importFailures.length ? (
+            <div className="ef-import-retry">
+              <div className="ef-import-retry-head">
+                <span className="status-error">导入待重试 · {importFailures.length} 篇</span>
+                <Button type="button" size="sm" onClick={() => void retryImportFailures()}>
+                  仅重试失败文件
+                </Button>
+              </div>
+              <ul className="ef-import-retry-list">
+                {importFailures.map((entry) => (
+                  <li key={entry.path} title={entry.message}>
+                    <span className="ef-import-retry-name">{entry.name}</span>
+                    <em>{entry.message}</em>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="text"
+                      aria-label={`放弃重试 ${entry.name}`}
+                      title="从待重试清单移除（不影响已入库的论文）"
+                      onClick={() => removeImportFailure(entry.path)}
+                    >
+                      移除
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+              <p className="ef-nav-sum">重试按失败时选定的目标领域导入；成功或确认重复后自动移出清单。</p>
+            </div>
+          ) : null}
           {failedParseCount ? (
             <div className="ef-job-row">
               <span className="status-error">解析失败 · {failedParseCount} 篇</span>
@@ -160,6 +200,93 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
                 全部重试
               </Button>
             </div>
+          ) : null}
+          {titlePending.length ? (
+            <div className="ef-import-retry is-title-review">
+              <div className="ef-import-retry-head">
+                <span>标题待确认 · {titlePending.length} 篇</span>
+                <span className="ef-nav-sum">标题仍是文件名</span>
+              </div>
+              <ul className="ef-import-retry-list">
+                {titlePending.slice(0, 4).map((paper) => (
+                  <li key={paper.id}>
+                    <button
+                      type="button"
+                      className="ef-import-retry-name ef-import-retry-link"
+                      title="打开这篇论文"
+                      onClick={() => void selectPaper(paper.id)}
+                    >
+                      {paper.titleZh || paper.title}
+                    </button>
+                    <span className="ef-import-retry-actions">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="text"
+                        title="到文献库重查著录（不调用模型）"
+                        onClick={() => void runRefreshLinks(paper.id)}
+                      >
+                        重查著录
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="text"
+                        onClick={() => openDialog("edit-paper", paper.id)}
+                      >
+                        编辑标题
+                      </Button>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              {titlePending.length > 4 ? (
+                <p className="ef-nav-sum">其余 {titlePending.length - 4} 篇在上方列表里逐篇处理。</p>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {/* 批量导入小结卡：导入落地页（现场/入库）都可见，常驻到用户关闭——
+          成功 / 跳过（重复）/ 失败清单与原因，失败可整批「仅重试失败篇」。 */}
+      {(mode === "field" || mode === "intake") && importSummary ? (
+        <div className="ef-import-summary" aria-label="导入小结">
+          <div className="ef-import-summary-head">
+            <strong>
+              导入小结 · 成功 {importSummary.created} 篇
+              {importSummary.skipped ? ` · 跳过 ${importSummary.skipped} 篇（已在库中）` : ""}
+              {importSummary.failed.length ? ` · 失败 ${importSummary.failed.length} 篇` : ""}
+            </strong>
+            <Button
+              type="button"
+              size="sm"
+              variant="text"
+              aria-label="关闭导入小结"
+              onClick={dismissImportSummary}
+            >
+              关闭
+            </Button>
+          </div>
+          {importSummary.failed.length ? (
+            <>
+              <ul className="ef-import-retry-list">
+                {importSummary.failed.slice(0, 6).map((entry) => (
+                  <li key={entry.path} title={entry.message}>
+                    <span className="ef-import-retry-name">{entry.name}</span>
+                    <em>{entry.message}</em>
+                  </li>
+                ))}
+              </ul>
+              {importSummary.failed.length > 6 ? (
+                <p className="ef-nav-sum">其余 {importSummary.failed.length - 6} 个失败文件见入库页「导入待重试」清单。</p>
+              ) : null}
+              <div className="ef-import-summary-actions">
+                <Button type="button" size="sm" onClick={() => void retryImportFailures()}>
+                  仅重试失败篇
+                </Button>
+              </div>
+            </>
           ) : null}
         </div>
       ) : null}

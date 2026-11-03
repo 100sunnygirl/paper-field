@@ -1,22 +1,96 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { Fragment, useEffect, useRef, useState, type CSSProperties } from "react";
 import { splitAuthorList } from "../lib/authorList";
+import { looksLikeNonPaper, scanImportItem, type ImportItemScan, type PaperRef } from "../lib/importScan";
+import { lookupPaper } from "../lib/lookup";
 import { pickPdfFiles, pickPdfFolder } from "../lib/mineru";
+import { providerLabel } from "../lib/mineruPlan";
+import { parsePastedRef, type ParsedRef } from "../lib/pasteRef";
 import { repo } from "../lib/repo";
 import { defaultNotePermit, type NotePermit, type PartitionedTitles } from "../lib/readingHolds";
 import { NOTE_DISPLAY_ORDER, NOTE_KINDS, NOTE_LABELS, type NoteKind, type Author, type PaperDetail } from "../lib/types";
 import { isTauri } from "../lib/util";
-import { useField } from "../store";
+import { useField, type ImportMode } from "../store";
+import { ImportTarget } from "./ImportTarget";
 import { Button, Dialog, Field, Icon } from "./ui";
+
+/** 导入模式：导入即自动解析是默认流程，但不是每次收集都想立刻烧解析/补全额度。 */
+const IMPORT_MODES: Array<{ value: ImportMode; label: string; hint: string }> = [
+  { value: "library", label: "只入库", hint: "不提交解析；之后可在设置页「继续未完成的解析」" },
+  { value: "parse", label: "入库并解析", hint: "解析完成不自动排队 AI 补全" },
+  { value: "parse-meta", label: "解析后补全", hint: "既有默认流程：解析完成后自动补全元数据" },
+];
+const IMPORT_MODE_KEY = "paper-field.import-mode";
+
+/** 秒级时长的小时：秒 →「45 秒」，分 →「1 分 23 秒」。 */
+function formatSpanShort(ms: number): string {
+  const totalSeconds = Math.max(0, Math.round(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes ? `${minutes} 分 ${seconds} 秒` : `${seconds} 秒`;
+}
+
+/** 记住上次选择的导入模式（本机 localStorage）；认不出的旧值回落默认。 */
+function readImportMode(): ImportMode {
+  try {
+    const raw = localStorage.getItem(IMPORT_MODE_KEY);
+    const found = IMPORT_MODES.find((item) => item.value === raw);
+    return found ? found.value : "parse-meta";
+  } catch {
+    return "parse-meta";
+  }
+}
+
+function writeImportMode(mode: ImportMode): void {
+  try {
+    localStorage.setItem(IMPORT_MODE_KEY, mode);
+  } catch {
+    // 记不住就用本次会话的选择，不影响导入。
+  }
+}
 
 export function PaperDialog() {
   const dialog = useField((s) => s.dialog);
   const closeDialog = useField((s) => s.closeDialog);
   const importPdfs = useField((s) => s.importPdfs);
-  const [items, setItems] = useState<Array<{ path: string; name: string; duplicate: boolean; excluded: boolean }>>([]);
+  const importPdfsPerFile = useField((s) => s.importPdfsPerFile);
+  const attachPdfToPaper = useField((s) => s.attachPdfToPaper);
+  const selectDomain = useField((s) => s.selectDomain);
+  const selectPaper = useField((s) => s.selectPaper);
+  const domains = useField((s) => s.domains);
+  // 导入目标：显式改选（含就地新建）优先，缺省跟随当前选中领域；对话框顶部常驻可见。
+  const importTargetDomainId = useField((s) => s.importTargetDomainId);
+  const selectedDomainId = useField((s) => s.selectedDomainId);
+  const targetDomainId = importTargetDomainId ?? selectedDomainId;
+  const targetDomain = domains.find((d) => d.id === targetDomainId) ?? null;
+  // 清单里逐文件可指定目标领域（domainTouched：用户单独改过的不跟随对话框目标联动）。
+  const [items, setItems] = useState<
+    Array<{
+      path: string;
+      name: string;
+      duplicate: boolean;
+      excluded: boolean;
+      domainId: string;
+      domainTouched: boolean;
+      /** 文件名扫描：提取的 arXiv 号 / 清洗标题 / 与库内著录的重复候选。 */
+      scan: ImportItemScan | null;
+      /** 「已在库中」对应的原条目（点开直达）。 */
+      duplicatePaper: { id: string; title: string; domainName: string; domainId: string } | null;
+      /** 已通过「补充到已有条目」挂上文件的行：不再参与导入。 */
+      attached: boolean;
+    }>
+  >([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<{ done: number; total: number; current: string } | null>(null);
+  // 导入开始时刻：进度行据此显示「已用时间」与按均值的「预计剩余」（nowTick 仅驱动秒级重渲染）。
+  const [importStartedAt, setImportStartedAt] = useState<number | null>(null);
+  const [, setNowTick] = useState(0);
   const [manualOpen, setManualOpen] = useState(false);
+  const [attachBusy, setAttachBusy] = useState(false);
+  // 导入模式（只入库 / 入库并解析 / 解析后补全），记住上次选择。
+  const [mode, setMode] = useState<ImportMode>(() => readImportMode());
+  const effectiveProvider = useField((s) => s.effectiveProvider);
+  const mineru = useField((s) => s.mineru);
   const open = dialog === "paper";
 
   useEffect(() => {
@@ -25,18 +99,67 @@ export function PaperDialog() {
     setError(null);
     setBusy(false);
     setProgress(null);
+    setImportStartedAt(null);
     setManualOpen(false);
+    setAttachBusy(false);
   }, [open]);
+
+  // 导入进行中每秒走一格表：即使单文件耗时很长，「已用时间」也在动（结束即停）。
+  useEffect(() => {
+    if (!busy || !importStartedAt) return;
+    const timer = setInterval(() => setNowTick((tick) => tick + 1), 1000);
+    return () => clearInterval(timer);
+  }, [busy, importStartedAt]);
+
+  // 对话框目标领域变化时：没被单独改过的行跟着换目标（跨领域收集时先全部指到 A 再逐个改）。
+  useEffect(() => {
+    if (!targetDomainId) return;
+    setItems((current) =>
+      current.some((item) => !item.domainTouched && item.domainId !== targetDomainId)
+        ? current.map((item) => (item.domainTouched ? item : { ...item, domainId: targetDomainId }))
+        : current,
+    );
+  }, [targetDomainId]);
 
   async function addPaths(paths: string[]) {
     const known = new Set(await repo.pdfPaths());
+    // 库内轻量引用：既找出「已在库中」的原条目，也做 arXiv/标题的重复候选扫描。
+    let refs: PaperRef[] = [];
+    try {
+      refs = await repo.paperRefsForDedup();
+    } catch {
+      refs = []; // 引用读不到时只保留按路径的重复标记，候选扫描安静降级。
+    }
+    const byPath = new Map<string, PaperRef>();
+    for (const ref of refs) {
+      if (ref.pdfPath) byPath.set(ref.pdfPath, ref);
+      if (ref.pdfOriginalPath) byPath.set(ref.pdfOriginalPath, ref);
+    }
+    const fallbackDomain = targetDomainId ?? domains[0]?.id ?? "";
     setItems((current) => {
       const next = new Map(current.map((item) => [item.path, item]));
       for (const path of paths) {
         const name = path.split(/[/\\]/).pop() ?? path;
-        // 重新扫描同一目录时保留用户已排除的选择，不悄悄改回勾选。
-        const excluded = current.find((item) => item.path === path)?.excluded ?? false;
-        next.set(path, { path, name, duplicate: known.has(path), excluded });
+        // 重新扫描同一目录时保留用户已排除的选择与单独指定过的目标领域，不悄悄改回；
+        // 新文件按文件名预判非论文 PDF（课件/习题/表单等强信号词）默认不勾选，允许改选。
+        const prev = current.find((item) => item.path === path);
+        const excluded = prev?.excluded ?? looksLikeNonPaper(name);
+        const domainId = prev?.domainId ?? fallbackDomain;
+        const domainTouched = prev?.domainTouched ?? false;
+        const ref = byPath.get(path) ?? null;
+        next.set(path, {
+          path,
+          name,
+          duplicate: known.has(path),
+          excluded,
+          domainId,
+          domainTouched,
+          scan: prev?.scan ?? scanImportItem(name, refs),
+          duplicatePaper: ref
+            ? { id: ref.id, title: ref.titleZh || ref.title, domainName: ref.domainName, domainId: ref.domainId }
+            : null,
+          attached: prev?.attached ?? false,
+        });
       }
       return [...next.values()];
     });
@@ -65,16 +188,144 @@ export function PaperDialog() {
     }
   }
 
-  const fresh = items.filter((item) => !item.duplicate && !item.excluded);
-  const checkable = items.filter((item) => !item.duplicate);
+  const fresh = items.filter((item) => !item.duplicate && !item.excluded && !item.attached);
+  const checkable = items.filter((item) => !item.duplicate && !item.attached);
   const checkedCount = checkable.filter((item) => !item.excluded).length;
+  // 本批要分入几个领域：1 个保持「导入 N 篇到「X」」的原按钮与原链路；多个则走逐文件导入。
+  const freshDomains = [...new Set(fresh.map((item) => item.domainId))];
+  const multiDomain = freshDomains.length > 1;
 
   function toggleExcluded(path: string, excluded: boolean) {
     setItems((current) => current.map((item) => (item.path === path ? { ...item, excluded } : item)));
   }
 
   function setAllExcluded(excluded: boolean) {
-    setItems((current) => current.map((item) => (item.duplicate ? item : { ...item, excluded })));
+    setItems((current) => current.map((item) => (item.duplicate || item.attached ? item : { ...item, excluded })));
+  }
+
+  function setItemDomain(path: string, domainId: string) {
+    setItems((current) => current.map((item) => (item.path === path ? { ...item, domainId, domainTouched: true } : item)));
+  }
+
+  /** 「全部使用此领域」：整批改到同一领域（含被排除行，保持后续再勾选时语义一致）。 */
+  function setAllDomain(domainId: string) {
+    setItems((current) => current.map((item) => ({ ...item, domainId, domainTouched: false })));
+  }
+
+  function setGroupDomain(paths: string[], domainId: string) {
+    const group = new Set(paths);
+    setItems((current) => current.map((item) => (group.has(item.path) ? { ...item, domainId, domainTouched: true } : item)));
+  }
+
+  // 按文件夹分组（跨领域收集时按目录审阅；单一目录保持原平铺清单）。
+  const groups = new Map<string, typeof items>();
+  for (const item of items) {
+    const dir = item.path.split(/[/\\]/).slice(0, -1).join("/") || "/";
+    const list = groups.get(dir) ?? [];
+    list.push(item);
+    groups.set(dir, list);
+  }
+  const groupEntries = [...groups.entries()];
+  const multiDir = groupEntries.length > 1;
+
+  /** 组内目标领域一致时返回该领域，不一致返回 ""（下拉显示「选择领域」占位）。 */
+  function groupDomainValue(groupItems: typeof items): string {
+    const first = groupItems[0]?.domainId ?? "";
+    return groupItems.every((item) => item.domainId === first) ? first : "";
+  }
+
+  /** 「补充到已有条目」：把这个 PDF 挂到候选的那篇论文上，行转为已补充，不再参与导入。 */
+  async function attachCandidate(item: (typeof items)[number]) {
+    if (!item.scan?.candidate || attachBusy) return;
+    setAttachBusy(true);
+    try {
+      await attachPdfToPaper(item.scan.candidate.paperId, item.path);
+      setItems((current) => current.map((row) => (row.path === item.path ? { ...row, attached: true } : row)));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAttachBusy(false);
+    }
+  }
+
+  /** 「已在库中」顺路直达原条目：关掉导入对话框、切到所属领域并打开那篇论文。 */
+  function openDuplicatePaper(duplicate: NonNullable<(typeof items)[number]["duplicatePaper"]>) {
+    closeDialog();
+    void selectDomain(duplicate.domainId)
+      .then(() => selectPaper(duplicate.id))
+      .catch(() => {
+        // 直达不是关键路径：失败已有提示，导入清单本身不受影响。
+      });
+  }
+
+  function renderItem(item: (typeof items)[number], index: number) {
+    const candidate = item.scan?.candidate ?? null;
+    return (
+      <li
+        key={item.path}
+        className={`pf-stagger${item.excluded && !item.duplicate ? " is-excluded" : ""}`}
+        style={{ "--pf-i": index } as CSSProperties}
+      >
+        <label className="ef-import-check">
+          <input
+            type="checkbox"
+            checked={!item.duplicate && !item.excluded && !item.attached}
+            disabled={busy || item.duplicate || item.attached}
+            onChange={(e) => toggleExcluded(item.path, !e.target.checked)}
+          />
+          <span>{item.name}</span>
+        </label>
+        <span className="ef-import-row-side">
+          {domains.length > 1 && !item.duplicate && !item.attached ? (
+            <select
+              className="ef-import-row-domain"
+              aria-label={`目标领域：${item.name}`}
+              value={item.domainId}
+              disabled={busy}
+              onChange={(e) => setItemDomain(item.path, e.target.value)}
+            >
+              {domains.map((domain) => (
+                <option key={domain.id} value={domain.id}>
+                  {domain.name}
+                </option>
+              ))}
+            </select>
+          ) : null}
+          {item.attached ? (
+            <em>已补充到「{candidate?.title ?? "已有条目"}」</em>
+          ) : item.duplicate ? (
+            item.duplicatePaper ? (
+              <button
+                type="button"
+                className="ef-import-dup-link"
+                title={`打开库里那篇：「${item.duplicatePaper.title}」（${item.duplicatePaper.domainName}）`}
+                onClick={() => openDuplicatePaper(item.duplicatePaper!)}
+              >
+                已在库中 · {item.duplicatePaper.title}（{item.duplicatePaper.domainName}）
+              </button>
+            ) : (
+              <em>已在库中</em>
+            )
+          ) : candidate ? (
+            <span className="ef-import-dup">
+              <span className="ef-import-dup-info">
+                疑似已有 · {candidate.title}（{candidate.domainName}）· {candidate.detail}
+              </span>
+              <Button
+                type="button"
+                size="sm"
+                variant="text"
+                disabled={busy || attachBusy}
+                title={`把这个 PDF 补充到「${candidate.title}」，不另建新条目`}
+                onClick={() => void attachCandidate(item)}
+              >
+                补充到已有条目
+              </Button>
+            </span>
+          ) : null}
+        </span>
+      </li>
+    );
   }
 
   return (
@@ -96,9 +347,19 @@ export function PaperDialog() {
               onClick={() => {
                 setError(null);
                 setBusy(true);
-                void importPdfs(fresh.map((item) => item.path), (done, total, current) =>
-                  setProgress({ done, total, current }),
-                )
+                setImportStartedAt(Date.now());
+                const onProgress = (done: number, total: number, current: string) =>
+                  setProgress({ done, total, current });
+                // 单一目标领域：走原有 importPdfs 链路；逐文件多领域：走 importPdfsPerFile。
+                // 两种链路都带上导入模式（只入库 / 入库并解析 / 解析后补全）。
+                const run = multiDomain
+                  ? importPdfsPerFile(
+                      fresh.map((item) => ({ path: item.path, domainId: item.domainId })),
+                      onProgress,
+                      { mode },
+                    )
+                  : importPdfs(fresh.map((item) => item.path), onProgress, fresh[0]?.domainId || undefined, { mode });
+                void run
                   .catch((err: unknown) => {
                     setError(err instanceof Error ? err.message : String(err));
                   })
@@ -108,7 +369,13 @@ export function PaperDialog() {
                   });
               }}
             >
-              {busy ? "导入中…" : `导入 ${fresh.length}`}
+              {busy
+                ? "导入中…"
+                : multiDomain
+                  ? `导入 ${fresh.length} 篇 · 分入 ${freshDomains.length} 个领域`
+                  : targetDomain
+                    ? `导入 ${fresh.length} 篇到「${targetDomain.name}」`
+                    : `导入 ${fresh.length}`}
             </Button>
           ) : null}
         </>
@@ -118,6 +385,8 @@ export function PaperDialog() {
         选择本机 PDF，或一个目录中的全部 PDF（只读所选目录本身，不进入子目录）。加入后先在下方清单里勾选，排除不是论文的
         PDF，再完成导入。文件名会先当作标题，导入后立即交给 MinerU 解析。没有 PDF 时也可手动添加论文。
       </p>
+      {/* 目标领域常驻可见可改：从 INTAKE 发起导入也能看清要导入哪、就地下拉更换或新建。 */}
+      <ImportTarget />
       {isTauri() ? (
         <div className="ef-import-actions">
           <Button type="button" onClick={() => void pickFiles()} disabled={busy}>
@@ -153,6 +422,11 @@ export function PaperDialog() {
           {progress ? (
             <p aria-live="polite">
               正在导入 {progress.done}/{progress.total} · {progress.current}
+              {importStartedAt ? ` · 已用 ${formatSpanShort(Date.now() - importStartedAt)}` : ""}
+              {/* 预计剩余按已完成各篇的均值估算；第一篇没跑完时不猜（诚实显示）。 */}
+              {importStartedAt && progress.done > 0 && progress.done < progress.total
+                ? ` · 预计剩余 ${formatSpanShort(((Date.now() - importStartedAt) / progress.done) * (progress.total - progress.done))}`
+                : ""}
             </p>
           ) : (
             <p aria-live="polite">正在导入…</p>
@@ -166,6 +440,26 @@ export function PaperDialog() {
               共 {checkable.length} 个待选，已勾选 {checkedCount} 个；取消勾选可在导入前排除非论文 PDF。
             </span>
             <span className="ef-import-review-actions">
+              {domains.length > 1 ? (
+                <label className="ef-import-bulk-domain">
+                  全部使用
+                  <select
+                    aria-label="全部使用此领域"
+                    value={freshDomains.length === 1 ? freshDomains[0] : ""}
+                    disabled={busy}
+                    onChange={(e) => setAllDomain(e.target.value)}
+                  >
+                    <option value="" disabled>
+                      选择领域
+                    </option>
+                    {domains.map((domain) => (
+                      <option key={domain.id} value={domain.id}>
+                        {domain.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
               <Button
                 type="button"
                 size="sm"
@@ -186,25 +480,67 @@ export function PaperDialog() {
               </Button>
             </span>
           </div>
+          {isTauri() ? (
+            <div className="ef-import-mode" role="group" aria-label="导入模式">
+              {IMPORT_MODES.map((item) => (
+                <Button
+                  key={item.value}
+                  type="button"
+                  size="sm"
+                  className={mode === item.value ? "is-active" : ""}
+                  aria-pressed={mode === item.value}
+                  title={item.hint}
+                  disabled={busy}
+                  onClick={() => {
+                    setMode(item.value);
+                    writeImportMode(item.value);
+                  }}
+                >
+                  {item.label}
+                </Button>
+              ))}
+              <span className="ef-import-mode-source">
+                {effectiveProvider
+                  ? `本批解析源：${providerLabel(effectiveProvider)}`
+                  : mineru.configured
+                    ? "解析源当前探测未通过，可选「只入库」稍后再解析"
+                    : "尚未配置解析源，可选「只入库」稍后再解析"}
+              </span>
+            </div>
+          ) : null}
           <ul className="ef-import-list">
-            {items.map((item, index) => (
-              <li
-                key={item.path}
-                className={`pf-stagger${item.excluded && !item.duplicate ? " is-excluded" : ""}`}
-                style={{ "--pf-i": index } as CSSProperties}
-              >
-                <label className="ef-import-check">
-                  <input
-                    type="checkbox"
-                    checked={!item.duplicate && !item.excluded}
-                    disabled={busy || item.duplicate}
-                    onChange={(e) => toggleExcluded(item.path, !e.target.checked)}
-                  />
-                  <span>{item.name}</span>
-                </label>
-                {item.duplicate ? <em>已在库中</em> : null}
-              </li>
-            ))}
+            {multiDir
+              ? groupEntries.map(([dir, groupItems]) => (
+                  <Fragment key={dir}>
+                    <li className="ef-import-group">
+                      <span className="ef-import-group-dir mono" title={dir}>
+                        {dir.split(/[/\\]/).filter(Boolean).slice(-1)[0] || dir}
+                      </span>
+                      <label className="ef-import-bulk-domain">
+                        此文件夹全部
+                        <select
+                          aria-label={`此文件夹全部使用：${dir}`}
+                          value={groupDomainValue(groupItems)}
+                          disabled={busy}
+                          onChange={(e) => setGroupDomain(groupItems.map((item) => item.path), e.target.value)}
+                        >
+                          {groupDomainValue(groupItems) === "" ? (
+                            <option value="" disabled>
+                              选择领域
+                            </option>
+                          ) : null}
+                          {domains.map((domain) => (
+                            <option key={domain.id} value={domain.id}>
+                              {domain.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </li>
+                    {groupItems.map((item) => renderItem(item, items.indexOf(item)))}
+                  </Fragment>
+                ))
+              : items.map((item, index) => renderItem(item, index))}
           </ul>
         </>
       ) : null}
@@ -221,6 +557,13 @@ function ManualPaperForm({ onCreated, primary = false }: { onCreated: () => void
   const [pdfPath, setPdfPath] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // 粘贴识别：一段文本自动拆出 arXiv / DOI / BibTeX 字段；失焦查文献库回显「已找到」。
+  const [pasted, setPasted] = useState("");
+  const [parsed, setParsed] = useState<ParsedRef | null>(null);
+  const [lookupBusy, setLookupBusy] = useState(false);
+  const [found, setFound] = useState<{ title: string; year: number | null } | null>(null);
+  const [lookupMissed, setLookupMissed] = useState(false);
+  const lastLookupKey = useRef<string | null>(null);
 
   async function pickPdf() {
     setError(null);
@@ -233,10 +576,96 @@ function ManualPaperForm({ onCreated, primary = false }: { onCreated: () => void
     }
   }
 
+  /** 粘贴内容变化即识别并拆字段（只覆盖仍为空的字段，不冲掉手填内容）。 */
+  function applyPasted(text: string) {
+    setPasted(text);
+    setFound(null);
+    setLookupMissed(false);
+    const ref = parsePastedRef(text);
+    setParsed(ref);
+    if (!ref) return;
+    if (ref.arxivId && !arxivId.trim()) setArxivId(ref.arxivId);
+    if (ref.doi && !doi.trim()) setDoi(ref.doi);
+    if (ref.title && !title.trim()) setTitle(ref.title);
+  }
+
+  /** 失焦回显：有标识符时查一次文献库，找到就显示「已找到：标题（年份）」。 */
+  async function lookupOnBlur() {
+    const key = [parsed?.arxivId ?? "", parsed?.doi ?? "", parsed?.title ?? ""].join("|");
+    if (!parsed || (!parsed.arxivId && !parsed.doi) || key === lastLookupKey.current) return;
+    lastLookupKey.current = key;
+    setLookupBusy(true);
+    setFound(null);
+    setLookupMissed(false);
+    try {
+      // 只用标识符查（不拿半截标题当键）；浏览器预览查不到，同样给出诚实提示。
+      const result = await lookupPaper({
+        title: "",
+        arxivId: parsed.arxivId ?? null,
+        doi: parsed.doi ?? null,
+        year: null,
+        authors: [],
+      });
+      if (result.meta?.title) setFound({ title: result.meta.title, year: result.meta.year ?? null });
+      else setLookupMissed(true);
+    } finally {
+      setLookupBusy(false);
+    }
+  }
+
   const titleMissing = Boolean(busy === false && error && !title.trim());
 
   return (
     <div className="ef-manual-paper pf-enter">
+      <Field label="粘贴链接 / 标识符 / BibTeX（自动识别）">
+        <textarea
+          value={pasted}
+          onChange={(e) => applyPasted(e.target.value)}
+          onBlur={() => void lookupOnBlur()}
+          placeholder="粘贴 arXiv 链接、DOI、doi.org/arXiv.org 地址或整段 BibTeX，自动拆到下方字段"
+          className="ef-paste-box"
+          aria-describedby={parsed ? "ef-paste-recognized" : undefined}
+        />
+      </Field>
+      {parsed ? (
+        <p className="ef-paste-recognized" id="ef-paste-recognized">
+          已识别：
+          {parsed.kind === "bibtex"
+            ? `BibTeX${parsed.title ? `「${parsed.title}」` : ""}${parsed.venue ? ` · ${parsed.venue}` : ""}`
+            : parsed.kind === "arxiv"
+              ? `arXiv ${parsed.arxivId}`
+              : `DOI ${parsed.doi}`}
+          {parsed.kind !== "bibtex" ? "，已填入下方字段；失焦可先查一次著录。" : "，已填入下方字段。"}
+        </p>
+      ) : pasted.trim() ? (
+        <p className="ef-paste-recognized is-miss">未识别出 arXiv / DOI / BibTeX，可直接在下方手填。</p>
+      ) : null}
+      {lookupBusy ? <p className="ef-paste-recognized">正在查询文献库…</p> : null}
+      {found ? (
+        <p className="ef-paste-recognized is-hit">
+          已找到：{found.title}
+          {found.year ? `（${found.year}）` : ""}
+          {found.title !== title ? (
+            <>
+              {" "}
+              <Button
+                type="button"
+                size="sm"
+                variant="text"
+                onClick={() => {
+                  setTitle(found.title);
+                  setPasted("");
+                  setParsed(null);
+                }}
+              >
+                用这个标题
+              </Button>
+            </>
+          ) : null}
+        </p>
+      ) : lookupMissed ? (
+        <p className="ef-paste-recognized">文献库这次没查到；创建论文后仍会自动查询并补全著录。</p>
+      ) : null}
       <Field label="标题（必填）">
         <input
           value={title}

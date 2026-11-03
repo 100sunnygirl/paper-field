@@ -55,6 +55,13 @@ import { DEFAULT_BIBLIO, loadBiblioSettings, saveBiblioSettings, type BiblioSave
 import { filledFrom, lookupPaper, type LookupResult, verifyReachable } from "./lib/lookup";
 import { normalizeArxivId, normalizeDoi, safeHttpUrl, withDefaultScheme } from "./lib/urls";
 import { DRAFT_NOTES_SYSTEM, PREPARE_META_SYSTEM, draftNotesUserPrompt, normalizeMeta, normalizeNotes, prepareMetaUserPrompt } from "./lib/prompts";
+import {
+  listImportFailures,
+  recordImportFailures,
+  removeImportFailure as dropImportFailure,
+  resolveImportFailures,
+  type ImportFailureEntry,
+} from "./lib/importFailures";
 import { redactSecrets } from "./lib/redact";
 import { noteReadingStatus } from "./lib/readingSince";
 import { repo } from "./lib/repo";
@@ -125,6 +132,28 @@ interface FieldState {
   paper: PaperDetail | null;
   archive: PaperListItem[];
   intake: PaperListItem[];
+  /**
+   * 导入失败清单（localStorage 持久化，见 lib/importFailures.ts）：toast 上的重试
+   * 入口随通知消失，这份清单让失败文件长期留在 INTAKE 页可逐条重试或放弃。
+   */
+  importFailures: ImportFailureEntry[];
+  /**
+   * 最近一次批量导入的小结卡（多文件或含失败时记录；单篇成功不打扰）：
+   * 成功 / 跳过（重复）/ 失败清单与原因，常驻到用户关闭——大批量导入后不必翻日志。
+   */
+  importSummary: (ImportOutcome & { at: number }) | null;
+  dismissImportSummary: () => void;
+  /** 逐条移除一个失败文件（用户明确放弃；不再走导入）。 */
+  removeImportFailure: (path: string) => void;
+  /** INTAKE「仅重试失败文件」：按原目标领域分组重跑（全部或指定路径）。 */
+  retryImportFailures: (paths?: string[]) => Promise<void>;
+  /**
+   * 导入目标领域（导入对话框与 INTAKE 页头部共享；null = 跟随当前选中领域）。
+   * 从 INTAKE 发起导入时当前选中领域不可见，这一份显式目标让「导入到哪」始终可读可改。
+   * 用户在阅读页切换领域时清空，目标重新跟随选中。
+   */
+  importTargetDomainId: string | null;
+  setImportTargetDomainId: (id: string | null) => void;
   jobs: LlmJob[];
   stats: FieldStats;
   search: string;
@@ -221,7 +250,18 @@ interface FieldState {
     onProgress?: (done: number, total: number, current: string) => void,
     /** 导入到哪个领域；缺省为发起时选中的领域（重试时由闭包带上原领域）。 */
     domainId?: string,
-  ) => Promise<void>;
+    /** 导入模式（只入库 / 入库并解析 / 解析后补全）；缺省为既有流程（解析后补全）。 */
+    options?: { mode?: ImportMode },
+  ) => Promise<ImportOutcome>;
+  /**
+   * 逐文件目标导入：导入预览里逐文件/按文件夹指定领域的执行端（跨领域收集不用先统一
+   * 导入再逐篇移动）；每个条目带自己的目标领域，单篇失败不中断，失败按原领域记账。
+   */
+  importPdfsPerFile: (
+    entries: ImportFileEntry[],
+    onProgress?: (done: number, total: number, current: string) => void,
+    options?: { mode?: ImportMode },
+  ) => Promise<ImportOutcome>;
   createManualPaper: (input: {
     title: string;
     arxivId?: string;
@@ -233,6 +273,11 @@ interface FieldState {
    * 补全），输入普通文字则按标题建档。之后与手动建档同链路：查文献库、可再关联 PDF。
    */
   createQuickEntry: (raw: string) => Promise<void>;
+  /**
+   * 为已有条目补充本地 PDF（导入预览的重复候选分支）：复制进文库后挂到该论文；
+   * 该论文已有关联 PDF 时不替换，只提示。挂上后若解析源可用则直接排队解析。
+   */
+  attachPdfToPaper: (paperId: string, path: string) => Promise<void>;
   retryMineru: (paperId: string) => Promise<void>;
   /** INTAKE 页批量重试：把全部解析失败（error）论文重新提交给 MinerU。 */
   retryFailedMineru: () => Promise<void>;
@@ -346,6 +391,22 @@ export function importFailureList(failed: Array<{ name: string; message: string 
   return rest > 0 ? `${shown} 等，另有 ${rest} 篇` : shown;
 }
 
+/** 一次导入要落库的文件与它的目标领域（导入预览可逐文件指定）。 */
+export interface ImportFileEntry {
+  path: string;
+  domainId: string;
+}
+
+/** 一次导入（单领域或逐文件多领域）的逐文件结果。 */
+export interface ImportOutcome {
+  created: number;
+  skipped: number;
+  failed: Array<{ name: string; path: string; domainId: string; message: string }>;
+}
+
+/** 导入模式：只入库 / 入库并解析（不自动补全）/ 解析后补全（既有默认流程）。 */
+export type ImportMode = "library" | "parse" | "parse-meta";
+
 const prepareInflight = new Set<string>();
 const refreshInflight = new Set<string>();
 const draftInflight = new Set<string>();
@@ -449,6 +510,9 @@ export const useField = create<FieldState>((set, get) => ({
   paper: null,
   archive: [],
   intake: [],
+  importTargetDomainId: null,
+  importFailures: listImportFailures(),
+  importSummary: null,
   jobs: [],
   stats: { read: 0, total: 0, openSource: 0, queued: 0, running: 0 },
   search: "",
@@ -803,12 +867,46 @@ export const useField = create<FieldState>((set, get) => ({
     await get().refresh({ reselect: true });
   },
 
+  setImportTargetDomainId: (id) => set({ importTargetDomainId: id }),
+
+  dismissImportSummary: () => set({ importSummary: null }),
+
+  removeImportFailure: (path) => {
+    dropImportFailure(path);
+    set({ importFailures: listImportFailures() });
+  },
+
+  retryImportFailures: async (paths) => {
+    const all = get().importFailures;
+    const targets = paths ? all.filter((entry) => paths.includes(entry.path)) : all;
+    if (!targets.length) {
+      get().setFlash({ tone: "warn", text: "没有待重试的导入失败文件。" });
+      return;
+    }
+    // 按原目标领域分组重跑：失败清单记着当时要导入到哪，重试不改道。
+    const byDomain = new Map<string, string[]>();
+    for (const entry of targets) {
+      const list = byDomain.get(entry.domainId) ?? [];
+      list.push(entry.path);
+      byDomain.set(entry.domainId, list);
+    }
+    for (const [domainId, group] of byDomain) {
+      try {
+        await get().importPdfs(group, undefined, domainId);
+      } catch (err) {
+        // importPdfs 内部已逐文件记失败与通知；这里兜住整组异常继续下一组。
+        log.error("store", "重试导入失败", err);
+      }
+    }
+  },
+
   selectDomain: async (id) => {
     try {
       selectionEpoch += 1;
       // 残留横幅的依据：换到的领域与搜索词输入时不同，且词还留着。
       const carried = Boolean(get().search.trim()) && id !== get().selectedDomainId;
-      set({ selectedDomainId: id, selectedPaperId: null, paper: null, mode: "field", dialog: null, dialogPaperId: null, dialogPaperIds: [], searchCarried: carried });
+      // 切换领域后导入目标重新跟随新选中的领域（此前的显式改选不再延续）。
+      set({ selectedDomainId: id, selectedPaperId: null, paper: null, mode: "field", dialog: null, dialogPaperId: null, dialogPaperIds: [], searchCarried: carried, importTargetDomainId: null });
       await get().refresh();
     } catch (err) {
       get().setFlash({ tone: "error", text: `切换领域失败：${errText(err)}，数据未改动。` });
@@ -906,7 +1004,7 @@ export const useField = create<FieldState>((set, get) => ({
       const entry = await snapshotForUndo(() => repo.snapshotDomainForUndo?.(id, domainName));
       await repo.deleteDomain(id);
       const domains = await repo.listDomains();
-      set({ selectedDomainId: domains[0]?.id ?? null, dialog: null, selectedPaperId: null, paper: null });
+      set({ selectedDomainId: domains[0]?.id ?? null, dialog: null, selectedPaperId: null, paper: null, importTargetDomainId: null });
       if (entry) {
         entry.drafts = priorDrafts;
         saveDeleteUndo(entry);
@@ -927,28 +1025,79 @@ export const useField = create<FieldState>((set, get) => ({
     }
   },
 
-  importPdfs: async (paths, onProgress, targetDomainId) => {
+  importPdfs: async (paths, onProgress, targetDomainId, options) => {
     const domainId = targetDomainId ?? get().selectedDomainId;
     if (!domainId) throw new Error("请先选择一个领域，再导入 PDF。");
     const unique = [...new Set(paths.map((path) => path.trim()).filter(Boolean))];
     if (!unique.length) throw new Error("请选择至少一个 PDF");
+    return get().importPdfsPerFile(
+      unique.map((path) => ({ path, domainId })),
+      onProgress,
+      options,
+    );
+  },
+
+  importPdfsPerFile: async (entries, onProgress, options) => {
+    // 同一路径只导一次（按首次出现的目标领域）；没带领域的条目按失败记账，不静默丢弃。
+    const byPath = new Map<string, ImportFileEntry>();
+    const failed: ImportOutcome["failed"] = [];
+    for (const entry of entries) {
+      const path = entry.path.trim();
+      if (!path || byPath.has(path)) continue;
+      if (!entry.domainId) {
+        failed.push({
+          name: path.split(/[/\\]/).pop() ?? path,
+          path,
+          domainId: "",
+          message: "未指定目标领域",
+        });
+        continue;
+      }
+      byPath.set(path, { path, domainId: entry.domainId });
+    }
+    const queue = [...byPath.values()];
+    if (!queue.length && !failed.length) throw new Error("请选择至少一个 PDF");
     try {
       // 逐篇入库以回报真实进度（n/总数 · 当前文件）；单篇失败不中断整批。
       const created: PaperListItem["id"][] = [];
+      const settled: string[] = [];
       let skippedCount = 0;
-      const failed: Array<{ name: string; path: string; message: string }> = [];
       let done = 0;
-      for (const path of unique) {
-        const name = path.split(/[/\\]/).pop() ?? path;
+      for (const entry of queue) {
+        const name = entry.path.split(/[/\\]/).pop() ?? entry.path;
         try {
-          const result = await repo.importLocalPdfs(domainId, [path]);
+          const result = await repo.importLocalPdfs(entry.domainId, [entry.path]);
           for (const paper of result.created) created.push(paper.id);
           skippedCount += result.skipped.length;
+          // 成功入库与确认重复都算落定：从失败清单（如有）移出。
+          settled.push(entry.path);
         } catch (err) {
-          failed.push({ name, path, message: errText(err) });
+          failed.push({ name, path: entry.path, domainId: entry.domainId, message: errText(err) });
         }
         done += 1;
-        onProgress?.(done, unique.length, name);
+        onProgress?.(done, queue.length, name);
+      }
+      // 失败清单持久化（同路径覆盖，按各自目标领域记账）：toast 的重试入口会消失，
+      // 这份清单长期留在 INTAKE。
+      if (failed.length) {
+        recordImportFailures(
+          failed
+            .filter((f) => f.domainId)
+            .map((f) => ({
+              path: f.path,
+              name: f.name,
+              domainId: f.domainId,
+              message: shortReason(f.message),
+              at: Date.now(),
+            })),
+        );
+      }
+      if (settled.length) resolveImportFailures(settled);
+      set({ importFailures: listImportFailures() });
+      // 批量小结卡：多文件或含失败时记录（单篇成功不打扰，仍走既有 toast）；
+      // 常驻到用户关闭——大批量导入后不必翻日志才知道谁失败了。
+      if (queue.length > 1 || failed.length) {
+        set({ importSummary: { created: created.length, skipped: skippedCount, failed, at: Date.now() } });
       }
       // 只关导入对话框本身：长时间导入期间用户打开的其他对话框不被顺手关掉。
       if (get().dialog === "paper") set({ dialog: null });
@@ -966,11 +1115,11 @@ export const useField = create<FieldState>((set, get) => ({
           text: `已导入 ${created.length} 篇${skippedText}，${failed.length} 篇失败：${importFailureList(failed)}。${failed.length > 1 ? "完整失败列表见日志。" : ""}`,
           action: {
             label: failed.length > 1 ? `重试这 ${failed.length} 篇` : "重试",
-            // Only the failed paths go back in; already-imported ones are not re-sent.
+            // Only the failed entries go back in; already-imported ones are not re-sent.
             run: () => {
-              const retry = failed.map((f) => f.path);
+              const retry = failed.filter((f) => f.domainId).map((f) => ({ path: f.path, domainId: f.domainId }));
               get()
-                .importPdfs(retry, undefined, domainId)
+                .importPdfsPerFile(retry)
                 .catch((err) => get().setFlash({ tone: "error", text: `重试导入失败：${errText(err)}` }));
             },
           },
@@ -978,7 +1127,15 @@ export const useField = create<FieldState>((set, get) => ({
       }
       if (!created.length) {
         if (!failed.length) get().setFlash({ tone: "warn", text: "这些 PDF 已在库中。" });
-        return;
+        return { created: created.length, skipped: skippedCount, failed };
+      }
+      // 「只入库」：不提交解析也不占用解析源判断，论文留在待解析队列，随时可续跑。
+      if ((options?.mode ?? "parse-meta") === "library") {
+        get().setFlash({
+          tone: "ok",
+          text: `已入库 ${created.length} 篇${skippedText}，未提交解析。可稍后在设置页「继续未完成的解析」或入库页重试。`,
+        });
+        return { created: created.length, skipped: skippedCount, failed };
       }
       // 生效源判断：探测结果可能过期，无结果时先重探一次再下结论。
       let effective = get().effectiveProvider;
@@ -991,7 +1148,7 @@ export const useField = create<FieldState>((set, get) => ({
           text: `已导入 ${created.length} 篇${skippedText}。当前没有可用的 MinerU 解析源，论文已入库但未解析，可到设置页启用解析源。`,
           action: { label: "去设置", run: () => get().openSystemCard("mineru") },
         });
-        return;
+        return { created: created.length, skipped: skippedCount, failed };
       }
       if (!failed.length) {
         get().setFlash({
@@ -999,7 +1156,9 @@ export const useField = create<FieldState>((set, get) => ({
           text: `已导入 ${created.length} 篇${skippedText}，正在用${providerLabel(effective)}解析。`,
         });
       }
-      enqueueMineruBatch(mineruHost(), created, false);
+      // 「入库并解析」：解析完不自动排队 AI 补全（host.autoMeta=false）；其余模式与既有流程一致。
+      enqueueMineruBatch(mineruHost(options?.mode === "parse" ? false : undefined), created, false);
+      return { created: created.length, skipped: skippedCount, failed };
     } catch (err) {
       get().setFlash({ tone: "error", text: `导入失败：${errText(err)}，数据未改动。` });
       throw err;
@@ -1074,6 +1233,40 @@ export const useField = create<FieldState>((set, get) => ({
       void get().runPrepareMeta(paper.id, false, true, { llm: true });
     } catch (err) {
       get().setFlash({ tone: "error", text: `快速建档失败：${errText(err)}，数据未改动。` });
+      throw err;
+    }
+  },
+
+  attachPdfToPaper: async (paperId, path) => {
+    const target = path.trim();
+    if (!target) return;
+    try {
+      // 先复制进文库（已在库中的原路径会在这里被拦下），再挂给目标论文。
+      const adopted = await repo.adoptManualPdf(target);
+      const result = await repo.attachPdfToPaper(paperId, adopted);
+      if (result === "has-pdf") {
+        get().setFlash({ tone: "warn", text: "这篇论文已有关联 PDF，未替换。可先在编辑里确认原有文件。" });
+        return;
+      }
+      await get().refresh();
+      const paper = await repo.getPaper(paperId);
+      const name = paper?.titleZh || paper?.title || "这篇论文";
+      // 与导入同口径：有可用解析源就直接排队解析；没有就留待解析队列。
+      let effective = get().effectiveProvider;
+      if (!effective && get().mineru.configured) {
+        effective = pickProviderFromHealths(get().mineru.order, await get().probeMineru());
+      }
+      if (effective) {
+        get().setFlash({ tone: "ok", text: `已把文件补充到「${name}」，正在用${providerLabel(effective)}解析。` });
+        enqueueMineruBatch(mineruHost(), [paperId], false);
+      } else {
+        get().setFlash({
+          tone: "ok",
+          text: `已把文件补充到「${name}」。当前没有可用的解析源，稍后可在入库页解析。`,
+        });
+      }
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `补充文件失败：${errText(err)}，数据未改动。` });
       throw err;
     }
   },
@@ -2218,7 +2411,7 @@ async function persistPaperDrafts(paperId: string): Promise<{ saved: number; fai
   return { saved, failed };
 }
 
-function mineruHost() {
+function mineruHost(autoMeta?: boolean) {
   return {
     mineru: () => useField.getState().mineru,
     // 门禁派生口径：任一 enabled 且（requiresKey ? 已存 Key : 免 Key）的提供商。
@@ -2235,6 +2428,8 @@ function mineruHost() {
     showFailures: () => {
       void useField.getState().setMode("intake");
     },
+    // 缺省（undefined / true）：解析完成自动排队 AI 补全（既有流程）。
+    autoMeta: autoMeta === false ? false : true,
   };
 }
 
