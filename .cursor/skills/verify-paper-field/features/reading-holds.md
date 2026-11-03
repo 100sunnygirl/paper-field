@@ -8,7 +8,7 @@ Six holds on the open paper. The browser can show five of them. It cannot swap a
 - 写总结 on an empty block, then 保存笔记 with no typing, flashes 笔记已保存。 The block stays empty and does not gain 手动笔记.
 - 更多操作 → 移动到其他领域. The dialog stays 移动到其他领域. 新领域名称 plus 创建并移入 creates the domain, moves the locked paper, and the switcher follows it.
 - A Ctrl R keydown flashes 已将「visual-instruction-tuning.pdf」标为已读。 with 撤销. 撤销 flashes 已撤销标记已读。 and the 修改阅读状态 value is `unread` again. The footer stays 已读 1 / 4.
-- 设置 can add Ollama 本地（免 Key） and 保存设置. Back on 阅读, 起草阅读笔记 opens 起草哪些笔记. The five blocks are 总结, 亮点, 不足, 启示, 备注. 取消 closes it. 起草所选 is not clicked, so no model call runs.
+- Add the keyless Ollama preset, return to the paper, and open 起草阅读笔记. The five blocks are listed. Do not click 起草选中, so no model call runs.
 - 设置 shows 恢复 disabled, with 浏览器预览不能备份 / 恢复. The dialog 恢复前的文献 does not open.
 
 ## How to get to it (user POV)

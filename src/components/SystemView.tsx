@@ -18,6 +18,7 @@ import {
   testLlmProvider,
   type LlmSaveInput,
 } from "../lib/settings";
+import { loadAutoBackfill, loadTaskPrimary, saveAutoBackfill, saveTaskPrimary, type AiTask } from "../lib/aiPrefs";
 import type { LlmProviderView } from "../lib/types";
 import { MODE_LABELS } from "../lib/types";
 import { biblioEmailConfigured, type BiblioSaveInput } from "../lib/biblio";
@@ -1515,6 +1516,9 @@ function LlmSettingsBlock({ focused }: { focused: boolean }) {
         </p>
       ) : null}
 
+      <AutoBackfillRow />
+      <TaskPrimaryRow />
+
       {saved.providers.length ? (
         <div className="ef-usage">
           <span className="ef-params-label">用量小结</span>
@@ -2500,5 +2504,117 @@ function UpdateBlock({ focused }: { focused: boolean }) {
       )}
       {installMessage ? <p className="ef-update-install-msg">{installMessage}</p> : null}
     </article>
+  );
+}
+
+
+/**
+ * 「自动补全旧论文」开关与待处理篇数预览：关闭后保存设置 / 启动不再自动排回填
+ * （显式「启用自动补全」与单篇手动补全不受影响）。篇数是实时预览（读不到不显示）。
+ */
+function AutoBackfillRow() {
+  const [on, setOn] = useState(loadAutoBackfill);
+  const [count, setCount] = useState<number | null>(null);
+  const settings = useField((s) => s.settings);
+  const usable = hasUsableProvider(settings);
+  useEffect(() => {
+    let alive = true;
+    // 引擎不可用（如部分测试环境只提供部分 repo）时安静地不显示篇数。
+    if (typeof repo.listReadyForMeta === "function") {
+      void repo
+        .listReadyForMeta()
+        .then((ids) => {
+          if (alive) setCount(ids.length);
+        })
+        .catch(() => {
+          if (alive) setCount(null);
+        });
+    }
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return (
+    <div className="ef-auto-backfill">
+      <label>
+        <input
+          type="checkbox"
+          checked={on}
+          onChange={(e) => {
+            setOn(e.target.checked);
+            saveAutoBackfill(e.target.checked);
+          }}
+        />
+        自动补全旧论文
+      </label>
+      <span className="ef-auto-backfill-info">
+        {usable
+          ? `开启后保存设置与启动时会自动为旧论文排队补全（当前待补全 ${count === null ? "…" : count} 篇）。关闭后仍可单篇「补全论文信息」或显式启用。`
+          : "配置可用的 AI 服务后此开关才会生效。"}
+      </span>
+    </div>
+  );
+}
+
+
+/**
+ * 任务模型分配：元数据补全与笔记起草分别选首选模型（本机偏好）。
+ * 回退链派生为「首选之后按全局顺序」；桌面端实际请求顺序由 Rust 决定，
+ * 此处选择在浏览器预览端生效并在 AI 助手的事前展示中呈现。
+ */
+function TaskPrimaryRow() {
+  const providers = useField((s) => s.settings.providers).filter(
+    (provider) => provider.enabled && (!provider.requiresKey || provider.hasKey),
+  );
+  const [meta, setMeta] = useState<string | null>(() => loadTaskPrimary("meta"));
+  const [notes, setNotes] = useState<string | null>(() => loadTaskPrimary("notes"));
+  const labelOf = (id: string | null): string =>
+    id ? (providers.find((provider) => provider.id === id)?.label ?? id) : "跟随全局回退顺序";
+  function select(task: AiTask, id: string | null) {
+    if (task === "meta") {
+      setMeta(id);
+      saveTaskPrimary("meta", id);
+    } else {
+      setNotes(id);
+      saveTaskPrimary("notes", id);
+    }
+  }
+  function row(task: AiTask, name: string, value: string | null) {
+    return (
+      <label className="ef-task-primary-row">
+        <span>{name}</span>
+        <select
+          aria-label={`${name}首选模型`}
+          value={value ?? ""}
+          onChange={(e) => select(task, e.target.value || null)}
+        >
+          <option value="">跟随全局回退顺序</option>
+          {providers.map((provider) => (
+            <option key={provider.id} value={provider.id}>
+              {provider.label}
+              {provider.model ? `（${provider.model}）` : ""}
+            </option>
+          ))}
+        </select>
+      </label>
+    );
+  }
+  if (!providers.length) {
+    return (
+      <div className="ef-task-primary">
+        <p className="ef-task-primary-note">配置可用的 AI 服务后，可分别为元数据补全与笔记起草选择首选模型。</p>
+      </div>
+    );
+  }
+  return (
+    <div className="ef-task-primary">
+      <p className="ef-task-primary-note">
+        两类任务可分别选首选模型；回退链 = 首选之后按上方全局顺序。浏览器预览端按此顺序请求，桌面端的实际请求顺序由后端执行。
+      </p>
+      {row("meta", "补全论文信息", meta)}
+      <small>当前：{labelOf(meta)}；回退：其余按全局顺序</small>
+      {row("notes", "起草阅读笔记", notes)}
+      <small>当前：{labelOf(notes)}；回退：其余按全局顺序</small>
+    </div>
   );
 }

@@ -1529,3 +1529,36 @@ describe("PaperNav · 领域头进度三段化与本周新增", () => {
     expect(document.querySelector(".ef-progress-segments")?.textContent).toContain("未读 1");
   });
 });
+
+
+describe("PaperNav · 批量补全空白信息", () => {
+  it("勾选多篇后点「补全空白信息」：复用 AI 队列逐篇执行（retryFailedMetaJobs 收勾选集）", () => {
+    const retryFailedMetaJobs = vi.fn(async () => undefined);
+    useField.setState({
+      mode: "field",
+      papers: [intakeItem("a", null), intakeItem("b", null), intakeItem("c", null)],
+      batchMode: true,
+      checkedPaperIds: ["a", "c"],
+      retryFailedMetaJobs,
+    });
+    render(<PaperNav />);
+    const button = screen.getByRole("button", { name: /补全空白信息/ });
+    expect(button.getAttribute("title")).toContain("只补空白字段");
+    fireEvent.click(button);
+    expect(retryFailedMetaJobs).toHaveBeenCalledWith(["a", "c"]);
+  });
+
+  it("未勾选任何论文时按钮禁用", () => {
+    const retryFailedMetaJobs = vi.fn(async () => undefined);
+    useField.setState({
+      mode: "field",
+      papers: [intakeItem("a", null)],
+      batchMode: true,
+      checkedPaperIds: [],
+      retryFailedMetaJobs,
+    });
+    render(<PaperNav />);
+    expect(screen.getByRole("button", { name: /补全空白信息/ })).toBeDisabled();
+    expect(retryFailedMetaJobs).not.toHaveBeenCalled();
+  });
+});

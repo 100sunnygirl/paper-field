@@ -272,15 +272,15 @@ async function readingHolds(page) {
   await clickMode(page, "阅读");
   await page.getByRole("heading", { name: FILENAME_TITLE, level: 1 }).waitFor();
   await page.getByRole("button", { name: "起草阅读笔记" }).click();
-  const permit = page.getByRole("dialog", { name: "起草哪些笔记" });
-  await permit.waitFor();
+  const draft = page.locator(".ef-draft-controls");
+  await draft.waitFor();
   for (const label of ["总结", "亮点", "不足", "启示", "备注"]) {
-    await permit.getByText(label, { exact: true }).waitFor();
+    await draft.getByText(label, { exact: true }).waitFor();
   }
-  await permit.getByRole("button", { name: "起草所选" }).waitFor();
+  await draft.getByRole("button", { name: /起草选中/ }).waitFor();
   await shot(page, "reading-holds-permit");
-  await permit.getByRole("button", { name: "取消" }).click();
-  await permit.waitFor({ state: "hidden" });
+  await page.getByRole("button", { name: "起草阅读笔记" }).click();
+  await draft.waitFor({ state: "hidden" });
 
   await clickMode(page, "设置");
   await page.getByRole("heading", { name: "备份与恢复", exact: true }).scrollIntoViewIfNeeded();

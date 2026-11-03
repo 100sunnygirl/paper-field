@@ -4793,6 +4793,185 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   text-underline-offset: 2px;
 }
 .ef-import-dup-link:hover { color: var(--pf-ink); }
+/* AI 写入前的字段级对照清单（确认对话框逐项勾选）：与导入审阅清单同一形态。 */
+.ef-confirm-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 240px;
+  overflow: auto;
+  border: 1px solid var(--pf-divider);
+}
+.ef-confirm-list li {
+  border-bottom: 1px solid var(--pf-divider);
+  font-size: var(--pf-fs-caption);
+}
+.ef-confirm-list li:last-child { border-bottom: 0; }
+.ef-confirm-list label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  min-width: 0;
+}
+.ef-confirm-name {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.ef-confirm-flag {
+  font-style: normal;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+  border: 1px solid var(--pf-divider);
+  border-radius: 3px;
+  padding: 0 4px;
+}
+.ef-confirm-list li.is-manual .ef-confirm-flag { color: var(--pf-ink); border-color: var(--pf-ink); }
+.ef-confirm-value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--pf-secondary);
+}
+.ef-confirm-hint {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  margin: 8px 0 0;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+}
+/* AI 写入的 diff 查看与撤销（ai-diff 对话框）。 */
+.ef-diff-block { margin: 14px 0 0; }
+.ef-diff-block h3 {
+  margin: 0 0 6px;
+  font-size: var(--pf-fs-body);
+}
+.ef-diff-block h4 {
+  margin: 8px 0 4px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+}
+.ef-diff-note { margin: 0 0 8px; font-size: var(--pf-fs-caption); color: var(--pf-secondary); }
+.ef-diff-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--pf-divider);
+}
+.ef-diff-list li {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--pf-divider);
+  font-size: var(--pf-fs-caption);
+}
+.ef-diff-list li:last-child { border-bottom: 0; }
+.ef-diff-field { flex: none; min-width: 5em; }
+.ef-diff-pair { display: flex; align-items: baseline; gap: 6px; min-width: 0; flex: 1; flex-wrap: wrap; }
+.ef-diff-pair del { color: var(--pf-secondary); overflow-wrap: anywhere; }
+.ef-diff-pair ins { text-decoration: none; color: var(--pf-ink); overflow-wrap: anywhere; }
+.ef-diff-versions ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.ef-diff-versions li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: var(--pf-fs-caption);
+  border-bottom: 1px dashed var(--pf-divider);
+}
+.ef-diff-versions li:last-child { border-bottom: 0; }
+.ef-diff-version-by { flex: none; }
+.ef-diff-version-by.is-ai { color: var(--pf-secondary); }
+.ef-diff-version-by.is-user { color: var(--pf-ink); }
+.ef-diff-version-at { flex: none; color: var(--pf-secondary); }
+.ef-diff-version-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--pf-secondary);
+}
+/* AI 助手块的「先预览再写入」干跑开关：安静的小标签，不与主按钮争夺注意力。 */
+/* 起草笔记的块级控制：选块 + 只补空白块 / 起草选中块。 */
+.ef-draft-controls {
+  border: 1px dashed var(--pf-divider);
+  padding: 8px 10px;
+  margin-top: 4px;
+}
+.ef-draft-controls p { margin: 0 0 6px; font-size: var(--pf-fs-caption); color: var(--pf-secondary); }
+.ef-draft-kinds { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.ef-draft-kinds label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--pf-fs-caption);
+  cursor: pointer;
+}
+.ef-draft-kinds em {
+  font-style: normal;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+}
+.ef-draft-actions { display: flex; gap: 8px; margin-top: 8px; }
+.ef-draft-note { margin: 8px 0 0; font-size: var(--pf-fs-caption); color: var(--pf-secondary); }
+/* 逐块采纳预览的 diff 行。 */
+.ef-draft-diff { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+.ef-draft-diff del { color: var(--pf-secondary); }
+.ef-draft-diff ins { text-decoration: none; color: var(--pf-ink); }
+.ef-draft-same { color: var(--pf-secondary); }
+/* 查询落空的内联补救表单：补充 / 更正 arXiv 或 DOI 后跳过缓存重查。 */
+.ef-lookup-retry {
+  border: 1px dashed var(--pf-divider);
+  padding: 8px 10px;
+  margin-top: 8px;
+}
+.ef-lookup-retry p { margin: 0 0 6px; font-size: var(--pf-fs-caption); color: var(--pf-secondary); }
+.ef-lookup-retry-fields { display: flex; flex-wrap: wrap; gap: 6px; align-items: end; }
+.ef-lookup-retry-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+  flex: 1;
+  min-width: 120px;
+}
+.ef-lookup-retry-fields input {
+  border: 1px solid var(--pf-divider);
+  background: var(--pf-canvas);
+  color: var(--pf-ink);
+  padding: 4px 8px;
+  font-size: var(--pf-fs-caption);
+}
+.ef-ai-preview-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+.ef-ai-preview-toggle.is-on { color: var(--pf-ink); }
+.ef-preview-source {
+  flex: none;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+}
 .ef-dialog-foot {
   display: flex;
   gap: 10px;
@@ -7087,3 +7266,160 @@ mark.ef-ft-hit.is-current { background: var(--pf-signal); }
   transition: border-color var(--pf-motion), color var(--pf-motion), background-color var(--pf-motion);
 }
 .ef-domain-templates button:hover { border-color: var(--pf-ink); color: var(--pf-ink); background: var(--pf-hover-flat); }
+/* AI 的事前展示行：将用哪个提供商/模型 + 回退顺序。 */
+.ef-ai-chain {
+  margin: 0 0 8px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+}
+.ef-ai-chain b { color: var(--pf-ink); }
+/* 起草参考范围开关。 */
+.ef-draft-fulltext {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+  font-size: var(--pf-fs-caption);
+  cursor: pointer;
+}
+/* 可点击的溯源徽章与点开详情浮层。 */
+.ef-source-wrap { position: relative; display: inline-flex; }
+.ef-source-badge-btn {
+  appearance: none;
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  cursor: pointer;
+}
+.ef-source-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 220px;
+  background: var(--pf-panel);
+  border: 1px solid var(--pf-divider);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  padding: 10px 12px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-ink);
+  white-space: nowrap;
+}
+.ef-source-pop em {
+  font-style: normal;
+  color: var(--pf-secondary);
+  white-space: normal;
+  max-width: 260px;
+}
+/* AI 按钮置灰原因浮层的触发壳。 */
+.ef-ai-gate { position: relative; display: inline-flex; }
+.ef-btn.is-gated { opacity: 0.55; cursor: not-allowed; }
+.ef-ai-gate-pop { left: 0; top: calc(100% + 6px); white-space: normal; max-width: 280px; }
+/* 著录缓存状态行：缓存说明 + 本会话查询时间 + 跳过缓存重查。 */
+.ef-biblio-cache {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--pf-divider);
+}
+.ef-biblio-cache p {
+  margin: 0 0 6px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+}
+.ef-biblio-cache-why { color: var(--pf-ink); }
+/* 未配置 AI 的一步式引导卡。 */
+.ef-ai-onboard {
+  border: 1px solid var(--pf-divider);
+  padding: 10px 12px;
+  margin: 8px 0;
+}
+.ef-ai-onboard p { margin: 0 0 8px; font-size: var(--pf-fs-caption); }
+.ef-ai-onboard-row { display: flex; flex-direction: column; gap: 6px; }
+.ef-ai-onboard-row select,
+.ef-ai-onboard-row input {
+  border: 1px solid var(--pf-divider);
+  background: var(--pf-canvas);
+  color: var(--pf-ink);
+  padding: 6px 8px;
+  font-size: var(--pf-fs-caption);
+}
+.ef-ai-onboard-note {
+  margin: 8px 0 0;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+}
+/* AI 助手菜单：动作 + 一行影响/耗时标注。 */
+.ef-ai-action { display: flex; flex-direction: column; gap: 2px; align-items: flex-start; }
+.ef-ai-action small,
+.ef-ai-action-note {
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+}
+.ef-ai-buttons { gap: 10px; }
+/* 起草风格与领域上下文。 */
+.ef-draft-style { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.ef-draft-style label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+}
+.ef-draft-style select,
+.ef-draft-style textarea {
+  border: 1px solid var(--pf-divider);
+  background: var(--pf-canvas);
+  color: var(--pf-ink);
+  padding: 4px 8px;
+  font-size: var(--pf-fs-caption);
+  font-family: inherit;
+}
+/* 自动补全开关行（设置页 AI 卡）。 */
+.ef-auto-backfill {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border: 1px dashed var(--pf-divider);
+}
+.ef-auto-backfill label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--pf-fs-caption);
+  cursor: pointer;
+}
+.ef-auto-backfill-info {
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+}
+/* 任务模型分配（设置页 AI 卡）。 */
+.ef-task-primary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border: 1px dashed var(--pf-divider);
+}
+.ef-task-primary-note { margin: 0; font-size: var(--pf-fs-caption); color: var(--pf-secondary); }
+.ef-task-primary-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--pf-fs-caption);
+}
+.ef-task-primary-row select {
+  border: 1px solid var(--pf-divider);
+  background: var(--pf-canvas);
+  color: var(--pf-ink);
+  padding: 4px 8px;
+  font-size: var(--pf-fs-caption);
+}
+.ef-task-primary small { color: var(--pf-secondary); font-size: var(--pf-fs-caption); }
+.ef-ai-chain p { margin: 0 0 2px; }

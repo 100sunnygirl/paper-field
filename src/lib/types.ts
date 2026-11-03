@@ -302,6 +302,24 @@ export const FIELD_SOURCE_LABELS: Record<FieldSource, string> = {
   file: "文件名",
 };
 
+/** 著录字段的中文名（确认对话框逐项勾选、字段 diff 等共用）。 */
+export const META_FIELD_LABELS: Record<MetaField, string> = {
+  title: "英文标题",
+  titleZh: "中文标题",
+  abstract: "摘要",
+  year: "年份",
+  venue: "会议 / 期刊",
+  doi: "DOI",
+  arxivId: "arXiv",
+  pdfUrl: "公开 PDF 链接",
+  codeUrl: "代码仓库",
+  codeOpenSource: "开源状态",
+  projectPage: "项目主页",
+  tags: "标签",
+  labs: "实验室",
+  authors: "作者",
+};
+
 export const OPEN_SOURCE_LABELS: Record<OpenSource, string> = {
   open: "开源",
   closed: "闭源",
@@ -312,7 +330,7 @@ export const OPEN_SOURCE_LABELS: Record<OpenSource, string> = {
 export const JOB_TYPE_LABELS: Record<JobType, string> = {
   prepareMeta: "补全论文信息",
   draftNotes: "起草阅读笔记",
-  refreshLinks: "刷新链接",
+  refreshLinks: "重新查询文献库",
   mineruParse: "MinerU 解析",
 };
 

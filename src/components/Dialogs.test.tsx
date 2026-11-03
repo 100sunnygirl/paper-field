@@ -1433,6 +1433,8 @@ describe("DomainDialog · 删除确认升级（数量清单 / 先导出 / 迁移
     openEditDomain();
     fireEvent.click(screen.getByRole("button", { name: "删除领域…" }));
     const exportBtn = await screen.findByRole("button", { name: "先导出为 Markdown 再删除" });
+    // 数量清单是异步的。按钮在统计回来之前是禁用的，点下去不会调用导出。
+    await waitFor(() => expect(exportBtn).toBeEnabled());
     fireEvent.click(exportBtn);
     expect(exportPapers).toHaveBeenCalledTimes(1);
 

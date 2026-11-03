@@ -15,6 +15,7 @@ import type {
   Lab,
   MineruStatus,
   LlmJob,
+  MetaField,
   NoteBlock,
   NoteKind,
   OpenSource,
@@ -1369,6 +1370,11 @@ export const repo = {
       source?: FieldSource;
       jobId?: string;
       replaceApi?: boolean;
+      /**
+       * 字段级覆盖白名单（确认对话框逐项勾选）：只允许替换勾选的手动字段。
+       * 只收窄整批 overwrite 的作用面，不放宽；缺省沿用整批语义。
+       */
+      allowFields?: ReadonlySet<MetaField>;
       /** 与这次写入同一个事务提交的一步（通常是作业 → done）；它的前提不成立时整批不写。 */
       finish?: BatchStep;
     },
@@ -1397,6 +1403,7 @@ export const repo = {
         source,
         ctx?.startedRev,
         ctx?.replaceApi ?? false,
+        ctx?.allowFields,
       );
       const at = nowIso();
       const sets: string[] = [];
@@ -1458,7 +1465,9 @@ export const repo = {
   /**
    * AI 起草的笔记逐块写入。`revs` 是作业开始（或用户确认覆盖）时每块的版本号：
    * 请求期间被用户改过的块版本号已变，整块跳过。不覆盖时用户改过的块一律保留。
-   * 返回被保留下来的块。
+   * `kinds` 限定这次只写哪些块（确认对话框逐项勾选的结果）；缺省 = 全部五块，
+   * 未列出的块既不写也不计入「被保留」的返回值。
+   * 返回本次请求范围内被保留下来的块。
    */
   async applyDraftedNotes(
     paperId: string,
@@ -1467,6 +1476,7 @@ export const repo = {
     revs?: Partial<Record<NoteKind, number>>,
     /** 与笔记同一个事务提交的一步（作业 → done）；作业已被取消时整批不写，返回 null。 */
     finish?: BatchStep,
+    kinds?: NoteKind[],
   ): Promise<NoteKind[] | null> {
     const engine = await getEngine();
     const paper = await engine.select<PaperRow>("SELECT * FROM papers WHERE id = ?", [paperId]);
@@ -1475,7 +1485,7 @@ export const repo = {
     const at = nowIso();
     const steps: BatchStep[] = [];
     const candidates: NoteKind[] = [];
-    for (const kind of NOTE_KINDS) {
+    for (const kind of kinds ?? NOTE_KINDS) {
       const block = blocks.find((row) => row.kind === kind);
       if (block) {
         if (block.user_edited && !overwrite) continue;
@@ -1504,7 +1514,7 @@ export const repo = {
       throw err;
     }
     const written = new Set(candidates.filter((_, index) => rows[index] > 0));
-    return NOTE_KINDS.filter((kind) => !written.has(kind));
+    return (kinds ?? NOTE_KINDS).filter((kind) => !written.has(kind));
   },
 
   /**

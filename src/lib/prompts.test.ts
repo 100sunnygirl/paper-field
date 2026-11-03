@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  draftInputScope,
   draftNotesUserPrompt,
   normalizeMeta,
   normalizeNotes,
@@ -152,5 +153,93 @@ describe("用户 prompt 组装", () => {
     expect(prompt).toContain("Authors: Alice (MIT); Bob");
     expect(prompt).toContain("Tags: x");
     expect(prompt).toContain("Abstract:\nA");
+  });
+});
+
+describe("draftNotesUserPrompt · 小节锚点注入", () => {
+  function paperOf(parsedMarkdown: string): PaperDetail {
+    return {
+      title: "T",
+      titleZh: null,
+      year: 2023,
+      venue: null,
+      abstract: "A",
+      parsedMarkdown,
+      tags: [],
+      authors: [],
+    } as unknown as PaperDetail;
+  }
+
+  it("有解析全文时附小节表（供模型按 §编号锚定判断）", () => {
+    const prompt = draftNotesUserPrompt(paperOf("# 引言\n\n正文。\n\n## 方法\n\n内容。"));
+    expect(prompt).toContain("Section map");
+    expect(prompt).toContain("§1 引言");
+    expect(prompt).toContain("§1.1 方法");
+  });
+
+  it("没有解析全文时不附小节表", () => {
+    expect(draftNotesUserPrompt(paperOf(""))).not.toContain("Section map");
+  });
+});
+
+describe("draftInputScope · 起草输入范围（事前展示）", () => {
+  it("统计摘要与全文字数，全文超 12000 字标 truncated", () => {
+    const scope = draftInputScope({ abstract: "一段摘要。", parsedMarkdown: "# 全文\n\n内容" });
+    expect(scope.abstractChars).toBe(5);
+    expect(scope.fulltextChars).toBeGreaterThan(0);
+    expect(scope.truncated).toBe(false);
+
+    const long = draftInputScope({ abstract: "", parsedMarkdown: "字".repeat(12001) });
+    expect(long.truncated).toBe(true);
+  });
+});
+
+describe("draftNotesUserPrompt · 参考范围开关", () => {
+  function paperOf(parsedMarkdown: string): PaperDetail {
+    return {
+      title: "T",
+      titleZh: null,
+      year: 2023,
+      venue: null,
+      abstract: "A",
+      parsedMarkdown,
+      tags: [],
+      authors: [],
+    } as unknown as PaperDetail;
+  }
+
+  it("includeFulltext=false 时不注入 markdown 与小节表（只看摘要）", () => {
+    const prompt = draftNotesUserPrompt(paperOf("# 引言\n\n正文。"), { includeFulltext: false });
+    expect(prompt).not.toContain("MinerU markdown");
+    expect(prompt).not.toContain("Section map");
+    expect(prompt).toContain("Abstract:");
+  });
+
+  it("默认注入全文（旧行为不变）", () => {
+    const prompt = draftNotesUserPrompt(paperOf("# 引言\n\n正文。"));
+    expect(prompt).toContain("MinerU markdown");
+  });
+});
+
+describe("draftNotesUserPrompt · 风格与领域上下文注入", () => {
+  function paperOf(): PaperDetail {
+    return {
+      title: "T", titleZh: null, year: null, venue: null, abstract: "A",
+      parsedMarkdown: "", tags: [], authors: [],
+    } as unknown as PaperDetail;
+  }
+
+  it("styleNote / contextNote 注入 prompt；缺省不注入", () => {
+    expect(draftNotesUserPrompt(paperOf(), { styleNote: "Reader style: 简洁" })).toContain("Reader style: 简洁");
+    expect(draftNotesUserPrompt(paperOf(), { contextNote: "关注多模态对齐" })).toContain("Research context");
+    expect(draftNotesUserPrompt(paperOf(), { contextNote: "关注多模态对齐" })).toContain("关注多模态对齐");
+    expect(draftNotesUserPrompt(paperOf())).not.toContain("Reader style");
+    expect(draftNotesUserPrompt(paperOf())).not.toContain("Research context");
+  });
+
+  it("空白风格/上下文不注入空行", () => {
+    const prompt = draftNotesUserPrompt(paperOf(), { styleNote: "  ", contextNote: "" });
+    expect(prompt).not.toContain("Reader style");
+    expect(prompt).not.toContain("Research context");
   });
 });

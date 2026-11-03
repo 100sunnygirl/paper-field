@@ -8,6 +8,7 @@ import {
   headingForSelection,
   highlightFulltextMatches,
   insertQuoteAtCursor,
+  linkSectionRefs,
 } from "./fulltext";
 
 describe("extractFulltextHeadings · 标题层级与编号", () => {
@@ -186,5 +187,37 @@ describe("highlightFulltextMatches · 全文内检索高亮", () => {
     highlightFulltextMatches(root, "beta");
     expect(highlightFulltextMatches(root, "ma")).toBe(1);
     expect(root.querySelectorAll("mark.ef-ft-hit").length).toBe(1);
+  });
+});
+
+describe("linkSectionRefs · AI 判断附原文段落锚点", () => {
+  // 小节表编号按层级起算（§1 引言 → §2.1 实验设置），AI 按小节表引用。
+  const headings = extractFulltextHeadings("# 引言\n\n正文。\n\n## 方法\n\n内容。\n\n### 实验设置\n\n更多。");
+  const secMethod = headings.find((heading) => heading.text === "实验设置")!;
+
+  it("把（原文 §N）引用变成指向解析全文小节的锚点链接", () => {
+    const linked = linkSectionRefs(`- 方法很稳（原文 §${secMethod.number}）。`, headings);
+    expect(linked).toContain(`(#${secMethod.id})`);
+    expect(linked).toContain(`（原文 [§${secMethod.number} 实验设置](#${secMethod.id})）`);
+  });
+
+  it("引用了不存在的小节保持纯文本（不造锚点）", () => {
+    const raw = "- 引用有误（原文 §9.9）。";
+    expect(linkSectionRefs(raw, headings)).toBe(raw);
+  });
+
+  it("模型按小节表引用时（§2.1），锚点指向同一小节", () => {
+    const linked = linkSectionRefs(`- 见（原文 §${secMethod.number}）。`, headings);
+    expect(linked).toContain(`（原文 [§${secMethod.number} 实验设置](#${secMethod.id})）`);
+  });
+
+  it("无小节表时原文返回，不抛错", () => {
+    const raw = "- （原文 §3.2）";
+    expect(linkSectionRefs(raw, [])).toBe(raw);
+  });
+
+  it("带小节标题的引用沿用引用里的标题文字", () => {
+    const linked = linkSectionRefs(`- 见（原文 §${secMethod.number} 实验设置）。`, headings);
+    expect(linked).toContain(`[§${secMethod.number} 实验设置](#${secMethod.id})`);
   });
 });

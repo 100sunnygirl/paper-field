@@ -1,3 +1,4 @@
+import { extractFulltextHeadings } from "./fulltext";
 import type { DraftedNotes, PaperDetail, PreparedMeta } from "./types";
 import { safeHttpUrl } from "./urls";
 
@@ -43,6 +44,10 @@ Write in Chinese if the user's other fields are Chinese, otherwise match the pap
 - highlights / weaknesses: markdown bullet lists.
 - remarks: practical lab notes (repro, code, what to check).
 - implications: what this paper changes for the current research domain.
+- When the paper provides MinerU markdown with numbered sections, anchor each key judgment in
+  highlights / weaknesses to the source passage: end the bullet with a plain section reference
+  like （原文 §3.2）using the section number from the markdown. Only cite sections that exist;
+  without parsed fulltext, omit references. Never invent section numbers.
 Be specific. No reading-status language. No fake citations.`;
 
 function excerpt(value: string | null | undefined, max = 12000): string | null {
@@ -78,8 +83,13 @@ export function prepareMetaUserPrompt(input: {
     .join("\n");
 }
 
-export function draftNotesUserPrompt(paper: PaperDetail): string {
+export function draftNotesUserPrompt(
+  paper: PaperDetail,
+  options: { includeFulltext?: boolean; styleNote?: string; contextNote?: string } = {},
+): string {
+  const includeFulltext = options.includeFulltext !== false;
   const authors = paper.authors.map((a) => `${a.name}${a.affiliation ? ` (${a.affiliation})` : ""}`).join("; ");
+  const headings = extractFulltextHeadings(paper.parsedMarkdown);
   return [
     `Title: ${paper.title}`,
     paper.titleZh ? `Chinese title: ${paper.titleZh}` : null,
@@ -90,10 +100,34 @@ export function draftNotesUserPrompt(paper: PaperDetail): string {
     "",
     "Abstract:",
     paper.abstract || "(none)",
-    excerpt(paper.parsedMarkdown) ? `\nMinerU markdown:\n${excerpt(paper.parsedMarkdown)}` : null,
+    includeFulltext && headings.length
+      ? `\nSection map (use these numbers when anchoring judgments as 原文 §number):\n${headings
+          .slice(0, 40)
+          .map((heading) => `§${heading.number} ${heading.text}`)
+          .join("\n")}`
+      : null,
+    includeFulltext && excerpt(paper.parsedMarkdown) ? `\nMinerU markdown:\n${excerpt(paper.parsedMarkdown)}` : null,
+    options.styleNote?.trim() ? `\n${options.styleNote.trim()}` : null,
+    options.contextNote?.trim() ? `\nResearch context (may inform implications; ignore if irrelevant):\n${options.contextNote.trim()}` : null,
   ]
     .filter((line) => line !== null)
     .join("\n");
+}
+
+/** 起草输入范围（事前展示）：摘要与解析全文字数、全文是否超限截断。 */
+export const DRAFT_EXCERPT_LIMIT = 12000;
+
+export function draftInputScope(paper: Pick<PaperDetail, "abstract" | "parsedMarkdown">): {
+  abstractChars: number;
+  fulltextChars: number;
+  truncated: boolean;
+} {
+  const count = (text: string): number => [...text.trim()].length;
+  return {
+    abstractChars: count(paper.abstract),
+    fulltextChars: count(paper.parsedMarkdown),
+    truncated: count(paper.parsedMarkdown) > DRAFT_EXCERPT_LIMIT,
+  };
 }
 
 /** 模型输出类型不可信：字符串字段只收字符串（数字转成文本），其他类型一律当空。 */
