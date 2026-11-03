@@ -162,3 +162,37 @@ describe("PaperSearch · 跨领域搜索下拉", () => {
     expect(windowKeydown).not.toHaveBeenCalled();
   });
 });
+
+describe("PaperSearch · 搜索范围显式化", () => {
+  beforeEach(() => {
+    localStorage.removeItem("paper-field.search-scope");
+  });
+
+  it("默认「全部领域」：输入即出跨领域下拉；切换到「当前领域」后输入只过滤列表、不再弹下拉", async () => {
+    vi.mocked(repo.searchAll).mockResolvedValue([]);
+    useField.setState({ mode: "field" });
+    render(<PaperSearch />);
+
+    // 默认 all：输入出下拉
+    fireEvent.change(screen.getByLabelText("搜索论文"), { target: { value: "vision" } });
+    expect(await screen.findByText(/全部领域共匹配/)).toBeInTheDocument();
+
+    // 切到当前领域：下拉收起，偏好写入本机
+    fireEvent.click(screen.getByRole("button", { name: "当前领域" }));
+    await waitFor(() => expect(screen.queryByText(/全部领域共匹配/)).toBeNull());
+    expect(localStorage.getItem("paper-field.search-scope")).toBe("domain");
+
+    // 范围切换回全部领域：带词重新展开下拉
+    fireEvent.click(screen.getByRole("button", { name: "全部领域" }));
+    expect(await screen.findByText(/全部领域共匹配/)).toBeInTheDocument();
+    expect(localStorage.getItem("paper-field.search-scope")).toBe("all");
+  });
+
+  it("沿用条件显式可见：下拉头写出搜索词与范围", async () => {
+    vi.mocked(repo.searchAll).mockResolvedValue([searchItem("p1", "Vision Transformer", "多模态")]);
+    useField.setState({ mode: "field" });
+    render(<PaperSearch />);
+    fireEvent.change(screen.getByLabelText("搜索论文"), { target: { value: "vision" } });
+    expect(await screen.findByText(/按「vision」检索 · 全部领域共匹配 1 篇/)).toBeInTheDocument();
+  });
+});

@@ -5,6 +5,11 @@ import { useField } from "../store";
 import type { NoteKind, PaperDetail } from "../lib/types";
 import { ConfirmMetaDialog, EditPaperDialog } from "./Dialogs";
 
+vi.mock("../lib/mineru", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/mineru")>();
+  return { ...actual, pickPdfFiles: vi.fn(async () => null) };
+});
+
 function noteBlock(paperId: string, kind: NoteKind, content = ""): PaperDetail["notes"][NoteKind] {
   return { id: `n-${kind}`, paperId, kind, content, source: "manual", userEdited: false, revisedAt: null };
 }
@@ -331,4 +336,174 @@ describe("EditPaperDialog · 选中被改走时保留未保存的修改", () => 
     expect(vi.mocked(useField.getState().savePaperPatch).mock.calls[0]![0]).toBe("paper-1");
     getPaper.mockRestore();
   });
+});
+
+describe("EditPaperDialog · 保存全部并关闭", () => {
+  it("一次提交著录与作者两处修改并关闭对话框", async () => {
+    openWith(fakeDetail());
+    render(<EditPaperDialog />);
+    fireEvent.change(screen.getByLabelText("英文标题"), { target: { value: "New Title" } });
+    fireEvent.click(screen.getByRole("button", { name: "编辑作者" }));
+    fireEvent.change(screen.getByLabelText("作者 1"), { target: { value: "Alice Smith" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "保存全部并关闭" }));
+    await waitFor(() => expect(useField.getState().dialog).toBeNull());
+    expect(useField.getState().savePaperPatch).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(useField.getState().savePaperPatch).mock.calls[0]![1]).toMatchObject({ title: "New Title" });
+    expect(useField.getState().saveAuthors).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(useField.getState().saveAuthors).mock.calls[0]![1][0].name).toBe("Alice Smith");
+  });
+
+  it("年份非法时定位到年份字段：不保存、不关闭，作者也不动", async () => {
+    openWith(fakeDetail());
+    render(<EditPaperDialog />);
+    fireEvent.change(screen.getByLabelText("英文标题"), { target: { value: "New Title" } });
+    fireEvent.change(screen.getByLabelText("年份"), { target: { value: "abc" } });
+    fireEvent.click(screen.getByRole("button", { name: "编辑作者" }));
+    fireEvent.change(screen.getByLabelText("作者 1"), { target: { value: "Alice Smith" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "保存全部并关闭" }));
+    await waitFor(() => expect(screen.getByLabelText("年份")).toHaveFocus());
+    expect(useField.getState().dialog).toBe("edit-paper");
+    expect(useField.getState().savePaperPatch).not.toHaveBeenCalled();
+    expect(useField.getState().saveAuthors).not.toHaveBeenCalled();
+  });
+
+  it("没有修改时直接关闭，不触发任何保存", async () => {
+    openWith(fakeDetail());
+    render(<EditPaperDialog />);
+    fireEvent.click(screen.getByRole("button", { name: "保存全部并关闭" }));
+    await waitFor(() => expect(useField.getState().dialog).toBeNull());
+    expect(useField.getState().savePaperPatch).not.toHaveBeenCalled();
+    expect(useField.getState().saveAuthors).not.toHaveBeenCalled();
+  });
+
+  it("保存失败时留在对话框：成功的著录不重复提交，作者仍可重试", async () => {
+    const detail = fakeDetail();
+    useField.setState({
+      dialog: "edit-paper",
+      dialogPaperId: detail.id,
+      paper: detail,
+      selectedPaperId: detail.id,
+      savePaperPatch: vi.fn(async () => undefined),
+      saveAuthors: vi.fn(async () => {
+        throw new Error("写入失败");
+      }),
+    });
+    render(<EditPaperDialog />);
+    fireEvent.change(screen.getByLabelText("英文标题"), { target: { value: "New Title" } });
+    fireEvent.click(screen.getByRole("button", { name: "编辑作者" }));
+    fireEvent.change(screen.getByLabelText("作者 1"), { target: { value: "Alice Smith" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "保存全部并关闭" }));
+    await waitFor(() => expect(useField.getState().saveAuthors).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(useField.getState().dialog).toBe("edit-paper");
+    expect(useField.getState().savePaperPatch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("EditPaperDialog · 作者名单粘贴自动拆分", () => {
+  it("粘贴整段名单拆分为逐项可校对的行（编号与括注机构剥掉）", async () => {
+    openWith(fakeDetail());
+    render(<EditPaperDialog />);
+    fireEvent.click(screen.getByRole("button", { name: "编辑作者" }));
+    fireEvent.click(screen.getByRole("button", { name: "粘贴整段名单…" }));
+
+    fireEvent.change(screen.getByLabelText("粘贴作者名单"), {
+      target: { value: "1. Alice Smith (MIT)\n（2）Bob Lee（北大）\n③ Carol Wu、张三" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "拆分为作者行" }));
+
+    expect((screen.getByLabelText("作者 1") as HTMLInputElement).value).toBe("Alice Smith");
+    expect((screen.getByLabelText("作者 2") as HTMLInputElement).value).toBe("Bob Lee");
+    expect((screen.getByLabelText("作者 3") as HTMLInputElement).value).toBe("Carol Wu");
+    expect((screen.getByLabelText("作者 4") as HTMLInputElement).value).toBe("张三");
+    // 拆分即视为修改：直接保存作者会把新名单落库
+    fireEvent.click(screen.getByRole("button", { name: "保存作者" }));
+    await waitFor(() => expect(useField.getState().saveAuthors).toHaveBeenCalledTimes(1));
+    const saved = vi.mocked(useField.getState().saveAuthors).mock.calls[0]![1];
+    expect(saved.map((a) => a.name)).toEqual(["Alice Smith", "Bob Lee", "Carol Wu", "张三"]);
+  });
+
+  it("识别不到姓名时提示且不改动现有作者", async () => {
+    openWith(fakeDetail());
+    render(<EditPaperDialog />);
+    fireEvent.click(screen.getByRole("button", { name: "编辑作者" }));
+    fireEvent.click(screen.getByRole("button", { name: "粘贴整段名单…" }));
+    fireEvent.change(screen.getByLabelText("粘贴作者名单"), { target: { value: "  、；, and " } });
+    fireEvent.click(screen.getByRole("button", { name: "拆分为作者行" }));
+
+    expect(screen.getByText(/没有识别到作者姓名/)).toBeInTheDocument();
+    expect((screen.getByLabelText("作者 1") as HTMLInputElement).value).toBe("Haotian Liu");
+  });
+
+  it("拆分后逐行校对：上移 / 下移 / 删除后按新顺序保存", async () => {
+    openWith(fakeDetail());
+    render(<EditPaperDialog />);
+    fireEvent.click(screen.getByRole("button", { name: "编辑作者" }));
+    fireEvent.click(screen.getByRole("button", { name: "粘贴整段名单…" }));
+    fireEvent.change(screen.getByLabelText("粘贴作者名单"), {
+      target: { value: "Alice Smith, Bob Lee, Carol Wu" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "拆分为作者行" }));
+
+    // 下移第一位 → [Bob, Alice, Carol]
+    fireEvent.click(screen.getByRole("button", { name: "下移作者 1" }));
+    expect((screen.getByLabelText("作者 1") as HTMLInputElement).value).toBe("Bob Lee");
+    // 删除现在的第二位（Alice）
+    fireEvent.click(screen.getByRole("button", { name: "删除作者 2" }));
+    expect((screen.getByLabelText("作者 1") as HTMLInputElement).value).toBe("Bob Lee");
+    expect((screen.getByLabelText("作者 2") as HTMLInputElement).value).toBe("Carol Wu");
+    // 首位不能上移
+    expect(screen.getByRole("button", { name: "上移作者 1" })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "保存作者" }));
+    await waitFor(() => expect(useField.getState().saveAuthors).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(useField.getState().saveAuthors).mock.calls[0]![1].map((a) => a.name)).toEqual([
+      "Bob Lee",
+      "Carol Wu",
+    ]);
+  });
+});
+
+describe("EditPaperDialog · 关联/替换本机 PDF", () => {
+  function asTauri() {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { value: {}, configurable: true });
+  }
+
+  it("浏览器预览：字段保持只读并给出拖入舞台的指引，不显示选择按钮", () => {
+    openWith(fakeDetail({ pdfPath: null }));
+    render(<EditPaperDialog />);
+    expect((screen.getByLabelText("本地 PDF") as HTMLInputElement).value).toBe("尚未关联本地 PDF");
+    expect(screen.queryByRole("button", { name: "关联 PDF 文件…" })).toBeNull();
+    expect(screen.getByText(/可在桌面应用中关联，或把文件拖进正文舞台/)).toBeInTheDocument();
+  });
+
+  it("已关联 PDF 的论文显示文件名与「替换 PDF 文件…」", () => {
+    asTauri();
+    openWith(fakeDetail());
+    useField.setState({ attachPaperPdf: vi.fn(async () => undefined) });
+    render(<EditPaperDialog />);
+    expect((screen.getByLabelText("本地 PDF") as HTMLInputElement).value).toBe("/local/llava.pdf");
+    expect(screen.getByRole("button", { name: "替换 PDF 文件…" })).toBeInTheDocument();
+    expect(screen.getByText(/文件缺失时可点「替换 PDF 文件…」重新定位/)).toBeInTheDocument();
+  });
+
+  it("桌面端：选择文件后交给 attachPaperPdf（替换已有文件时按钮文案跟着变）", async () => {
+    const { pickPdfFiles } = await import("../lib/mineru");
+    asTauri();
+    const attachPaperPdf = vi.fn(async () => undefined);
+    openWith(fakeDetail({ pdfPath: null }));
+    useField.setState({ attachPaperPdf });
+    render(<EditPaperDialog />);
+    fireEvent.click(screen.getByRole("button", { name: "关联 PDF 文件…" }));
+    await waitFor(() => expect(pickPdfFiles).toHaveBeenCalledWith(false));
+    vi.mocked(pickPdfFiles).mockResolvedValueOnce(["/papers/llava-v2.pdf"]);
+    fireEvent.click(screen.getByRole("button", { name: "关联 PDF 文件…" }));
+    await waitFor(() => expect(attachPaperPdf).toHaveBeenCalledWith("paper-1", "/papers/llava-v2.pdf"));
+  });
+
 });

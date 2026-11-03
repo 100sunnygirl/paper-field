@@ -236,7 +236,7 @@ async function readingHolds(page) {
   }
 
   await page.getByRole("button", { name: "更多操作" }).click();
-  await page.getByRole("button", { name: "移动到其他领域" }).click();
+  await page.getByRole("button", { name: "移动到其他领域", exact: true }).click();
   const move = page.getByRole("dialog", { name: "移动到其他领域" });
   await move.getByRole("textbox", { name: "新领域名称" }).fill("对齐验收");
   await move.getByRole("button", { name: "创建并移入" }).click();

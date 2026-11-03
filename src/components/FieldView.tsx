@@ -47,6 +47,8 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
   // 阶段一句话与作业面板同一口径：入库页行内直接看到「已解析 n/N 页」等实况。
   const activity = useSyncExternalStore(subscribeActivity, getActivity);
   const search = useField((s) => s.search);
+  const searchCarried = useField((s) => s.searchCarried);
+  const setSearch = useField((s) => s.setSearch);
   const batchMode = useField((s) => s.batchMode);
   const checkedPaperIds = useField((s) => s.checkedPaperIds);
   const setBatchMode = useField((s) => s.setBatchMode);
@@ -229,6 +231,18 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
         <PaperSearch />
       </div>
 
+      {/* 搜索残留横幅：切领域后旧词仍在过滤当前领域，明说出来并可一键清空。 */}
+      {mode === "field" && search.trim() && searchCarried ? (
+        <div className="ef-search-carry" role="note">
+          <span>
+            已切换领域，列表仍按此前的搜索词「{search.trim()}」过滤（本领域 {list.length} 篇命中）
+          </span>
+          <Button type="button" size="sm" variant="text" onClick={() => void setSearch("")}>
+            清空搜索
+          </Button>
+        </div>
+      ) : null}
+
       <div className={`ef-list-head ${batchMode ? "is-batch" : ""}`.trim()}>
         {batchMode ? (
           <>
@@ -289,13 +303,20 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
 
       {list.length === 0 ? (
         <p className="no-results">
-          {search.trim()
-            ? "没有符合条件的论文。可以调整搜索词或切换领域。"
-            : mode === "archive"
-              ? "还没有手动标记已读的论文。"
-              : mode === "intake"
-                ? "没有待处理论文。"
-                : "此领域还没有论文。"}
+          {search.trim() ? (
+            <>
+              没有符合条件的论文。可以调整搜索词或切换领域。
+              <Button type="button" size="sm" variant="text" className="ef-carry-clear" onClick={() => void setSearch("")}>
+                清空搜索查看全部
+              </Button>
+            </>
+          ) : mode === "archive" ? (
+            "还没有手动标记已读的论文。"
+          ) : mode === "intake" ? (
+            "没有待处理论文。"
+          ) : (
+            "此领域还没有论文。"
+          )}
         </p>
       ) : (
         <PaperMatrix

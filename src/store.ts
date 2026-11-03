@@ -60,6 +60,12 @@ import { noteReadingStatus } from "./lib/readingSince";
 import { repo } from "./lib/repo";
 import { cancelChat, completeChat, hasUsableProvider, loadSettings, readLlmSettings, saveSettings, type LlmSaveInput } from "./lib/settings";
 import { log } from "./lib/logger";
+import {
+  DELETE_UNDO_TOAST_MS,
+  saveDeleteUndo,
+  takeDeleteUndo,
+  type DeleteUndoEntry,
+} from "./lib/deleteUndo";
 import { dismissAll, notify, type ToastAction } from "./toasts";
 import type {
   AppMode,
@@ -81,6 +87,8 @@ interface Flash {
   tone: "ok" | "warn" | "error";
   text: string;
   action?: ToastAction;
+  /** 本条通知的停留时长（毫秒）；缺省按 tone。限时撤销（删除/移动）用短窗口。 */
+  durationMs?: number;
 }
 
 /** 数据导出的可选范围。 */
@@ -120,6 +128,11 @@ interface FieldState {
   jobs: LlmJob[];
   stats: FieldStats;
   search: string;
+  /**
+   * 搜索残留可见化：切换领域时搜索词没有清空（沿用是特性），这里记一笔
+   * 「这个词是在别的领域输入的」，列表顶部据此显示残留横幅；用户再次输入即清除。
+   */
+  searchCarried: boolean;
   archiveFilter: OpenSource | "all";
   settings: LlmSettings;
   mineru: MineruSettingsV2;
@@ -215,6 +228,11 @@ interface FieldState {
     doi?: string;
     pdfPath?: string;
   }) => Promise<void>;
+  /**
+   * 空领域引导的快速建档：粘贴 arXiv 链接 / DOI 直接建档（标识符入列，标题留给文献库
+   * 补全），输入普通文字则按标题建档。之后与手动建档同链路：查文献库、可再关联 PDF。
+   */
+  createQuickEntry: (raw: string) => Promise<void>;
   retryMineru: (paperId: string) => Promise<void>;
   /** INTAKE 页批量重试：把全部解析失败（error）论文重新提交给 MinerU。 */
   retryFailedMineru: () => Promise<void>;
@@ -244,8 +262,14 @@ interface FieldState {
    * 精确写回撤销前库里的已读时间戳（含 null），不重新起算。
    */
   setReadingStatus: (status: "unread" | "reading" | "read", paperId?: string, restoreReadAt?: string | null) => Promise<void>;
-  movePaper: (domainId: string, paperId?: string) => Promise<void>;
+  movePaper: (domainId: string, paperId?: string, options?: { follow?: boolean }) => Promise<void>;
+  /** 「撤销移回」的落点：移回原领域并带着用户回去（不再二次提供撤销）。 */
+  movePaperBack: (originDomainId: string, paperId: string) => Promise<void>;
+  /** 为已有论文关联 / 替换本机 PDF（编辑对话框与拖入正文舞台共用）。 */
+  attachPaperPdf: (paperId: string, path: string) => Promise<void>;
   deletePaper: (paperId?: string) => Promise<void>;
+  /** 撤销最近一次删除（论文 / 批量 / 领域）：限时缓冲里的快照原样回插；窗口已过则提示。 */
+  undoDelete: () => Promise<void>;
   setBatchMode: (on: boolean) => void;
   toggleCheckedPaper: (id: string) => void;
   setCheckedPaperIds: (ids: string[]) => void;
@@ -335,6 +359,9 @@ let selectionEpoch = 0;
 
 const DRAFTS_KEY = "paper-field.note-drafts";
 
+/** 移动论文「撤销移回」通知的停留窗口（与删除撤销同一节奏）。 */
+const MOVE_UNDO_TOAST_MS = 10_000;
+
 /** 草稿同步存一份到 localStorage：窗口意外重载也能找回。读写失败（隐私模式等）静默忽略。 */
 function loadDrafts(): Record<string, Partial<Record<NoteKind, string>>> {
   try {
@@ -354,6 +381,24 @@ function persistDrafts(drafts: Record<string, Partial<Record<NoteKind, string>>>
   } catch {
     // 存不下也不影响编辑：草稿仍在内存里。
   }
+}
+
+/**
+ * 删除前的撤销快照（可选调用）：repo 缺这个方法（旧测试替身）或快照失败时返回
+ * null——删除照常执行，只是这条不可反悔，主流程不被拖垮。
+ */
+async function snapshotForUndo(capture: () => Promise<DeleteUndoEntry> | undefined): Promise<DeleteUndoEntry | null> {
+  try {
+    return (await capture()) ?? null;
+  } catch (err) {
+    log.error("store", "删除撤销快照失败（删除继续，本次不可撤销）", err);
+    return null;
+  }
+}
+
+/** 删除通知上「撤销删除」的公共按钮（10 秒窗口，见 DELETE_UNDO_TOAST_MS）。 */
+function undoDeleteAction(): ToastAction {
+  return { label: "撤销删除", run: () => void useField.getState().undoDelete() };
 }
 
 /** 这篇论文有没有尚未保存的笔记草稿。 */
@@ -407,6 +452,7 @@ export const useField = create<FieldState>((set, get) => ({
   jobs: [],
   stats: { read: 0, total: 0, openSource: 0, queued: 0, running: 0 },
   search: "",
+  searchCarried: false,
   archiveFilter: "all",
   settings: { version: 2, providers: [], usage: {} },
   mineru: DEFAULT_MINERU,
@@ -440,7 +486,11 @@ export const useField = create<FieldState>((set, get) => ({
   // 否则会出现「有弹窗、无日志」的盲区（store.test.ts 有零 IPC + 收口防回归用例）。
   setFlash: (flash) => {
     set({ flash });
-    if (flash) notify(flash.tone, flash.text, flash.action ? { action: flash.action } : undefined);
+    if (flash)
+      notify(flash.tone, flash.text, {
+        ...(flash.durationMs !== undefined ? { durationMs: flash.durationMs } : {}),
+        ...(flash.action ? { action: flash.action } : {}),
+      });
     else dismissAll("manual");
   },
   setNoteDraft: (paperId, kind, value) => {
@@ -756,7 +806,9 @@ export const useField = create<FieldState>((set, get) => ({
   selectDomain: async (id) => {
     try {
       selectionEpoch += 1;
-      set({ selectedDomainId: id, selectedPaperId: null, paper: null, mode: "field", dialog: null, dialogPaperId: null, dialogPaperIds: [] });
+      // 残留横幅的依据：换到的领域与搜索词输入时不同，且词还留着。
+      const carried = Boolean(get().search.trim()) && id !== get().selectedDomainId;
+      set({ selectedDomainId: id, selectedPaperId: null, paper: null, mode: "field", dialog: null, dialogPaperId: null, dialogPaperIds: [], searchCarried: carried });
       await get().refresh();
     } catch (err) {
       get().setFlash({ tone: "error", text: `切换领域失败：${errText(err)}，数据未改动。` });
@@ -779,7 +831,8 @@ export const useField = create<FieldState>((set, get) => ({
   setSearch: (value) => {
     // The input shows `value` at once; the query runs SEARCH_DEBOUNCE_MS after
     // the last keystroke. Every caller's promise settles when that refresh does.
-    set({ search: value });
+    // 用户主动输入（或清空）即解除「切领域残留」横幅。
+    set({ search: value, searchCarried: false });
     if (searchTimer) clearTimeout(searchTimer);
     // Clearing the box restores the full list at once; there is nothing to debounce.
     const delay = value.trim() === "" ? 0 : SEARCH_DEBOUNCE_MS;
@@ -812,6 +865,12 @@ export const useField = create<FieldState>((set, get) => ({
     const domain = await repo.createDomain(input);
     set({ dialog: null, selectedDomainId: domain.id, mode: "field" });
     await get().refresh();
+    // 新建领域的下一步直接挂在 toast 上：顺手把第一篇论文加进来。
+    get().setFlash({
+      tone: "ok",
+      text: `已创建领域「${domain.name}」。`,
+      action: { label: "添加第一篇论文", run: () => useField.getState().openDialog("paper") },
+    });
   },
 
   updateDomain: async (input) => {
@@ -829,12 +888,39 @@ export const useField = create<FieldState>((set, get) => ({
     const id = get().selectedDomainId;
     if (!id) return;
     try {
+      // 名字以库为准（状态里的 domains 可能尚未刷新），只用于提示与撤销文案。
+      let domainRow: { name?: string } | null = null;
+      try {
+        domainRow = (await repo.getDomain?.(id)) ?? null;
+      } catch {
+        domainRow = null;
+      }
+      const domainName = get().domains.find((d) => d.id === id)?.name ?? domainRow?.name ?? "";
       // 先取消这些论文的在途作业并移出排队，免得轮询在论文删掉后还占着队列、扣着配额。
-      await forgetPapers(await repo.paperIdsInDomain(id));
+      const paperIds = await repo.paperIdsInDomain(id);
+      await forgetPapers(paperIds);
+      const priorDrafts = Object.fromEntries(
+        paperIds.map((paperId) => [paperId, get().drafts[paperId]]).filter(([, value]) => value),
+      ) as DeleteUndoEntry["drafts"];
+      // 限时撤销：删除前的应用层快照（领域行 + 论文/笔记/解析/关联/作业），失败则本次不可撤销。
+      const entry = await snapshotForUndo(() => repo.snapshotDomainForUndo?.(id, domainName));
       await repo.deleteDomain(id);
       const domains = await repo.listDomains();
       set({ selectedDomainId: domains[0]?.id ?? null, dialog: null, selectedPaperId: null, paper: null });
+      if (entry) {
+        entry.drafts = priorDrafts;
+        saveDeleteUndo(entry);
+      }
       await get().refresh();
+      const flash: Flash = {
+        tone: "ok",
+        text: `已删除领域「${domainName}」${paperIds.length ? `与 ${paperIds.length} 篇论文` : ""}。`,
+      };
+      if (entry) {
+        flash.action = undoDeleteAction();
+        flash.durationMs = DELETE_UNDO_TOAST_MS;
+      }
+      get().setFlash(flash);
     } catch (err) {
       get().setFlash({ tone: "error", text: `删除领域失败：${errText(err)}，数据未改动。` });
       throw err;
@@ -950,6 +1036,44 @@ export const useField = create<FieldState>((set, get) => ({
       if (paper.pdfPath) enqueueMineruBatch(mineruHost(), [paper.id], false);
     } catch (err) {
       get().setFlash({ tone: "error", text: `创建论文失败：${errText(err)}，数据未改动。` });
+      throw err;
+    }
+  },
+
+  createQuickEntry: async (raw) => {
+    const domainId = get().selectedDomainId;
+    if (!domainId) throw new Error("请先选择一个领域，再建档。");
+    const text = raw.trim();
+    if (!text) throw new Error("先粘贴 arXiv 链接、DOI，或直接输入论文标题。");
+    try {
+      // 全角冒号、doi.org 链接等写法在入库前规整；认不出的当标题用。
+      const arxivId = normalizeArxivId(text);
+      const doi = arxivId ? null : normalizeDoi(text);
+      if (!arxivId && !doi && text.length > 200) {
+        throw new Error("这段内容既不是 arXiv 链接也不是 DOI；作为标题请控制在 200 字以内。");
+      }
+      // 标识符建档不写标题（「未命名论文」无来源标记），文献库查到后可替换成正式标题。
+      const paper = await repo.createPaper({
+        domainId,
+        ...(arxivId ? { arxivId } : {}),
+        ...(doi ? { doi } : {}),
+        ...(!arxivId && !doi ? { title: text, userOwned: true } : {}),
+      });
+      selectionEpoch += 1;
+      set({ selectedPaperId: paper.id, mode: "field" });
+      await get().refresh();
+      get().setFlash({
+        tone: "ok",
+        text: arxivId
+          ? `已按 arXiv:${arxivId} 建档，正在查询文献库补全标题与信息。`
+          : doi
+            ? `已按 DOI ${doi} 建档，正在查询文献库补全标题与信息。`
+            : `已创建「${text}」。`,
+      });
+      // 与手动建档同链路：标识符建档即查文献库（无 AI Key 也查），模型部分交给配置决定。
+      void get().runPrepareMeta(paper.id, false, true, { llm: true });
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `快速建档失败：${errText(err)}，数据未改动。` });
       throw err;
     }
   },
@@ -1304,21 +1428,99 @@ export const useField = create<FieldState>((set, get) => ({
     }
   },
 
-  movePaper: async (domainId, paperId) => {
+  movePaper: async (domainId, paperId, options) => {
     const id = paperId ?? get().dialogPaperId ?? get().selectedPaperId;
     if (!id) return;
+    // 去向选择：跟随到目标领域（默认，保持既有行为）或留在原领域继续看原列表。
+    const follow = options?.follow !== false;
     try {
+      // 撤销要回到的领域以库里的当前值为准（状态可能滞后）。
+      const originRow = await repo.getPaper(id).catch(() => null);
+      const originDomainId = originRow?.domainId ?? get().selectedDomainId;
       await repo.updatePaper(id, { domainId });
       selectionEpoch += 1;
-      set({ dialog: null, dialogPaperId: null, selectedPaperId: id, selectedDomainId: domainId, mode: "field" });
+      if (follow) {
+        set({ dialog: null, dialogPaperId: null, selectedPaperId: id, selectedDomainId: domainId, mode: "field" });
+      } else {
+        // 留在原领域：论文已不在本列表，选中回落到第一篇（refresh 兜底）。
+        set({ dialog: null, dialogPaperId: null, selectedPaperId: null, paper: null });
+      }
       await get().refresh();
       const domain = get().domains.find((d) => d.id === domainId);
-      get().setFlash({
+      const originName = get().domains.find((d) => d.id === originDomainId)?.name;
+      const flash: Flash = {
         tone: "ok",
-        text: domain ? `论文已移动到「${domain.name}」。` : "论文已移动到新领域。",
-      });
+        text: originName && !follow
+          ? `论文已移动到「${domain?.name ?? "新领域"}」，你仍留在「${originName}」。`
+          : domain
+            ? `论文已移动到「${domain.name}」。`
+            : "论文已移动到新领域。",
+      };
+      // 限时撤销移回（真的跨领域才给）：短窗口内一键带回原领域。
+      if (originDomainId && originDomainId !== domainId) {
+        flash.action = { label: "撤销移回", run: () => void get().movePaperBack(originDomainId, id) };
+        flash.durationMs = MOVE_UNDO_TOAST_MS;
+      }
+      get().setFlash(flash);
     } catch (err) {
       get().setFlash({ tone: "error", text: `移动论文失败：${errText(err)}，数据未改动。` });
+      throw err;
+    }
+  },
+
+  movePaperBack: async (originDomainId, paperId) => {
+    try {
+      await repo.updatePaper(paperId, { domainId: originDomainId });
+      selectionEpoch += 1;
+      set({ selectedPaperId: paperId, selectedDomainId: originDomainId, mode: "field" });
+      await get().refresh();
+      const domain = get().domains.find((d) => d.id === originDomainId);
+      get().setFlash({ tone: "ok", text: domain ? `已移回「${domain.name}」。` : "已移回原领域。" });
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `撤销移动失败：${errText(err)}，数据未改动。` });
+      throw err;
+    }
+  },
+
+  attachPaperPdf: async (paperId, path) => {
+    const trimmed = path.trim();
+    if (!trimmed) return;
+    try {
+      const paper = await repo.getPaper(paperId);
+      if (!paper) return;
+      // 同一文件已关联到这篇：不重复复制，友好提示（也覆盖「文件缺失重新定位到原路径」的误点）。
+      if (paper.pdfPath === trimmed || paper.pdfOriginalPath === trimmed) {
+        get().setFlash({ tone: "ok", text: "这篇论文已经关联这个文件。" });
+        return;
+      }
+      const adopted = await repo.adoptManualPdf(trimmed);
+      await repo.attachPdf(paperId, adopted);
+      await get().refresh();
+      const name = adopted.libraryPath.split(/[/\\]/).pop() ?? adopted.libraryPath;
+      // 尚未解析出全文的论文：解析源可用就顺势排上解析（与导入、手动建档同一语义）。
+      const fresh = await repo.getPaper(paperId);
+      if (fresh && !fresh.parsedMarkdown.trim()) {
+        let effective = get().effectiveProvider;
+        if (!effective && get().mineru.configured) {
+          effective = pickProviderFromHealths(get().mineru.order, await get().probeMineru());
+        }
+        if (effective) {
+          get().setFlash({
+            tone: "ok",
+            text: `已关联 PDF（${name}），正在用${providerLabel(effective)}解析。`,
+          });
+          enqueueMineruBatch(mineruHost(), [paperId], false);
+          return;
+        }
+        get().setFlash({
+          tone: "ok",
+          text: `已关联 PDF（${name}）。尚未启用解析源，可到设置页配置后解析全文。`,
+        });
+        return;
+      }
+      get().setFlash({ tone: "ok", text: `已关联 PDF（${name}）。` });
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `关联 PDF 失败：${errText(err)}，数据未改动。` });
       throw err;
     }
   },
@@ -1328,10 +1530,17 @@ export const useField = create<FieldState>((set, get) => ({
     if (!id) return;
     try {
       await forgetPapers([id]);
+      const priorDraft = get().drafts[id];
+      // 限时撤销：删除前的应用层快照（论文/笔记/解析/关联/作业）；失败则本次不可撤销。
+      const entry = await snapshotForUndo(() => repo.snapshotPapersForUndo?.([id], ""));
       await repo.deletePaper(id);
       const drafts = { ...get().drafts };
       delete drafts[id];
       persistDrafts(drafts);
+      if (entry) {
+        if (priorDraft) entry.drafts = { [id]: priorDraft };
+        saveDeleteUndo(entry);
+      }
       const wasSelected = get().selectedPaperId === id;
       if (wasSelected) selectionEpoch += 1;
       set({
@@ -1341,9 +1550,52 @@ export const useField = create<FieldState>((set, get) => ({
         ...(wasSelected ? { selectedPaperId: null, paper: null } : {}),
       });
       await get().refresh();
-      get().setFlash({ tone: "ok", text: "论文已删除。" });
+      const flash: Flash = { tone: "ok", text: "论文已删除。" };
+      if (entry) {
+        flash.action = undoDeleteAction();
+        flash.durationMs = DELETE_UNDO_TOAST_MS;
+      }
+      get().setFlash(flash);
     } catch (err) {
       get().setFlash({ tone: "error", text: `删除论文失败：${errText(err)}，数据未改动。` });
+      throw err;
+    }
+  },
+
+  undoDelete: async () => {
+    const entry = takeDeleteUndo();
+    if (!entry) {
+      get().setFlash({ tone: "warn", text: "撤销窗口已过，删除已定型，无法恢复。" });
+      return;
+    }
+    try {
+      if (typeof repo.restoreDeleted !== "function") throw new Error("当前环境不支持恢复");
+      await repo.restoreDeleted(entry);
+      // 未保存的笔记草稿原样放回（快照捕获的是删除那一刻的草稿）。
+      for (const [paperId, kinds] of Object.entries(entry.drafts)) {
+        for (const [kind, value] of Object.entries(kinds)) {
+          get().setNoteDraft(paperId, kind as NoteKind, value ?? null);
+        }
+      }
+      selectionEpoch += 1;
+      set({
+        mode: "field",
+        selectedDomainId: entry.domainId || get().selectedDomainId,
+        selectedPaperId: entry.paperIds[0] ?? null,
+        paper: null,
+        dialog: null,
+        dialogPaperId: null,
+      });
+      await get().refresh();
+      get().setFlash({
+        tone: "ok",
+        text:
+          entry.kind === "domain"
+            ? `已撤销删除：领域「${entry.label}」与 ${entry.paperIds.length} 篇论文已原样恢复。`
+            : `已撤销删除，${entry.paperIds.length} 篇论文（含笔记与未保存草稿）已原样恢复。`,
+      });
+    } catch (err) {
+      get().setFlash({ tone: "error", text: `撤销删除失败：${errText(err)}，论文保持删除状态。` });
       throw err;
     }
   },
@@ -1371,10 +1623,19 @@ export const useField = create<FieldState>((set, get) => ({
     if (!ids.length) return;
     try {
       await forgetPapers(ids);
+      const priorDrafts = Object.fromEntries(
+        ids.map((id) => [id, get().drafts[id]]).filter(([, value]) => value),
+      ) as DeleteUndoEntry["drafts"];
+      // 限时撤销：整批一体的应用层快照。
+      const entry = await snapshotForUndo(() => repo.snapshotPapersForUndo?.(ids, ""));
       await repo.deletePapers(ids);
       const drafts = { ...get().drafts };
       for (const id of ids) delete drafts[id];
       persistDrafts(drafts);
+      if (entry) {
+        entry.drafts = priorDrafts;
+        saveDeleteUndo(entry);
+      }
       selectionEpoch += 1;
       set({
         drafts,
@@ -1386,7 +1647,12 @@ export const useField = create<FieldState>((set, get) => ({
         paper: null,
       });
       await get().refresh();
-      get().setFlash({ tone: "ok", text: `已删除 ${ids.length} 篇论文。` });
+      const flash: Flash = { tone: "ok", text: `已删除 ${ids.length} 篇论文。` };
+      if (entry) {
+        flash.action = undoDeleteAction();
+        flash.durationMs = DELETE_UNDO_TOAST_MS;
+      }
+      get().setFlash(flash);
     } catch (err) {
       get().setFlash({ tone: "error", text: `批量删除失败：${errText(err)}，数据未改动。` });
       throw err;
