@@ -238,6 +238,8 @@ async function readingHolds(page) {
   await page.getByRole("button", { name: "更多操作" }).click();
   await page.getByRole("button", { name: "移动到其他领域", exact: true }).click();
   const move = page.getByRole("dialog", { name: "移动到其他领域" });
+  const createRow = move.getByRole("button", { name: "新建领域并移入" });
+  if (await createRow.count()) await createRow.click();
   await move.getByRole("textbox", { name: "新领域名称" }).fill("对齐验收");
   await move.getByRole("button", { name: "创建并移入" }).click();
   await page.getByRole("button", { name: "切换研究领域：对齐验收" }).waitFor();

@@ -29,6 +29,12 @@ describe(`real Tauri desktop — ${phase}`, () => {
     await openPaperList();
     await click('[aria-label^="切换研究领域"]');
     if (phase === 'create') {
+      // 快捷菜单里没有「新建领域」，要先进入「管理领域…」才到原来的对话框。
+      const manage = await $('button=管理领域…');
+      if (await manage.isExisting()) {
+        await manage.waitForDisplayed();
+        await manage.click();
+      }
       await click('button=新建领域');
       await $('input[placeholder="多模态"]').setValue(domain);
       await click('button=创建领域');
@@ -54,7 +60,14 @@ describe(`real Tauri desktop — ${phase}`, () => {
       await $('textarea[aria-label="总结内容"]').setValue(note);
       await click('//section[@id="note-summary"]//button[normalize-space(.)="保存笔记"]');
     } else if (phase === 'reopen') {
-      await click(`button.ef-domain-option*=${domain}`);
+      const quick = $(`button.ef-domain-menu-item*=${domain}`);
+      const legacy = $(`button.ef-domain-option*=${domain}`);
+      await browser.waitUntil(
+        async () => (await quick.isDisplayed()) || (await legacy.isDisplayed()),
+        { timeoutMsg: `Domain ${domain} was not offered after opening the switcher` },
+      );
+      if (await quick.isDisplayed()) await quick.click();
+      else await legacy.click();
       await $('[role="dialog"]').waitForExist({ reverse: true });
       await openPaperList();
       await click('//div[@aria-label="论文列表"]//button[.//h3[normalize-space(.)="smoke"]]');

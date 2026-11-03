@@ -38,6 +38,13 @@
   --pf-hover-quiet: #eef1e8;
   --pf-tint-success: #8fd3a9;
   --pf-tint-danger: #f19a92;
+  /* 领域强调色板（六枚、与墨色同饱和度的深色；信号黄不在其中，保留给「打开 PDF」与选中提示）。 */
+  --pf-accent-moss: #4e6e38;
+  --pf-accent-indigo: #35507e;
+  --pf-accent-sienna: #8a4b2b;
+  --pf-accent-plum: #6d4470;
+  --pf-accent-teal: #2f6b66;
+  --pf-accent-amber: #8a6512;
 
   /* ---- Type ---- */
   --pf-font-ui: Inter, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
@@ -733,7 +740,11 @@ button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent
 .ef-nav-head {
   padding: 24px 22px 20px;
   border-bottom: 1px solid var(--pf-divider);
+  /* 领域强调色：未设置时回落墨色；进度条填充与「上次阅读」左边线同色归组。 */
+  --pf-domain-accent: var(--pf-ink);
 }
+.ef-nav-head .ef-progress > i { background: var(--pf-domain-accent); }
+.ef-nav-head .ef-last-read { border-left-color: var(--pf-domain-accent); }
 /* 区段角标（研究领域 / 全部领域 · 已读…）：caption 档、带一枚墨框黄方块。 */
 .ef-overline {
   display: flex;
@@ -806,6 +817,129 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 .ef-domain-select .ef-ico { width: 16px; height: 16px; transition: transform var(--pf-direct); }
 .ef-domain-select:hover { border-color: var(--pf-ink); background: var(--pf-ink); color: var(--pf-signal); }
 .ef-domain-select:hover .ef-ico { transform: translateY(1px); }
+/* 领域快捷切换下拉：点领域名就地展开（各领域带阅读进度），⌘1-9 / ⌘↑⌘↓ 直达。 */
+.ef-domain-menu-wrap { position: relative; margin-top: 10px; }
+.ef-domain-menu-wrap .ef-domain-picker { margin-top: 0; }
+.ef-domain-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 12;
+  background: var(--pf-surface);
+  border: 1px solid var(--pf-ink);
+  border-radius: var(--pf-radius);
+  box-shadow: 0 14px 34px rgba(25, 25, 25, 0.16);
+  padding: 6px;
+  max-height: min(60vh, 420px);
+  overflow: auto;
+}
+.ef-domain-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: calc(var(--pf-radius) - 1px);
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ef-domain-menu-item:hover { background: var(--pf-hover-flat); }
+.ef-domain-menu-item.is-current { background: var(--pf-hover-quiet); }
+.ef-domain-menu-main { min-width: 0; display: block; }
+.ef-domain-menu-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--pf-fs-ui);
+  font-weight: 600;
+  color: var(--pf-ink);
+  overflow-wrap: anywhere;
+}
+.ef-domain-menu-name .ef-ico { width: 13px; height: 13px; color: var(--pf-success); flex: none; }
+.ef-domain-menu-meta {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-muted);
+}
+.ef-domain-menu-bar {
+  display: block;
+  height: 3px;
+  margin-top: 5px;
+  background: #dcdfd5;
+  overflow: hidden;
+}
+.ef-domain-menu-bar > i { display: block; height: 3px; background: var(--pf-ink); }
+.ef-domain-menu-item kbd,
+.ef-domain-menu-hint {
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-muted);
+}
+.ef-domain-menu-item kbd {
+  flex: none;
+  border: 1px solid var(--pf-divider);
+  border-radius: 4px;
+  padding: 1px 5px;
+  background: var(--pf-panel);
+}
+.ef-domain-menu-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-top: 1px solid var(--pf-divider);
+  margin-top: 6px;
+  padding: 8px 10px 2px;
+}
+.ef-domain-menu-foot button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: none;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+  cursor: pointer;
+}
+.ef-domain-menu-foot button:hover { color: var(--pf-ink); }
+.ef-domain-menu-foot button .ef-ico { width: 13px; height: 13px; }
+.ef-domain-menu-hint { white-space: nowrap; }
+.ef-domain-menu-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+/* 领域强调色选择：固定六枚色票 + 默认（墨色）。 */
+.ef-domain-swatches {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.ef-domain-swatches button {
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--pf-divider);
+  border-radius: 50%;
+  background: var(--pf-panel);
+  font: inherit;
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-secondary);
+  cursor: pointer;
+  transition: box-shadow var(--pf-motion), border-color var(--pf-motion);
+}
+.ef-domain-swatches button.is-on {
+  border-color: var(--pf-ink);
+  box-shadow: inset 0 0 0 2px var(--pf-surface), inset 0 0 0 3px var(--pf-ink);
+}
 .ef-nav-sum {
   font-size: var(--pf-fs-caption);
   color: var(--pf-secondary);
@@ -867,10 +1001,100 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   background: var(--pf-tint-success);
   animation: pf-flash-out 700ms var(--pf-ease-out);
 }
+/* 领域头进度三段（未读/在读/已读）：纯展示的分段计数条。 */
+.ef-progress-segments {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+.ef-progress-segments span {
+  font-size: var(--pf-fs-tag);
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--pf-divider);
+  color: var(--pf-secondary);
+  background: var(--pf-surface);
+}
+.ef-progress-segments .seg-reading { border-color: var(--pf-control-border); color: var(--pf-ink); }
+.ef-progress-segments .seg-read { border-color: var(--pf-line-strong); background: var(--pf-hover-quiet); }
+/* 本周新增：小墨点 + 一行说明（冷置领域不显示，活跃度一眼可辨）。 */
+.ef-week-new {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 0 0;
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-secondary);
+}
+.ef-week-new i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--pf-domain-accent, var(--pf-ink));
+}
 .ef-progress-value b.is-read-pulse,
 .ef-status b.is-read-pulse {
   display: inline-block;
   animation: pf-count-bump 700ms var(--pf-ease-out);
+}
+/* 上次阅读：领域头一行「标题 · 日期」，点击直达续读。 */
+.ef-last-read {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  margin-top: 12px;
+  padding: 6px 10px;
+  border: none;
+  border-left: 3px solid var(--pf-ink);
+  background: var(--pf-hover-quiet);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--pf-motion);
+}
+.ef-last-read:hover { background: var(--pf-hover-flat); }
+.ef-last-read-label {
+  flex: none;
+  font-size: var(--pf-fs-tag);
+  font-weight: 600;
+  letter-spacing: var(--pf-tracking-tag);
+  color: var(--pf-muted);
+}
+.ef-last-read-title {
+  min-width: 0;
+  flex: 1;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ef-last-read .mono { flex: none; font-size: var(--pf-fs-tag); color: var(--pf-muted); }
+/* 领域关键问题：进入领域时的一句话提示（简介之外的「为什么读这些」）。 */
+.ef-domain-question {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 10px 0 0;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+  line-height: 1.7;
+}
+.ef-domain-question-label {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid var(--pf-control-border);
+  border-radius: 999px;
+  font-size: var(--pf-fs-tag);
+  font-weight: 500;
+  color: var(--pf-muted);
+}
+.ef-field-hint {
+  display: block;
+  margin-top: 4px;
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-muted);
 }
 .ef-list-head {
   display: flex;
@@ -4062,6 +4286,18 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
   color: var(--pf-muted);
   line-height: 1.6;
 }
+.ef-domain-option-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  flex: none;
+}
+.ef-domain-option-stats {
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-muted);
+  text-align: right;
+}
 .ef-domain-option .mono {
   display: inline-flex;
   align-items: center;
@@ -4074,6 +4310,146 @@ button.ef-domain-picker:focus-visible .ef-domain-select .ef-ico {
 .ef-domain-option:hover { border-color: var(--pf-ink); background: var(--pf-hover-flat); }
 .ef-domain-option:hover .mono .ef-ico { transform: translateX(3px); }
 .ef-domain-option:active { transform: translateY(var(--pf-nudge)); }
+/* 领域选择对话框：顶部搜索过滤 + ↑↓/Enter 键盘高亮；最近使用的领域置顶并带角标。 */
+.ef-domain-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0 2px;
+  padding: 0 12px;
+  height: 36px;
+  border: 1px solid var(--pf-divider);
+  border-radius: var(--pf-radius);
+  background: var(--pf-surface);
+}
+.ef-domain-filter > .ef-ico { width: 15px; height: 15px; color: var(--pf-muted); flex: none; }
+.ef-domain-filter:focus-within { border-color: var(--pf-ink); }
+.ef-domain-filter input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  font: inherit;
+  color: var(--pf-ink);
+}
+.ef-domain-filter input:focus { outline: none; }
+.ef-domain-filter input::placeholder { color: var(--pf-muted); }
+.ef-domain-filter-hint {
+  flex: none;
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-muted);
+  letter-spacing: 0.02em;
+}
+.ef-domain-options { margin-top: 2px; }
+.ef-domain-option.is-active { border-color: var(--pf-ink); box-shadow: inset 0 0 0 1px var(--pf-ink); }
+.ef-domain-recent {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 6px;
+  border: 1px solid var(--pf-control-border);
+  border-radius: 999px;
+  font-size: var(--pf-fs-tag);
+  font-style: normal;
+  font-weight: 500;
+  color: var(--pf-secondary);
+  vertical-align: 2px;
+}
+.ef-domain-empty { color: var(--pf-muted); text-align: center; padding: 18px 0; }
+/* 排序模式：行不可点击切换，右侧 ↑↓ 立即写回 sort_order。 */
+.ef-domain-ordering .ef-order-row { cursor: default; }
+.ef-domain-ordering .ef-order-row:hover { background: var(--pf-surface); border-color: var(--pf-divider); }
+.ef-order-actions { display: inline-flex; gap: 2px; flex: none; }
+/* 移动模式：目标领域不存在时就地「新建领域并移入」，不必中途退出先去建。 */
+.ef-domain-create { margin-top: 10px; }
+.ef-domain-create-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  border: 1px dashed var(--pf-control-border);
+  border-radius: var(--pf-radius);
+  background: transparent;
+  font: inherit;
+  font-size: var(--pf-fs-ui);
+  color: var(--pf-secondary);
+  cursor: pointer;
+  transition: border-color var(--pf-motion), color var(--pf-motion), background-color var(--pf-motion);
+}
+.ef-domain-create-toggle .ef-ico { width: 15px; height: 15px; }
+.ef-domain-create-toggle:hover { border-color: var(--pf-ink); color: var(--pf-ink); background: var(--pf-hover-flat); }
+.ef-domain-create-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  height: 40px;
+  border: 1px solid var(--pf-ink);
+  border-radius: var(--pf-radius);
+  background: var(--pf-surface);
+}
+.ef-domain-create-row > .ef-ico { width: 15px; height: 15px; color: var(--pf-muted); flex: none; }
+.ef-domain-create-row input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  font: inherit;
+  color: var(--pf-ink);
+}
+.ef-domain-create-row input:focus { outline: none; }
+.ef-domain-create-row input::placeholder { color: var(--pf-muted); }
+/* 批量标签对话框：输入添加 + 已有标签按覆盖篇数移除。 */
+.ef-tag-batch-row { display: flex; gap: 8px; margin: 4px 0 14px; }
+.ef-tag-batch-row input {
+  flex: 1;
+  min-width: 0;
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--pf-divider);
+  border-radius: var(--pf-radius);
+  background: var(--pf-surface);
+  font: inherit;
+  color: var(--pf-ink);
+}
+.ef-tag-batch-row input:focus { outline: none; border-color: var(--pf-ink); }
+.ef-tag-batch-row input::placeholder { color: var(--pf-muted); }
+.ef-tag-batch-hint { font-size: var(--pf-fs-caption); color: var(--pf-muted); }
+.ef-tag-batch-existing ul {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0 0;
+  padding: 0;
+}
+.ef-tag-batch-existing li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px 3px 10px;
+  border: 1px solid var(--pf-control-border);
+  border-radius: 999px;
+  background: var(--pf-surface);
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+}
+.ef-tag-batch-existing li small { color: var(--pf-muted); }
+.ef-tag-batch-existing li button {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--pf-muted);
+  cursor: pointer;
+}
+.ef-tag-batch-existing li button:hover { background: var(--pf-danger-bg); color: var(--pf-danger); }
+.ef-tag-batch-existing li button .ef-ico { width: 11px; height: 11px; }
 /* Current option: the 3px signal bar lives on a ::before so pf-marker-in can
    grow it once from the top; the corner notch marks it as the active field. */
 .ef-domain-option.is-current {
@@ -6023,3 +6399,79 @@ mark.ef-ft-hit.is-current { background: var(--pf-signal); }
 .ef-combobox-list li { padding: 4px 8px; cursor: pointer; color: var(--pf-ink); }
 .ef-combobox-list li[data-active], .ef-combobox-list li:hover { background: var(--pf-hover-flat); }
 .ef-combobox-list li[aria-selected="true"] { font-weight: 600; }
+/* 每领域列表现场：恢复上次的搜索词时给一行可清空的提示（不打断，也不悄悄沿用）。 */
+.ef-restored-search {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 8px;
+  padding: 5px 10px;
+  border: 1px solid var(--pf-divider);
+  border-radius: var(--pf-radius);
+  background: var(--pf-surface);
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+}
+.ef-restored-search button {
+  flex: none;
+  border: none;
+  background: transparent;
+  padding: 2px 4px;
+  font: inherit;
+  font-size: var(--pf-fs-tag);
+  color: var(--pf-secondary);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.ef-restored-search button:hover { color: var(--pf-ink); }
+/* 删除领域确认：损失清单 + 导出 / 迁移动作。 */
+.ef-domain-delete-review p { margin: 0 0 10px; }
+.ef-domain-delete-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.ef-domain-delete-migrate { margin-top: 4px; }
+
+/* 领域回收站（设置页）：整域快照 30 天内可恢复。 */
+.ef-trash-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.ef-trash-list li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border: 1px solid var(--pf-divider);
+  border-radius: var(--pf-radius);
+  background: var(--pf-surface);
+}
+.ef-trash-main { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.ef-trash-main small { color: var(--pf-muted); }
+.ef-trash-meta { flex: 1; font-size: var(--pf-fs-caption); color: var(--pf-secondary); }
+.ef-trash-actions { display: inline-flex; align-items: center; gap: 8px; }
+.ef-trash-warn { font-size: var(--pf-fs-caption); color: var(--pf-danger); }
+/* 合并领域对话框：来源/目标两列选择 + 预览。 */
+.ef-merge-selects { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.ef-merge-preview {
+  margin-top: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--pf-divider);
+  border-radius: var(--pf-radius);
+  background: var(--pf-surface);
+}
+.ef-merge-preview p { margin: 0 0 6px; }
+.ef-merge-dup-head { font-size: var(--pf-fs-caption); color: var(--pf-secondary); }
+.ef-merge-dups { margin: 4px 0 0; padding-left: 18px; font-size: var(--pf-fs-caption); color: var(--pf-secondary); }
+
+/* 新建领域示例模板：一键套用名称与简介。 */
+.ef-domain-templates { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin: -6px 0 4px; }
+.ef-domain-templates-label { font-size: var(--pf-fs-caption); color: var(--pf-muted); }
+.ef-domain-templates button {
+  padding: 3px 10px;
+  border: 1px dashed var(--pf-control-border);
+  border-radius: 999px;
+  background: transparent;
+  font: inherit;
+  font-size: var(--pf-fs-caption);
+  color: var(--pf-secondary);
+  cursor: pointer;
+  transition: border-color var(--pf-motion), color var(--pf-motion), background-color var(--pf-motion);
+}
+.ef-domain-templates button:hover { border-color: var(--pf-ink); color: var(--pf-ink); background: var(--pf-hover-flat); }

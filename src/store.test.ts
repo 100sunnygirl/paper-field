@@ -14,6 +14,13 @@ vi.mock("./lib/repo", () => ({
     listIntake: vi.fn(async () => []),
     listFailedMineru: vi.fn(async () => [] as string[]),
     createDomain: vi.fn(),
+    updatePaper: vi.fn(async () => undefined),
+    movePapers: vi.fn(async () => undefined),
+    applyTagsToPapers: vi.fn(async () => undefined),
+    paperIdsInDomain: vi.fn(async () => [] as string[]),
+    deleteDomain: vi.fn(async () => undefined),
+    migrateDomainPapers: vi.fn(async () => 0),
+    searchStructured: vi.fn(async () => [] as import("./lib/types").PaperListItem[]),
     setReadingStatus: vi.fn(async () => undefined),
     setMineruState: vi.fn(async () => undefined),
     resetMineru: vi.fn(async () => undefined),
@@ -81,6 +88,12 @@ beforeEach(() => {
   vi.mocked(repo.setReadingStatus).mockReset();
   vi.mocked(repo.setMineruState).mockReset();
   vi.mocked(repo.createDomain).mockReset();
+  vi.mocked(repo.updatePaper).mockClear();
+  vi.mocked(repo.movePapers).mockClear();
+  vi.mocked(repo.paperIdsInDomain).mockReset();
+  vi.mocked(repo.deleteDomain).mockClear();
+  vi.mocked(repo.migrateDomainPapers).mockReset();
+  vi.mocked(repo.applyTagsToPapers).mockClear();
   vi.mocked(repo.deletePapers).mockReset();
 });
 
@@ -487,6 +500,29 @@ describe("createDomain / updateDomain（仅名称必填）", () => {
     await useField.getState().createDomain({ name: "多模态", code: "" });
     expect(repo.createDomain).toHaveBeenCalledWith({ name: "多模态", code: "" });
   });
+
+  it("createDomainAndMove：一次完成建领域 + 移动（就地新建入口）", async () => {
+    vi.mocked(repo.createDomain).mockResolvedValue({
+      id: "d-world",
+      name: "世界模型",
+      code: "D-09",
+      summary: null,
+      sortOrder: 9,
+      createdAt: "2024-06-01T00:00:00.000Z",
+    });
+    useField.setState({ dialog: "move-paper", dialogPaperId: "p-1", mode: "field", selectedDomainId: "d-1" });
+    await useField.getState().createDomainAndMove("  世界模型 ", "p-1");
+    expect(repo.createDomain).toHaveBeenCalledWith({ name: "世界模型", code: "" });
+    expect(repo.updatePaper).toHaveBeenCalledWith("p-1", { domainId: "d-world" });
+    // 移动完成后：对话框关闭、选中新领域（refresh 后列表为空 → 选中回落为空也符合语义）。
+    expect(useField.getState().dialog).toBeNull();
+  });
+
+  it("createDomainAndMove：名称为空报「领域名称必填」，不建领域不移动", async () => {
+    await expect(useField.getState().createDomainAndMove("  ", "p-1")).rejects.toThrow("领域名称必填");
+    expect(repo.createDomain).not.toHaveBeenCalled();
+    expect(repo.updatePaper).not.toHaveBeenCalled();
+  });
 });
 
 describe("setFlash × notify：通知唯一收口", () => {
@@ -563,24 +599,152 @@ describe("setFlash × notify：通知唯一收口", () => {
   });
 });
 
-describe("搜索残留可见化（searchCarried）", () => {
-  it("带着搜索词切换领域记 searchCarried；再输入或清空即解除", async () => {
-    useField.setState({ mode: "field", selectedDomainId: "d-1", search: "旧词", searchCarried: false });
-    await useField.getState().selectDomain("d-2");
-    expect(useField.getState().searchCarried).toBe(true);
-
-    await useField.getState().setSearch("新词");
-    expect(useField.getState().search).toBe("新词");
-    expect(useField.getState().searchCarried).toBe(false);
+describe("批量操作（移动 / 标状态 / 标签）", () => {
+  it("moveCheckedPapers：按打开对话框时冻结的勾选集移动，提示带目标领域名", async () => {
+    const DOMAINS = [
+      { id: "d-1", name: "多模态", code: "MM-01", summary: null, sortOrder: 1, createdAt: "2024-01-01T00:00:00.000Z" },
+      { id: "d-2", name: "指令对齐", code: "AL-02", summary: null, sortOrder: 2, createdAt: "2024-01-02T00:00:00.000Z" },
+    ];
+    // refresh 会用 repo.listDomains 的返回覆盖 store：让 mock 返回同一份领域。
+    vi.mocked(repo.listDomains).mockResolvedValue(DOMAINS);
+    useField.setState({
+      mode: "field",
+      selectedDomainId: "d-1",
+      domains: DOMAINS,
+      batchMode: true,
+      checkedPaperIds: ["a", "b", "x"],
+    });
+    useField.getState().openDialog("move-checked");
+    // 打开后后台把勾选改成别的：本批不受影响。
+    useField.setState({ checkedPaperIds: ["z"] });
+    await useField.getState().moveCheckedPapers("d-2");
+    expect(repo.movePapers).toHaveBeenCalledWith(["a", "b", "x"], "d-2");
+    expect(useField.getState().dialog).toBeNull();
+    expect(useField.getState().flash?.tone).toBe("ok");
+    expect(useField.getState().flash?.text).toContain("已将 3 篇论文移动到「指令对齐」");
   });
 
-  it("没有搜索词时切换领域不记残留；同一领域重复选择也不记", async () => {
-    useField.setState({ mode: "field", selectedDomainId: "d-1", search: "" });
-    await useField.getState().selectDomain("d-2");
-    expect(useField.getState().searchCarried).toBe(false);
+  it("setCheckedReadingStatus：逐篇写库并汇总提示（用户批量入口，非 AI）", async () => {
+    useField.setState({ mode: "field", checkedPaperIds: ["a", "b"] });
+    await useField.getState().setCheckedReadingStatus("read");
+    expect(repo.setReadingStatus).toHaveBeenCalledTimes(2);
+    expect(repo.setReadingStatus).toHaveBeenCalledWith("a", "read");
+    expect(repo.setReadingStatus).toHaveBeenCalledWith("b", "read");
+    expect(useField.getState().flash?.text).toContain("已将 2 篇论文标为已读");
+  });
 
-    useField.setState({ search: "词" });
+  it("addTagsToChecked / removeTagsFromChecked：作用于冻结集并给汇总提示", async () => {
+    useField.setState({ checkedPaperIds: ["a", "b"] });
+    useField.getState().openDialog("tag-checked");
+    await useField.getState().addTagsToChecked(["综述", "综述", " "]);
+    expect(repo.applyTagsToPapers).toHaveBeenCalledWith(["a", "b"], ["综述"], "add");
+    expect(useField.getState().flash?.text).toContain("已为 2 篇论文添加标签：综述");
+
+    // add 之后 refresh 把勾选裁剪到（空的）可见列表：重新勾选再开对话框。
+    useField.setState({ checkedPaperIds: ["a", "b"] });
+    useField.getState().openDialog("tag-checked");
+    await useField.getState().removeTagsFromChecked(["综述"]);
+    expect(repo.applyTagsToPapers).toHaveBeenCalledWith(["a", "b"], ["综述"], "remove");
+  });
+});
+
+describe("每领域记住搜索、选中与列表位置（domainSpot）", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  function domainsFixture() {
+    return [
+      { id: "d-1", name: "多模态", code: "MM-01", summary: null, sortOrder: 1, createdAt: "2024-01-01T00:00:00.000Z" },
+      { id: "d-2", name: "指令对齐", code: "AL-02", summary: null, sortOrder: 2, createdAt: "2024-01-02T00:00:00.000Z" },
+    ];
+  }
+
+  it("离开领域时保存现场；切回时恢复搜索词与选中（论文仍在列表里才恢复）", async () => {
+    const paperA = { ...listItem("a"), domainId: "d-1" };
+    const paperB = { ...listItem("b"), domainId: "d-2" };
+    vi.mocked(repo.listDomains).mockResolvedValue(domainsFixture());
+    vi.mocked(repo.listPapers).mockImplementation(async (domainId: string) =>
+      domainId === "d-1" ? [paperA] : [paperB],
+    );
+    useField.setState({ mode: "field", selectedDomainId: "d-1", domains: domainsFixture(), search: "clip", selectedPaperId: "a" });
     await useField.getState().selectDomain("d-2");
-    expect(useField.getState().searchCarried).toBe(false);
+    // 切走后现场已存：d-1 的搜索词与选中论文
+    const spot = JSON.parse(localStorage.getItem("paper-field.domain-spot")!) as Record<string, { search: string; paperId: string | null }>;
+    expect(spot["d-1"].search).toBe("clip");
+    expect(spot["d-1"].paperId).toBe("a");
+    // 进入 d-2：不沿用 d-1 的搜索条件
+    expect(useField.getState().search).toBe("");
+    expect(useField.getState().restoredSearchFor).toBeNull();
+
+    // d-2 自己留过现场：搜索与选中恢复
+    await useField.getState().setSearch("rlhf");
+    await useField.getState().selectPaper("b");
+    await useField.getState().selectDomain("d-1");
+    expect(useField.getState().search).toBe("clip");
+    expect(useField.getState().restoredSearchFor).toBe("d-1");
+    await useField.getState().selectDomain("d-2");
+    expect(useField.getState().search).toBe("rlhf");
+    expect(useField.getState().selectedPaperId).toBe("b");
+  });
+
+  it("切回时现场里的论文已不在列表（被删/被移走）：选中回落，搜索仍恢复", async () => {
+    const paperA = { ...listItem("a"), domainId: "d-1" };
+    vi.mocked(repo.listDomains).mockResolvedValue(domainsFixture());
+    vi.mocked(repo.listPapers).mockResolvedValue([paperA]);
+    localStorage.setItem(
+      "paper-field.domain-spot",
+      JSON.stringify({ "d-1": { search: "clip", paperId: "ghost", listTop: 40, at: 1 } }),
+    );
+    useField.setState({ mode: "field", selectedDomainId: "d-2", domains: domainsFixture() });
+    await useField.getState().selectDomain("d-1");
+    expect(useField.getState().search).toBe("clip");
+    expect(useField.getState().selectedPaperId).toBe("a"); // refresh reselect 回落第一篇
+  });
+});
+
+describe("migrateDomainThenDelete（迁移后删除）", () => {
+  it("先取消在途作业，迁移论文到目标领域，删除旧领域并切到目标领域", async () => {
+    const DOMAINS = [
+      { id: "d-1", name: "旧领域", code: "D-01", summary: null, sortOrder: 1, createdAt: "2024-01-01T00:00:00.000Z" },
+      { id: "d-2", name: "收留领域", code: "D-02", summary: null, sortOrder: 2, createdAt: "2024-01-02T00:00:00.000Z" },
+    ];
+    vi.mocked(repo.listDomains).mockResolvedValue(DOMAINS);
+    vi.mocked(repo.paperIdsInDomain).mockResolvedValue(["p1", "p2"]);
+    vi.mocked(repo.migrateDomainPapers).mockResolvedValue(2);
+    useField.setState({
+      mode: "field",
+      selectedDomainId: "d-1",
+      domains: DOMAINS,
+      selectedPaperId: "p1",
+    });
+    await useField.getState().migrateDomainThenDelete("d-2");
+    expect(repo.migrateDomainPapers).toHaveBeenCalledWith("d-1", "d-2");
+    expect(repo.deleteDomain).toHaveBeenCalledWith("d-1");
+    expect(useField.getState().selectedDomainId).toBe("d-2");
+    expect(useField.getState().flash?.text).toContain("已把 2 篇论文迁入「收留领域」");
+  });
+
+  it("目标是当前领域时不动作", async () => {
+    useField.setState({ selectedDomainId: "d-1" });
+    await useField.getState().migrateDomainThenDelete("d-1");
+    expect(repo.migrateDomainPapers).not.toHaveBeenCalled();
+    expect(repo.deleteDomain).not.toHaveBeenCalled();
+  });
+});
+
+describe("结构化检索（tag:/domain:/year: 走 searchStructured）", () => {
+  it("搜索词带 tag: 前缀时走 repo.searchStructured；普通词走 listPapers", async () => {
+    vi.mocked(repo.listPapers).mockResolvedValue([]);
+    const searchStructured = repo.searchStructured as ReturnType<typeof vi.fn>;
+    searchStructured.mockResolvedValue([]);
+    useField.setState({ mode: "field", selectedDomainId: "d-1", search: "" });
+    await useField.getState().setSearch("clip");
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(searchStructured).not.toHaveBeenCalled();
+    useField.setState({ search: "" });
+    await useField.getState().setSearch("tag:clip");
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(searchStructured).toHaveBeenCalledWith(expect.objectContaining({ tags: ["clip"] }));
   });
 });

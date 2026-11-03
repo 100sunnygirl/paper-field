@@ -339,7 +339,7 @@ describe("PaperNav · 领域标题与批量入口", () => {
     useField.setState(useField.getInitialState(), true);
   });
 
-  it("领域标题整行是切换按钮，chevron 只是图标", () => {
+  it("领域标题整行是切换按钮，chevron 只是图标；点击就地展开快捷切换下拉", () => {
     useField.setState({
       mode: "field",
       selectedDomainId: "d-1",
@@ -352,6 +352,14 @@ describe("PaperNav · 领域标题与批量入口", () => {
           sortOrder: 1,
           createdAt: "2024-01-01T00:00:00.000Z",
         },
+        {
+          id: "d-2",
+          name: "指令对齐",
+          code: "AL-02",
+          summary: null,
+          sortOrder: 2,
+          createdAt: "2024-01-02T00:00:00.000Z",
+        },
       ],
       papers: [intakeItem("a", null)],
     });
@@ -361,8 +369,10 @@ describe("PaperNav · 领域标题与批量入口", () => {
     expect(picker.querySelector("h2")).toHaveTextContent("多模态");
     expect(picker.querySelector(".ef-domain-select")).toBeTruthy();
     expect(picker.querySelector("button")).toBeNull();
+    // 点击展开快捷下拉：一步切换，不再先进领域选择对话框。
     fireEvent.click(picker);
-    expect(useField.getState().dialog).toBe("pick-domain");
+    expect(screen.getByRole("menu", { name: "领域快捷切换" })).toBeInTheDocument();
+    expect(useField.getState().dialog).toBeNull();
   });
 
   it("批量入口在图标旁显示「批量」", () => {
@@ -521,5 +531,215 @@ describe("PaperNav · 批量导入小结卡", () => {
     useField.setState({ mode: "archive", importSummary: summary });
     render(<PaperNav />);
     expect(screen.queryByText(/导入小结/)).toBeNull();
+  });
+});
+
+describe("PaperNav · 批量工具栏扩展（移动 / 标状态 / 标签 / 入库作业）", () => {
+  it("批量模式提供移动、标为已读、标为在读、标签与删除；点击走对应动作或对话框", () => {
+    const setCheckedReadingStatus = vi.fn(async () => undefined);
+    useField.setState({
+      mode: "field",
+      papers: [intakeItem("a", null), intakeItem("b", null)],
+      batchMode: true,
+      checkedPaperIds: ["a"],
+      setCheckedReadingStatus,
+    });
+    render(<PaperNav />);
+
+    fireEvent.click(screen.getByRole("button", { name: "移动到领域" }));
+    expect(useField.getState().dialog).toBe("move-checked");
+    expect(useField.getState().dialogPaperIds).toEqual(["a"]);
+
+    fireEvent.click(screen.getByRole("button", { name: "标为已读" }));
+    expect(setCheckedReadingStatus).toHaveBeenCalledWith("read");
+    fireEvent.click(screen.getByRole("button", { name: "标为在读" }));
+    expect(setCheckedReadingStatus).toHaveBeenCalledWith("reading");
+
+    fireEvent.click(screen.getByRole("button", { name: "标签…" }));
+    expect(useField.getState().dialog).toBe("tag-checked");
+
+    expect(screen.getByRole("button", { name: "删除" })).toBeInTheDocument();
+  });
+
+  it("无勾选时新动作与删除一样禁用", () => {
+    useField.setState({
+      mode: "field",
+      papers: [intakeItem("a", null)],
+      batchMode: true,
+      checkedPaperIds: [],
+    });
+    render(<PaperNav />);
+    expect(screen.getByRole("button", { name: "移动到领域" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "标为已读" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "标签…" })).toBeDisabled();
+  });
+
+  it("入库页批量工具栏额外提供「解析选中」「补全选中」；阅读页不提供", () => {
+    const retryMineruPapers = vi.fn(async () => undefined);
+    const retryFailedMetaJobs = vi.fn(async () => undefined);
+    useField.setState({
+      mode: "intake",
+      intake: [intakeItem("a", "error")],
+      batchMode: true,
+      checkedPaperIds: ["a"],
+      retryMineruPapers,
+      retryFailedMetaJobs,
+    });
+    const { unmount } = render(<PaperNav />);
+    fireEvent.click(screen.getByRole("button", { name: "解析选中" }));
+    expect(retryMineruPapers).toHaveBeenCalledWith(["a"]);
+    fireEvent.click(screen.getByRole("button", { name: "补全选中" }));
+    expect(retryFailedMetaJobs).toHaveBeenCalledWith(["a"]);
+    unmount();
+
+    useField.setState({ mode: "field", papers: [intakeItem("a", null)], intake: [] });
+    render(<PaperNav />);
+    expect(screen.queryByRole("button", { name: "解析选中" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "补全选中" })).toBeNull();
+  });
+});
+
+describe("PaperNav · 上次阅读一键续读", () => {
+  it("显示领域内最近标记已读的论文（标题 + 日期），点击直达续读", () => {
+    const selectPaper = vi.fn(async () => undefined);
+    const older = { ...intakeItem("old", null), readingStatus: "read" as const, readAt: "2024-09-01T00:00:00.000Z", title: "Older Paper" };
+    const newer = { ...intakeItem("new", null), readingStatus: "read" as const, readAt: "2024-10-05T00:00:00.000Z", title: "Newer Paper" };
+    useField.setState({
+      mode: "field",
+      selectedDomainId: "d-1",
+      papers: [older, newer, intakeItem("u", null)],
+      selectPaper,
+    });
+    render(<PaperNav />);
+    const lastRead = screen.getByRole("button", { name: /上次阅读/ });
+    expect(lastRead.textContent).toContain("Newer Paper");
+    expect(lastRead.textContent).toContain("2024.10.05");
+    fireEvent.click(lastRead);
+    expect(selectPaper).toHaveBeenCalledWith("new");
+  });
+
+  it("领域内没有已读论文时不显示该行", () => {
+    useField.setState({ mode: "field", selectedDomainId: "d-1", papers: [intakeItem("a", null)] });
+    render(<PaperNav />);
+    expect(screen.queryByRole("button", { name: /上次阅读/ })).toBeNull();
+  });
+});
+
+describe("PaperNav · 领域关键问题提示", () => {
+  it("领域设置了关键问题时在领域头显示一句话提示", () => {
+    useField.setState({
+      mode: "field",
+      selectedDomainId: "d-1",
+      domains: [
+        {
+          id: "d-1",
+          name: "多模态",
+          code: "MM-01",
+          summary: null,
+          keyQuestion: "视觉与语言在哪个粒度上对齐最有效？",
+          sortOrder: 1,
+          createdAt: "2024-01-01T00:00:00.000Z",
+        },
+      ],
+    });
+    render(<PaperNav />);
+    expect(screen.getByText("关键问题")).toBeInTheDocument();
+    expect(screen.getByText(/视觉与语言在哪个粒度上对齐最有效/)).toBeInTheDocument();
+  });
+
+  it("未设置时不显示提示行", () => {
+    useField.setState({
+      mode: "field",
+      selectedDomainId: "d-1",
+      domains: [
+        { id: "d-1", name: "多模态", code: "MM-01", summary: null, sortOrder: 1, createdAt: "2024-01-01T00:00:00.000Z" },
+      ],
+    });
+    render(<PaperNav />);
+    expect(screen.queryByText("关键问题")).toBeNull();
+  });
+});
+
+describe("PaperNav · 领域强调色归组", () => {
+  it("领域设置强调色时导航头挂上对应 CSS 变量", () => {
+    useField.setState({
+      mode: "field",
+      selectedDomainId: "d-1",
+      domains: [
+        { id: "d-1", name: "多模态", code: "MM-01", summary: null, accent: "teal", sortOrder: 1, createdAt: "2024-01-01T00:00:00.000Z" },
+      ],
+      papers: [intakeItem("a", null)],
+    });
+    render(<PaperNav />);
+    expect(document.querySelector(".ef-nav-head")?.getAttribute("style")).toContain("--pf-domain-accent: var(--pf-accent-teal)");
+  });
+
+  it("未设置时不挂变量（回落默认墨色）", () => {
+    useField.setState({
+      mode: "field",
+      selectedDomainId: "d-1",
+      domains: [
+        { id: "d-1", name: "多模态", code: "MM-01", summary: null, sortOrder: 1, createdAt: "2024-01-01T00:00:00.000Z" },
+      ],
+      papers: [intakeItem("a", null)],
+    });
+    render(<PaperNav />);
+    expect(document.querySelector(".ef-nav-head")?.getAttribute("style") ?? "").not.toContain("--pf-domain-accent");
+  });
+});
+
+describe("PaperNav · 恢复领域现场提示", () => {
+  it("恢复了该领域上次的搜索词时显示提示行，点「清空条件」清掉搜索并撤销提示", async () => {
+    const setSearch = vi.fn(async () => undefined);
+    useField.setState({
+      mode: "field",
+      selectedDomainId: "d-1",
+      search: "clip",
+      restoredSearchFor: "d-1",
+      setSearch,
+    });
+    render(<PaperNav />);
+    expect(screen.getByText(/已恢复这个领域上次的搜索/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "清空条件" }));
+    expect(setSearch).toHaveBeenCalledWith("");
+    expect(useField.getState().restoredSearchFor).toBeNull();
+  });
+
+  it("提示只对当前领域显示；其他领域不显示", () => {
+    useField.setState({ mode: "field", selectedDomainId: "d-2", search: "clip", restoredSearchFor: "d-1" });
+    render(<PaperNav />);
+    expect(screen.queryByText(/已恢复这个领域上次的搜索/)).toBeNull();
+  });
+});
+
+describe("PaperNav · 领域头进度三段化与本周新增", () => {
+  function iso(daysAgo: number): string {
+    return new Date(Date.now() - daysAgo * 86400000).toISOString();
+  }
+
+  it("显示 未读/在读/已读 三段计数与本周新增 N 篇", () => {
+    const fresh = { ...intakeItem("f", null), createdAt: iso(1) };
+    const reading = { ...intakeItem("r", null), readingStatus: "reading" as const, createdAt: iso(20) };
+    const read = { ...intakeItem("d", null), readingStatus: "read" as const, createdAt: iso(30) };
+    useField.setState({
+      mode: "field",
+      selectedDomainId: "d-1",
+      papers: [fresh, reading, read],
+    });
+    render(<PaperNav />);
+    const segments = document.querySelector(".ef-progress-segments");
+    expect(segments?.getAttribute("aria-label")).toBe("未读 1 篇，在读 1 篇，已读 1 篇");
+    expect(segments?.textContent).toContain("未读 1");
+    expect(segments?.textContent).toContain("在读 1");
+    expect(segments?.textContent).toContain("已读 1");
+    expect(screen.getByText("本周新增 1 篇")).toBeInTheDocument();
+  });
+
+  it("没有本周新增时不显示活跃度行", () => {
+    const old = { ...intakeItem("o", null), createdAt: iso(30) };
+    useField.setState({ mode: "field", selectedDomainId: "d-1", papers: [old] });
+    render(<PaperNav />);
+    expect(screen.queryByText(/本周新增/)).toBeNull();
+    expect(document.querySelector(".ef-progress-segments")?.textContent).toContain("未读 1");
   });
 });

@@ -18,6 +18,7 @@ vi.mock("../lib/repo", () => ({
     listPendingMineru: vi.fn(async () => [] as string[]),
     listReadyForMeta: vi.fn(async () => [] as string[]),
     searchAll: vi.fn(async () => []),
+    domainCensus: vi.fn(async () => []),
   },
 }));
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { useSyncExternalStore } from "react";
 import {
   JOB_STATUS_LABELS,
@@ -10,7 +10,10 @@ import { getActivity, subscribeActivity } from "../lib/activity";
 import { jobStageLine } from "../lib/jobsView";
 import { repo } from "../lib/repo";
 import { pad2, shortcut } from "../lib/util";
+import { domainAccentVar } from "../lib/domainExtras";
+import { formatDate } from "../lib/util";
 import { useField } from "../store";
+import { DomainMenu } from "./DomainMenu";
 import { useReadPulse } from "./useReadPulse";
 import { CheckSquare, PaperMatrix, titleStillFromFile } from "./PaperMatrix";
 import { ImportTarget } from "./ImportTarget";
@@ -61,7 +64,28 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
   const setBatchMode = useField((s) => s.setBatchMode);
   const toggleCheckedPaper = useField((s) => s.toggleCheckedPaper);
   const setCheckedPaperIds = useField((s) => s.setCheckedPaperIds);
+  const setCheckedReadingStatus = useField((s) => s.setCheckedReadingStatus);
+  const retryMineruPapers = useField((s) => s.retryMineruPapers);
+  const retryFailedMetaJobs = useField((s) => s.retryFailedMetaJobs);
+  const restoredSearchFor = useField((s) => s.restoredSearchFor);
+  const clearRestoredSearchHint = useField((s) => s.clearRestoredSearchHint);
+  const restoreListTop = useField((s) => s.restoreListTop);
+  const clearRestoreListTop = useField((s) => s.clearRestoreListTop);
   const [censusEpoch, setCensusEpoch] = useState(0);
+  // 列表挂载后应用一次「回到上次位置」：ref 兜住滚动容器，双 rAF 等列表行渲染完成。
+  const listWrapRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!restoreListTop) return;
+    const target = restoreListTop;
+    clearRestoreListTop();
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        const el = listWrapRef.current?.querySelector(".ef-paper-list") as HTMLElement | null;
+        if (el) el.scrollTop = target.top;
+      }),
+    );
+  }, [restoreListTop, clearRestoreListTop]);
 
   if (mode === "field" && selectedDomainId && !search.trim()) {
     domainCensus = { domainId: selectedDomainId, items: papers };
@@ -93,10 +117,24 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
   // 标题来源仍是文件名的论文：导入完成后集中列出供批量校对（文献库没查到时标题不会永远停在文件名）。
   const titlePending = intake.filter((p) => titleStillFromFile(p.fieldSources));
   const domainRead = domainPapers.filter((p) => p.readingStatus === "read").length;
+  const domainReading = domainPapers.filter((p) => p.readingStatus === "reading").length;
+  const domainUnread = domainPapers.length - domainRead - domainReading;
   const fill = domainPapers.length ? domainRead / domainPapers.length : 0;
+  // 本周新增：领域内 created_at 在最近 7 天内的论文数（跨搜索过滤，按未过滤领域算）。
+  const weekSince = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const domainNewThisWeek = domainPapers.filter(
+    (p) => new Date(p.createdAt).getTime() >= weekSince,
+  ).length;
   const allChecked = list.length > 0 && checkedPaperIds.length === list.length;
   // 标已读（⌘R / 下拉）时：领域进度条 + 已读计数做一次 +1 微反馈。
   const readPulse = useReadPulse();
+  // 上次阅读：领域内最近标记已读的那篇，点击直达续读（回到领域不必凭记忆找）。
+  const lastRead = domainPapers
+    .filter((p) => p.readingStatus === "read" && p.readAt)
+    .reduce<PaperListItem | null>(
+      (latest, paper) => (!latest || (paper.readAt ?? "") > (latest.readAt ?? "") ? paper : latest),
+      null,
+    );
 
   // 批量模式下 Esc 退出。对话框打开时 Dialog 的捕获层会拦截 Esc，不会误退批量模式。
   useEffect(() => {
@@ -111,23 +149,22 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
   return (
     <aside className="ef-nav" aria-label="领域与论文列表">
       {mode === "field" ? (
-        <div className="ef-nav-head">
+        <div
+          className="ef-nav-head"
+          style={domainAccentVar(domain?.accent) ? ({ "--pf-domain-accent": domainAccentVar(domain!.accent) } as CSSProperties) : undefined}
+        >
           <div className="ef-overline">
             <span>研究领域</span>
             {domain?.code ? <span className="ef-code">{domain.code}</span> : null}
           </div>
-          <button
-            type="button"
-            className="ef-domain-picker"
-            aria-label={domain?.name ? `切换研究领域：${domain.name}` : "切换研究领域"}
-            onClick={() => openDialog("pick-domain")}
-          >
-            <h2>{domain?.name ?? "未选择领域"}</h2>
-            <span className="ef-domain-select" aria-hidden="true">
-              <Icon name="down" />
-            </span>
-          </button>
+          <DomainMenu />
           <p className="ef-nav-sum">{domain?.summary ?? "选择或创建领域，开始组织论文。"}</p>
+          {domain?.keyQuestion ? (
+            <p className="ef-domain-question" title={domain.keyQuestion}>
+              <span className="ef-domain-question-label">关键问题</span>
+              {domain.keyQuestion}
+            </p>
+          ) : null}
           <div className="ef-progress-label">
             <span>阅读进度</span>
             <span className="ef-progress-value">
@@ -135,9 +172,33 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
               <span className="mono"> / {domainPapers.length}</span>
             </span>
           </div>
+          {/* 三段化：未读 / 在读 / 已读一眼可见积压结构；本周新增标出活跃度。 */}
+          <div className="ef-progress-segments" role="img" aria-label={`未读 ${domainUnread} 篇，在读 ${domainReading} 篇，已读 ${domainRead} 篇`}>
+            <span className="seg-unread mono">未读 {domainUnread}</span>
+            <span className="seg-reading mono">在读 {domainReading}</span>
+            <span className="seg-read mono">已读 {domainRead}</span>
+          </div>
           <div className={`ef-progress${readPulse ? " is-read-pulse" : ""}`} aria-hidden="true">
             <i style={{ width: `${Math.round(fill * 100)}%` }} />
           </div>
+          {domainNewThisWeek > 0 ? (
+            <p className="ef-week-new" aria-label={`本周新增 ${domainNewThisWeek} 篇`}>
+              <i aria-hidden="true" />
+              本周新增 {domainNewThisWeek} 篇
+            </p>
+          ) : null}
+          {lastRead ? (
+            <button
+              type="button"
+              className="ef-last-read"
+              title={`继续阅读：${lastRead.titleZh || lastRead.title}`}
+              onClick={() => void selectPaper(lastRead.id)}
+            >
+              <span className="ef-last-read-label">上次阅读</span>
+              <span className="ef-last-read-title">{lastRead.titleZh || lastRead.title}</span>
+              <span className="mono">{formatDate(lastRead.readAt)}</span>
+            </button>
+          ) : null}
         </div>
       ) : null}
 
@@ -355,6 +416,20 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
       ) : null}
 
       <div className="ef-nav-search">
+        {restoredSearchFor && restoredSearchFor === selectedDomainId ? (
+          <p className="ef-restored-search" aria-live="polite">
+            已恢复这个领域上次的搜索「{search}」
+            <button
+              type="button"
+              onClick={() => {
+                clearRestoredSearchHint();
+                void setSearch("");
+              }}
+            >
+              清空条件
+            </button>
+          </p>
+        ) : null}
         <PaperSearch />
       </div>
 
@@ -387,6 +462,66 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
               已选 {checkedPaperIds.length} / {list.length}
             </span>
             <span className="ef-batch-actions">
+              {/* 批量不止删除：整理归属（移动）、推进阅读（标状态）、入库积压（解析/补全）都可整批做。
+                  移动/标签走对话框并预览将作用的篇数；状态与作业类就地执行（操作后仍留在批量模式）。 */}
+              <Button
+                type="button"
+                size="sm"
+                disabled={!checkedPaperIds.length}
+                title="把选中的论文移动到其他领域"
+                onClick={() => openDialog("move-checked")}
+              >
+                移动到领域
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                disabled={!checkedPaperIds.length}
+                title="把选中的论文标记为已读（只有你本人能标记）"
+                onClick={() => void setCheckedReadingStatus("read")}
+              >
+                标为已读
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                disabled={!checkedPaperIds.length}
+                title="把选中的论文标记为在读"
+                onClick={() => void setCheckedReadingStatus("reading")}
+              >
+                标为在读
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                disabled={!checkedPaperIds.length}
+                title="为选中的论文统一添加或移除标签"
+                onClick={() => openDialog("tag-checked")}
+              >
+                标签…
+              </Button>
+              {mode === "intake" ? (
+                <>
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={!checkedPaperIds.length}
+                    title="把选中的论文重新提交给 MinerU 解析"
+                    onClick={() => void retryMineruPapers(checkedPaperIds)}
+                  >
+                    解析选中
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={!checkedPaperIds.length}
+                    title="把选中的论文排入 AI 补全队列"
+                    onClick={() => void retryFailedMetaJobs(checkedPaperIds)}
+                  >
+                    补全选中
+                  </Button>
+                </>
+              ) : null}
               <Button
                 type="button"
                 size="sm"
@@ -428,6 +563,7 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
         )}
       </div>
 
+      <div ref={listWrapRef} className="ef-list-wrap">
       {list.length === 0 ? (
         <p className="no-results">
           {search.trim() ? (
@@ -458,6 +594,7 @@ export function PaperNav({ onPaperChosen }: { onPaperChosen?: () => void }) {
           onToggleCheck={(id) => toggleCheckedPaper(id)}
         />
       )}
+      </div>
 
       {/* 添加论文落进当前领域：只在看得见目标领域的阅读页和收新论文的入库页提供；
           归档页只列已读论文，新论文不会出现在那里。领域切换走顶部领域名。 */}

@@ -1,9 +1,10 @@
 import { captureDomainDelete, capturePaperDelete, restoreDeleteUndo, type DeleteUndoEntry } from "./deleteUndo";
-import { ConflictError, getEngine, type BatchStep } from "./engine";
+import { ConflictError, getEngine, type BatchStep, type SqlEngine } from "./engine";
 import { planPreparedMeta } from "./mergeMeta";
 import { seedIfEmpty } from "./seed";
 import type {
   Domain,
+  DomainCensus,
   DraftedNotes,
   FieldProviders,
   FieldSource,
@@ -168,6 +169,53 @@ function mapDomain(row: DomainRow): Domain {
   };
 }
 
+/**
+ * 领域附加字段（关键问题 / 强调色）存在 app_meta 的一个 JSON 键里：不动 domains 表
+ * 结构（schema 版本与桌面端恢复逻辑锁步），且随数据库一起进备份、跨设备保留。
+ */
+const DOMAIN_EXTRA_KEY = "domain-extra";
+
+export interface DomainExtraPatch {
+  keyQuestion?: string | null;
+  accent?: string | null;
+}
+
+type DomainExtras = Record<string, DomainExtraPatch>;
+
+async function readDomainExtras(engine: SqlEngine): Promise<DomainExtras> {
+  const rows = await engine.select<{ value: string }>(
+    "SELECT value FROM app_meta WHERE key = ?",
+    [DOMAIN_EXTRA_KEY],
+  );
+  const raw = rows[0]?.value;
+  if (!raw) return {};
+  try {
+    const value = JSON.parse(raw) as unknown;
+    return value && typeof value === "object" && !Array.isArray(value) ? (value as DomainExtras) : {};
+  } catch {
+    return {};
+  }
+}
+
+function applyDomainExtra(domain: Domain, extra: DomainExtraPatch | undefined): Domain {
+  // 总是归一化出两个可选字段（空一律为 null），调用方不区分 undefined / null。
+  return {
+    ...domain,
+    keyQuestion:
+      typeof extra?.keyQuestion === "string" && extra.keyQuestion.trim() ? extra.keyQuestion.trim() : null,
+    accent: typeof extra?.accent === "string" && extra.accent.trim() ? extra.accent.trim() : null,
+  };
+}
+
+/** 读出全部领域（含附加字段）。 */
+async function domainsWithExtras(engine: SqlEngine, where = ""): Promise<Domain[]> {
+  const rows = await engine.select<DomainRow>(
+    `SELECT * FROM domains ${where} ORDER BY sort_order ASC, created_at ASC`,
+  );
+  const extras = await readDomainExtras(engine);
+  return rows.map((row) => applyDomainExtra(mapDomain(row), extras[row.id]));
+}
+
 function mapPaper(row: PaperRow): Paper {
   return {
     id: row.id,
@@ -209,6 +257,42 @@ function mapPaper(row: PaperRow): Paper {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+
+/**
+ * 回收站重插 papers 行：直接按「SELECT * 行对象的键」生成列清单（键序即快照时的
+ * 表列序），与当前库的实际列自然一致，不手工维护列清单。
+ */
+function paperInsertStep(row: Record<string, unknown>): BatchStep {
+  const columns = Object.keys(row);
+  return {
+    sql: `INSERT OR IGNORE INTO papers (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
+    params: columns.map((column) => row[column] ?? null),
+  };
+}
+
+/** 把领域附加字段的一个补丁合并进 app_meta 的 JSON 键（读-合-写，单键低频操作）。 */
+async function writeDomainExtra(engine: SqlEngine, id: string, patch: DomainExtraPatch): Promise<void> {
+  const extras = await readDomainExtras(engine);
+  const current = extras[id] ?? {};
+  const next: DomainExtraPatch = { ...current };
+  for (const key of Object.keys(patch) as Array<keyof DomainExtraPatch>) {
+    const value = patch[key];
+    next[key] = value && typeof value === "string" && value.trim() ? value.trim() : null;
+  }
+  // accent 可能未定义（undefined）：用真值判断，两者都空才删条目。
+  if (!next.keyQuestion && !next.accent) delete extras[id];
+  else extras[id] = next;
+  // 全空时顺手删掉键，app_meta 不残留 "{}" 空行。
+  if (Object.keys(extras).length) {
+    await engine.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)", [
+      DOMAIN_EXTRA_KEY,
+      JSON.stringify(extras),
+    ]);
+  } else {
+    await engine.execute("DELETE FROM app_meta WHERE key = ?", [DOMAIN_EXTRA_KEY]);
+  }
 }
 
 function titleFromPdf(path: string): string {
@@ -376,19 +460,58 @@ export const repo = {
 
   async listDomains(): Promise<Domain[]> {
     const engine = await getEngine();
-    const rows = await engine.select<DomainRow>(
-      "SELECT * FROM domains ORDER BY sort_order ASC, created_at ASC",
+    return domainsWithExtras(engine);
+  },
+
+  /** 各领域论文概览（总数 / 三态 / 最近已读 / 最近活跃 / 本周新增）：一次 GROUP BY 读全。 */
+  async domainCensus(): Promise<DomainCensus[]> {
+    const engine = await getEngine();
+    const weekSince = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const rows = await engine.select<{
+      domain_id: string;
+      total: number;
+      unread: number;
+      reading: number;
+      read: number;
+      last_read_at: string | null;
+      last_activity_at: string | null;
+      week_count: number;
+    }>(
+      `SELECT domain_id,
+              COUNT(*) AS total,
+              SUM(CASE WHEN reading_status = 'unread' THEN 1 ELSE 0 END) AS unread,
+              SUM(CASE WHEN reading_status = 'reading' THEN 1 ELSE 0 END) AS reading,
+              SUM(CASE WHEN reading_status = 'read' THEN 1 ELSE 0 END) AS read,
+              MAX(read_at) AS last_read_at,
+              MAX(updated_at) AS last_activity_at,
+              SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS week_count
+         FROM papers
+        GROUP BY domain_id`,
+      [weekSince],
     );
-    return rows.map(mapDomain);
+    return rows.map((row) => ({
+      domainId: row.domain_id,
+      total: Number(row.total ?? 0),
+      unread: Number(row.unread ?? 0),
+      reading: Number(row.reading ?? 0),
+      read: Number(row.read ?? 0),
+      lastReadAt: row.last_read_at ?? null,
+      lastActivityAt: row.last_activity_at ?? null,
+      weekCount: Number(row.week_count ?? 0),
+    }));
   },
 
   async getDomain(id: string): Promise<Domain | null> {
     const engine = await getEngine();
     const rows = await engine.select<DomainRow>("SELECT * FROM domains WHERE id = ?", [id]);
-    return rows[0] ? mapDomain(rows[0]) : null;
+    if (!rows[0]) return null;
+    const extras = await readDomainExtras(engine);
+    return applyDomainExtra(mapDomain(rows[0]), extras[id]);
   },
 
-  async createDomain(input: { name: string; code: string; summary?: string }): Promise<Domain> {
+  async createDomain(
+    input: { name: string; code: string; summary?: string; keyQuestion?: string | null; accent?: string | null },
+  ): Promise<Domain> {
     const engine = await getEngine();
     const existing = await engine.select<{ max_order: number | null }>(
       "SELECT MAX(sort_order) AS max_order FROM domains",
@@ -400,6 +523,8 @@ export const repo = {
       // 短码可选：留空时按排序自动生成（D-01 递增），保证界面恒有短码可显示。
       code: domainCodeOf(input.code, sortOrder),
       summary: input.summary?.trim() || null,
+      keyQuestion: input.keyQuestion?.trim() || null,
+      accent: input.accent?.trim() || null,
       sortOrder,
       createdAt: nowIso(),
     };
@@ -407,10 +532,19 @@ export const repo = {
       "INSERT INTO domains (id, name, code, summary, sort_order, created_at) VALUES (?, ?, ?, ?, ?, ?)",
       [domain.id, domain.name, domain.code, domain.summary, domain.sortOrder, domain.createdAt],
     );
+    if (domain.keyQuestion || domain.accent) {
+      await writeDomainExtra(engine, domain.id, {
+        keyQuestion: domain.keyQuestion,
+        accent: domain.accent,
+      });
+    }
     return domain;
   },
 
-  async updateDomain(id: string, input: { name: string; code: string; summary?: string }): Promise<void> {
+  async updateDomain(
+    id: string,
+    input: { name: string; code: string; summary?: string; keyQuestion?: string | null; accent?: string | null },
+  ): Promise<void> {
     const engine = await getEngine();
     const code = domainCodeOf(input.code, 0);
     // 编辑时清空短码 → 保留原短码而不是写空串，列表/标题处恒有值。
@@ -425,6 +559,24 @@ export const repo = {
       input.summary?.trim() || null,
       id,
     ]);
+    if (input.keyQuestion !== undefined || input.accent !== undefined) {
+      await writeDomainExtra(engine, id, {
+        ...(input.keyQuestion !== undefined ? { keyQuestion: input.keyQuestion?.trim() || null } : {}),
+        ...(input.accent !== undefined ? { accent: input.accent?.trim() || null } : {}),
+      });
+    }
+  },
+
+  /** 手动排序：把给定顺序写回 sort_order（1 起连续编号，同一事务）。 */
+  async reorderDomains(orderedIds: string[]): Promise<void> {
+    if (!orderedIds.length) return;
+    const engine = await getEngine();
+    await engine.batch(
+      orderedIds.map((id, index) => ({
+        sql: "UPDATE domains SET sort_order = ? WHERE id = ?",
+        params: [index + 1, id],
+      })),
+    );
   },
 
   async deleteDomain(id: string): Promise<void> {
@@ -454,6 +606,41 @@ export const repo = {
           AND ${PAPER_SEARCH_MATCH_SQL}
         ORDER BY p.created_at DESC`,
       [domainId, ...searchParams(like)],
+    );
+    return rows.map(mapListItem);
+  },
+
+  /**
+   * 结构化检索（tag:/domain:/year: 前缀，可组合 + 自由文本）。
+   * domain: 同时匹配领域名称与短码；tag: 精确匹配标签；year: 匹配年份。
+   */
+  async searchStructured(
+    query: { tags: string[]; domains: string[]; years: number[]; text: string },
+  ): Promise<PaperListItem[]> {
+    const engine = await getEngine();
+    const clauses: string[] = [];
+    const params: unknown[] = [];
+    for (const tag of query.tags) {
+      clauses.push("EXISTS (SELECT 1 FROM json_each(p.tags) WHERE json_each.value = ?)");
+      params.push(tag);
+    }
+    for (const domain of query.domains) {
+      clauses.push("(d.name LIKE ? ESCAPE '\\' OR d.code LIKE ? ESCAPE '\\')");
+      const like = likePattern(domain);
+      params.push(like, like);
+    }
+    for (const year of query.years) {
+      clauses.push("p.year = ?");
+      params.push(year);
+    }
+    if (query.text.trim()) {
+      clauses.push(PAPER_SEARCH_MATCH_SQL);
+      params.push(...searchParams(likePattern(query.text.trim())));
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    const rows = await engine.select<PaperRow>(
+      `${PAPER_LIST_SQL} ${where} ORDER BY p.updated_at DESC`,
+      params,
     );
     return rows.map(mapListItem);
   },
@@ -925,6 +1112,84 @@ export const repo = {
     await engine.batch(steps);
   },
 
+  /** 批量移动：把多篇论文改到同一领域（同一事务；IN 列表按 500 分块）。 */
+  async movePapers(ids: string[], domainId: string): Promise<void> {
+    if (!ids.length) return;
+    const engine = await getEngine();
+    const at = nowIso();
+    const steps: BatchStep[] = [];
+    for (let i = 0; i < ids.length; i += 500) {
+      const chunk = ids.slice(i, i + 500);
+      const placeholders = chunk.map(() => "?").join(", ");
+      steps.push({
+        sql: `UPDATE papers SET domain_id = ?, updated_at = ? WHERE id IN (${placeholders})`,
+        params: [domainId, at, ...chunk],
+      });
+    }
+    await engine.batch(steps);
+  },
+
+  /** 这批论文现有哪些标签、各覆盖几篇（批量标签对话框的移除候选）。 */
+  async tagsOfPapers(ids: string[]): Promise<Array<{ tag: string; count: number }>> {
+    const unique = [...new Set(ids)].filter(Boolean);
+    if (!unique.length) return [];
+    const engine = await getEngine();
+    const counts = new Map<string, number>();
+    for (let start = 0; start < unique.length; start += 400) {
+      const chunk = unique.slice(start, start + 400);
+      const rows = await engine.select<{ tags: string }>(
+        `SELECT tags FROM papers WHERE id IN (${chunk.map(() => "?").join(", ")})`,
+        chunk,
+      );
+      for (const row of rows) {
+        for (const tag of parseJsonArray<string>(row.tags, [])) {
+          counts.set(tag, (counts.get(tag) ?? 0) + 1);
+        }
+      }
+    }
+    return [...counts.entries()]
+      .map(([tag, count]) => ({ tag, count }))
+      .sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag));
+  },
+
+  /**
+   * 批量增删标签：与各篇现有 tags 合并 / 剔除后整批写回（同一事务）。
+   * 与单篇编辑同一口径：tags 来源记 user、bump meta_rev，AI 不会覆盖这些标签。
+   */
+  async applyTagsToPapers(ids: string[], tags: string[], mode: "add" | "remove"): Promise<void> {
+    const unique = [...new Set(ids)].filter(Boolean);
+    const wanted = [...new Set(tags.map((tag) => tag.trim()).filter(Boolean))];
+    if (!unique.length || !wanted.length) return;
+    const engine = await getEngine();
+    const at = nowIso();
+    const rows: Array<{ id: string; tags: string }> = [];
+    for (let start = 0; start < unique.length; start += 400) {
+      const chunk = unique.slice(start, start + 400);
+      rows.push(
+        ...(await engine.select<{ id: string; tags: string }>(
+          `SELECT id, tags FROM papers WHERE id IN (${chunk.map(() => "?").join(", ")})`,
+          chunk,
+        )),
+      );
+    }
+    const steps: BatchStep[] = rows.map((row) => {
+      const current = parseJsonArray<string>(row.tags, []);
+      const next =
+        mode === "add"
+          ? [...new Set([...current, ...wanted])]
+          : current.filter((tag) => !wanted.includes(tag));
+      return {
+        sql: `UPDATE papers SET tags = ?,
+                field_sources = json_set(COALESCE(field_sources, '{}'), '$.tags', 'user'),
+                field_providers = json_remove(COALESCE(field_providers, '{}'), '$.tags'),
+                user_meta_touched = 1, meta_rev = meta_rev + 1, updated_at = ?
+              WHERE id = ?`,
+        params: [JSON.stringify(next), at, row.id],
+      };
+    });
+    if (steps.length) await engine.batch(steps);
+  },
+
   async replaceAuthors(
     paperId: string,
     authors: Array<{
@@ -1332,6 +1597,227 @@ export const repo = {
     const engine = await getEngine();
     const rows = await engine.select<{ id: string }>("SELECT id FROM papers WHERE domain_id = ?", [domainId]);
     return rows.map((row) => row.id);
+  },
+
+  /** 删除确认的损失清单：领域内论文数 / 笔记数 / 已读数（一次聚合查询）。 */
+  async domainDeletionStats(domainId: string): Promise<{ papers: number; notes: number; read: number }> {
+    const engine = await getEngine();
+    const rows = await engine.select<{ papers: number; notes: number; read: number }>(
+      `SELECT
+         (SELECT COUNT(*) FROM papers WHERE domain_id = ?) AS papers,
+         (SELECT COUNT(*) FROM notes n JOIN papers p ON p.id = n.paper_id WHERE p.domain_id = ?) AS notes,
+         (SELECT COUNT(*) FROM papers WHERE domain_id = ? AND reading_status = 'read') AS read`,
+      [domainId, domainId, domainId],
+    );
+    const row = rows[0];
+    return {
+      papers: Number(row?.papers ?? 0),
+      notes: Number(row?.notes ?? 0),
+      read: Number(row?.read ?? 0),
+    };
+  },
+
+  // ---- 领域回收站（app_meta 快照方案，不动 schema 版本）----
+  //
+  // pf_domain_cascade 触发器在 DELETE 单语句内删光论文/笔记，无法在 SQL 层拦截；
+  // 升 schema 版本会破坏桌面端（restore.rs SCHEMA_VERSION=6 与 schema.ts 锁步，
+  // 拒绝恢复更新版本的库）。因此删除前把整域数据序列化为一份 JSON 快照存进
+  // app_meta（与库同文件：进备份、跨设备保留），30 天后过期。恢复时重建领域并
+  // 逐行重插论文/笔记/作者/链接，id 全部沿用，解析全文随论文行一起恢复。
+  /** 快照行类型（与各表列一一对应的小驼峰映射太宽，直接存原始行）。 */
+  async trashDomain(id: string): Promise<{ snapshotId: string; paperCount: number } | null> {
+    const engine = await getEngine();
+    const domains = await engine.select<DomainRow>("SELECT * FROM domains WHERE id = ?", [id]);
+    const domain = domains[0];
+    if (!domain) return null;
+    const papers = await engine.select<Record<string, unknown>>("SELECT * FROM papers WHERE domain_id = ?", [id]);
+    const notes: Record<string, unknown>[] = [];
+    const authors: Record<string, unknown>[] = [];
+    const links: Record<string, unknown>[] = [];
+    const parses: Record<string, unknown>[] = [];
+    const authorIds = new Set<string>();
+    for (const paper of papers) {
+      const paperId = String(paper.id);
+      notes.push(...(await engine.select<Record<string, unknown>>("SELECT * FROM notes WHERE paper_id = ?", [paperId])));
+      parses.push(...(await engine.select<Record<string, unknown>>("SELECT * FROM paper_parse WHERE paper_id = ?", [paperId])));
+      const rows = await engine.select<{ author_id: string }>("SELECT author_id FROM paper_authors WHERE paper_id = ?", [paperId]);
+      for (const row of rows) authorIds.add(row.author_id);
+      links.push(...(await engine.select<Record<string, unknown>>("SELECT * FROM paper_authors WHERE paper_id = ?", [paperId])));
+    }
+    for (const authorId of authorIds) {
+      authors.push(...(await engine.select<Record<string, unknown>>("SELECT * FROM authors WHERE id = ?", [authorId])));
+    }
+    const snapshot = {
+      domain: domain,
+      papers,
+      notes,
+      authors,
+      links,
+      parses,
+      deletedAt: nowIso(),
+    };
+    const snapshotId = `domain-trash:${id}`;
+    await engine.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)", [
+      snapshotId,
+      JSON.stringify(snapshot),
+    ]);
+    return { snapshotId, paperCount: papers.length };
+  },
+
+  /** 回收站里的领域（30 天内）；附带可恢复的论文数与剩余天数。 */
+  async listTrashedDomains(): Promise<Array<{ id: string; name: string; code: string; deletedAt: string; papers: number; daysLeft: number }>> {
+    const engine = await getEngine();
+    const rows = await engine.select<{ key: string; value: string }>(
+      "SELECT key, value FROM app_meta WHERE key LIKE 'domain-trash:%'",
+    );
+    const out: Array<{ id: string; name: string; code: string; deletedAt: string; papers: number; daysLeft: number }> = [];
+    for (const row of rows) {
+      try {
+        const snapshot = JSON.parse(row.value) as {
+          domain?: { id: string; name: string; code: string };
+          deletedAt?: string;
+          papers?: unknown[];
+        };
+        if (!snapshot.domain || !snapshot.deletedAt) continue;
+        const daysLeft = 30 - Math.floor((Date.now() - new Date(snapshot.deletedAt).getTime()) / 86400000);
+        if (daysLeft <= 0) continue; // 过期条目不再展示（下次写入时物理清理）。
+        out.push({
+          id: snapshot.domain.id,
+          name: snapshot.domain.name,
+          code: snapshot.domain.code,
+          deletedAt: snapshot.deletedAt,
+          papers: snapshot.papers?.length ?? 0,
+          daysLeft,
+        });
+      } catch {
+        // 坏快照跳过。
+      }
+    }
+    return out.sort((a, b) => (a.deletedAt < b.deletedAt ? 1 : -1));
+  },
+
+  /** 从快照恢复整域（领域、论文、笔记、作者、关联、解析全文，id 全部沿用）。 */
+  async restoreTrashedDomain(id: string): Promise<number> {
+    const engine = await getEngine();
+    const rows = await engine.select<{ value: string }>("SELECT value FROM app_meta WHERE key = ?", [
+      `domain-trash:${id}`,
+    ]);
+    if (!rows[0]) throw new Error("回收站里没有这个领域");
+    const snapshot = JSON.parse(rows[0].value) as {
+      domain: Record<string, unknown>;
+      papers: Array<Record<string, unknown>>;
+      notes: Array<Record<string, unknown>>;
+      authors: Array<Record<string, unknown>>;
+      links: Array<Record<string, unknown>>;
+      parses: Array<Record<string, unknown>>;
+    };
+    // 领域行沿用原 id 重建（论文行的 domain_id 无需改写）。
+    const steps: BatchStep[] = [];
+    steps.push({
+      sql: "INSERT OR IGNORE INTO domains (id, name, code, summary, sort_order, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+      params: [
+        snapshot.domain.id,
+        snapshot.domain.name,
+        snapshot.domain.code,
+        snapshot.domain.summary ?? null,
+        snapshot.domain.sort_order ?? 999,
+        snapshot.domain.created_at ?? nowIso(),
+      ],
+    });
+    for (const author of snapshot.authors) {
+      steps.push({
+        sql: "INSERT OR IGNORE INTO authors (id, name, name_zh, affiliation, lab, homepage, orcid) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        params: [author.id, author.name, author.name_zh ?? null, author.affiliation ?? null, author.lab ?? null, author.homepage ?? null, author.orcid ?? null],
+      });
+    }
+    for (const paper of snapshot.papers) {
+      steps.push(paperInsertStep(paper));
+    }
+    for (const note of snapshot.notes) {
+      steps.push({
+        sql: "INSERT OR IGNORE INTO notes (id, paper_id, kind, content, source, user_edited, rev, revised_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        params: [note.id, note.paper_id, note.kind, note.content, note.source, note.user_edited ?? 0, note.rev ?? 0, note.revised_at ?? null],
+      });
+    }
+    for (const parse of snapshot.parses) {
+      steps.push({
+        sql: "INSERT OR IGNORE INTO paper_parse (paper_id, markdown, updated_at) VALUES (?, ?, ?)",
+        params: [parse.paper_id, parse.markdown, parse.updated_at],
+      });
+    }
+    for (const link of snapshot.links) {
+      steps.push({
+        sql: "INSERT OR IGNORE INTO paper_authors (paper_id, author_id, sort_order, is_corresponding) VALUES (?, ?, ?, ?)",
+        params: [link.paper_id, link.author_id, link.sort_order, link.is_corresponding ?? 0],
+      });
+    }
+    await engine.batch(steps);
+    await engine.execute("DELETE FROM app_meta WHERE key = ?", [`domain-trash:${id}`]);
+    return snapshot.papers.length;
+  },
+
+  /** 彻底删除回收站里的快照（不可再恢复）。 */
+  async purgeTrashedDomain(id: string): Promise<void> {
+    const engine = await getEngine();
+    await engine.execute("DELETE FROM app_meta WHERE key = ?", [`domain-trash:${id}`]);
+  },
+
+  /** 合并预览：两个领域的论文数与同名论文（标题完全一致视为同一工作）。 */
+  async mergePreview(fromDomainId: string, intoDomainId: string): Promise<{
+    fromName: string;
+    intoName: string;
+    fromCount: number;
+    intoCount: number;
+    duplicates: Array<{ title: string }>;
+  } | null> {
+    const engine = await getEngine();
+    const domains = await engine.select<DomainRow>(
+      "SELECT * FROM domains WHERE id IN (?, ?)",
+      [fromDomainId, intoDomainId],
+    );
+    const from = domains.find((row) => row.id === fromDomainId);
+    const into = domains.find((row) => row.id === intoDomainId);
+    if (!from || !into) return null;
+    const fromTitles = await engine.select<{ title: string }>("SELECT title FROM papers WHERE domain_id = ?", [fromDomainId]);
+    const intoTitles = await engine.select<{ title: string }>("SELECT title FROM papers WHERE domain_id = ?", [intoDomainId]);
+    const intoSet = new Set(intoTitles.map((row) => row.title));
+    const duplicates = fromTitles.filter((row) => intoSet.has(row.title)).map((row) => ({ title: row.title }));
+    return {
+      fromName: from.name,
+      intoName: into.name,
+      fromCount: fromTitles.length,
+      intoCount: intoTitles.length,
+      duplicates,
+    };
+  },
+
+  /**
+   * 合并执行：A 域全部论文（含笔记、解析、作者关联）迁入 B 域后删除 A。
+   * 与 migrateDomainPapers 的差别：迁移前把在途作业清理由调用方负责，本方法只搬数据。
+   */
+  async mergeDomains(fromDomainId: string, intoDomainId: string): Promise<number> {
+    const moved = await this.migrateDomainPapers(fromDomainId, intoDomainId);
+    await this.deleteDomain(fromDomainId);
+    return moved;
+  },
+
+  /** 迁移后删除：把整域论文改挂到目标领域（迁移前先取消在途作业由 store 层处理）。 */
+  async migrateDomainPapers(fromDomainId: string, toDomainId: string): Promise<number> {
+    const engine = await getEngine();
+    const at = nowIso();
+    const rows = await engine.select<{ id: string }>("SELECT id FROM papers WHERE domain_id = ?", [fromDomainId]);
+    const ids = rows.map((row) => row.id);
+    const steps: BatchStep[] = [];
+    for (let i = 0; i < ids.length; i += 500) {
+      const chunk = ids.slice(i, i + 500);
+      const placeholders = chunk.map(() => "?").join(", ");
+      steps.push({
+        sql: `UPDATE papers SET domain_id = ?, updated_at = ? WHERE id IN (${placeholders})`,
+        params: [toDomainId, at, ...chunk],
+      });
+    }
+    if (steps.length) await engine.batch(steps);
+    return ids.length;
   },
 
   /** 重新解析：重置解析状态并收回所有权，旧的一轮写入不再生效。多篇在同一个事务里。 */

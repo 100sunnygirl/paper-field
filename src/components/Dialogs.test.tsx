@@ -1,11 +1,12 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { recordDomainVisit } from "../lib/domainRecent";
 import { lookupPaper } from "../lib/lookup";
 import { pickPdfFiles, pickPdfFolder } from "../lib/mineru";
 import { repo } from "../lib/repo";
 import { useField, type ImportOutcome } from "../store";
-import { DeleteCheckedPapersDialog, DomainDialog, PaperDialog } from "./Dialogs";
-import type { Paper } from "../lib/types";
+import { DeleteCheckedPapersDialog, DomainDialog, DomainPickerDialog, PaperDialog, TagCheckedPapersDialog } from "./Dialogs";
+import type { Domain, DomainCensus, Paper } from "../lib/types";
 
 function emptyOutcome(): ImportOutcome {
   return { created: 0, skipped: 0, failed: [] };
@@ -32,6 +33,9 @@ vi.mock("../lib/repo", () => ({
     listArchive: vi.fn(async () => []),
     listIntake: vi.fn(async () => []),
     getPaper: vi.fn(async () => null),
+    tagsOfPapers: vi.fn(async () => [] as Array<{ tag: string; count: number }>),
+    domainCensus: vi.fn(async () => [] as DomainCensus[]),
+    domainDeletionStats: vi.fn(async () => ({ papers: 0, notes: 0, read: 0 })),
   },
 }));
 
@@ -973,5 +977,511 @@ describe("DomainPickerDialog · 移动的去向选择", () => {
     const { DomainPickerDialog } = await import("./Dialogs");
     render(<DomainPickerDialog />);
     expect(screen.queryByRole("group", { name: "移动后的去向" })).toBeNull();
+  });
+});
+
+const PICKER_DOMAINS: Domain[] = [
+  { id: "d-1", name: "多模态", code: "MM-01", summary: null, sortOrder: 1, createdAt: "2024-01-01T00:00:00.000Z" },
+  { id: "d-2", name: "指令对齐", code: "AL-02", summary: null, sortOrder: 2, createdAt: "2024-01-02T00:00:00.000Z" },
+  { id: "d-3", name: "强化学习", code: "RL-03", summary: null, sortOrder: 3, createdAt: "2024-01-03T00:00:00.000Z" },
+];
+
+describe("DomainPickerDialog · 搜索、最近置顶与键盘选择", () => {
+  function openPicker(dialog: "pick-domain" | "move-paper" = "pick-domain", dialogPaperId: string | null = null) {
+    useField.setState({ dialog, dialogPaperId, domains: PICKER_DOMAINS, selectedDomainId: "d-1" });
+    return render(<DomainPickerDialog />);
+  }
+
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it("默认第一项键盘高亮，↑↓ 移动高亮、Enter 选择对应领域", () => {
+    const selectDomain = vi.fn(async () => undefined);
+    useField.setState({ selectDomain });
+    openPicker();
+    const input = screen.getByLabelText("搜索领域");
+    expect(document.querySelector('.ef-domain-option[data-index="0"]')).toHaveClass("is-active");
+
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+    expect(document.querySelector('.ef-domain-option[data-index="1"]')).toHaveClass("is-active");
+    expect(document.querySelector('.ef-domain-option[data-index="0"]')).not.toHaveClass("is-active");
+
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(selectDomain).toHaveBeenCalledTimes(1);
+    expect(selectDomain).toHaveBeenCalledWith("d-2");
+  });
+
+  it("↑ 在第一项上回绕到最后一项", () => {
+    const selectDomain = vi.fn(async () => undefined);
+    useField.setState({ selectDomain });
+    openPicker();
+    const input = screen.getByLabelText("搜索领域");
+    fireEvent.keyDown(input, { key: "ArrowUp" });
+    expect(document.querySelector('.ef-domain-option[data-index="2"]')).toHaveClass("is-active");
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(selectDomain).toHaveBeenCalledWith("d-3");
+  });
+
+  it("输入关键词过滤：按名称或短码匹配，无匹配时提示且 Enter 不动作", () => {
+    const selectDomain = vi.fn(async () => undefined);
+    useField.setState({ selectDomain });
+    openPicker();
+    const input = screen.getByLabelText("搜索领域");
+
+    fireEvent.change(input, { target: { value: "指令" } });
+    expect(document.querySelectorAll(".ef-domain-option")).toHaveLength(1);
+    expect(document.querySelector(".ef-domain-option")?.textContent).toContain("指令对齐");
+
+    // 短码也能过滤
+    fireEvent.change(input, { target: { value: "rl-03" } });
+    expect(document.querySelectorAll(".ef-domain-option")).toHaveLength(1);
+    expect(document.querySelector(".ef-domain-option")?.textContent).toContain("强化学习");
+
+    fireEvent.change(input, { target: { value: "不存在的领域" } });
+    expect(screen.getByText("没有匹配的领域。")).toBeInTheDocument();
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(selectDomain).not.toHaveBeenCalled();
+  });
+
+  it("最近使用的领域置顶并带「最近」角标", () => {
+    recordDomainVisit("d-3");
+    openPicker();
+    const rows = document.querySelectorAll(".ef-domain-option");
+    expect(rows).toHaveLength(3);
+    expect(rows[0].textContent).toContain("强化学习");
+    expect(within(rows[0] as HTMLElement).getByText("最近")).toBeInTheDocument();
+    expect(rows[1].textContent).toContain("多模态");
+    expect(within(rows[1] as HTMLElement).queryByText("最近")).toBeNull();
+  });
+
+  it("移动模式：Enter 走 movePaper 且作用于对话框锁定的那篇论文", () => {
+    const movePaper = vi.fn(async () => undefined);
+    useField.setState({ movePaper });
+    openPicker("move-paper", "p-9");
+    expect(screen.getByText("选择这篇论文要进入的领域。")).toBeInTheDocument();
+    const input = screen.getByLabelText("搜索领域");
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(movePaper).toHaveBeenCalledTimes(1);
+    // 合并语义：键盘选择与点击同走 pick()，同样带上「移动后去向」偏好（默认跟随）。
+    expect(movePaper).toHaveBeenCalledWith("d-2", "p-9", { follow: true });
+  });
+
+  it("重新打开时清空搜索词并重置高亮", () => {
+    const selectDomain = vi.fn(async () => undefined);
+    useField.setState({ selectDomain });
+    const { rerender } = openPicker();
+    fireEvent.change(screen.getByLabelText("搜索领域"), { target: { value: "指令" } });
+    act(() => useField.setState({ dialog: null }));
+    rerender(<DomainPickerDialog />);
+    act(() => useField.setState({ dialog: "pick-domain" }));
+    rerender(<DomainPickerDialog />);
+    expect(screen.getByLabelText("搜索领域")).toHaveValue("");
+    expect(document.querySelectorAll(".ef-domain-option")).toHaveLength(3);
+    expect(document.querySelector('.ef-domain-option[data-index="0"]')?.textContent).toContain("多模态");
+  });
+});
+
+describe("DomainPickerDialog · 移动模式就地新建领域并移入", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  function openMoving(createDomainAndMove?: (name: string, paperId?: string) => Promise<void>) {
+    useField.setState({
+      dialog: "move-paper",
+      dialogPaperId: "p-9",
+      domains: PICKER_DOMAINS,
+      selectedDomainId: "d-1",
+      ...(createDomainAndMove ? { createDomainAndMove } : {}),
+    });
+    return render(<DomainPickerDialog />);
+  }
+
+  it("移动模式显示「新建领域并移入」入口；切换模式不显示", () => {
+    openMoving();
+    expect(screen.getByRole("button", { name: "新建领域并移入" })).toBeInTheDocument();
+    act(() => useField.setState({ dialog: "pick-domain" }));
+    expect(screen.queryByRole("button", { name: "新建领域并移入" })).toBeNull();
+  });
+
+  it("展开输入名称后「创建并移入」一次完成建领域 + 移动", async () => {
+    const createDomainAndMove = vi.fn(async () => undefined);
+    openMoving(createDomainAndMove);
+    fireEvent.click(screen.getByRole("button", { name: "新建领域并移入" }));
+    const input = screen.getByLabelText("新领域名称");
+    fireEvent.change(input, { target: { value: " 世界模型 " } });
+    fireEvent.click(screen.getByRole("button", { name: "创建并移入" }));
+    await waitFor(() => expect(createDomainAndMove).toHaveBeenCalledTimes(1));
+    expect(createDomainAndMove).toHaveBeenCalledWith("世界模型", "p-9");
+  });
+
+  it("输入框内 Enter 同样提交；名称为空给出中文提示且不调用", () => {
+    const createDomainAndMove = vi.fn(async () => undefined);
+    openMoving(createDomainAndMove);
+    fireEvent.click(screen.getByRole("button", { name: "新建领域并移入" }));
+    const input = screen.getByLabelText("新领域名称");
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(screen.getByText("请先输入新领域的名称。")).toBeInTheDocument();
+    expect(createDomainAndMove).not.toHaveBeenCalled();
+    fireEvent.change(input, { target: { value: "世界模型" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(createDomainAndMove).toHaveBeenCalledWith("世界模型", "p-9");
+  });
+
+  it("搜索无匹配时 Enter 把搜索词带进新建输入，再 Enter 完成创建", async () => {
+    const createDomainAndMove = vi.fn(async () => undefined);
+    openMoving(createDomainAndMove);
+    const filter = screen.getByLabelText("搜索领域");
+    fireEvent.change(filter, { target: { value: "具身智能" } });
+    expect(screen.getByText("没有匹配的领域。")).toBeInTheDocument();
+    fireEvent.keyDown(filter, { key: "Enter" });
+    const input = screen.getByLabelText("新领域名称");
+    expect(input).toHaveValue("具身智能");
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(createDomainAndMove).toHaveBeenCalledWith("具身智能", "p-9"));
+  });
+
+  it("创建失败时显示错误信息，输入与展开状态保留", async () => {
+    const createDomainAndMove = vi.fn(async () => {
+      throw new Error("领域名称必填");
+    });
+    openMoving(createDomainAndMove);
+    fireEvent.click(screen.getByRole("button", { name: "新建领域并移入" }));
+    fireEvent.change(screen.getByLabelText("新领域名称"), { target: { value: "x" } });
+    fireEvent.click(screen.getByRole("button", { name: "创建并移入" }));
+    expect(await screen.findByText("领域名称必填")).toBeInTheDocument();
+    expect(screen.getByLabelText("新领域名称")).toHaveValue("x");
+  });
+});
+
+describe("TagCheckedPapersDialog · 批量标签", () => {
+  beforeEach(() => {
+    vi.mocked(repo.tagsOfPapers).mockReset();
+    vi.mocked(repo.tagsOfPapers).mockResolvedValue([
+      { tag: "benchmark", count: 3 },
+      { tag: "综述", count: 1 },
+    ]);
+  });
+
+  function openTagDialog() {
+    useField.setState({ checkedPaperIds: ["a", "b", "c"] });
+    act(() => useField.getState().openDialog("tag-checked"));
+    return render(<TagCheckedPapersDialog />);
+  }
+
+  it("显示作用篇数与已有标签（含覆盖篇数）；空输入提交给中文提示", async () => {
+    openTagDialog();
+    expect(screen.getByText("批量修改标签")).toBeInTheDocument();
+    expect(await screen.findByText("benchmark")).toBeInTheDocument();
+    expect(screen.getByText("综述")).toBeInTheDocument();
+    expect(screen.getByText(/这批论文已有的标签/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "添加标签" }));
+    expect(screen.getByText("请先输入要添加的标签（逗号分隔，可一次多个）。")).toBeInTheDocument();
+  });
+
+  it("逗号/中文逗号分隔解析后统一添加；Enter 也可提交", async () => {
+    const addTagsToChecked = vi.fn(async () => undefined);
+    useField.setState({ addTagsToChecked });
+    openTagDialog();
+    const input = screen.getByLabelText("要添加的标签");
+    fireEvent.change(input, { target: { value: "rlhf, 综述、alignment" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(addTagsToChecked).toHaveBeenCalledTimes(1));
+    expect(addTagsToChecked).toHaveBeenCalledWith(["rlhf", "综述", "alignment"]);
+  });
+
+  it("点已有标签的 × 从整批移除", async () => {
+    const removeTagsFromChecked = vi.fn(async () => undefined);
+    useField.setState({ removeTagsFromChecked });
+    openTagDialog();
+    const chip = await screen.findByText("benchmark");
+    fireEvent.click(screen.getByRole("button", { name: "移除标签 benchmark" }));
+    await waitFor(() => expect(removeTagsFromChecked).toHaveBeenCalledWith(["benchmark"]));
+    void chip;
+  });
+
+  it("勾选为空时不渲染", () => {
+    useField.setState({ checkedPaperIds: [] });
+    act(() => useField.getState().openDialog("tag-checked"));
+    render(<TagCheckedPapersDialog />);
+    expect(screen.queryByText("批量修改标签")).toBeNull();
+  });
+});
+
+describe("DomainPickerDialog · 批量移动（move-checked）", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it("标题与说明写明作用篇数，点击领域行执行批量移动", () => {
+    const moveCheckedPapers = vi.fn(async () => undefined);
+    useField.setState({
+      moveCheckedPapers,
+      checkedPaperIds: ["a", "b"],
+      domains: PICKER_DOMAINS,
+      selectedDomainId: "d-1",
+    });
+    act(() => useField.getState().openDialog("move-checked"));
+    render(<DomainPickerDialog />);
+    expect(screen.getByText("移动选中论文到其他领域")).toBeInTheDocument();
+    expect(screen.getByText("把选中的 2 篇论文移入哪个领域？")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /指令对齐/ }));
+    expect(moveCheckedPapers).toHaveBeenCalledTimes(1);
+    expect(moveCheckedPapers).toHaveBeenCalledWith("d-2");
+  });
+
+  it("批量移动不提供「新建领域并移入」入口（就地新建仅单篇移动）", () => {
+    useField.setState({
+      checkedPaperIds: ["a"],
+      domains: PICKER_DOMAINS,
+      selectedDomainId: "d-1",
+    });
+    act(() => useField.getState().openDialog("move-checked"));
+    render(<DomainPickerDialog />);
+    expect(screen.queryByRole("button", { name: "新建领域并移入" })).toBeNull();
+  });
+});
+
+describe("DomainPickerDialog · 手动排序（写回 sort_order）", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  function openSwitch() {
+    useField.setState({ dialog: "pick-domain", domains: PICKER_DOMAINS, selectedDomainId: "d-1" });
+    return render(<DomainPickerDialog />);
+  }
+
+  it("「调整顺序」进入排序模式：按 sort_order 列出（不受最近置顶影响），行不再点击切换", () => {
+    recordDomainVisit("d-3"); // 最近置顶影响切换视图，但排序视图按 sort_order
+    openSwitch();
+    fireEvent.click(screen.getByRole("button", { name: "调整顺序" }));
+    expect(screen.getByText(/用 ↑↓ 调整领域顺序/)).toBeInTheDocument();
+    const rows = document.querySelectorAll(".ef-order-row");
+    expect(rows).toHaveLength(3);
+    expect(rows[0].textContent).toContain("多模态");
+    expect(rows[2].textContent).toContain("强化学习");
+    // 排序模式下没有搜索框，也没有可点的切换行（只有 ↑↓ 调整按钮）
+    expect(screen.queryByLabelText("搜索领域")).toBeNull();
+    expect(document.querySelectorAll(".ef-domain-options button.ef-domain-option")).toHaveLength(0);
+  });
+
+  it("上移/下移立即写回新顺序；首行上移与末行下移禁用", () => {
+    const applyDomainOrder = vi.fn(async () => undefined);
+    useField.setState({ applyDomainOrder });
+    openSwitch();
+    fireEvent.click(screen.getByRole("button", { name: "调整顺序" }));
+    expect(screen.getByRole("button", { name: "上移 多模态" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "下移 强化学习" })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "上移 指令对齐" }));
+    expect(applyDomainOrder).toHaveBeenCalledTimes(1);
+    expect(applyDomainOrder).toHaveBeenCalledWith(["d-2", "d-1", "d-3"]);
+    // 本地顺序同步：指令对齐现在排第一
+    const rows = document.querySelectorAll(".ef-order-row");
+    expect(rows[0].textContent).toContain("指令对齐");
+  });
+
+  it("「完成排序」退出排序模式，恢复搜索与点击切换", () => {
+    const selectDomain = vi.fn(async () => undefined);
+    useField.setState({ selectDomain });
+    openSwitch();
+    fireEvent.click(screen.getByRole("button", { name: "调整顺序" }));
+    fireEvent.click(screen.getByRole("button", { name: "完成排序" }));
+    expect(screen.getByLabelText("搜索领域")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /指令对齐/ }));
+    expect(selectDomain).toHaveBeenCalledWith("d-2");
+  });
+});
+
+describe("DomainDialog · 关键问题字段", () => {
+  it("编辑模式回显关键问题，保存时随 updateDomain 提交", () => {
+    const updateDomain = vi.fn(async () => undefined);
+    useField.setState({
+      dialog: "edit-domain",
+      selectedDomainId: "d-1",
+      domains: [
+        { id: "d-1", name: "多模态", code: "MM-01", summary: null, keyQuestion: "旧问题", sortOrder: 1, createdAt: "2024-01-01T00:00:00.000Z" },
+      ],
+      updateDomain,
+    });
+    render(<DomainDialog />);
+    const field = screen.getByLabelText(/关键问题（可选）/);
+    expect(field).toHaveValue("旧问题");
+    fireEvent.change(field, { target: { value: "新问题" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存修改" }));
+    expect(updateDomain).toHaveBeenCalledWith(expect.objectContaining({ keyQuestion: "新问题" }));
+  });
+
+  it("新建模式从空开始，填写后随 createDomain 提交", () => {
+    const createDomain = vi.fn(async () => undefined);
+    useField.setState({ dialog: "domain", createDomain });
+    render(<DomainDialog />);
+    fireEvent.change(screen.getByLabelText(/名称 \/ 中文（必填）/), { target: { value: "世界模型" } });
+    fireEvent.change(screen.getByLabelText(/关键问题（可选）/), { target: { value: "Q" } });
+    fireEvent.click(screen.getByRole("button", { name: "创建领域" }));
+    expect(createDomain).toHaveBeenCalledWith(expect.objectContaining({ keyQuestion: "Q" }));
+  });
+});
+
+describe("DomainDialog · 领域强调色", () => {
+  it("编辑模式显示色票，选择后随 updateDomain 提交 accent", () => {
+    const updateDomain = vi.fn(async () => undefined);
+    useField.setState({
+      dialog: "edit-domain",
+      selectedDomainId: "d-1",
+      domains: [
+        { id: "d-1", name: "多模态", code: "MM-01", summary: null, sortOrder: 1, createdAt: "2024-01-01T00:00:00.000Z" },
+      ],
+      updateDomain,
+    });
+    render(<DomainDialog />);
+    const group = screen.getByRole("radiogroup", { name: "领域强调色" });
+    expect(within(group).getByRole("radio", { name: "默认" })).toBeChecked();
+    fireEvent.click(within(group).getByRole("radio", { name: "黛蓝" }));
+    fireEvent.click(screen.getByRole("button", { name: "保存修改" }));
+    expect(updateDomain).toHaveBeenCalledWith(expect.objectContaining({ accent: "indigo" }));
+  });
+
+  it("已有强调色的领域回显选中色票；改回默认提交 null", () => {
+    const updateDomain = vi.fn(async () => undefined);
+    useField.setState({
+      dialog: "edit-domain",
+      selectedDomainId: "d-1",
+      domains: [
+        { id: "d-1", name: "多模态", code: "MM-01", summary: null, accent: "moss", sortOrder: 1, createdAt: "2024-01-01T00:00:00.000Z" },
+      ],
+      updateDomain,
+    });
+    render(<DomainDialog />);
+    const group = screen.getByRole("radiogroup", { name: "领域强调色" });
+    expect(within(group).getByRole("radio", { name: "苔绿" })).toBeChecked();
+    fireEvent.click(within(group).getByRole("radio", { name: "默认" }));
+    fireEvent.click(screen.getByRole("button", { name: "保存修改" }));
+    expect(updateDomain).toHaveBeenCalledWith(expect.objectContaining({ accent: null }));
+  });
+});
+
+describe("DomainPickerDialog · 领域行显示论文数、已读进度与最近阅读", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    vi.mocked(repo.domainCensus).mockReset();
+  });
+
+  it("每行右侧显示总数、已读、在读与上次阅读日期", async () => {
+    vi.mocked(repo.domainCensus).mockResolvedValue([
+      { domainId: "d-1", total: 12, unread: 8, reading: 2, read: 2, lastReadAt: "2024-10-05T00:00:00.000Z", lastActivityAt: null, weekCount: 0 },
+      { domainId: "d-2", total: 5, unread: 5, reading: 0, read: 0, lastReadAt: null, lastActivityAt: null, weekCount: 0 },
+    ]);
+    useField.setState({ dialog: "pick-domain", domains: PICKER_DOMAINS, selectedDomainId: "d-1" });
+    render(<DomainPickerDialog />);
+    const row1 = document.querySelector('.ef-domain-option[data-index="0"]')!;
+    expect(await within(row1 as HTMLElement).findByText(/12 篇 · 已读 2 · 在读 2 · 上次阅读 2024\.10\.05/)).toBeInTheDocument();
+    const row2 = document.querySelector('.ef-domain-option[data-index="1"]')!;
+    expect(await within(row2 as HTMLElement).findByText(/5 篇 · 已读 0/)).toBeInTheDocument();
+  });
+
+  it("聚合读取失败时行内降级：只显示短码不显示统计", async () => {
+    vi.mocked(repo.domainCensus).mockRejectedValue(new Error("no engine"));
+    useField.setState({ dialog: "pick-domain", domains: PICKER_DOMAINS, selectedDomainId: "d-1" });
+    render(<DomainPickerDialog />);
+    await waitFor(() => expect(repo.domainCensus).toHaveBeenCalled());
+    expect(document.querySelector(".ef-domain-option-stats")).toBeNull();
+    expect(screen.getAllByText(/MM-01/).length).toBeGreaterThan(0);
+  });
+});
+
+describe("DomainDialog · 删除确认升级（数量清单 / 先导出 / 迁移后删除）", () => {
+  beforeEach(() => {
+    vi.mocked(repo.domainCensus).mockReset();
+    vi.mocked(repo.domainCensus).mockResolvedValue([]);
+    vi.mocked(repo.domainDeletionStats).mockReset();
+  });
+
+  function openEditDomain() {
+    useField.setState({
+      dialog: "edit-domain",
+      selectedDomainId: "d-1",
+      domains: [
+        { id: "d-1", name: "待删领域", code: "D-09", summary: null, sortOrder: 1, createdAt: "2024-01-01T00:00:00.000Z" },
+        { id: "d-2", name: "收留领域", code: "D-10", summary: null, sortOrder: 2, createdAt: "2024-01-02T00:00:00.000Z" },
+      ],
+    });
+    return render(<DomainDialog />);
+  }
+
+  it("确认步列出论文/笔记数量（含已读）；统计读取失败时回落笼统警告", async () => {
+    vi.mocked(repo.domainDeletionStats).mockResolvedValue({ papers: 7, notes: 23, read: 3 });
+    const { rerender } = openEditDomain();
+    fireEvent.click(screen.getByRole("button", { name: "删除领域…" }));
+    expect(await screen.findByText(/篇论文/)).toBeInTheDocument();
+    const copy = document.querySelector(".ef-domain-delete-review")?.textContent ?? "";
+    expect(copy).toContain("7");
+    expect(copy).toContain("23");
+    expect(copy).toContain("已读 3 篇");
+    void rerender;
+  });
+
+  it("提供「先导出为 Markdown」与「迁移到其他领域后删除」；迁移选目标后执行并关闭", async () => {
+    vi.mocked(repo.domainDeletionStats).mockResolvedValue({ papers: 2, notes: 5, read: 1 });
+    const migrateDomainThenDelete = vi.fn(async () => undefined);
+    const exportPapers = vi.fn(async () => undefined);
+    useField.setState({ migrateDomainThenDelete, exportPapers });
+    openEditDomain();
+    fireEvent.click(screen.getByRole("button", { name: "删除领域…" }));
+    const exportBtn = await screen.findByRole("button", { name: "先导出为 Markdown 再删除" });
+    fireEvent.click(exportBtn);
+    expect(exportPapers).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "迁移到其他领域后删除…" }));
+    const select = screen.getByLabelText("迁入领域");
+    fireEvent.change(select, { target: { value: "d-2" } });
+    fireEvent.click(screen.getByRole("button", { name: "迁移并删除领域" }));
+    await waitFor(() => expect(migrateDomainThenDelete).toHaveBeenCalledWith("d-2"));
+  });
+
+  it("未选迁移目标时「迁移并删除领域」禁用；空领域导出按钮禁用", async () => {
+    vi.mocked(repo.domainDeletionStats).mockResolvedValue({ papers: 0, notes: 0, read: 0 });
+    openEditDomain();
+    fireEvent.click(screen.getByRole("button", { name: "删除领域…" }));
+    expect(await screen.findByRole("button", { name: "先导出为 Markdown 再删除" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "迁移到其他领域后删除…" }));
+    expect(screen.getByRole("button", { name: "迁移并删除领域" })).toBeDisabled();
+  });
+});
+
+describe("DomainDialog · 新建领域示例模板", () => {
+  it("新建模式显示三个模板，点击套用名称与简介；编辑模式不显示", () => {
+    useField.setState({ dialog: "domain", createDomain: vi.fn(async () => undefined) });
+    const { unmount } = render(<DomainDialog />);
+    expect(screen.getByRole("group", { name: "示例模板" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "在研项目" }));
+    expect(screen.getByLabelText(/名称 \/ 中文（必填）/)).toHaveValue("在研项目");
+    expect(screen.getByLabelText("简介（可选）")).toHaveValue("一个具体项目/系统用到的论文与参考资料。");
+    unmount();
+
+    useField.setState({
+      dialog: "edit-domain",
+      selectedDomainId: "d-1",
+      domains: [
+        { id: "d-1", name: "多模态", code: "MM-01", summary: null, sortOrder: 1, createdAt: "2024-01-01T00:00:00.000Z" },
+      ],
+    });
+    render(<DomainDialog />);
+    expect(screen.queryByRole("group", { name: "示例模板" })).toBeNull();
+  });
+
+  it("套用模板后仍可继续修改名称，创建时提交修改后的值", () => {
+    useField.setState({ dialog: "domain", createDomain: vi.fn(async () => undefined) });
+    render(<DomainDialog />);
+    fireEvent.click(screen.getByRole("button", { name: "研究方向" }));
+    fireEvent.change(screen.getByLabelText(/名称 \/ 中文（必填）/), { target: { value: "世界模型" } });
+    fireEvent.click(screen.getByRole("button", { name: "创建领域" }));
+    expect(useField.getState().createDomain).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "世界模型", summary: "围绕一个长期研究方向收集论文（如：多模态对齐）。" }),
+    );
   });
 });

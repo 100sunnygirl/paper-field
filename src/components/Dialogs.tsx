@@ -1,5 +1,7 @@
-import { Fragment, useEffect, useRef, useState, type CSSProperties } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { splitAuthorList } from "../lib/authorList";
+import { DOMAIN_ACCENTS } from "../lib/domainExtras";
+import { loadRecentDomains, orderDomainsByRecent } from "../lib/domainRecent";
 import { looksLikeNonPaper, scanImportItem, type ImportItemScan, type PaperRef } from "../lib/importScan";
 import { lookupPaper } from "../lib/lookup";
 import { pickPdfFiles, pickPdfFolder } from "../lib/mineru";
@@ -7,8 +9,8 @@ import { providerLabel } from "../lib/mineruPlan";
 import { parsePastedRef, type ParsedRef } from "../lib/pasteRef";
 import { repo } from "../lib/repo";
 import { defaultNotePermit, type NotePermit, type PartitionedTitles } from "../lib/readingHolds";
-import { NOTE_DISPLAY_ORDER, NOTE_KINDS, NOTE_LABELS, type NoteKind, type Author, type PaperDetail } from "../lib/types";
-import { isTauri } from "../lib/util";
+import { NOTE_DISPLAY_ORDER, NOTE_KINDS, NOTE_LABELS, type NoteKind, type Author, type DomainCensus, type PaperDetail } from "../lib/types";
+import { formatDate, isTauri } from "../lib/util";
 import { useField, type ImportMode } from "../store";
 import { ImportTarget } from "./ImportTarget";
 import { Button, Dialog, Field, Icon } from "./ui";
@@ -47,6 +49,13 @@ function writeImportMode(mode: ImportMode): void {
     // 记不住就用本次会话的选择，不影响导入。
   }
 }
+
+/** 新建领域的示例模板：一键套用名称与简介，新人不用对着空白表单发呆。 */
+const DOMAIN_TEMPLATES: Array<{ id: string; name: string; summary: string }> = [
+  { id: "research", name: "研究方向", summary: "围绕一个长期研究方向收集论文（如：多模态对齐）。" },
+  { id: "project", name: "在研项目", summary: "一个具体项目/系统用到的论文与参考资料。" },
+  { id: "course", name: "课程 / 综述", summary: "课程阅读清单或某篇综述的延伸论文。" },
+];
 
 export function PaperDialog() {
   const dialog = useField((s) => s.dialog);
@@ -734,6 +743,8 @@ export function DomainDialog() {
   const createDomain = useField((s) => s.createDomain);
   const updateDomain = useField((s) => s.updateDomain);
   const deleteDomain = useField((s) => s.deleteDomain);
+  const migrateDomainThenDelete = useField((s) => s.migrateDomainThenDelete);
+  const exportPapers = useField((s) => s.exportPapers);
   const domains = useField((s) => s.domains);
   const selectedDomainId = useField((s) => s.selectedDomainId);
   const current = domains.find((d) => d.id === selectedDomainId);
@@ -741,8 +752,14 @@ export function DomainDialog() {
   const [name, setName] = useState("");
   const [code, setCode] = useState("");
   const [summary, setSummary] = useState("");
+  const [keyQuestion, setKeyQuestion] = useState("");
+  const [accent, setAccent] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // 删除确认升级：损失清单（论文/笔记数）+ 先导出 + 迁移后删除三选一。
+  const [deletionStats, setDeletionStats] = useState<{ papers: number; notes: number; read: number } | null>(null);
+  const [migrateMode, setMigrateMode] = useState(false);
+  const [migrateTarget, setMigrateTarget] = useState("");
   const open = dialog === "domain" || dialog === "edit-domain";
 
   useEffect(() => {
@@ -751,14 +768,40 @@ export function DomainDialog() {
       setName(current.name);
       setCode(current.code);
       setSummary(current.summary ?? "");
+      setKeyQuestion(current.keyQuestion ?? "");
+      setAccent(current.accent ?? null);
     } else if (!editing) {
       setName("");
       setCode("");
       setSummary("");
+      setKeyQuestion("");
+      setAccent(null);
     }
     setError(null);
     setConfirmDelete(false);
+    setMigrateMode(false);
+    setMigrateTarget("");
   }, [open, editing, selectedDomainId]);
+
+  useEffect(() => {
+    // 进入确认步时读一次损失清单（当前领域）；读不到则降级为笼统警告。
+    if (!(open && confirmDelete && editing && current)) {
+      setDeletionStats(null);
+      return;
+    }
+    let alive = true;
+    repo
+      .domainDeletionStats(current.id)
+      .then((stats) => {
+        if (alive) setDeletionStats(stats);
+      })
+      .catch(() => {
+        if (alive) setDeletionStats(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [open, confirmDelete, editing, current]);
 
   return (
     <Dialog
@@ -772,9 +815,20 @@ export function DomainDialog() {
             <Button type="button" onClick={closeDialog}>
               取消
             </Button>
-            <Button type="button" className="ef-btn-danger-solid" onClick={() => void deleteDomain()}>
-              确认删除领域
-            </Button>
+            {migrateMode ? (
+              <Button
+                type="button"
+                variant="primary"
+                disabled={!migrateTarget}
+                onClick={() => void migrateDomainThenDelete(migrateTarget)}
+              >
+                迁移并删除领域
+              </Button>
+            ) : (
+              <Button type="button" className="ef-btn-danger-solid" onClick={() => void deleteDomain()}>
+                确认删除领域
+              </Button>
+            )}
           </>
         ) : (
           <>
@@ -792,8 +846,8 @@ export function DomainDialog() {
               onClick={() => {
                 setError(null);
                 const run = editing
-                  ? updateDomain({ name, code, summary })
-                  : createDomain({ name, code, summary });
+                  ? updateDomain({ name, code, summary, keyQuestion, accent })
+                  : createDomain({ name, code, summary, keyQuestion, accent });
                 void run.catch((err: unknown) =>
                   setError(err instanceof Error ? err.message : String(err)),
                 );
@@ -806,7 +860,49 @@ export function DomainDialog() {
       }
     >
       {confirmDelete ? (
-        <p>将删除「{current?.name}」及其中全部论文与笔记。删除后 10 秒内可「撤销删除」，超时后不可恢复。</p>
+        <div className="ef-domain-delete-review">
+          {deletionStats ? (
+            <p>
+              将删除「{current?.name}」里的 <strong>{deletionStats.papers}</strong> 篇论文（已读{" "}
+              {deletionStats.read} 篇）与 <strong>{deletionStats.notes}</strong> 条笔记。删除后 10
+              秒内可「撤销删除」；整域快照也会进回收站保留 30 天。
+            </p>
+          ) : (
+            <p>将删除「{current?.name}」及其中全部论文与笔记。删除后 10 秒内可「撤销删除」，超时后不可恢复。</p>
+          )}
+          {!migrateMode ? (
+            <div className="ef-domain-delete-actions">
+              <Button
+                type="button"
+                size="sm"
+                disabled={!deletionStats?.papers}
+                title={deletionStats?.papers ? "把当前领域的论文导出为 Markdown（删除前留一份）" : "这个领域没有论文可导出"}
+                onClick={() => void exportPapers({ scope: "current", format: "folders", include: { notes: true, abstract: true, parsedText: false } })}
+              >
+                先导出为 Markdown 再删除
+              </Button>
+              <Button type="button" size="sm" disabled={(domains.length ?? 0) < 2} onClick={() => setMigrateMode(true)}>
+                迁移到其他领域后删除…
+              </Button>
+            </div>
+          ) : (
+            <div className="ef-domain-delete-migrate">
+              <Field label="迁入领域">
+                <select value={migrateTarget} onChange={(e) => setMigrateTarget(e.target.value)}>
+                  <option value="">选择要迁入的领域…</option>
+                  {domains
+                    .filter((domain) => domain.id !== current?.id)
+                    .map((domain) => (
+                      <option key={domain.id} value={domain.id}>
+                        {domain.name}（{domain.code}）
+                      </option>
+                    ))}
+                </select>
+              </Field>
+              <p className="ef-field-hint">论文与笔记将完整移入目标领域，然后删除这个空领域。</p>
+            </div>
+          )}
+        </div>
       ) : (
         <>
           <Field label="名称 / 中文（必填）">
@@ -817,12 +913,67 @@ export function DomainDialog() {
               autoFocus
             />
           </Field>
+          {!editing ? (
+            <div className="ef-domain-templates" role="group" aria-label="示例模板">
+              <span className="ef-domain-templates-label">示例模板，一键套用：</span>
+              {DOMAIN_TEMPLATES.map((template) => (
+                <button
+                  key={template.id}
+                  type="button"
+                  title={template.summary}
+                  onClick={() => {
+                    setName(template.name);
+                    setSummary(template.summary);
+                  }}
+                >
+                  {template.name}
+                </button>
+              ))}
+            </div>
+          ) : null}
           <Field label="短码（可选）">
             <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="留空自动生成，如 MM-03" />
           </Field>
           <Field label="简介（可选）">
             <textarea value={summary} onChange={(e) => setSummary(e.target.value)} />
           </Field>
+          <Field label="关键问题（可选）">
+            <input
+              value={keyQuestion}
+              onChange={(e) => setKeyQuestion(e.target.value)}
+              placeholder="这个领域最想回答的一个问题"
+            />
+            <small className="ef-field-hint">进入领域时会显示为一句提示，提醒自己为什么读这些论文。</small>
+          </Field>
+          <div className="ef-field">
+            <span>强调色（可选）</span>
+            <div className="ef-domain-swatches" role="radiogroup" aria-label="领域强调色">
+              <button
+                type="button"
+                role="radio"
+                aria-checked={accent === null}
+                aria-label="默认"
+                className={accent === null ? "is-on" : ""}
+                onClick={() => setAccent(null)}
+              >
+                默认
+              </button>
+              {DOMAIN_ACCENTS.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={accent === item.id}
+                  aria-label={item.label}
+                  title={item.label}
+                  className={accent === item.id ? "is-on" : ""}
+                  style={{ background: `var(--pf-accent-${item.id})` }}
+                  onClick={() => setAccent(item.id)}
+                />
+              ))}
+            </div>
+            <small className="ef-field-hint">领域头进度条与领域条会用这个颜色归组；不选则用默认墨色。</small>
+          </div>
         </>
       )}
       {error ? <p className="ef-error">{error}</p> : null}
@@ -906,20 +1057,19 @@ export function DomainPickerDialog() {
   const selectedDomainId = useField((s) => s.selectedDomainId);
   const selectDomain = useField((s) => s.selectDomain);
   const movePaper = useField((s) => s.movePaper);
-  const createDomainAndMove = useField((s) => s.createDomainAndMove);
+  const moveCheckedPapers = useField((s) => s.moveCheckedPapers);
   const openDialog = useField((s) => s.openDialog);
   const dialogPaperId = useField((s) => s.dialogPaperId);
+  const dialogPaperIds = useField((s) => s.dialogPaperIds);
   const moving = dialog === "move-paper";
-  const open = dialog === "pick-domain" || moving;
+  // 批量移动：勾选集在对话框打开时冻结（dialogPaperIds），确认期间不被后台刷新改动。
+  const movingChecked = dialog === "move-checked";
+  const open = dialog === "pick-domain" || moving || movingChecked;
   const [follow, setFollow] = useState(() => loadMoveFollow());
-  const [domainName, setDomainName] = useState("");
-  const [moveError, setMoveError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
     setFollow(loadMoveFollow());
-    setDomainName("");
-    setMoveError(null);
   }, [open]);
 
   function chooseFollow(next: boolean) {
@@ -927,18 +1077,173 @@ export function DomainPickerDialog() {
     saveMoveFollow(next);
   }
 
+  // 搜索过滤 + 最近使用置顶 + ↑↓/Enter 键盘选择：领域多时不必线性滚动逐个找。
+  const [query, setQuery] = useState("");
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [recent, setRecent] = useState<string[]>([]);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  // 移动模式：就地新建领域并移入（目标领域不存在时不必中途退出先去建）。
+  const createDomainAndMove = useField((s) => s.createDomainAndMove);
+  const [creating, setCreating] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [createBusy, setCreateBusy] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+  const createInputRef = useRef<HTMLInputElement | null>(null);
+  // 手动排序模式：按 sort_order 列出并 ↑↓ 调整，改动即时写回（常用领域可以靠前）。
+  const applyDomainOrder = useField((s) => s.applyDomainOrder);
+  const [ordering, setOrdering] = useState(false);
+  const [order, setOrder] = useState<string[]>([]);
+  // 每行右侧的论文数 / 已读进度 / 最近阅读：一次聚合查询，读不到时行内降级隐藏。
+  const [census, setCensus] = useState<Record<string, DomainCensus> | null>(null);
+
+  useEffect(() => {
+    if (!open || ordering) return;
+    let alive = true;
+    repo
+      .domainCensus()
+      .then((rows) => {
+        if (alive) setCensus(Object.fromEntries(rows.map((row) => [row.domainId, row])));
+      })
+      .catch(() => {
+        if (alive) setCensus(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [open, ordering]);
+
+  useEffect(() => {
+    if (!open) {
+      setCreating(false);
+      setNewName("");
+      setCreateBusy(false);
+      setCreateError(null);
+      setOrdering(false);
+      setOrder([]);
+      return;
+    }
+    setQuery("");
+    setActiveIndex(0);
+    setRecent(loadRecentDomains());
+  }, [open]);
+
+  const ordered = useMemo(() => orderDomainsByRecent(domains, recent), [domains, recent]);
+  const keyword = query.trim().toLowerCase();
+  const filtered = keyword
+    ? ordered.filter(
+        (domain) =>
+          domain.name.toLowerCase().includes(keyword) || domain.code.toLowerCase().includes(keyword),
+      )
+    : ordered;
+  const recentSet = useMemo(() => new Set(recent), [recent]);
+
+  useEffect(() => {
+    setActiveIndex(0);
+  }, [keyword]);
+
+  useEffect(() => {
+    // 键盘高亮行保持在可视区内（jsdom 无 scrollIntoView，可选调用静默跳过）。
+    const row = listRef.current?.querySelector<HTMLElement>(`[data-index="${activeIndex}"]`);
+    row?.scrollIntoView?.({ block: "nearest" });
+  }, [activeIndex]);
+
+  useEffect(() => {
+    if (creating) createInputRef.current?.focus();
+  }, [creating]);
+
+  function pick(domainId: string) {
+    if (movingChecked) void moveCheckedPapers(domainId);
+    else if (moving) void movePaper(domainId, dialogPaperId ?? undefined, { follow });
+    else void selectDomain(domainId);
+  }
+
+  function startCreate(initial: string) {
+    setNewName(initial);
+    setCreateError(null);
+    setCreating(true);
+  }
+
+  async function submitCreate() {
+    if (!moving || createBusy) return;
+    const name = newName.trim();
+    if (!name) {
+      setCreateError("请先输入新领域的名称。");
+      return;
+    }
+    setCreateError(null);
+    setCreateBusy(true);
+    try {
+      // 成功后 movePaper 会关掉对话框；失败保留输入与就地展开的状态。
+      await createDomainAndMove(name, dialogPaperId ?? undefined);
+    } catch (err) {
+      setCreateBusy(false);
+      setCreateError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  function toggleOrdering() {
+    if (!ordering) setOrder(domains.map((domain) => domain.id));
+    setOrdering((value) => !value);
+  }
+
+  function moveOrder(id: string, dir: -1 | 1) {
+    const index = order.indexOf(id);
+    const target = index + dir;
+    if (index < 0 || target < 0 || target >= order.length) return;
+    const next = [...order];
+    [next[index], next[target]] = [next[target], next[index]];
+    setOrder(next);
+    // 每次调整即时写回 sort_order：中途关掉对话框顺序也已生效。
+    void applyDomainOrder(next);
+  }
+
+  function onFilterKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Enter") {
+      if (filtered.length) {
+        event.preventDefault();
+        pick(filtered[activeIndex].id);
+      } else if (moving && keyword) {
+        // 搜索无匹配：Enter 直接把搜索词带进「新建领域并移入」，再按一次 Enter 完成。
+        event.preventDefault();
+        startCreate(query.trim());
+      }
+      return;
+    }
+    if (!filtered.length) return;
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setActiveIndex((index) => (index + 1) % filtered.length);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setActiveIndex((index) => (index - 1 + filtered.length) % filtered.length);
+    }
+  }
+
   return (
     <Dialog
       open={open}
-      title={moving ? "移动到其他领域" : "切换研究领域"}
+      title={moving ? "移动到其他领域" : movingChecked ? "移动选中论文到其他领域" : "切换研究领域"}
       onClose={closeDialog}
       footer={
-        moving ? (
+        moving || movingChecked ? (
           <Button type="button" onClick={closeDialog}>
             取消
           </Button>
         ) : (
           <>
+            {!ordering ? (
+              <Button type="button" onClick={() => openDialog("merge-domain")}>
+                合并领域…
+              </Button>
+            ) : null}
+            <Button
+              type="button"
+              aria-pressed={ordering}
+              className={ordering ? "is-active" : ""}
+              onClick={toggleOrdering}
+            >
+              {ordering ? "完成排序" : "调整顺序"}
+            </Button>
             <Button type="button" onClick={() => openDialog("edit-domain")}>
               编辑当前领域
             </Button>
@@ -950,81 +1255,185 @@ export function DomainPickerDialog() {
         )
       }
     >
-      <p>{moving ? "选择这篇论文要进入的领域。" : "选择要查看的研究领域。"}</p>
-      {moving ? (
-        <>
-          <div className="ef-move-follow" role="group" aria-label="移动后的去向">
-            <span className="ef-move-follow-label">移动后</span>
-            <Button
-              type="button"
-              size="sm"
-              variant="text"
-              className={follow ? "is-active" : ""}
-              aria-pressed={follow}
-              title="移动完成后直接进入目标领域，打开这篇论文"
-              onClick={() => chooseFollow(true)}
-            >
-              跟随到目标领域
-            </Button>
-            <Button
-              type="button"
-              size="sm"
-              variant="text"
-              className={!follow ? "is-active" : ""}
-              aria-pressed={!follow}
-              title="移动完成后留在当前领域继续阅读原列表"
-              onClick={() => chooseFollow(false)}
-            >
-              留在当前领域
-            </Button>
-          </div>
-          <form
-            onSubmit={(event) => {
-              event.preventDefault();
-              setMoveError(null);
-              void createDomainAndMove(domainName).catch((err: unknown) =>
-                setMoveError(err instanceof Error ? err.message : String(err)),
-              );
-            }}
+      <p>
+        {moving
+          ? "选择这篇论文要进入的领域。"
+          : movingChecked
+            ? `把选中的 ${dialogPaperIds.length} 篇论文移入哪个领域？`
+            : ordering
+              ? "用 ↑↓ 调整领域顺序，常用领域放前面；每次调整即时保存（⌘1-9 跟随新顺序）。"
+              : "选择要查看的研究领域。"}
+      </p>
+      {moving && !ordering ? (
+        <div className="ef-move-follow" role="group" aria-label="移动后的去向">
+          <span className="ef-move-follow-label">移动后</span>
+          <Button
+            type="button"
+            size="sm"
+            variant="text"
+            className={follow ? "is-active" : ""}
+            aria-pressed={follow}
+            title="移动完成后直接进入目标领域，打开这篇论文"
+            onClick={() => chooseFollow(true)}
           >
-            <Field label="新领域名称">
-              <input
-                aria-label="新领域名称"
-                value={domainName}
-                onChange={(event) => setDomainName(event.target.value)}
-                placeholder="例如：对齐"
-              />
-            </Field>
-            <Button type="submit" variant="primary">
-              创建并移入
-            </Button>
-            {moveError ? <p className="ef-error">{moveError}</p> : null}
-          </form>
-        </>
+            跟随到目标领域
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="text"
+            className={!follow ? "is-active" : ""}
+            aria-pressed={!follow}
+            title="移动完成后留在当前领域继续阅读原列表"
+            onClick={() => chooseFollow(false)}
+          >
+            留在当前领域
+          </Button>
+        </div>
       ) : null}
-      {domains.map((domain) => (
-        <button
-          key={domain.id}
-          type="button"
-          className={`ef-domain-option ${domain.id === selectedDomainId ? "is-current" : ""}`}
-          onClick={() => {
-            if (moving) void movePaper(domain.id, dialogPaperId ?? undefined, { follow });
-            else void selectDomain(domain.id);
-          }}
-        >
-          <span>
-            <strong>{domain.name}</strong>
-            {domain.summary ? (
-              <small className="ef-domain-option-sum">
-                {domain.summary}
-              </small>
-            ) : null}
-          </span>
-          <span className="mono">
-            {domain.code} <Icon name="right" />
-          </span>
-        </button>
-      ))}
+      {ordering ? (
+        <div className="ef-domain-options ef-domain-ordering" aria-label="领域排序列表">
+          {order.map((id, index) => {
+            const domain = domains.find((item) => item.id === id);
+            if (!domain) return null;
+            return (
+              <div key={id} className="ef-domain-option ef-order-row">
+                <span>
+                  <strong>{domain.name}</strong>
+                  <small className="ef-domain-option-sum">
+                    {domain.code}
+                    {index < 9 ? ` · ⌘${index + 1}` : ""}
+                  </small>
+                </span>
+                <span className="ef-order-actions">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="text"
+                    aria-label={`上移 ${domain.name}`}
+                    disabled={index === 0}
+                    onClick={() => moveOrder(id, -1)}
+                  >
+                    <Icon name="up" />
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="text"
+                    aria-label={`下移 ${domain.name}`}
+                    disabled={index === order.length - 1}
+                    onClick={() => moveOrder(id, 1)}
+                  >
+                    <Icon name="down" />
+                  </Button>
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <>
+      <div className="ef-domain-filter">
+        <Icon name="search" />
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={onFilterKeyDown}
+          placeholder="搜索领域名称或短码"
+          aria-label="搜索领域"
+          aria-keyshortcuts="ArrowUp ArrowDown Enter"
+        />
+        <small className="ef-domain-filter-hint" aria-hidden="true">
+          ↑↓ 选择 · Enter 确认
+        </small>
+      </div>
+      <div className="ef-domain-options" ref={listRef} role="list" aria-label="领域列表">
+        {filtered.map((domain, index) => (
+          <button
+            key={domain.id}
+            type="button"
+            data-index={index}
+            className={[
+              "ef-domain-option",
+              domain.id === selectedDomainId ? "is-current" : "",
+              index === activeIndex ? "is-active" : "",
+            ]
+              .filter(Boolean)
+              .join(" ")}
+            onClick={() => pick(domain.id)}
+            onMouseEnter={() => setActiveIndex(index)}
+          >
+            <span>
+              <strong>{domain.name}</strong>
+              {recentSet.has(domain.id) ? <i className="ef-domain-recent" aria-hidden="true">最近</i> : null}
+              {domain.summary ? (
+                <small className="ef-domain-option-sum">{domain.summary}</small>
+              ) : null}
+            </span>
+            <span className="ef-domain-option-side">
+              {census?.[domain.id] ? (
+                <span className="ef-domain-option-stats mono">
+                  {census[domain.id].total} 篇 · 已读 {census[domain.id].read}
+                  {census[domain.id].reading ? ` · 在读 ${census[domain.id].reading}` : ""}
+                  {formatDate(census[domain.id].lastReadAt) !== "—"
+                    ? ` · 上次阅读 ${formatDate(census[domain.id].lastReadAt)}`
+                    : ""}
+                </span>
+              ) : null}
+              <span className="mono">
+                {domain.code} <Icon name="right" />
+              </span>
+            </span>
+          </button>
+        ))}
+        {filtered.length === 0 ? <p className="ef-domain-empty">没有匹配的领域。</p> : null}
+      </div>
+      {moving ? (
+        <div className="ef-domain-create">
+          {creating ? (
+            <>
+              <div className="ef-domain-create-row">
+                <Icon name="plus" />
+                <input
+                  ref={createInputRef}
+                  value={newName}
+                  onChange={(e) => setNewName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      void submitCreate();
+                    }
+                  }}
+                  placeholder="新领域名称，Enter 直接移入"
+                  aria-label="新领域名称"
+                  disabled={createBusy}
+                />
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="primary"
+                  disabled={createBusy}
+                  onClick={() => void submitCreate()}
+                >
+                  {createBusy ? "移动中…" : "创建并移入"}
+                </Button>
+              </div>
+              {createError ? <p className="ef-error">{createError}</p> : null}
+            </>
+          ) : (
+            <button
+              type="button"
+              className="ef-domain-create-toggle"
+              onClick={() => startCreate(keyword ? query.trim() : "")}
+            >
+              <Icon name="plus" />
+              新建领域并移入
+            </button>
+          )}
+        </div>
+      ) : null}
+        </>
+      )}
     </Dialog>
   );
 }
@@ -1112,6 +1521,138 @@ export function DeleteCheckedPapersDialog() {
       <p>
         将删除选中的 <strong>{checkedPaperIds.length}</strong> 篇论文及其全部笔记。删除后 10 秒内可「撤销删除」，超时后不可恢复。
       </p>
+    </Dialog>
+  );
+}
+
+/** 批量标签：为勾选集统一添加标签，或从整批移除已有标签（候选标签按覆盖篇数排序）。 */
+export function TagCheckedPapersDialog() {
+  const dialog = useField((s) => s.dialog);
+  const closeDialog = useField((s) => s.closeDialog);
+  const checkedPaperIds = useField((s) => s.dialogPaperIds);
+  const addTagsToChecked = useField((s) => s.addTagsToChecked);
+  const removeTagsFromChecked = useField((s) => s.removeTagsFromChecked);
+  const [input, setInput] = useState("");
+  const [existing, setExisting] = useState<Array<{ tag: string; count: number }>>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const open = dialog === "tag-checked" && checkedPaperIds.length > 0;
+
+  useEffect(() => {
+    if (!open) {
+      setInput("");
+      setExisting([]);
+      setError(null);
+      return;
+    }
+    let alive = true;
+    repo
+      .tagsOfPapers(checkedPaperIds)
+      .then((rows) => {
+        if (alive) setExisting(rows);
+      })
+      .catch(() => {
+        if (alive) setExisting([]);
+      });
+    return () => {
+      alive = false;
+    };
+    // checkedPaperIds 是打开时冻结的快照，不会中途变化。
+  }, [open, checkedPaperIds]);
+
+  const pending = input
+    .split(/[,，、;；]/)
+    .map((tag) => tag.trim())
+    .filter(Boolean);
+
+  async function add() {
+    if (busy) return;
+    if (!pending.length) {
+      setError("请先输入要添加的标签（逗号分隔，可一次多个）。");
+      return;
+    }
+    setError(null);
+    setBusy(true);
+    try {
+      await addTagsToChecked(pending);
+    } catch (err) {
+      setBusy(false);
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function remove(tag: string) {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await removeTagsFromChecked([tag]);
+    } catch (err) {
+      setBusy(false);
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  return (
+    <Dialog
+      open={open}
+      title="批量修改标签"
+      onClose={closeDialog}
+      footer={
+        <>
+          <Button type="button" onClick={closeDialog}>
+            取消
+          </Button>
+          <Button type="button" variant="primary" disabled={busy} onClick={() => void add()}>
+            添加标签
+          </Button>
+        </>
+      }
+    >
+      <p>
+        将作用于选中的 <strong>{checkedPaperIds.length}</strong> 篇论文。标签写入后按「手动」来源保护，AI 补全不会覆盖。
+      </p>
+      <div className="ef-tag-batch-row">
+        <input
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              void add();
+            }
+          }}
+          placeholder="新标签，逗号分隔，如：benchmark, 综述"
+          aria-label="要添加的标签"
+          disabled={busy}
+        />
+      </div>
+      {existing.length ? (
+        <div className="ef-tag-batch-existing">
+          <span className="ef-tag-batch-hint">这批论文已有的标签（点 × 从全部选中论文移除）：</span>
+          <ul>
+            {existing.map((item) => (
+              <li key={item.tag}>
+                <span>
+                  {item.tag}
+                  <small className="mono"> ×{item.count}</small>
+                </span>
+                <button
+                  type="button"
+                  aria-label={`移除标签 ${item.tag}`}
+                  title={`从 ${item.count} 篇论文移除标签「${item.tag}」`}
+                  disabled={busy}
+                  onClick={() => void remove(item.tag)}
+                >
+                  <Icon name="close" />
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : (
+        <p className="ef-tag-batch-hint">这批论文还没有标签。</p>
+      )}
+      {error ? <p className="ef-error">{error}</p> : null}
     </Dialog>
   );
 }

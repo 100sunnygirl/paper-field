@@ -22,7 +22,7 @@ Viewport 1600×1000. Fresh context so the fourth seed paper exists.
 - Click the filename row. Wait for the level-1 heading, the exact text 文件名, and 认领标题.
 - After claim, 认领标题 is hidden and 文件名 is gone. The heading text is unchanged.
 - 写总结, then 保存笔记. Wait for 笔记已保存。 `#note-summary` shows 写总结 again and does not show 手动笔记.
-- 更多操作, then the exact button 移动到其他领域. The breadcrumb 移动到其他领域：多模态 contains the same words, so the locator is exact. Fill 新领域名称 with 对齐验收, 创建并移入. Wait for 切换研究领域：对齐验收.
+- 更多操作, then the exact button 移动到其他领域. If the dialog offers 新建领域并移入, click it so 新领域名称 appears. Fill 对齐验收 and 创建并移入. Wait for 切换研究领域：对齐验收.
 - Dispatch Ctrl R on `window` (a real browser accelerator may reload). Click 撤销 inside that status toast.
 - Select 提供商预设 `Ollama 本地（免 Key）`, 添加提供商, 保存设置, then 阅读 and 起草阅读笔记. Cancel the dialog.
 - Wait until 恢复 is disabled and the page shows 浏览器预览不能备份 / 恢复. Do not expect 恢复前的文献.

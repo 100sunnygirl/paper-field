@@ -707,6 +707,7 @@ describe("SystemView · 锚点目录、查找设置与深链", () => {
         "密钥与令牌",
         "数据导出",
         "备份与恢复",
+        "领域回收站",
         "快捷键",
         "软件更新",
         "MinerU 解析源",
@@ -714,7 +715,7 @@ describe("SystemView · 锚点目录、查找设置与深链", () => {
         "运行日志",
       ]);
       // 每张卡片都带锚点 id
-      for (const id of ["setup", "llm", "secrets", "export", "backup", "shortcuts", "update", "mineru", "biblio", "logs"]) {
+      for (const id of ["setup", "llm", "secrets", "export", "backup", "domain-trash", "shortcuts", "update", "mineru", "biblio", "logs"]) {
         expect(document.getElementById(`settings-${id}`)).not.toBeNull();
       }
       fireEvent.click(within(nav).getByRole("link", { name: "备份与恢复" }));
